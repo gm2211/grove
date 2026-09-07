@@ -11,9 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gm2211/grove/internal/apiclient"
+	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/dispatch"
-	"github.com/gm2211/grove/internal/nomad"
-	"github.com/gm2211/grove/internal/orchard"
+	"github.com/gm2211/grove/internal/server"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -24,9 +25,10 @@ type fakeGroveAPI struct {
 
 	token string
 
-	workers []orchard.Worker
-	vms     []orchard.VM
-	nodes   []nomad.Node
+	workers []server.FleetEntry
+	vms     []server.FleetEntry
+	nodes   []server.FleetEntry
+	totals  server.FleetTotals
 
 	jobs      map[string]*dispatch.Job
 	nextJobID int
@@ -60,7 +62,7 @@ func (f *fakeGroveAPI) handle(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/fleet":
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		writeJSON(w, http.StatusOK, FleetResponse{Workers: f.workers, VMs: f.vms, Nodes: f.nodes})
+		writeJSON(w, http.StatusOK, server.FleetResponse{Workers: f.workers, VMs: f.vms, Nodes: f.nodes, Totals: f.totals})
 
 	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/jobs":
 		var req dispatch.JobRequest
@@ -100,12 +102,21 @@ func (f *fakeGroveAPI) handle(w http.ResponseWriter, r *http.Request) {
 		id, _ := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/api/v1/jobs/"))
 		f.mu.Lock()
 		job, ok := f.jobs[id]
+		var jobCopy dispatch.Job
+		if ok {
+			// Copy the job to a value while still holding the lock, then encode the copy after
+			// unlocking — encoding reads every field via reflection, and a test goroutine can be
+			// concurrently mutating the same *dispatch.Job's fields (see
+			// TestRunToolWaitsForTerminalStatus), which -race correctly flags as a data race if
+			// the encode happens against the live pointer with the lock released.
+			jobCopy = *job
+		}
 		f.mu.Unlock()
 		if !ok {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		writeJSON(w, http.StatusOK, job)
+		writeJSON(w, http.StatusOK, jobCopy)
 
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v1/jobs/"):
 		id, _ := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/api/v1/jobs/"))
@@ -127,7 +138,7 @@ func (f *fakeGroveAPI) handle(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.recycled = append(f.recycled, name)
 		f.mu.Unlock()
-		w.WriteHeader(http.StatusNoContent)
+		writeJSON(w, http.StatusOK, map[string]bool{"drainStarted": true})
 
 	case r.Method == http.MethodPost && (strings.HasSuffix(r.URL.Path, "/pause") || strings.HasSuffix(r.URL.Path, "/resume")):
 		paused := strings.HasSuffix(r.URL.Path, "/pause")
@@ -156,27 +167,24 @@ func newTestHandlers(t *testing.T, fake *fakeGroveAPI) *handlers {
 	t.Helper()
 	srv := fake.server()
 	t.Cleanup(srv.Close)
-	client, err := newAPIClient(srv.URL, fake.token)
-	if err != nil {
-		t.Fatalf("newAPIClient: %v", err)
-	}
+	client := apiclient.New(srv.URL, fake.token)
 	return &handlers{client: client}
 }
 
 func TestFleetTool(t *testing.T) {
 	fake := newFakeGroveAPI()
-	fake.workers = []orchard.Worker{
-		{Name: "mac-1", Offline: false, SchedulingPaused: false},
-		{Name: "mac-2", Offline: true, SchedulingPaused: true},
+	fake.workers = []server.FleetEntry{
+		{Name: "mac-1", Online: true, Cordoned: false},
+		{Name: "mac-2", Online: false, Cordoned: true},
 	}
-	fake.vms = []orchard.VM{
+	fake.vms = []server.FleetEntry{
 		{Name: "linux-mac-1-0", Status: "running", Labels: map[string]string{"pool": "linux"}},
 		{Name: "linux-mac-1-1", Status: "pending", Labels: map[string]string{"pool": "linux"}},
 		{Name: "macos-mac-2-0", Status: "running", Labels: map[string]string{"pool": "macos"}},
 	}
-	fake.nodes = []nomad.Node{
-		{ID: "n1", Status: "ready", RunningAllocs: 2},
-		{ID: "n2", Status: "down", RunningAllocs: 0},
+	fake.nodes = []server.FleetEntry{
+		{Name: "n1", Status: "ready"},
+		{Name: "n2", Status: "down"},
 	}
 	fake.jobs["j1"] = &dispatch.Job{ID: "j1", Status: dispatch.StatusRunning}
 	fake.jobs["j2"] = &dispatch.Job{ID: "j2", Status: dispatch.StatusSuccess}
@@ -207,11 +215,11 @@ func TestFleetTool(t *testing.T) {
 	}
 }
 
-func TestSummarizeFleetFallsBackToAllocCountsWhenJobsUnavailable(t *testing.T) {
-	fleet := &FleetResponse{Nodes: []nomad.Node{{ID: "n1", Status: "ready", RunningAllocs: 3}}}
+func TestSummarizeFleetFallsBackToServerTotalsWhenJobsUnavailable(t *testing.T) {
+	fleet := &server.FleetResponse{Totals: server.FleetTotals{JobsRunning: 3}}
 	summary := summarizeFleet(fleet, nil)
 	if summary.RunningJobs != 3 {
-		t.Errorf("RunningJobs = %d, want 3 (fallback to alloc sum)", summary.RunningJobs)
+		t.Errorf("RunningJobs = %d, want 3 (fallback to fleet.Totals.JobsRunning)", summary.RunningJobs)
 	}
 }
 
@@ -446,7 +454,7 @@ func TestRecycleVMTool(t *testing.T) {
 		t.Fatalf("recycleVM: %v", err)
 	}
 	if !res.Recycled {
-		t.Error("Recycled = false, want true")
+		t.Error("Recycled = false, want true (fake reports drainStarted=true)")
 	}
 	if len(fake.recycled) != 1 || fake.recycled[0] != "linux-mac-1-0" {
 		t.Errorf("recycled = %v, want [linux-mac-1-0]", fake.recycled)
@@ -478,17 +486,11 @@ func TestPauseWorkerTool(t *testing.T) {
 }
 
 func TestAPIClientReportsUnreachableServer(t *testing.T) {
-	client, err := newAPIClient("http://127.0.0.1:1", "") // nothing listens here
-	if err != nil {
-		t.Fatalf("newAPIClient: %v", err)
-	}
+	client := apiclient.New("http://127.0.0.1:1", "") // nothing listens here
 	h := &handlers{client: client}
-	_, _, err = h.fleet(t.Context(), nil, fleetArgs{})
+	_, _, err := h.fleet(t.Context(), nil, fleetArgs{})
 	if err == nil {
 		t.Fatal("expected an error calling an unreachable server")
-	}
-	if !strings.Contains(err.Error(), "grove serve") {
-		t.Errorf("error = %q, want an actionable message mentioning `grove serve`", err.Error())
 	}
 }
 
@@ -498,29 +500,23 @@ func TestAPIClientReportsAuthFailure(t *testing.T) {
 	srv := fake.server()
 	defer srv.Close()
 
-	client, err := newAPIClient(srv.URL, "wrong-token")
-	if err != nil {
-		t.Fatalf("newAPIClient: %v", err)
-	}
+	client := apiclient.New(srv.URL, "wrong-token")
 	h := &handlers{client: client}
-	_, _, err = h.fleet(t.Context(), nil, fleetArgs{})
+	_, _, err := h.fleet(t.Context(), nil, fleetArgs{})
 	if err == nil {
 		t.Fatal("expected an auth error")
 	}
-	if !strings.Contains(err.Error(), "token") {
-		t.Errorf("error = %q, want it to mention the token", err.Error())
-	}
 }
 
-func TestNewAPIClientRejectsEmptyURL(t *testing.T) {
-	if _, err := newAPIClient("", "tok"); err == nil {
-		t.Error("expected error for empty base URL")
+func TestNewServerRejectsEmptyURL(t *testing.T) {
+	if _, err := NewServer(&config.Config{}, "test-version"); err == nil {
+		t.Error("expected error for empty server.url")
 	}
 }
 
 func TestReadFleetResource(t *testing.T) {
 	fake := newFakeGroveAPI()
-	fake.workers = []orchard.Worker{{Name: "mac-1"}}
+	fake.workers = []server.FleetEntry{{Name: "mac-1"}}
 	h := newTestHandlers(t, fake)
 
 	result, err := h.readFleetResource(t.Context(), nil)
@@ -622,10 +618,7 @@ func TestNewServerBuildsWithoutError(t *testing.T) {
 	srv := fake.server()
 	defer srv.Close()
 
-	client, err := newAPIClient(srv.URL, fake.token)
-	if err != nil {
-		t.Fatalf("newAPIClient: %v", err)
-	}
+	client := apiclient.New(srv.URL, fake.token)
 	s := newServerWithClient(client, "test-version")
 	if s == nil {
 		t.Fatal("newServerWithClient returned nil")

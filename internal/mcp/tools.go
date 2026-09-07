@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
+	"github.com/gm2211/grove/internal/apiclient"
 	"github.com/gm2211/grove/internal/dispatch"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -15,7 +17,7 @@ import (
 // methods on a small struct (rather than closures) makes them directly callable from tests
 // without spinning up a real *mcpsdk.Server or stdio transport.
 type handlers struct {
-	client *apiClient
+	client *apiclient.Client
 }
 
 // --- grove_fleet -------------------------------------------------------------------------
@@ -170,8 +172,10 @@ func (h *handlers) awaitJob(ctx context.Context, req *mcpsdk.CallToolRequest, jo
 			if !isTerminal(job.Status) {
 				res.TimedOutWaiting = true
 			}
-			if logs, lerr := h.client.JobLogs(ctx, jobID); lerr == nil {
-				res.LogTail = tail(logs, tailLines)
+			if rc, lerr := h.client.JobLogs(ctx, jobID, false); lerr == nil {
+				data, _ := io.ReadAll(rc)
+				rc.Close()
+				res.LogTail = tail(string(data), tailLines)
 			}
 			return nil, res, nil
 		}
@@ -244,11 +248,16 @@ func (h *handlers) jobLogs(ctx context.Context, _ *mcpsdk.CallToolRequest, args 
 	if tailLines <= 0 {
 		tailLines = 200
 	}
-	logs, err := h.client.JobLogs(ctx, args.JobID)
+	rc, err := h.client.JobLogs(ctx, args.JobID, false)
 	if err != nil {
 		return nil, nil, err
 	}
-	return nil, &jobLogsResult{JobID: args.JobID, LogTail: tail(logs, tailLines)}, nil
+	data, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		return nil, nil, fmt.Errorf("read job logs: %w", err)
+	}
+	return nil, &jobLogsResult{JobID: args.JobID, LogTail: tail(string(data), tailLines)}, nil
 }
 
 // --- grove_job_cancel ------------------------------------------------------------------------
@@ -283,10 +292,11 @@ func (h *handlers) recycleVM(ctx context.Context, _ *mcpsdk.CallToolRequest, arg
 	if strings.TrimSpace(args.Name) == "" {
 		return nil, nil, errors.New("name is required")
 	}
-	if err := h.client.RecycleVM(ctx, args.Name); err != nil {
+	drainStarted, err := h.client.RecycleVM(ctx, args.Name)
+	if err != nil {
 		return nil, nil, err
 	}
-	return nil, &recycleResult{Name: args.Name, Recycled: true}, nil
+	return nil, &recycleResult{Name: args.Name, Recycled: drainStarted}, nil
 }
 
 // --- grove_pause_worker ----------------------------------------------------------------------
@@ -305,7 +315,13 @@ func (h *handlers) pauseWorker(ctx context.Context, _ *mcpsdk.CallToolRequest, a
 	if strings.TrimSpace(args.Name) == "" {
 		return nil, nil, errors.New("name is required")
 	}
-	if err := h.client.PauseWorker(ctx, args.Name, args.Paused); err != nil {
+	var err error
+	if args.Paused {
+		err = h.client.PauseWorker(ctx, args.Name)
+	} else {
+		err = h.client.ResumeWorker(ctx, args.Name)
+	}
+	if err != nil {
 		return nil, nil, err
 	}
 	return nil, &pauseWorkerResult{Name: args.Name, Paused: args.Paused}, nil
