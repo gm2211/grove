@@ -41,12 +41,18 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 		},
 		{
 			Name:        "tart",
-			Description: "Install Tart (`brew install cirruslabs/cli/tart`).",
+			Description: "Install Tart (`brew install openai/tools/tart`, falling back to `brew install cirruslabs/cli/tart` if that tap doesn't have it).",
 			Check: func(ctx context.Context) (bool, error) {
 				_, err := lookPath("tart")
 				return err == nil, nil
 			},
 			Apply: func(ctx context.Context) error {
+				// Cirrus Labs joined OpenAI; the canonical tap moved to openai/homebrew-tools
+				// (openai/tools/tart). Fall back to the original cirruslabs/cli/tart tap only if
+				// the new one fails, in case a host's brew hasn't picked up the move yet.
+				if _, _, err := r.Run(ctx, "brew", "install", "openai/tools/tart"); err == nil {
+					return nil
+				}
 				_, _, err := r.Run(ctx, "brew", "install", "cirruslabs/cli/tart")
 				return err
 			},

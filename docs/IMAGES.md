@@ -13,7 +13,7 @@ for what *is* automated (the `images/runner` container) and the `make images` ta
 manual path.
 
 ```console
-$ brew install cirruslabs/cli/tart
+$ brew install openai/tools/tart
 $ brew tap hashicorp/tap && brew install hashicorp/tap/packer   # or `brew install packer` if your
                                                                   # Homebrew allows the hashicorp tap
 $ cd images/macos-worker && packer init . && packer validate . && packer build .
