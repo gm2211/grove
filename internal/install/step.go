@@ -13,7 +13,7 @@ type Step struct {
 	// Name is a short stable identifier, e.g. "homebrew", "tart", "launchagent:orchard-worker".
 	Name string
 	// Description is a human sentence describing what Apply does, shown in --dry-run and normal
-	// output ("Install tart via `brew install cirruslabs/cli/tart`.").
+	// output ("Install tart via `brew install openai/tools/tart`.").
 	Description string
 	// Privileged steps (sudo, launchctl bootstrap of a LaunchDaemon, disablesleep, …) are never
 	// run automatically: Apply only prints the commands for a human (or Claude) to run, even with

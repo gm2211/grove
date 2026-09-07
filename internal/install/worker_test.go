@@ -72,8 +72,11 @@ func TestWorkerPlan_AppliesCommandsAndGatesPrivilegedSteps(t *testing.T) {
 		t.Fatalf("RunPlan: %v", err)
 	}
 
-	if !r.CalledWith("brew install cirruslabs/cli/tart") {
-		t.Error("expected `brew install cirruslabs/cli/tart` to run")
+	if !r.CalledWith("brew install openai/tools/tart") {
+		t.Error("expected `brew install openai/tools/tart` to run")
+	}
+	if r.CalledWith("brew install cirruslabs/cli/tart") {
+		t.Error("cirruslabs/cli/tart fallback should not run when the openai/tools tap install succeeds")
 	}
 	sawHomebrewInstall := false
 	sawOrchardBuild := false
@@ -122,6 +125,29 @@ func TestWorkerPlan_AppliesCommandsAndGatesPrivilegedSteps(t *testing.T) {
 	}
 }
 
+func TestWorkerPlan_TartFallsBackToCirruslabsTap(t *testing.T) {
+	home := t.TempDir()
+	r := NewFakeRunner()
+	scriptTailscaleUp(r)
+	r.Script("brew install openai/tools/tart", FakeResult{Err: errors.New("no available formula (fake)")})
+	opts := testWorkerOptions(home)
+
+	steps, err := BuildPlan(r, opts, io.Discard)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+
+	if !r.CalledWith("brew install openai/tools/tart") {
+		t.Error("expected the openai/tools/tart install to be attempted first")
+	}
+	if !r.CalledWith("brew install cirruslabs/cli/tart") {
+		t.Error("expected the cirruslabs/cli/tart tap to be tried as a fallback after openai/tools/tart failed")
+	}
+}
+
 func TestWorkerPlan_DryRunAppliesNothing(t *testing.T) {
 	home := t.TempDir()
 	r := NewFakeRunner()
@@ -146,6 +172,7 @@ func TestWorkerPlan_DryRunAppliesNothing(t *testing.T) {
 	// No mutating command may run in --dry-run — only read-only Check calls (e.g. `pmset -g`,
 	// `launchctl print <label>`) are expected to still execute, since dry-run only skips Apply.
 	forbidden := []string{
+		"brew install openai/tools/tart",
 		"brew install cirruslabs/cli/tart",
 		"sudo pmset -a disablesleep 1",
 		"launchctl bootstrap",

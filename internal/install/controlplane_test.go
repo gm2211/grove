@@ -27,9 +27,6 @@ func TestControlPlanePlan_DarwinRendersConfigAndLaunchAgents(t *testing.T) {
 	r := NewFakeRunner()
 	scriptTailscaleUp(r)
 	opts := testControlPlaneOptions(home, "darwin")
-	destOrchard := filepath.Join(home, ".local", "bin", "orchard")
-	r.Script(destOrchard+" create service-account grove --roles compute:read,compute:write,compute:connect",
-		FakeResult{Stdout: "token: abcdef0123456789\n"})
 
 	steps, err := BuildPlan(r, opts, io.Discard)
 	if err != nil {
@@ -76,11 +73,36 @@ func TestControlPlanePlan_DarwinRendersConfigAndLaunchAgents(t *testing.T) {
 	if cfg.Artifacts.AccessKey == "" || cfg.Artifacts.SecretKey == "" {
 		t.Error("expected generated MinIO credentials in config.yaml")
 	}
-	if cfg.Orchard.Token != "abcdef0123456789" {
-		t.Errorf("cfg.Orchard.Token = %q, want the token extracted from `orchard create service-account`", cfg.Orchard.Token)
+	if cfg.Orchard.Token == "" {
+		t.Error("expected a grove-generated orchard service-account token")
 	}
 	if cfg.Fleet != filepath.Join(cfgDir, "fleet.yaml") {
 		t.Errorf("cfg.Fleet = %q, want %q", cfg.Fleet, filepath.Join(cfgDir, "fleet.yaml"))
+	}
+
+	// `orchard create service-account` must be called with --roles repeated once per role
+	// (the fork's --roles is a StringArrayVar and does not split on commas) and with an
+	// explicit --token, since the command prints nothing on success for grove to scrape.
+	destOrchard := filepath.Join(home, ".local", "bin", "orchard")
+	wantCreate := Call{
+		Name: destOrchard,
+		Args: []string{
+			"create", "service-account", "grove",
+			"--token", cfg.Orchard.Token,
+			"--roles", "compute:read",
+			"--roles", "compute:write",
+			"--roles", "compute:connect",
+		},
+	}
+	found := false
+	for _, c := range r.Calls {
+		if c.String() == wantCreate.String() {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected call %q, calls were: %v", wantCreate.String(), r.Calls)
 	}
 
 	// No sudo anywhere in the control-plane plan; it has no privileged steps.
@@ -94,9 +116,6 @@ func TestControlPlanePlan_LinuxRendersSystemdUnits(t *testing.T) {
 	r := NewFakeRunner()
 	scriptTailscaleUp(r)
 	opts := testControlPlaneOptions(home, "linux")
-	destOrchard := filepath.Join(home, ".local", "bin", "orchard")
-	r.Script(destOrchard+" create service-account grove --roles compute:read,compute:write,compute:connect",
-		FakeResult{Stdout: "token: abcdef0123456789\n"})
 
 	steps, err := BuildPlan(r, opts, io.Discard)
 	if err != nil {

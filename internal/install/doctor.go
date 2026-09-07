@@ -164,7 +164,7 @@ func checkTart(ctx context.Context, r Runner, opts Options) []CheckResult {
 			Name:        "tart",
 			OK:          false,
 			Detail:      "not installed",
-			Remediation: "run `grove install --role worker` (or `brew install cirruslabs/cli/tart`)",
+			Remediation: "run `grove install --role worker` (or `brew install openai/tools/tart`)",
 		}}
 	}
 	results := []CheckResult{{Name: "tart", OK: true, Detail: "installed"}}
