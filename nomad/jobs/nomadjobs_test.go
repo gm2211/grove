@@ -1,9 +1,15 @@
 package nomadjobs
 
 import (
+	"bytes"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"text/template"
+	"time"
 
 	"github.com/hashicorp/nomad/jobspec2"
 )
@@ -256,4 +262,110 @@ func boolToStr(b bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+// runRunSH writes runSH and scriptBody to a fresh NOMAD_TASK_DIR-shaped temp dir and executes
+// run.sh with /bin/bash, the same way raw_exec (macOS) and the docker driver's
+// args = ["${NOMAD_TASK_DIR}/run.sh"] invoke it in production. It returns the process's real exit
+// code (extracted from *exec.ExitError, not the Go-side error), combined stdout+stderr, and how
+// long the run took.
+func runRunSH(t *testing.T, runSH, scriptBody, timeoutSeconds string) (code int, output string, elapsed time.Duration) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "script.sh"), []byte(scriptBody), 0o755); err != nil {
+		t.Fatalf("write script.sh: %v", err)
+	}
+	runPath := filepath.Join(dir, "run.sh")
+	if err := os.WriteFile(runPath, []byte(runSH), 0o755); err != nil {
+		t.Fatalf("write run.sh: %v", err)
+	}
+
+	cmd := exec.Command("/bin/bash", runPath)
+	cmd.Env = append(os.Environ(),
+		"NOMAD_TASK_DIR="+dir,
+		"NOMAD_META_timeout_seconds="+timeoutSeconds,
+	)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+
+	start := time.Now()
+	err := cmd.Run()
+	elapsed = time.Since(start)
+
+	if err == nil {
+		return 0, out.String(), elapsed
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode(), out.String(), elapsed
+	}
+	t.Fatalf("run run.sh: %v\noutput:\n%s", err, out.String())
+	return -1, out.String(), elapsed
+}
+
+// renderedRunSH renders file for (kind, pool) and returns the real, HCL-unescaped run.sh body —
+// i.e. the same string Nomad would write to ${NOMAD_TASK_DIR}/run.sh at dispatch time. It goes
+// through jobspec2 (not the raw Go-template output used elsewhere in this file) specifically
+// because `$${...}` only collapses to `${...}` during HCL2 parsing (see docs/JOBS.md "HCL
+// escaping") — executing the raw template output directly would leave literal `$${` sequences
+// bash would misinterpret as `$$` (the shell's own PID) followed by stray `{...}` text.
+func renderedRunSH(t *testing.T, file string, data renderData) string {
+	t.Helper()
+	hcl := render(t, file, data)
+	job, err := jobspec2.ParseWithConfig(&jobspec2.ParseConfig{
+		Path:    "job.hcl",
+		Body:    []byte(hcl),
+		AllowFS: false,
+	})
+	if err != nil {
+		t.Fatalf("jobspec2 failed to parse rendered %s: %v", file, err)
+	}
+	task := job.TaskGroups[0].Tasks[0]
+	if len(task.Templates) != 1 || task.Templates[0].EmbeddedTmpl == nil {
+		t.Fatalf("rendered %s: expected exactly one template with embedded data on task %q", file, task.Name)
+	}
+	return *task.Templates[0].EmbeddedTmpl
+}
+
+// TestRunSHPortableTimeout is the regression test for the live defect this fix addresses: a
+// `shell` job dispatched to a macOS (raw_exec) node failed every time with exit 127
+// ("…/run.sh: line N: exec: timeout: not found") because GNU coreutils' `timeout(1)` does not
+// exist on stock macOS. run.sh's run_with_timeout() prefers the real `timeout` when the host has
+// one, and otherwise runs the command in the background under a watchdog. This test extracts the
+// real run.sh body (via renderedRunSH, so it exercises exactly what Nomad would run) and executes
+// it directly with /bin/bash against a temp script — on a host with `timeout` on PATH this
+// exercises run_with_timeout's fast path, and on one without it (e.g. a stock macOS runner, the
+// scenario that was broken) it exercises the watchdog fallback. Both must satisfy the same
+// contract: propagate the script's real exit code, and exit 124 on a timeout so
+// internal/dispatch's 124 -> Job.TimedOut mapping keeps working regardless of which path ran.
+func TestRunSHPortableTimeout(t *testing.T) {
+	runSH := renderedRunSH(t, "shell.nomad.hcl", renderData{Kind: "shell", Pool: "macos"})
+
+	t.Run("exits 0 and echoes", func(t *testing.T) {
+		code, out, _ := runRunSH(t, runSH, "#!/bin/bash\necho hello-from-script\n", "60")
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0; output:\n%s", code, out)
+		}
+		if !strings.Contains(out, "hello-from-script") {
+			t.Fatalf("output missing expected echo; output:\n%s", out)
+		}
+	})
+
+	t.Run("propagates a non-timeout exit code", func(t *testing.T) {
+		code, out, _ := runRunSH(t, runSH, "#!/bin/bash\nexit 3\n", "60")
+		if code != 3 {
+			t.Fatalf("exit code = %d, want 3; output:\n%s", code, out)
+		}
+	})
+
+	t.Run("times out and exits 124", func(t *testing.T) {
+		code, out, elapsed := runRunSH(t, runSH, "#!/bin/bash\nsleep 30\n", "1")
+		if code != 124 {
+			t.Fatalf("exit code = %d, want 124; output:\n%s", code, out)
+		}
+		if elapsed > 3*time.Second {
+			t.Fatalf("timeout took %s, want well under the 30s sleep (watchdog fires ~1s after T, plus up to a 10s SIGKILL grace only if SIGTERM didn't work)", elapsed)
+		}
+	})
 }
