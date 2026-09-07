@@ -131,7 +131,7 @@ export function JobDetailPage() {
               follow
             </label>
           </div>
-          <LogViewer jobId={job.id} follow={follow} />
+          <LogViewer jobId={job.id} follow={follow} jobStatus={job.status} />
         </div>
       </div>
 

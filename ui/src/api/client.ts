@@ -105,36 +105,126 @@ export const api = {
 
 export { ApiError };
 
+export interface LogLine {
+  offset: number;
+  ts: string;
+  stream: "stdout" | "stderr";
+  line: string;
+}
+
+interface StreamJobLogsHandlers {
+  onLine: (entry: LogLine) => void;
+  onOpen?: () => void;
+  onError?: () => void;
+  onDone?: () => void;
+  isTerminal: () => boolean;
+}
+
+const RECONNECT_DELAY_MS = 1500;
+
 /**
- * Streams a job's logs. Returns an unsubscribe function. `onLine` fires per log line, `onDone`
- * fires when the stream closes (job finished or connection ended).
+ * Streams a job's logs over fetch + NDJSON (EventSource can't set an Authorization header, so it
+ * isn't usable here — the server intentionally accepts only the header, never a token in the
+ * URL). Returns an unsubscribe function. `onLine` fires per log line, `onDone` fires once the
+ * stream is done for good (job terminal and server closed, or unsubscribed).
+ *
+ * Reconnects with `sinceOffset` set to the last processed offset whenever the server closes the
+ * stream (or fails to connect, e.g. the job has no Nomad allocation yet) and the job is not yet
+ * terminal, per `isTerminal`.
  */
-export function streamJobLogs(
-  jobId: string,
-  handlers: { onLine: (line: string) => void; onOpen?: () => void; onError?: () => void; onDone?: () => void },
-): () => void {
+export function streamJobLogs(jobId: string, handlers: StreamJobLogsHandlers): () => void {
   if (isMock) {
     handlers.onOpen?.();
-    const stop = mock.mockLogStream(jobId, handlers.onLine);
+    let i = 0;
+    const stop = mock.mockLogStream(jobId, (line) => {
+      handlers.onLine({ offset: i, ts: new Date().toISOString(), stream: "stdout", line });
+      i += 1;
+    });
     return stop;
   }
 
+  let stopped = false;
+  let lastOffset = 0;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let controller: AbortController | undefined;
+
   const base = getServerUrl();
   const token = getToken();
-  const url = new URL(`${base}/api/v1/jobs/${encodeURIComponent(jobId)}/logs`);
-  url.searchParams.set("follow", "1");
-  // EventSource can't set headers, so pass the token as a query param when present. The server
-  // must accept ?token= as a fallback to the Authorization header for this endpoint.
-  if (token) url.searchParams.set("token", token);
 
-  const source = new EventSource(url.toString());
-  source.onopen = () => handlers.onOpen?.();
-  source.onmessage = (evt) => handlers.onLine(evt.data);
-  source.onerror = () => {
-    handlers.onError?.();
-  };
+  async function connect() {
+    if (stopped) return;
+    controller = new AbortController();
+    const url = new URL(`${base}/api/v1/jobs/${encodeURIComponent(jobId)}/logs`);
+    url.searchParams.set("follow", "1");
+    if (lastOffset > 0) url.searchParams.set("sinceOffset", String(lastOffset));
+
+    try {
+      const res = await fetch(url.toString(), {
+        headers: {
+          Accept: "application/x-ndjson",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        signal: controller.signal,
+      });
+
+      if (!res.ok || !res.body) {
+        handlers.onError?.();
+        scheduleReconnectOrStop();
+        return;
+      }
+
+      handlers.onOpen?.();
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (stopped) return;
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n");
+        buffer = parts.pop() ?? "";
+        for (const part of parts) {
+          if (!part.trim()) continue;
+          try {
+            const entry = JSON.parse(part) as LogLine;
+            lastOffset = Math.max(lastOffset, entry.offset + entry.line.length + 1);
+            handlers.onLine(entry);
+          } catch {
+            // skip lines that fail to parse rather than crashing the stream
+          }
+        }
+      }
+
+      if (stopped) return;
+      if (handlers.isTerminal()) {
+        handlers.onDone?.();
+      } else {
+        scheduleReconnectOrStop();
+      }
+    } catch (err) {
+      if (stopped || (err instanceof DOMException && err.name === "AbortError")) return;
+      handlers.onError?.();
+      scheduleReconnectOrStop();
+    }
+  }
+
+  function scheduleReconnectOrStop() {
+    if (stopped) return;
+    if (handlers.isTerminal()) {
+      handlers.onDone?.();
+      return;
+    }
+    reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
+  }
+
+  connect();
+
   return () => {
-    source.close();
-    handlers.onDone?.();
+    stopped = true;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    controller?.abort();
   };
 }
