@@ -114,11 +114,69 @@ boot) — every `--follow` invocation would race the scheduler and usually lose.
    - expands `env_json` into `export`s (`jq`),
    - (build/agent) `git clone --depth 50 $repo work && cd work && git checkout $ref`, running
      `gh auth setup-git` first if `GH_TOKEN`/`GIT_TOKEN` is set (so a private HTTPS clone works),
-   - runs `script.sh` under `timeout ${timeout_seconds:-3600}`,
+   - runs `script.sh` under `run_with_timeout $T` (see "Portable timeout" below), where
+     `T="${timeout_seconds:-3600}"`,
    - (build) uploads `./artifacts/**` via `mc` to `$ARTIFACT_ENDPOINT/$ARTIFACT_BUCKET/<artifact_prefix>/`
      using `ARTIFACT_ACCESS_KEY`/`ARTIFACT_SECRET_KEY` from the environment,
    - exits with `script.sh`'s exit code, which becomes the Nomad task's (and therefore the
      allocation's, and therefore `Job.ExitCode`'s) exit status.
+
+### Portable timeout: macOS raw_exec hosts have no GNU `timeout(1)`
+
+GNU coreutils' `timeout(1)` does not exist on stock macOS (no coreutils installed by default), but
+every `run.sh` used to `exec timeout $T bash -eo pipefail script.sh` unconditionally. On a `macos`
+pool node (`raw_exec` driver, native process, no container) that failed every dispatch with exit
+127 (`…/run.sh: line N: exec: timeout: not found`) before ever running the caller's script.
+
+Each `run.sh` now defines a `run_with_timeout` shell function instead of calling `timeout`
+directly:
+
+- If `command -v timeout` finds a real `timeout` binary (true inside the `docker`-driver `linux`
+  pool's `grove-runner` image, and inside the nested `docker run` in the `AllowDockerSocket`
+  branch, both of which are Linux-based and carry GNU coreutils), it's used directly — same
+  behavior as before.
+- Otherwise (macOS raw_exec, bash 3.2 at `/bin/bash`), the command runs in the background (under
+  `set -m` so it lands in its own process group — see below) under a watchdog subshell that sleeps
+  `$T`, sends `kill -TERM "-$pid"`, then polls (`ps -o stat=`, once a second, up to 10s) until the
+  target is gone or a zombie before sending `kill -KILL "-$pid"` as a fallback. A marker file
+  records whether the watchdog actually fired, so `run_with_timeout` can `return 124` exactly when
+  it did — preserving the same contract `internal/dispatch` already relies on (124 ->
+  `Job.TimedOut`) regardless of which path ran.
+- The grace-period loop polls with `ps` instead of a blind `sleep 10` for a second, load-bearing
+  reason beyond responsiveness: on macOS's bash 3.2, sending `kill -TERM` from this watchdog
+  subshell straight into a `sleep 10` (no intervening forked process) could leave the main flow's
+  `wait "$pid"` below stuck indefinitely — the target process died right away, but run.sh's own
+  blocking `wait` for it never woke up, an apparent SIGCHLD-notification race specific to old
+  bash's job-control implementation without a controlling terminal (as is the case for both a
+  Nomad raw_exec task and this fix's own test, which runs run.sh via Go's `os/exec` — no tty).
+  Forking `ps` here — a real, unrelated child process, not merely another builtin — reliably
+  un-sticks it: repeated empirical testing (`nomad/jobs/nomadjobs_test.go`'s
+  `TestRunSHPortableTimeout` "times out and exits 124" case, which took the full 30s instead of
+  ~1s without this) never reproduced the hang once a real `ps` fork was in the path between the
+  `kill -TERM` and the eventual `wait`. If this ever needs revisiting, the reproduction is: drop
+  the `ps` poll for a blind `sleep 10; kill -KILL ...` and rerun that test.
+- The kill targets the negative pid (`-$pid`, the process **group**), not the pid itself. `"$@"`
+  is `bash -eo pipefail script.sh`, and the dispatched `script.sh` typically ends in its own
+  foreground command (e.g. a `sleep`, a long-running build step); signaling only the immediate
+  `bash -eo pipefail` wrapper kills that wrapper but leaves any such grandchild orphaned and
+  running for its full, unbounded duration — a real bug caught by this fix's own test
+  (`TestRunSHPortableTimeout`'s "times out and exits 124" case took the full 30s instead of ~1s
+  before `set -m` + `-$pid` was added). `set -m` (enabling job control) is what makes `&` place
+  `"$@"` in a new process group in the first place — off by default in a non-interactive script,
+  so it's toggled on immediately before backgrounding and back off immediately after.
+- Either path installs a `trap ... TERM INT` that forwards a signal Nomad sends the task (e.g. on
+  `kill_timeout` during a cancel) to the child process, since the fallback path no longer `exec`s
+  into `timeout` and therefore keeps `run.sh`'s own bash process as the one Nomad signals.
+- `build.nomad.hcl`'s `run.sh` (which already captures `code=$?` under `set +e` to run the artifact
+  upload afterward, rather than `exec`ing into the last command) calls `run_with_timeout` the same
+  way; `shell.nomad.hcl`/`agent.nomad.hcl` call it followed by an explicit `exit $?`, since neither
+  had anything left to do after the script previously.
+
+See `nomad/jobs/nomadjobs_test.go`'s `TestRunSHPortableTimeout` for the regression test — it
+extracts the real, HCL-unescaped `run.sh` body via `jobspec2` and runs it directly with
+`/bin/bash`, so it exercises whichever of the two `run_with_timeout` paths matches the machine
+running `go test` (the fast path if that machine happens to have `timeout` on `PATH`, the fallback
+otherwise).
 4. `internal/dispatch` polls (or streams via `Logs`) the allocation the same way regardless of
    pool — the pool-specific driver difference (`raw_exec` on macOS, `docker` on linux) is fully
    contained inside the job template and invisible to callers.
