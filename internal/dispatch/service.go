@@ -168,6 +168,9 @@ func validate(req JobRequest) error {
 	if (req.Kind == KindBuild || req.Kind == KindAgent) && req.Repo == "" {
 		return fmt.Errorf("dispatch: repo is required for kind %q", req.Kind)
 	}
+	if t := req.Timeout.Duration(); t > 0 && t < time.Second {
+		return fmt.Errorf(`dispatch: timeout must be at least 1s (send a duration string like "30m" or a number of seconds)`)
+	}
 	return nil
 }
 
@@ -243,8 +246,8 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	if req.Ref != "" {
 		meta["ref"] = req.Ref
 	}
-	if req.Timeout > 0 {
-		meta["timeout_seconds"] = strconv.FormatFloat(req.Timeout.Seconds(), 'f', 0, 64)
+	if t := req.Timeout.Duration(); t > 0 {
+		meta["timeout_seconds"] = strconv.FormatFloat(t.Seconds(), 'f', 0, 64)
 	}
 	if len(req.Env) > 0 {
 		envJSON, err := json.Marshal(req.Env)

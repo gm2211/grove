@@ -3,8 +3,12 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router";
 import { api } from "../api/client";
 import { Button } from "../components/Button";
-import { parseDurationToNanos } from "../lib/format";
 import type { JobKind } from "../api/types";
+
+// Same shape grove's server accepts via time.ParseDuration ("30m", "2h", "90s", "1h30m", ...) —
+// checked client-side just to catch an obviously-malformed value before submitting; the server is
+// the source of truth (see internal/dispatch/duration.go).
+const DURATION_RE = /^\d+(?:\.\d+)?(ns|us|µs|ms|s|m|h)$/;
 
 interface EnvRow {
   key: string;
@@ -49,6 +53,11 @@ export function DispatchPage() {
       setFormError("script is required");
       return;
     }
+    const trimmedTimeout = timeout.trim();
+    if (trimmedTimeout && !DURATION_RE.test(trimmedTimeout)) {
+      setFormError(`timeout must look like "30m" or "2h" (got ${JSON.stringify(trimmedTimeout)})`);
+      return;
+    }
     const envObj: Record<string, string> = {};
     for (const row of env) {
       if (row.key.trim()) envObj[row.key.trim()] = row.value;
@@ -60,7 +69,10 @@ export function DispatchPage() {
       ref: kind === "shell" ? undefined : ref || undefined,
       script,
       env: Object.keys(envObj).length > 0 ? envObj : undefined,
-      timeout: parseDurationToNanos(timeout),
+      // Sent as the raw text ("30m", "2h", ...) — never converted to nanoseconds. The server
+      // parses this with the same rules as Go's time.ParseDuration; see
+      // internal/dispatch/duration.go.
+      timeout: trimmedTimeout || undefined,
       requester: "ui",
     });
   }

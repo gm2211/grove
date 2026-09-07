@@ -37,6 +37,7 @@ operator/UI surface, not part of the Argos contract — the executor never calls
 | `constraints` | `pool` | Argos's `groveClient` picks the first matching pool label — grove itself doesn't interpret `constraints` |
 | `taskId` + `runId` | `idempotencyKey` | convention: `argos:<taskId>:<runId>` — see below |
 | `beadId`, `repo`, `taskId` (whatever Argos wants round-tripped) | `meta` | opaque, round-tripped verbatim onto `Job.meta` — not consumed by grove's job templates, just carried |
+| WorkUnit's own deadline/timeout, if any | `timeout` | **send a duration string** ("30m", "2h", "90s") — a JSON number is also accepted but means SECONDS, never nanoseconds/milliseconds; omit entirely for no timeout. Sending anything that looks like a millisecond count as a bare number (e.g. `120000` meaning 2 minutes) is the one mistake this field cannot detect for you: `120000` is parsed as 120000 *seconds* (~33h), not 2 minutes — always prefer the string form. Sub-second timeouts (`0 < timeout < 1s`) are rejected with 400. |
 
 Example submitted `JobRequest` for a `repo-verify` WorkUnit:
 
@@ -48,6 +49,7 @@ Example submitted `JobRequest` for a `repo-verify` WorkUnit:
   "ref": "a1b2c3d",
   "script": "make verify",
   "secrets": ["GH_TOKEN"],
+  "timeout": "30m",
   "idempotencyKey": "argos:task-1234:run-2",
   "meta": {
     "argosTaskId": "task-1234",

@@ -140,7 +140,9 @@ default, so every VM stuck pending.
 ## Job model
 
 A **JobRequest** is self-contained: which pool, what repo+ref to fetch, what script to run, which env
-and secrets to inject, timeout. grove maps it onto a **parameterized Nomad job** (`nomad job dispatch`)
+and secrets to inject, timeout (a duration string like `"30m"`/`"2h"`, or a number of *seconds* —
+never nanoseconds; see `docs/JOBS.md` "JobRequest.timeout wire format"). grove maps it onto a
+**parameterized Nomad job** (`nomad job dispatch`)
 constrained to `meta.pool`. Kinds:
 
 - `build` — clone `repo@ref`, run `script`, upload `./artifacts/**` to MinIO, exit code = job status.
@@ -159,7 +161,7 @@ All under `/api/v1`, `Authorization: Bearer <token>`, bind to the tailnet addres
 | POST | `/vms/{name}/recycle` | drain (via Nomad) then delete; reconciler recreates |
 | POST | `/workers/{name}/pause` · `/resume` | Orchard cordon |
 | GET | `/jobs` · `/jobs/{id}` | list / status |
-| POST | `/jobs` | JobRequest → `{id}`; JobRequest.idempotencyKey replays the existing job (no re-dispatch) instead of creating a new one |
+| POST | `/jobs` | JobRequest → `{id}`; JobRequest.idempotencyKey replays the existing job (no re-dispatch) instead of creating a new one; JobRequest.timeout is a duration string ("30m", "2h") or a number of *seconds* (never nanoseconds) — see `docs/JOBS.md` |
 | GET | `/jobs/{id}/logs?follow=1` | SSE / chunked log stream; `Accept: application/x-ndjson` + `&sinceOffset=N` streams `{offset,ts,stream,line}` objects, resumable by offset |
 | GET | `/jobs/{id}/artifacts/{path}` | streams one uploaded artifact from the bucket via the server's own credentials |
 | DELETE | `/jobs/{id}` · POST `/jobs/{id}/cancel` | cancel (same operation, two spellings) |

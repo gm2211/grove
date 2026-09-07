@@ -32,7 +32,9 @@ type JobRequest struct {
 	// server-side from the artifact/secret store rather than be sent inline.
 	Env     map[string]string `json:"env,omitempty"`
 	Secrets []string          `json:"secrets,omitempty"`
-	Timeout time.Duration     `json:"timeout,omitempty"`
+	// Timeout is a duration string ("30m", "2h", "90s") or a JSON number of SECONDS on the wire —
+	// never raw nanoseconds. See Duration's doc comment.
+	Timeout Duration `json:"timeout,omitempty"`
 	// Meta is free-form and round-tripped (Argos puts bead ids here).
 	Meta map[string]string `json:"meta,omitempty"`
 	// Requester is an opaque label for who submitted (argos, mcp:claude-code, cli).
