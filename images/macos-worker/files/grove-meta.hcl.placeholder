@@ -1,0 +1,20 @@
+# Placeholder only. The fleet startup script (internal/fleet) overwrites this file at every VM
+# boot with the real control-plane address and pool/host meta, e.g.:
+#
+#   client {
+#     servers = ["grove-nomad.internal:4647"]
+#     meta {
+#       pool = "macos"
+#       host = "mac-mini-1"
+#     }
+#   }
+#
+# Shipping a syntactically valid (but non-functional) file in the image means `nomad agent`
+# never fails to start for lack of a servers stanza, even if the startup script hasn't run yet.
+client {
+  servers = []
+  meta {
+    pool = "unset"
+    host = "unset"
+  }
+}
