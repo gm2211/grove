@@ -45,6 +45,39 @@ type Pool struct {
 	// gives any job on the VM root-equivalent host control and breaks job-to-job isolation within
 	// the pool, so this is a deliberate per-pool trade-off, not something grove enables silently.
 	AllowDockerSocket bool `yaml:"allowDockerSocket,omitempty" json:"allowDockerSocket,omitempty"`
+	// JobCPU/JobMemory are this pool's per-JOB Nomad resource defaults (MHz / MiB) — they size the
+	// `resources` block of every build/agent/shell job dispatched against this pool (see
+	// dispatch.PoolConfig, threaded through by internal/cli/serve.go's poolConfigs). These are
+	// deliberately distinct from CPU/Memory above, which size the pool's Orchard VMs themselves
+	// (the VM the job then runs inside) — a job's resources request is a slice of that VM's
+	// capacity, not the same number. Zero means "use the built-in default" — see
+	// JobCPUOrDefault/JobMemoryOrDefault.
+	JobCPU    uint64 `yaml:"jobCPU,omitempty" json:"jobCPU,omitempty"`
+	JobMemory uint64 `yaml:"jobMemory,omitempty" json:"jobMemory,omitempty"`
+}
+
+// Built-in per-job Nomad resource defaults (MHz / MiB) used when a pool doesn't set
+// jobCPU/jobMemory in fleet.yaml. Deliberately modest — enough for a typical CI/agent script
+// without reserving so much of a pool VM's capacity that few jobs can run concurrently on it.
+const (
+	DefaultJobCPU    uint64 = 500  // MHz
+	DefaultJobMemory uint64 = 1024 // MiB
+)
+
+// JobCPUOrDefault returns p.JobCPU if set, else DefaultJobCPU.
+func (p Pool) JobCPUOrDefault() uint64 {
+	if p.JobCPU > 0 {
+		return p.JobCPU
+	}
+	return DefaultJobCPU
+}
+
+// JobMemoryOrDefault returns p.JobMemory if set, else DefaultJobMemory.
+func (p Pool) JobMemoryOrDefault() uint64 {
+	if p.JobMemory > 0 {
+		return p.JobMemory
+	}
+	return DefaultJobMemory
 }
 
 // Spec is the whole fleet.yaml.

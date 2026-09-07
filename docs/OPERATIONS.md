@@ -68,3 +68,26 @@ subcommands, or `GET /api/v1/jobs/{id}/logs?follow=1`.
 ## Re-checking health
 
 `grove doctor` any time — it's read-only, 3s-timeout HTTP checks, and never hangs.
+
+## Troubleshooting
+
+**Jobs pending with `DimensionExhausted cpu` on macOS.** Nomad's stock CPU fingerprinter badly
+under-reports on Apple Silicon (a real M5 Max worker fingerprinted `cpu.totalcompute=24`), which
+fails placement for any job whose `resources.cpu` request is a realistic MHz value — every
+build/agent/shell job on that node stays `pending` forever. `internal/fleet/scripts.go`'s
+startup script is supposed to fix this automatically by computing `cpu_total_compute` from the
+guest's actual core count (`ncpu * 2000` MHz) and writing it into the dynamic `grove-meta.hcl` (see
+docs/IMAGES.md's two-file config contract) — if you're hitting this anyway:
+
+1. Run `grove doctor` — it warns (`macos-cpu-fingerprint`) when any `macos`-class Nomad node
+   reports a fingerprinted CPU under 1000 MHz.
+2. On the affected Mac, check `/usr/local/etc/nomad.d/grove-meta.hcl` for a `cpu_total_compute`
+   line inside its `client {}` block. Missing entirely usually means the startup script hasn't run
+   since this fix shipped — recycle the VM (`grove` fleet reconciler recreates it, re-running the
+   startup script) rather than editing the file by hand.
+3. Present but the Nomad client hasn't picked it up — a `grove-meta.hcl` edit only takes effect on
+   the next Nomad client restart: `sudo launchctl kickstart -k system/com.grove.nomad`, then
+   `nomad node status -self -verbose | grep cpu.totalcompute` to confirm.
+4. Per-job sizing (`JobRequest.Resources` / fleet.yaml's `pools[].jobCPU`/`jobMemory`) is unrelated
+   to this — see docs/JOBS.md "Per-job resource sizing" — a request rejected there is a 400 with an
+   explicit "exceeds pool's job default" message, not a silently-pending job.

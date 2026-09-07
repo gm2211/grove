@@ -7,7 +7,14 @@
 #       pool = "macos"
 #       host = "mac-mini-1"
 #     }
+#     cpu_total_compute = 36000
 #   }
+#
+# cpu_total_compute (macOS only) overrides Nomad's stock CPU fingerprint, which badly
+# under-reports on Apple Silicon (see client.hcl's comment and docs/OPERATIONS.md "jobs pending
+# with DimensionExhausted cpu on macOS"). The startup script computes it per boot from the guest's
+# actual core count (ncpu * 2000 MHz) since it can't be a fixed value baked into this generic
+# image — see docs/IMAGES.md's two-file config contract.
 #
 # Shipping a syntactically valid (but non-functional) file in the image means `nomad agent`
 # never fails to start for lack of a servers stanza, even if the startup script hasn't run yet.

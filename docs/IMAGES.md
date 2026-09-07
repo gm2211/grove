@@ -69,8 +69,21 @@ ARCHITECTURE.md's fleet spec) every time a VM starts:
 |---|---|---|
 | Nomad config dir | `/usr/local/etc/nomad.d` | `/etc/nomad.d` |
 | Static file (baked into image) | `client.hcl` — `data_dir`, `client { enabled = true, node_class = "macos" }`, `raw_exec` plugin enabled | `client.hcl` — `data_dir`, `client { enabled = true, node_class = "linux" }`, `docker` (with `volumes.enabled = true`) + `raw_exec` plugins enabled |
-| Dynamic file (overwritten by the startup script every boot) | `grove-meta.hcl` — `client { servers = [...] meta { pool = "macos" host = "<worker>" } }` | same shape, `pool = "linux"` |
+| Dynamic file (overwritten by the startup script every boot) | `grove-meta.hcl` — `client { servers = [...] meta { pool = "macos" host = "<worker>" } cpu_total_compute = <ncpu*2000> }` | same shape, `pool = "linux"`, no `cpu_total_compute` override |
 | Supervisor | `launchd` — `/Library/LaunchDaemons/com.grove.nomad.plist` (`KeepAlive`, runs `nomad agent -config /usr/local/etc/nomad.d`) | `systemd` — `nomad.service` (`Restart=on-failure`, `nomad agent -config /etc/nomad.d`) |
+
+**macOS-only: `cpu_total_compute`.** Nomad's stock CPU fingerprinter badly under-reports on Apple
+Silicon — a real M5 Max worker fingerprinted `cpu.totalcompute=24` (`cpu.frequency=4`,
+`cpu.numcores=18`; it's effectively treating GHz as MHz-per-core instead of deriving a usable
+total). Since every job's `resources.cpu` is specified in MHz (see docs/JOBS.md), a node
+fingerprinting single-digit MHz fails placement for *any* real job with `DimensionExhausted cpu` —
+see docs/OPERATIONS.md's troubleshooting entry. Because `images/macos-worker` is one generic image
+run on whatever Mac model a given worker happens to be, this can't be a fixed value baked into the
+static `client.hcl` — it's computed per boot instead, in the startup script
+(`internal/fleet/scripts.go`'s `nomadMetaScript`, only on the `Darwin` branch) as
+`$(sysctl -n hw.ncpu) * 2000` MHz/core, and written into the dynamic `grove-meta.hcl`'s `client {}`
+block alongside `meta`. `grove doctor` also checks for this (see docs/OPERATIONS.md) by listing
+Nomad nodes and warning when a `macos`-class node's fingerprinted CPU is implausibly low.
 
 `nomad agent -config <dir>` merges every `*.hcl` file in the directory, so shipping the static half
 in the image and letting the startup script drop in the dynamic half means: (a) the image never

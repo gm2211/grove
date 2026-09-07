@@ -19,6 +19,15 @@ type Data struct {
 }
 ```
 
+In practice `grove serve` never renders with `CPU`/`Memory` left at 0: `internal/dispatch.EnsureJobs`
+is called with a `[]PoolConfig` built from `fleet.yaml`'s `pools[].jobCPU`/`jobMemory`
+(`internal/cli/serve.go`'s `poolConfigs`, via `fleet.Pool.JobCPUOrDefault()`/`JobMemoryOrDefault()`),
+which defaults to 500 MHz / 1024 MiB rather than 0 — so this template's own 2000/4096 fallback only
+fires for a caller that builds a bare `PoolConfig{Name: ...}` directly (some tests, or a future
+caller that hasn't been taught about pool job sizing). See `docs/JOBS.md`'s "Per-job resource
+sizing" for the full picture, including why a `JobRequest.Resources` hint is validated but not
+actually applied per-dispatch.
+
 ```go
 tmpl, _ := template.New("build.nomad.hcl").ParseFS(nomadjobs.FS, "build.nomad.hcl")
 var buf bytes.Buffer

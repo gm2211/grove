@@ -82,11 +82,22 @@ func shQuote(s string) string {
 }
 
 // nomadMetaScript writes the Nomad client meta file naming this VM's pool/host/vm, at the path
-// appropriate for the guest OS.
+// appropriate for the guest OS. On macOS it also overrides cpu_total_compute — see docs/IMAGES.md
+// "The two-file config contract" and docs/OPERATIONS.md "jobs pending with DimensionExhausted cpu
+// on macOS" for why this is necessary and computed here rather than baked into the image.
 const nomadMetaScript = `if [ "$(uname -s)" = "Darwin" ]; then
   grove_meta_file="/usr/local/etc/nomad.d/grove-meta.hcl"
+  # Apple Silicon's stock Nomad fingerprinter reports cpu.totalcompute in the single digits of MHz
+  # (a real M5 Max fingerprinted cpu.totalcompute=24, cpu.frequency=4, cpu.numcores=18 — it's
+  # treating GHz as MHz-per-core rather than deriving a usable total), which fails placement for
+  # any job that requests a realistic CPU MHz value (DimensionExhausted cpu). The image is generic
+  # across Mac models, so this can't be a fixed value baked into images/macos-worker/files/client.hcl
+  # — it's computed here, per boot, from this guest's actual core count: ncpu * 2000 MHz/core,
+  # the same 2000-MHz-per-core convention Nomad's own fingerprinter uses on Intel/Linux.
+  grove_cpu_total_compute=$(( $(sysctl -n hw.ncpu) * 2000 ))
 else
   grove_meta_file="/etc/nomad.d/grove-meta.hcl"
+  grove_cpu_total_compute=""
 fi
 
 mkdir -p "$(dirname "$grove_meta_file")"
@@ -97,8 +108,15 @@ client {
     host = "$grove_host"
     vm = "$grove_vm"
   }
-}
 GROVE_META
+if [ -n "$grove_cpu_total_compute" ]; then
+  cat >> "$grove_meta_file" <<GROVE_META_CPU
+  cpu_total_compute = $grove_cpu_total_compute
+GROVE_META_CPU
+fi
+cat >> "$grove_meta_file" <<GROVE_META_END
+}
+GROVE_META_END
 `
 
 // nomadRestartScript restarts the Nomad client so a freshly written meta file takes effect.

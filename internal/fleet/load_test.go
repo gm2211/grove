@@ -44,6 +44,43 @@ pools:
 	}
 }
 
+func TestLoad_JobCPUAndJobMemory(t *testing.T) {
+	path := writeTempSpec(t, `
+pools:
+  - name: linux
+    image: ghcr.io/example/linux:latest
+    perWorker: 1
+    jobCPU: 1500
+    jobMemory: 3072
+  - name: macos
+    image: ghcr.io/example/macos:latest
+    perWorker: 1
+`)
+
+	spec, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if spec.Pools[0].JobCPU != 1500 || spec.Pools[0].JobMemory != 3072 {
+		t.Errorf("unexpected pool[0] jobCPU/jobMemory: %+v", spec.Pools[0])
+	}
+	if got := spec.Pools[0].JobCPUOrDefault(); got != 1500 {
+		t.Errorf("JobCPUOrDefault() = %d, want the explicit 1500", got)
+	}
+	if got := spec.Pools[0].JobMemoryOrDefault(); got != 3072 {
+		t.Errorf("JobMemoryOrDefault() = %d, want the explicit 3072", got)
+	}
+
+	// pool[1] (macos) didn't set jobCPU/jobMemory — should fall back to the built-in defaults.
+	if got := spec.Pools[1].JobCPUOrDefault(); got != DefaultJobCPU {
+		t.Errorf("JobCPUOrDefault() = %d, want the default %d", got, DefaultJobCPU)
+	}
+	if got := spec.Pools[1].JobMemoryOrDefault(); got != DefaultJobMemory {
+		t.Errorf("JobMemoryOrDefault() = %d, want the default %d", got, DefaultJobMemory)
+	}
+}
+
 func TestLoad_DuplicatePoolNames(t *testing.T) {
 	path := writeTempSpec(t, `
 pools:

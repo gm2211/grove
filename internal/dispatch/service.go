@@ -24,6 +24,18 @@ import (
 // ErrNotFound is returned by Get/Cancel/Logs when no job with the given id is known.
 var ErrNotFound = errors.New("dispatch: job not found")
 
+// ErrNoAllocationYet is returned by Logs/LogLines when a job has no Nomad allocation to stream
+// from: with follow=false this is returned immediately (no wait); with follow=true it is only
+// returned once allocIDFor has polled until ctx is done (deadline or cancellation) or the job
+// reached a terminal status without ever getting an allocation. The HTTP server handler treats
+// this as "200, empty body, X-Grove-Job-Status: pending" rather than an error response — see
+// internal/server/handlers_jobs.go.
+var ErrNoAllocationYet = errors.New("dispatch: job has no allocation yet")
+
+// defaultAllocationPollInterval is how often allocIDFor re-checks Nomad for a job's allocation
+// while waiting on follow=true, absent an Options.AllocationPollInterval override.
+const defaultAllocationPollInterval = 1 * time.Second
+
 // Options configures a dispatch Service.
 type Options struct {
 	// ArtifactsBase optionally names the artifact bucket/base clients should assume artifact
@@ -40,6 +52,17 @@ type Options struct {
 	StorePath string
 	// StatusTTL caps how often Get/List re-query Nomad for a job's allocations. Defaults to 3s.
 	StatusTTL time.Duration
+	// Pools, when set, is used only to validate JobRequest.Resources hints against each pool's
+	// configured job CPU/Memory defaults (Submit rejects a hint that exceeds them with a 400). It
+	// is unrelated to EnsureJobs, which takes its own []PoolConfig directly — callers that already
+	// have that slice (see internal/cli/serve.go) pass the same one here. Pool CPU/Memory here are
+	// assumed already resolved to their effective (non-zero) value — see fleet.Pool.JobCPUOrDefault
+	// /JobMemoryOrDefault — since a zero here is treated as "no configured limit for this pool" and
+	// skips validation entirely, not as "0 MHz/MiB allowed".
+	Pools []PoolConfig
+	// AllocationPollInterval overrides defaultAllocationPollInterval — mainly for tests, so a
+	// follow=true wait-for-allocation test isn't stuck sleeping in real seconds.
+	AllocationPollInterval time.Duration
 }
 
 type cachedStatus struct {
@@ -52,6 +75,7 @@ type service struct {
 	artifacts artifacts.Client
 	opts      Options
 	store     *store
+	pools     map[string]PoolConfig
 
 	mu    sync.Mutex
 	cache map[string]cachedStatus
@@ -73,7 +97,14 @@ func New(nc nomad.Client, opts Options) (Service, error) {
 	if opts.StatusTTL <= 0 {
 		opts.StatusTTL = 3 * time.Second
 	}
-	return &service{nomad: nc, artifacts: opts.Artifacts, opts: opts, store: st, cache: map[string]cachedStatus{}}, nil
+	if opts.AllocationPollInterval <= 0 {
+		opts.AllocationPollInterval = defaultAllocationPollInterval
+	}
+	pools := make(map[string]PoolConfig, len(opts.Pools))
+	for _, p := range opts.Pools {
+		pools[p.Name] = p
+	}
+	return &service{nomad: nc, artifacts: opts.Artifacts, opts: opts, store: st, pools: pools, cache: map[string]cachedStatus{}}, nil
 }
 
 // jobName returns the parameterized Nomad job name for a kind×pool pair, e.g. "grove-build-linux".
@@ -101,6 +132,28 @@ func validate(req JobRequest) error {
 	return nil
 }
 
+// validateResources rejects req.Resources when it exceeds the target pool's configured job
+// defaults. A pool with no configured defaults known to this service (opts.Pools didn't mention
+// it, or the service was built without Pools at all) accepts any hint — there's nothing to
+// validate against. See ResourceHint's doc comment for why this is validation-only, not applied
+// sizing.
+func (s *service) validateResources(req JobRequest) error {
+	if req.Resources == nil {
+		return nil
+	}
+	pc, ok := s.pools[req.Pool]
+	if !ok || (pc.CPU <= 0 && pc.Memory <= 0) {
+		return nil
+	}
+	if pc.CPU > 0 && req.Resources.CPU > pc.CPU {
+		return fmt.Errorf("dispatch: requested cpu=%dMHz exceeds pool %q's job default cpu=%dMHz (per-dispatch sizing isn't supported yet — see docs/JOBS.md)", req.Resources.CPU, req.Pool, pc.CPU)
+	}
+	if pc.Memory > 0 && req.Resources.Memory > pc.Memory {
+		return fmt.Errorf("dispatch: requested memory=%dMiB exceeds pool %q's job default memory=%dMiB (per-dispatch sizing isn't supported yet — see docs/JOBS.md)", req.Resources.Memory, req.Pool, pc.Memory)
+	}
+	return nil
+}
+
 func randomID() (string, error) {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
@@ -115,6 +168,9 @@ func artifactPrefix(id string) string {
 
 func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error) {
 	if err := validate(req); err != nil {
+		return nil, false, err
+	}
+	if err := s.validateResources(req); err != nil {
 		return nil, false, err
 	}
 
@@ -380,27 +436,73 @@ func (s *service) List(ctx context.Context) ([]Job, error) {
 
 // allocIDFor resolves the current allocation id for a job, reconciling from Nomad if the store's
 // cached AllocID is still empty. Shared by Logs and LogLines.
-func (s *service) allocIDFor(ctx context.Context, id string) (string, error) {
+//
+// follow=false does a single check and returns ErrNoAllocationYet immediately if there's still no
+// allocation — no waiting. follow=true instead polls (see allocationPollInterval) until an
+// allocation appears, the job reaches a terminal status, or ctx is done (a caller wanting a
+// bounded wait should derive ctx via context.WithTimeout/WithDeadline before calling — the HTTP
+// handler does this for the `?wait=` query), at which point it also returns ErrNoAllocationYet.
+func (s *service) allocIDFor(ctx context.Context, id string, follow bool) (string, error) {
 	rec, ok := s.store.get(id)
 	if !ok {
 		return "", ErrNotFound
 	}
-	allocID := rec.AllocID
-	if allocID == "" {
-		job, err := s.reconcile(ctx, rec)
-		if err != nil {
-			return "", err
+
+	allocID, err := s.resolveAllocID(ctx, rec)
+	if err != nil {
+		return "", err
+	}
+	if allocID != "" {
+		return allocID, nil
+	}
+	if !follow {
+		return "", ErrNoAllocationYet
+	}
+
+	ticker := time.NewTicker(s.opts.AllocationPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return "", ErrNoAllocationYet
+		case <-ticker.C:
+			allocID, err := s.resolveAllocID(ctx, rec)
+			if err != nil {
+				return "", err
+			}
+			if allocID != "" {
+				return allocID, nil
+			}
+			if isTerminal(rec.Status) {
+				// The job ran its whole life without ever getting an allocation (e.g. it was
+				// canceled before Nomad placed it) — nothing will ever appear, so stop waiting.
+				return "", ErrNoAllocationYet
+			}
 		}
-		allocID = job.AllocID
 	}
-	if allocID == "" {
-		return "", fmt.Errorf("dispatch: job %s has no allocation yet", id)
+}
+
+// resolveAllocID returns rec's current allocation id, forcing a fresh (uncached) reconcile
+// against Nomad when the store doesn't already have one. rec is updated in place by reconcile, so
+// repeated calls from allocIDFor's poll loop observe the latest known status/AllocID.
+func (s *service) resolveAllocID(ctx context.Context, rec *record) (string, error) {
+	if rec.AllocID != "" {
+		return rec.AllocID, nil
 	}
-	return allocID, nil
+	// Bypass the status cache so a poll loop actually re-queries Nomad every call instead of
+	// replaying a stale "still no allocation" result for up to StatusTTL.
+	s.mu.Lock()
+	delete(s.cache, rec.ID)
+	s.mu.Unlock()
+	job, err := s.reconcile(ctx, rec)
+	if err != nil {
+		return "", err
+	}
+	return job.AllocID, nil
 }
 
 func (s *service) Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error) {
-	allocID, err := s.allocIDFor(ctx, id)
+	allocID, err := s.allocIDFor(ctx, id, follow)
 	if err != nil {
 		return nil, err
 	}
@@ -420,7 +522,7 @@ func (s *service) Logs(ctx context.Context, id string, follow bool) (io.ReadClos
 // LogLines streams stdout/stderr as discrete, stream-tagged lines. See the Service interface doc
 // for the ordering caveat (best-effort across streams, same as Logs).
 func (s *service) LogLines(ctx context.Context, id string, follow bool) (<-chan LogLine, error) {
-	allocID, err := s.allocIDFor(ctx, id)
+	allocID, err := s.allocIDFor(ctx, id, follow)
 	if err != nil {
 		return nil, err
 	}

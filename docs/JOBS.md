@@ -49,6 +49,62 @@ as a separate concept from ordinary env vars. Nothing about secret handling live
 template; keeping that logic in `internal/dispatch` means changing how secrets are resolved never
 requires re-registering jobs.
 
+## Per-job resource sizing
+
+Every `nomad/jobs/*.nomad.hcl` template's `resources { cpu = ...; memory = ... }` block is rendered
+from `dispatch.PoolConfig.CPU`/`Memory` (MHz / MiB), which `internal/cli/serve.go`'s `poolConfigs`
+populates from `fleet.yaml`'s `pools[].jobCPU`/`jobMemory` (`fleet.Pool.JobCPUOrDefault()`/
+`JobMemoryOrDefault()`, falling back to 500 MHz / 1024 MiB when unset) — see `EnsureJobs`
+(`internal/dispatch/nomadjobs.go`). This sizes every `build`/`agent`/`shell` job dispatched
+against that pool identically; a pool built without a `PoolConfig` at all (some tests, or a
+`grove serve` that couldn't load a fleet spec) leaves every job at the templates' own hardcoded
+fallback (2000 MHz / 4096 MiB).
+
+**These are pool-level, not per-dispatch, and that's a real limitation.** `JobRequest.Resources`
+(`{cpu, memory}`) *looks* like it should let one dispatch request more or less than another, but
+Nomad has no dispatch-time equivalent of "override this parameterized job's `resources` block for
+just this run" — a job's `resources` is fixed at *registration* time (`nomad job dispatch` only
+supplies meta + payload, never a resources override), and there's no per-dispatch job update API
+either. So today, `JobRequest.Resources` is **validated only**: `Service.Submit`
+(`internal/dispatch/service.go`) rejects a hint that exceeds the target pool's configured CPU/
+Memory defaults with a 400 (`dispatch: requested cpu=...MHz exceeds pool "..."'s job default
+...`), via `Options.Pools` (the same `[]PoolConfig` `internal/cli/serve.go` also hands to
+`EnsureJobs`). A hint within budget is otherwise a no-op — the dispatched job runs at the pool's
+one fixed size regardless of what `Resources` says. A pool the service has no config for at all
+(`Options.Pools` didn't mention it) accepts any hint without validating it, since there's nothing
+to check it against.
+
+Real per-dispatch sizing would need either per-size parameterized jobs (`grove-shell-macos-small`/
+`-large`, ...) or a Nomad feature that doesn't exist yet; either is future work, not something a
+`Resources` field can paper over today.
+
+## Logs and the "no allocation yet" race
+
+`GET /api/v1/jobs/{id}/logs` (and its NDJSON mode) has to cope with the gap between "job
+submitted" and "Nomad actually placed an allocation" — `dispatch.Service.Get`/`List` show the job
+as `pending` the whole time, but there is nothing to stream logs from yet. `Service.Logs`/
+`LogLines` treat that gap differently depending on `follow`:
+
+- **`follow=false`** (a one-shot `grove logs <id>`) does a single check; if there's still no
+  allocation it returns `dispatch.ErrNoAllocationYet` immediately, which the HTTP handler turns
+  into **`200` with an empty body and an `X-Grove-Job-Status: pending` header** — not a `502`, since
+  "no output yet" is a legitimate state for a pending job. `apiclient.Client.JobLogs` retries this
+  a handful of times with a short backoff before giving up and handing the (still-empty) response
+  back to the caller, so `grove logs <id>` run moments after `grove dispatch` usually just works
+  rather than requiring the caller to poll by hand.
+- **`follow=true`** (`grove dispatch --follow` / `grove logs --follow`) instead *waits*: it polls
+  Nomad roughly once a second until an allocation appears, the job reaches a terminal status, or a
+  deadline passes, then streams normally. The HTTP handler bounds that wait with a context
+  deadline — `?wait=<duration>` on the request (`time.ParseDuration` syntax, e.g. `?wait=2m`),
+  defaulting to 10 minutes — so a job that Nomad can't place at all (no capacity, no matching pool)
+  doesn't hold the connection open forever; if the deadline elapses without an allocation, the
+  handler falls back to the same `200`/empty/`pending` response as the non-follow case.
+
+This is the fix for a real bug: `grove dispatch --follow` used to 502 immediately with `job <id>
+has no allocation yet` the moment the job was still `pending`, which is the common case for the
+first second or two after submission (and much longer on a macOS pool waiting on a Tart VM to
+boot) — every `--follow` invocation would race the scheduler and usually lose.
+
 ## What runs inside the allocation
 
 1. Nomad places the allocation on a node whose `meta.pool` (set in the image's `grove-meta.hcl`,

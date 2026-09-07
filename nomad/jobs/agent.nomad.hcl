@@ -109,6 +109,12 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         perms       = "0755"
       }
 
+      # CPU/Memory come from fleet.yaml pools[].jobCPU/jobMemory (dispatch.PoolConfig,
+      # defaulting to 500 MHz / 1024 MiB — see docs/JOBS.md "Per-job resource sizing"),
+      # falling back to this template's own 2000/4096 only when the caller didn't supply
+      # pool sizing at all. A dispatch-time JobRequest.Resources hint is validated against
+      # these pool defaults but not applied here — Nomad has no per-dispatch resources
+      # override for a parameterized job.
       resources {
         cpu    = {{if .CPU}}{{.CPU}}{{else}}2000{{end}}
         memory = {{if .Memory}}{{.Memory}}{{else}}4096{{end}}

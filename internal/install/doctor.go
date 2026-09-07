@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gm2211/grove/internal/config"
+	"github.com/gm2211/grove/internal/wire"
 )
 
 // httpCheckTimeout bounds every doctor HTTP probe so `grove doctor` never hangs waiting on an
@@ -22,6 +23,18 @@ const maxMacOSVMSlots = 2
 
 // minTartDiskFreeGiB is the free-space threshold under ~/.tart doctor warns below.
 const minTartDiskFreeGiB = 50.0
+
+// minMacOSCPUTotalCompute is the threshold below which a macOS Nomad client's fingerprinted
+// cpu.totalcompute (Node.CPUMHz) is almost certainly the broken stock Apple Silicon fingerprint
+// (observed as low as 24 on a real M5 Max) rather than a real MHz total — see
+// docs/OPERATIONS.md "jobs pending with DimensionExhausted cpu on macOS". Any believable
+// per-core-scaled override (internal/fleet/scripts.go: ncpu * 2000) lands far above this.
+const minMacOSCPUTotalCompute = 1000
+
+// macOSCPUFingerprintCheckTimeout bounds checkMacOSCPUFingerprint's handful of Nomad API calls
+// (ListNodes does one List + one Info + one Allocations call per node), independent of the
+// single-call httpCheckTimeout used by checkHTTPEndpoint.
+const macOSCPUFingerprintCheckTimeout = 3 * httpCheckTimeout
 
 // CheckResult is one row of `grove doctor`'s table.
 type CheckResult struct {
@@ -52,6 +65,7 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 			checkHTTPEndpoint(ctx, "nomad", cfg.Nomad.URL, "/v1/agent/self", ""),
 			checkHTTPEndpoint(ctx, "grove-server", cfg.Server.URL, "/api/v1/healthz", cfg.Server.Token),
 		)
+		results = append(results, checkMacOSCPUFingerprint(ctx, cfg))
 	}
 
 	results = append(results, checkServiceUnits(opts))
@@ -127,6 +141,54 @@ func checkHTTPEndpoint(ctx context.Context, name, base, path, token string) Chec
 		}
 	}
 	return CheckResult{Name: name, OK: true, Detail: fmt.Sprintf("GET %s: HTTP %d", url, resp.StatusCode)}
+}
+
+// checkMacOSCPUFingerprint warns when any macOS Nomad client node in the cluster is fingerprinting
+// an implausibly low cpu.totalcompute (Node.CPUMHz) — the Apple Silicon fingerprinter bug that
+// makes every job placement fail with DimensionExhausted cpu. internal/fleet/scripts.go's
+// StartupScript is supposed to override this at boot (see nomadMetaScript's cpu_total_compute),
+// so seeing it this low means that override either didn't run or didn't take effect (e.g. the
+// Nomad client wasn't restarted after grove-meta.hcl was written).
+//
+// This is best-effort: any error reaching Nomad is reported as OK/skipped rather than failing the
+// check outright, since the "nomad" checkHTTPEndpoint check above already reports Nomad
+// reachability — this check would just be noise duplicating that failure.
+func checkMacOSCPUFingerprint(ctx context.Context, cfg *config.Config) CheckResult {
+	const name = "macos-cpu-fingerprint"
+	if cfg == nil || cfg.Nomad.URL == "" {
+		return CheckResult{Name: name, OK: true, Detail: "nomad not configured (skipped)"}
+	}
+
+	nc, err := wire.NewNomadClient(cfg.Nomad)
+	if err != nil {
+		return CheckResult{Name: name, OK: true, Detail: "could not build nomad client (skipped): " + err.Error()}
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, macOSCPUFingerprintCheckTimeout)
+	defer cancel()
+	nodes, err := nc.ListNodes(reqCtx)
+	if err != nil {
+		return CheckResult{Name: name, OK: true, Detail: "could not list nomad nodes (skipped): " + err.Error()}
+	}
+
+	var low []string
+	for _, n := range nodes {
+		if n.NodeClass != "macos" {
+			continue
+		}
+		if n.CPUMHz > 0 && n.CPUMHz < minMacOSCPUTotalCompute {
+			low = append(low, fmt.Sprintf("%s(cpu.totalcompute=%d)", n.Name, n.CPUMHz))
+		}
+	}
+	if len(low) > 0 {
+		return CheckResult{
+			Name:        name,
+			OK:          false,
+			Detail:      "implausibly low CPU fingerprint on: " + strings.Join(low, ", "),
+			Remediation: "jobs will fail to place with DimensionExhausted cpu — see docs/OPERATIONS.md \"jobs pending with DimensionExhausted cpu on macOS\" (set cpu_total_compute in grove-meta.hcl and restart the node's Nomad client)",
+		}
+	}
+	return CheckResult{Name: name, OK: true, Detail: "no undersized macOS CPU fingerprints found"}
 }
 
 // checkServiceUnits reports whether grove's launchd agents (macOS) or systemd --user units

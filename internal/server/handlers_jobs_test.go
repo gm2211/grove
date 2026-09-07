@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gm2211/grove/internal/artifacts"
 	"github.com/gm2211/grove/internal/dispatch"
@@ -253,6 +254,113 @@ func TestJobLogs_NotFound(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+// TestJobLogs_NoAllocationYet_NonFollow_Returns200Pending is the regression test for the
+// live-run defect: `grove logs <id>` on a job that hasn't been allocated yet used to 502
+// ("job has no allocation yet"). It must now succeed with an empty body and a pending marker
+// header instead, since "no output yet" isn't a failure.
+func TestJobLogs_NoAllocationYet_NonFollow_Returns200Pending(t *testing.T) {
+	ds := &fakeDispatch{
+		jobs: map[string]*dispatch.Job{"job-1": {ID: "job-1", Status: dispatch.StatusPending}},
+		logsFunc: func(ctx context.Context, id string, follow bool) (io.ReadCloser, error) {
+			return nil, dispatch.ErrNoAllocationYet
+		},
+	}
+	srv := newTestServer(nil, nil, ds, Options{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-1/logs", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Grove-Job-Status"); got != "pending" {
+		t.Errorf("X-Grove-Job-Status = %q, want %q", got, "pending")
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("body = %q, want empty", rec.Body.String())
+	}
+}
+
+// TestJobLogs_NoAllocationYet_NDJSON_Returns200Pending is the NDJSON-mode counterpart of the
+// above.
+func TestJobLogs_NoAllocationYet_NDJSON_Returns200Pending(t *testing.T) {
+	ds := &fakeDispatch{
+		jobs: map[string]*dispatch.Job{"job-1": {ID: "job-1", Status: dispatch.StatusPending}},
+		logLinesFunc: func(ctx context.Context, id string, follow bool) (<-chan dispatch.LogLine, error) {
+			return nil, dispatch.ErrNoAllocationYet
+		},
+	}
+	srv := newTestServer(nil, nil, ds, Options{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-1/logs", nil)
+	req.Header.Set("Accept", "application/x-ndjson")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Grove-Job-Status"); got != "pending" {
+		t.Errorf("X-Grove-Job-Status = %q, want %q", got, "pending")
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("body = %q, want empty", rec.Body.String())
+	}
+}
+
+// TestJobLogs_Follow_BoundsContextWithWaitDeadline asserts that a follow=true request wraps the
+// context handed to dispatch.Logs with a deadline (so Logs/LogLines's poll-for-allocation loop is
+// actually bounded — see dispatch.Service.Logs), and that `?wait=` overrides the default.
+func TestJobLogs_Follow_BoundsContextWithWaitDeadline(t *testing.T) {
+	var gotDeadline time.Time
+	var gotOK bool
+	ds := &fakeDispatch{
+		jobs: map[string]*dispatch.Job{"job-1": {ID: "job-1"}},
+		logsFunc: func(ctx context.Context, id string, follow bool) (io.ReadCloser, error) {
+			gotDeadline, gotOK = ctx.Deadline()
+			return io.NopCloser(strings.NewReader("")), nil
+		},
+	}
+	srv := newTestServer(nil, nil, ds, Options{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-1/logs?follow=1&wait=45s", nil)
+	rec := httptest.NewRecorder()
+	before := time.Now()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	if !gotOK {
+		t.Fatal("expected the context passed to dispatch.Logs to carry a deadline for follow=1")
+	}
+	// wait=45s should be honored (within a generous slack for test execution time), not the 10m default.
+	if d := gotDeadline.Sub(before); d <= 0 || d > time.Minute {
+		t.Errorf("deadline = %s from now, want ~45s (honoring ?wait=45s, not the 10m default)", d)
+	}
+}
+
+// TestJobLogs_NoFollow_ContextHasNoDeadline asserts the non-follow path doesn't impose any extra
+// deadline — it's a single check, not a bounded wait.
+func TestJobLogs_NoFollow_ContextHasNoDeadline(t *testing.T) {
+	var gotOK bool
+	ds := &fakeDispatch{
+		jobs: map[string]*dispatch.Job{"job-1": {ID: "job-1"}},
+		logsFunc: func(ctx context.Context, id string, follow bool) (io.ReadCloser, error) {
+			_, gotOK = ctx.Deadline()
+			return io.NopCloser(strings.NewReader("")), nil
+		},
+	}
+	srv := newTestServer(nil, nil, ds, Options{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-1/logs", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if gotOK {
+		t.Error("expected no context deadline to be added for a non-follow request")
 	}
 }
 

@@ -65,19 +65,22 @@ func runServe(ctx context.Context, listen string) error {
 		}
 	}
 
-	ds, err := dispatch.New(nc, dispatch.Options{ArtifactsBase: cfg.Artifacts.Bucket, Artifacts: ac})
+	pools, perr := poolConfigs(cfg)
+	if perr != nil {
+		slog.Warn("serve: could not determine pools for EnsureJobs; skipping job registration", "config", cfgPath, "err", perr)
+	} else if len(pools) == 0 {
+		slog.Warn("serve: no pools found in fleet spec; no parameterized jobs registered", "fleet", cfg.Fleet)
+	}
+
+	ds, err := dispatch.New(nc, dispatch.Options{ArtifactsBase: cfg.Artifacts.Bucket, Artifacts: ac, Pools: pools})
 	if err != nil {
 		return fmt.Errorf("dispatch service: %w", err)
 	}
 
-	if pools, perr := poolConfigs(cfg); perr != nil {
-		slog.Warn("serve: could not determine pools for EnsureJobs; skipping job registration", "config", cfgPath, "err", perr)
-	} else if len(pools) > 0 {
+	if len(pools) > 0 {
 		if err := dispatch.EnsureJobs(ctx, nc, pools); err != nil {
 			slog.Warn("serve: EnsureJobs failed; continuing to serve anyway", "err", err)
 		}
-	} else {
-		slog.Warn("serve: no pools found in fleet spec; no parameterized jobs registered", "fleet", cfg.Fleet)
 	}
 
 	srv := server.New(oc, nc, ds, ac, server.Options{Token: cfg.Server.Token, Version: Version})
@@ -102,7 +105,12 @@ func poolConfigs(cfg *config.Config) ([]dispatch.PoolConfig, error) {
 	}
 	pools := make([]dispatch.PoolConfig, 0, len(spec.Pools))
 	for _, p := range spec.Pools {
-		pools = append(pools, dispatch.PoolConfig{Name: p.Name, AllowDockerSocket: p.AllowDockerSocket})
+		pools = append(pools, dispatch.PoolConfig{
+			Name:              p.Name,
+			CPU:               int(p.JobCPUOrDefault()),
+			Memory:            int(p.JobMemoryOrDefault()),
+			AllowDockerSocket: p.AllowDockerSocket,
+		})
 	}
 	return pools, nil
 }
