@@ -1,0 +1,10 @@
+/bin/
+/dist/
+/ui/node_modules/
+/ui/dist/
+/internal/server/dist/
+*.log
+.DS_Store
+/images/output-*/
+/images/*.pkrvars.hcl
+/.claude/worktrees/
