@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -254,6 +256,78 @@ func TestRunDoctor_SkipsTapTrustChecksOnNonDarwin(t *testing.T) {
 	}
 	if r.CalledWith("brew tap-info --json=v1 openai/tools") {
 		t.Error("no brew command should run on non-darwin")
+	}
+}
+
+// writeFleetYAML writes a minimal valid fleet.yaml with one pool pulling image, returning its path.
+func writeFleetYAML(t *testing.T, dir, image string) string {
+	t.Helper()
+	path := filepath.Join(dir, "fleet.yaml")
+	content := "pools:\n  - name: macos\n    image: " + image + "\n    perWorker: 1\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	return path
+}
+
+// TestRunDoctor_WarnsOnUnauthenticatedGHCRImages covers the doctor half of the registry-login
+// feature: fleet.yaml pulling a ghcr.io image with no recorded `tart login ghcr.io` on this
+// machine must fail the registry-login check with the exact remediation text (make the packages
+// public, or re-run `grove install --role worker --registry-token …`).
+func TestRunDoctor_WarnsOnUnauthenticatedGHCRImages(t *testing.T) {
+	home := t.TempDir()
+	fleetPath := writeFleetYAML(t, home, "ghcr.io/gm2211/grove-macos-worker:latest")
+	cfg := &config.Config{Fleet: fleetPath}
+	opts := Options{Home: home, GOOS: "darwin", LookPath: alwaysFailLookPath, Exists: alwaysFalseExists}
+
+	results := RunDoctor(context.Background(), NewFakeRunner(), opts, cfg)
+	r := findResult(t, results, "registry-login")
+	if r.OK {
+		t.Error("expected registry-login to fail: ghcr.io image with no login marker recorded")
+	}
+	if !strings.Contains(r.Remediation, "Change visibility") || !strings.Contains(r.Remediation, "--registry-token") {
+		t.Errorf("Remediation = %q, want both the public-visibility and --registry-token options", r.Remediation)
+	}
+}
+
+// TestRunDoctor_RegistryLoginOKWhenMarkerPresent covers the healthy path: once
+// registryLoginStep's Apply has written the marker (i.e. `grove install --role worker
+// --registry-token …` succeeded), doctor reports registry-login as OK.
+func TestRunDoctor_RegistryLoginOKWhenMarkerPresent(t *testing.T) {
+	home := t.TempDir()
+	fleetPath := writeFleetYAML(t, home, "ghcr.io/gm2211/grove-macos-worker:latest")
+	cfg := &config.Config{Fleet: fleetPath}
+	opts := Options{Home: home, GOOS: "darwin", LookPath: alwaysFailLookPath, Exists: alwaysFalseExists}
+
+	markerDir := filepath.Join(home, ".config", "grove")
+	if err := os.MkdirAll(markerDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(markerDir, "registry-login.ghcr.io"), []byte("gm2211 ghcr.io\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	results := RunDoctor(context.Background(), NewFakeRunner(), opts, cfg)
+	r := findResult(t, results, "registry-login")
+	if !r.OK {
+		t.Errorf("expected registry-login to pass once the marker is recorded, got %+v", r)
+	}
+}
+
+// TestRunDoctor_SkipsRegistryLoginCheckForNonGHCRImages makes sure a fleet.yaml that doesn't
+// reference ghcr.io at all (e.g. a self-hosted registry, or images built locally) doesn't get a
+// registry-login warning — grove only knows ghcr.io to be private-by-default.
+func TestRunDoctor_SkipsRegistryLoginCheckForNonGHCRImages(t *testing.T) {
+	home := t.TempDir()
+	fleetPath := writeFleetYAML(t, home, "my-registry.example.com/grove-macos-worker:latest")
+	cfg := &config.Config{Fleet: fleetPath}
+	opts := Options{Home: home, GOOS: "darwin", LookPath: alwaysFailLookPath, Exists: alwaysFalseExists}
+
+	results := RunDoctor(context.Background(), NewFakeRunner(), opts, cfg)
+	for _, r := range results {
+		if r.Name == "registry-login" {
+			t.Errorf("did not expect a registry-login check for a non-ghcr.io image, got %+v", r)
+		}
 	}
 }
 

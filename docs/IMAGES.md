@@ -43,6 +43,32 @@ Tag with a date or git SHA too (`:2026-09-06`) before overwriting `:latest` if y
 reconciler's old VMs to keep running their current image until you deliberately bump
 `fleet.yaml`'s `pools[].image`.
 
+### Packages are private by default — workers need access too
+
+`tart push` creates a GHCR **package** the first time it runs, and GitHub Container Registry makes
+every new package **private by default**. Unlike a repo's visibility, there is **no GitHub API to
+change a package's visibility** — it's a UI-only setting. Every worker that pulls the image (via
+`tart` from `internal/fleet`'s reconciler, at VM create time) needs either:
+
+1. **The packages made public** (one-time, per package, simplest for a fleet with several
+   workers): on GitHub, go to **Packages -> `grove-macos-worker`** (and `grove-linux-worker`
+   separately) **-> Package settings -> Change visibility -> Public**.
+2. **Each worker logged in to the registry**: `grove install --role worker --registry-user
+   <github-username> --registry-token <PAT>` (PAT needs at least `read:packages`; also readable
+   from `$GROVE_REGISTRY_TOKEN` so it doesn't have to sit in shell history) — see docs/INSTALL.md's
+   "Registry access for private worker images". This runs `tart login <registry>
+   --password-stdin`, caching the credential in the worker's own keychain the same way a manual
+   `tart login` would, and records a marker (`~/.config/grove/registry-login.<registry>`, never the
+   token) so it's idempotent across re-runs.
+
+If neither is done, the fleet reconciler still *creates* the VM record in Orchard, but the actual
+`tart pull`/run on the worker fails with an auth error — the VM sits `pending` or shows an error
+status. That surfaces in two places: `grove vm ls`'s STATUS column, and the Orchard worker's own
+log (`~/Library/Logs/grove/orchard-worker.err.log` on the worker — see docs/OPERATIONS.md's Log
+locations table). `grove doctor`'s `registry-login` check flags this proactively whenever
+`fleet.yaml` references a `ghcr.io` image and no login marker is present on the machine `grove
+doctor` runs on.
+
 ## Base image choice
 
 | Image | Base | Why |

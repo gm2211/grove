@@ -148,6 +148,7 @@ See [CHANGELOG.md](CHANGELOG.md) for what shipped in each release.
 | **OS** | macOS 15+ (for the Local Network permission worker Macs need) |
 | **Tailscale** | standalone variant, already authenticated — **not** the Mac App Store build (it doesn't start before login) |
 | **Homebrew** | grove is its own tap; on recent Homebrew you may need `brew trust openai/tools` before Tart will install |
+| **Registry access** | grove's worker images on `ghcr.io` are private by default — make the GitHub packages public, or `grove install --role worker --registry-token …` (see [docs/INSTALL.md](docs/INSTALL.md)) |
 
 grove installs everything else itself (Tart, Nomad, MinIO, Orchard).
 

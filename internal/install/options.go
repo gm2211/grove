@@ -26,6 +26,15 @@ type Options struct {
 	ServerURL  string // grove server URL (client role, and recorded on control-plane/worker too)
 	Token      string // bootstrap / server token, meaning depends on Role
 
+	// Registry/RegistryUser/RegistryToken configure `tart login` for a worker's private image
+	// pulls (see docs/IMAGES.md "Pushing to GHCR": ghcr.io packages are private by default, and
+	// GitHub has no API to flip that — UI only). Registry defaults to "ghcr.io" via registry()
+	// below. RegistryToken is never persisted or logged: it's only ever fed to `tart login
+	// --password-stdin` over stdin (see Runner.RunWithStdin), never as a command argument.
+	Registry      string
+	RegistryUser  string
+	RegistryToken string
+
 	Hostname string // test override; defaults to os.Hostname()
 	Home     string // test override; defaults to os.UserHomeDir()
 	GOOS     string // test override; defaults to runtime.GOOS
@@ -82,6 +91,15 @@ func (o Options) lookPath() func(string) (string, error) {
 
 func (o Options) exists() func(string) bool {
 	return o.Exists // nil is fine: FindTailscale substitutes the real check itself
+}
+
+// registry is o.Registry, defaulting to "ghcr.io" — where grove's own worker images are published
+// (see docs/IMAGES.md).
+func (o Options) registry() string {
+	if o.Registry != "" {
+		return o.Registry
+	}
+	return "ghcr.io"
 }
 
 // ConfigDir is ~/.config/grove (honours GROVE_CONFIG's directory if set, then Options.Home).

@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/gm2211/grove/internal/config"
+	"github.com/gm2211/grove/internal/fleet"
 	"github.com/gm2211/grove/internal/wire"
 )
 
@@ -71,8 +73,60 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 	results = append(results, checkServiceUnits(opts))
 	results = append(results, checkTart(ctx, r, opts)...)
 	results = append(results, checkTrustedTaps(ctx, r, opts)...)
+	if c := checkRegistryLogin(opts, cfg); c != nil {
+		results = append(results, *c)
+	}
 
 	return results
+}
+
+// ghcrHost is the one registry grove itself knows to be private-by-default (see docs/IMAGES.md
+// "Pushing to GHCR") and so worth a dedicated doctor warning about; a self-hosted or otherwise
+// public registry isn't flagged.
+const ghcrHost = "ghcr.io"
+
+// checkRegistryLogin warns when fleet.yaml's pools pull images from ghcr.io — private by default,
+// with no GitHub API to flip that (UI only) — but this machine has no recorded `tart login
+// ghcr.io` (see registryLoginStep/registryLoginMarkerPath). Left unaddressed, the fleet
+// reconciler's VM create for that pool sits pending/fails on the worker with an auth error; that
+// surfaces in `grove vm ls`'s STATUS column and in the Orchard worker's own log (see
+// docs/OPERATIONS.md).
+//
+// Returns nil (nothing to report) when there's no fleet.yaml configured, it doesn't parse, or none
+// of its pools reference ghcr.io at all — mirroring checkTrustedTaps: doctor only complains about
+// things that are actually configured.
+func checkRegistryLogin(opts Options, cfg *config.Config) *CheckResult {
+	if cfg == nil || cfg.Fleet == "" {
+		return nil
+	}
+	spec, err := fleet.Load(cfg.Fleet)
+	if err != nil {
+		return nil // fleet.yaml's own health is checkTrustedTaps/fleet commands' job, not this one
+	}
+
+	usesGHCR := false
+	for _, p := range spec.Pools {
+		if strings.HasPrefix(p.Image, ghcrHost+"/") {
+			usesGHCR = true
+			break
+		}
+	}
+	if !usesGHCR {
+		return nil
+	}
+
+	marker := registryLoginMarkerPath(opts, ghcrHost)
+	if _, err := os.Stat(marker); err == nil {
+		return &CheckResult{Name: "registry-login", OK: true, Detail: "tart login ghcr.io recorded (" + marker + ")"}
+	}
+
+	return &CheckResult{
+		Name:   "registry-login",
+		OK:     false,
+		Detail: "fleet.yaml has pool image(s) on ghcr.io, which are private by default, and no `tart login ghcr.io` was recorded on this machine",
+		Remediation: "images on ghcr.io may be private; either make the packages public (GitHub -> Packages -> " +
+			"grove-*-worker -> Package settings -> Change visibility) or re-run `grove install --role worker --registry-token …`",
+	}
 }
 
 func checkTailscale(ctx context.Context, opts Options) CheckResult {

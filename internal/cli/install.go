@@ -10,13 +10,16 @@ import (
 )
 
 var installFlags struct {
-	role       string
-	controller string
-	nomad      string
-	server     string
-	token      string
-	yes        bool
-	dryRun     bool
+	role          string
+	controller    string
+	nomad         string
+	server        string
+	token         string
+	registry      string
+	registryUser  string
+	registryToken string
+	yes           bool
+	dryRun        bool
 }
 
 var installCmd = &cobra.Command{
@@ -38,6 +41,9 @@ func init() {
 	installCmd.Flags().StringVar(&installFlags.nomad, "nomad", "", "Nomad HTTP API URL")
 	installCmd.Flags().StringVar(&installFlags.server, "server", "", "grove server URL")
 	installCmd.Flags().StringVar(&installFlags.token, "token", "", "bootstrap/server token (meaning depends on --role)")
+	installCmd.Flags().StringVar(&installFlags.registry, "registry", "ghcr.io", "container registry a worker authenticates to for private image pulls (worker role; see docs/INSTALL.md)")
+	installCmd.Flags().StringVar(&installFlags.registryUser, "registry-user", "", "registry username for `tart login` (worker role)")
+	installCmd.Flags().StringVar(&installFlags.registryToken, "registry-token", "", "registry password/PAT for `tart login` (worker role); also read from $GROVE_REGISTRY_TOKEN so it needn't be in shell history")
 	installCmd.Flags().BoolVar(&installFlags.yes, "yes", false, "apply privileged steps too, when running as root")
 	installCmd.Flags().BoolVar(&installFlags.dryRun, "dry-run", false, "print the plan; change nothing")
 	_ = installCmd.MarkFlagRequired("role")
@@ -52,12 +58,23 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--role must be %q, %q or %q (got %q)", install.RoleWorker, install.RoleControlPlane, install.RoleClient, installFlags.role)
 	}
 
+	registryToken := installFlags.registryToken
+	if registryToken == "" {
+		// Falling back to the environment lets the token skip shell history/process-listing
+		// exposure entirely; the flag still exists for scripts that manage their own secret
+		// handling.
+		registryToken = os.Getenv("GROVE_REGISTRY_TOKEN")
+	}
+
 	opts := install.Options{
-		Role:       role,
-		Controller: installFlags.controller,
-		NomadAddr:  installFlags.nomad,
-		ServerURL:  installFlags.server,
-		Token:      installFlags.token,
+		Role:          role,
+		Controller:    installFlags.controller,
+		NomadAddr:     installFlags.nomad,
+		ServerURL:     installFlags.server,
+		Token:         installFlags.token,
+		Registry:      installFlags.registry,
+		RegistryUser:  installFlags.registryUser,
+		RegistryToken: registryToken,
 	}
 
 	out := cmd.OutOrStdout()
