@@ -61,6 +61,13 @@ subcommands, or `GET /api/v1/jobs/{id}/logs?follow=1`.
 - **Orchard / Nomad / MinIO**: `grove install` re-checks each binary; bump the version pin in this
   repo's install steps and re-run to pick up the change (Homebrew formulae upgrade in place;
   Linux downloads re-fetch the pinned version).
+- **A Homebrew upgrade adds the third-party-tap trust gate**: `brew update && brew upgrade` on a Mac
+  that already has `tart`/`nomad`/`minio` installed can pick up a Homebrew version that now refuses
+  to load formulae from an untrusted tap (`Error: Refusing to load formula … from untrusted tap …`)
+  even though nothing about grove's own config changed. Re-running `grove install --role <role>`
+  fixes it — it re-trusts `openai/tools`/`cirruslabs/cli`/`hashicorp/tap`/`minio/stable` as needed
+  before touching anything that installs from them — or run `grove doctor` first to see exactly
+  which tap it is and the `brew trust <tap>` command to run by hand.
 - **Restart a supervised service** after a config change: macOS —
   `launchctl kickstart -k gui/$(id -u)/com.grove.<name>`; Linux —
   `systemctl --user restart grove-<name>`.
