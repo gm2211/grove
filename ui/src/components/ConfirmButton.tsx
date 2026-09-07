@@ -1,0 +1,38 @@
+import { useState } from "react";
+import { Button } from "./Button";
+
+/** A button that requires a second click within a few seconds to actually fire. */
+export function ConfirmButton({
+  label,
+  confirmLabel = "confirm?",
+  onConfirm,
+  variant = "danger",
+  disabled,
+}: {
+  label: string;
+  confirmLabel?: string;
+  onConfirm: () => void;
+  variant?: "danger" | "default" | "primary";
+  disabled?: boolean;
+}) {
+  const [armed, setArmed] = useState(false);
+
+  return (
+    <Button
+      type="button"
+      variant={armed ? "danger" : variant}
+      disabled={disabled}
+      onClick={() => {
+        if (armed) {
+          setArmed(false);
+          onConfirm();
+        } else {
+          setArmed(true);
+          setTimeout(() => setArmed(false), 3000);
+        }
+      }}
+    >
+      {armed ? confirmLabel : label}
+    </Button>
+  );
+}

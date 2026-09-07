@@ -2,7 +2,9 @@
 /dist/
 /ui/node_modules/
 /ui/dist/
-/internal/server/dist/
+/ui/*.tsbuildinfo
+/internal/server/dist/*
+!/internal/server/dist/.keep
 *.log
 .DS_Store
 /images/output-*/
