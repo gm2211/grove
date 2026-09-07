@@ -1,0 +1,61 @@
+version: 2
+
+project_name: grove
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: grove
+    main: ./cmd/grove
+    binary: grove
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/gm2211/grove/internal/cli.Version={{ .Version }}
+
+archives:
+  - id: grove
+    ids: [grove]
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+# Publishes/updates Formula/grove.rb in gm2211/homebrew-tap on every release. Requires a
+# HOMEBREW_TAP_TOKEN repo secret with write access to that repo — see
+# .github/workflows/release.yml for why the default GITHUB_TOKEN can't do this.
+brews:
+  - name: grove
+    repository:
+      owner: gm2211
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/gm2211/grove"
+    description: "Your Macs as a private build/agent cloud: Tart VMs via Orchard, jobs via Nomad."
+    license: "MIT"
+    install: |
+      bin.install "grove"
+    test: |
+      system "#{bin}/grove", "--version"
