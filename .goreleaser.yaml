@@ -42,16 +42,19 @@ changelog:
       - "^test:"
       - "^ci:"
 
-# Publishes/updates Formula/grove.rb in gm2211/homebrew-tap on every release. Requires a
-# HOMEBREW_TAP_TOKEN repo secret with write access to that repo — see
-# .github/workflows/release.yml for why the default GITHUB_TOKEN can't do this.
+# Publishes/updates Formula/grove.rb in THIS repo on every release, so it doubles as its own
+# Homebrew tap (`brew tap gm2211/grove https://github.com/gm2211/grove`) — no separate
+# gm2211/homebrew-tap repo or personal access token needed; the default GITHUB_TOKEN can push
+# here.
 brews:
   - name: grove
     repository:
       owner: gm2211
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+      name: grove
+      branch: main
+      token: "{{ .Env.GITHUB_TOKEN }}"
     directory: Formula
+    commit_msg_template: "Formula: update grove to {{ .Tag }} [skip ci]"
     homepage: "https://github.com/gm2211/grove"
     description: "Your Macs as a private build/agent cloud: Tart VMs via Orchard, jobs via Nomad."
     license: "MIT"

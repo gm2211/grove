@@ -26,11 +26,7 @@ jobs:
           version: "~> v2"
           args: release --clean
         env:
+          # goreleaser pushes Formula/grove.rb back into this same repo (see .goreleaser.yaml's
+          # `brews` block), so the default, repo-scoped GITHUB_TOKEN is enough — no separate
+          # tap repo or personal access token needed.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # goreleaser needs write access to a SEPARATE repo (gm2211/homebrew-tap) to publish
-          # Formula/grove.rb, so the default GITHUB_TOKEN (scoped to this repo only) isn't
-          # enough. Add a repo secret named HOMEBREW_TAP_TOKEN: a GitHub personal access token
-          # (classic with `repo` scope, or fine-grained with Contents: read/write) on
-          # gm2211/homebrew-tap. Settings -> Secrets and variables -> Actions -> New repository
-          # secret, in gm2211/grove.
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

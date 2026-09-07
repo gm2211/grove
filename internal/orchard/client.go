@@ -168,9 +168,7 @@ func vmFromV1(vm v1.VM) VM {
 		RestartCount:  vm.RestartCount,
 		CreatedAt:     vm.CreatedAt,
 		StartedAt:     vm.StartedAt,
-		// TODO(gm2211/orchard): populate TTL once ttl_seconds lands on v1.VM — no such field
-		// or PR exists upstream yet; see the note in vmToV1 below and ARCHITECTURE.md's
-		// "Fork of Orchard" section.
+		TTL:           time.Duration(vm.TTLSeconds) * time.Second,
 	}
 }
 
@@ -216,11 +214,9 @@ func vmToV1(spec VMSpec) *v1.VM {
 		vm.ShutdownScriptTimeoutSeconds = uint64(spec.ShutdownTimeout.Seconds())
 	}
 
-	// TODO(gm2211/orchard): spec.TTL is still NOT wired here — ttl_seconds has not landed on
-	// v1.VM (no such PR exists against github.com/gm2211/orchard, open or merged, as of the
-	// pinned replace version in go.mod; see ARCHITECTURE.md's "Fork of Orchard" section).
-	// fleet.Reconciler still threads spec.TTL through from fleet.yaml, it's just silently
-	// dropped here until the fork adds a field to carry it.
+	if spec.TTL > 0 {
+		vm.TTLSeconds = uint64(spec.TTL.Seconds())
+	}
 
 	return vm
 }

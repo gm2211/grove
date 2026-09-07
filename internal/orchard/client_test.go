@@ -94,15 +94,39 @@ func TestVMToV1_NoShutdownScript(t *testing.T) {
 	}
 }
 
-func TestVMToV1_TTLNotYetWired(t *testing.T) {
-	// gm2211/orchard's v1.VM has no TTL-shaped field yet (no ttl_seconds PR exists upstream,
-	// open or merged), so a non-zero TTL on the spec has nothing to land on. This test just
-	// documents that vmToV1 accepts such a spec without error and doesn't panic or otherwise
-	// misbehave; there is no field to assert against.
-	vm := vmToV1(VMSpec{Name: "vm1", TTL: time.Hour})
+func TestVMToV1_TTL(t *testing.T) {
+	vm := vmToV1(VMSpec{Name: "vm1", TTL: 90 * time.Minute})
 
-	if vm == nil || vm.Name != "vm1" {
-		t.Fatalf("want vm1 produced despite TTL set, got %+v", vm)
+	if vm.TTLSeconds != uint64(90*time.Minute/time.Second) {
+		t.Errorf("want TTLSeconds %d, got %d", uint64(90*time.Minute/time.Second), vm.TTLSeconds)
+	}
+}
+
+func TestVMToV1_NoTTL(t *testing.T) {
+	vm := vmToV1(VMSpec{Name: "vm1"})
+
+	if vm.TTLSeconds != 0 {
+		t.Errorf("want zero TTLSeconds when spec.TTL unset, got %d", vm.TTLSeconds)
+	}
+}
+
+func TestVMFromV1_TTL(t *testing.T) {
+	v := v1.VM{Meta: v1.Meta{Name: "vm1"}, TTLSeconds: 3600}
+
+	out := vmFromV1(v)
+
+	if out.TTL != time.Hour {
+		t.Errorf("want TTL 1h, got %v", out.TTL)
+	}
+}
+
+func TestVMFromV1_NoTTL(t *testing.T) {
+	v := v1.VM{Meta: v1.Meta{Name: "vm1"}}
+
+	out := vmFromV1(v)
+
+	if out.TTL != 0 {
+		t.Errorf("want zero TTL when TTLSeconds unset, got %v", out.TTL)
 	}
 }
 

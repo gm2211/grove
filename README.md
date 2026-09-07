@@ -15,7 +15,7 @@ Stop paying for GitHub Actions macOS minutes; keep the isolation.
 ## Quick start
 
 ```bash
-# on each Mac you want in the fleet
+# on each Mac you want in the fleet (installs via Homebrew — this repo is its own tap)
 curl -fsSL https://raw.githubusercontent.com/gm2211/grove/main/scripts/install.sh | sh
 grove install --role worker --controller https://grove-cp.<tailnet>.ts.net:6120
 
