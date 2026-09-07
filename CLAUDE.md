@@ -85,15 +85,16 @@ make ui           # cd ui && npm ci && npm run build (only needed once ui/ has c
 
 CI (`.github/workflows/ci.yml`) runs `go build/vet/test` on `ubuntu-latest` and `macos-latest`,
 plus the `ui` build when `ui/package.json` exists. Releases (`.github/workflows/release.yml`) run
-on `v*` tags via goreleaser (`.goreleaser.yaml`), which also updates the Homebrew tap
-(gm2211/homebrew-tap).
+on `v*` tags via goreleaser (`.goreleaser.yaml`), which also regenerates `Formula/grove.rb` in
+this same repo — grove is its own Homebrew tap, no separate `gm2211/homebrew-tap` repo or PAT.
 
 ## If asked to install grove on this machine
 
 Decision tree:
 
-1. **Is this a fresh machine with no `grove` binary?** Run `scripts/install.sh`'s one-liner (or
-   `brew install gm2211/tap/grove` on macOS) first.
+1. **Is this a fresh machine with no `grove` binary?** Run `scripts/install.sh`'s one-liner (or,
+   on macOS, `brew tap gm2211/grove https://github.com/gm2211/grove && brew install
+   gm2211/grove/grove`) first. Already installed? `brew upgrade grove`.
 2. **What role?**
    - Runs jobs (a Mac, ideally always-on, lid open or docked) → `worker`.
    - The one always-on box (Linux, or a dedicated Mac) that should host the control plane →

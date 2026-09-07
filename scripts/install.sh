@@ -47,8 +47,11 @@ install_macos() {
 			eval "$(/usr/local/bin/brew shellenv)"
 		fi
 	fi
-	log "installing grove via Homebrew (gm2211/tap/grove)"
-	brew install gm2211/tap/grove
+	log "installing grove via Homebrew (this repo doubles as its own tap)"
+	if ! brew tap | grep -qx gm2211/grove; then
+		brew tap gm2211/grove https://github.com/gm2211/grove
+	fi
+	brew install gm2211/grove/grove
 }
 
 install_linux() {

@@ -25,6 +25,11 @@ curl -fsSL https://raw.githubusercontent.com/gm2211/grove/main/scripts/install.s
 This installs the CLI only (via Homebrew on macOS, a direct binary download on Linux) — it never
 runs `grove install` for you, since that needs a `--role` and touches system settings.
 
+On macOS this is equivalent to `brew tap gm2211/grove https://github.com/gm2211/grove && brew
+install gm2211/grove/grove` — the grove repo doubles as its own Homebrew tap (no separate
+`homebrew-tap` repo, no personal access token). Once installed, upgrade in place any time with
+`brew upgrade grove`.
+
 ## 2. Pick a role and run `grove install`
 
 ### Worker (every Mac that runs jobs)
