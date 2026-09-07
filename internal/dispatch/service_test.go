@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -75,6 +76,8 @@ func TestSubmit_Validation(t *testing.T) {
 		{"missing script", JobRequest{Kind: KindShell, Pool: "linux"}},
 		{"missing repo for build", JobRequest{Kind: KindBuild, Pool: "linux", Script: "true"}},
 		{"missing repo for agent", JobRequest{Kind: KindAgent, Pool: "linux", Script: "true"}},
+		{"sub-second timeout", JobRequest{Kind: KindShell, Pool: "linux", Script: "true", Timeout: Duration(500 * time.Millisecond)}},
+		{"sub-second timeout just under 1s", JobRequest{Kind: KindShell, Pool: "linux", Script: "true", Timeout: Duration(999 * time.Millisecond)}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -85,6 +88,36 @@ func TestSubmit_Validation(t *testing.T) {
 	}
 	if len(nc.dispatchCalls) != 0 {
 		t.Fatalf("Dispatch should not have been called, got %d calls", len(nc.dispatchCalls))
+	}
+}
+
+// TestSubmit_RejectsSubSecondTimeout pins the exact error message a 0 < timeout < 1s request gets,
+// and confirms a zero timeout (no timeout requested) and a timeout of exactly 1s are both fine —
+// only the open sub-second gap is rejected.
+func TestSubmit_RejectsSubSecondTimeout(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestService(t, nc)
+
+	_, _, err := svc.Submit(context.Background(), JobRequest{
+		Kind: KindShell, Pool: "linux", Script: "true", Timeout: Duration(100 * time.Millisecond),
+	})
+	if err == nil {
+		t.Fatal("expected an error for a sub-second timeout")
+	}
+	wantMsg := `timeout must be at least 1s (send a duration string like "30m" or a number of seconds)`
+	if !strings.Contains(err.Error(), wantMsg) {
+		t.Fatalf("error = %q, want it to contain %q", err.Error(), wantMsg)
+	}
+
+	if _, _, err := svc.Submit(context.Background(), JobRequest{
+		Kind: KindShell, Pool: "linux", Script: "true", Timeout: Duration(0),
+	}); err != nil {
+		t.Fatalf("zero timeout (no timeout) should be accepted: %v", err)
+	}
+	if _, _, err := svc.Submit(context.Background(), JobRequest{
+		Kind: KindShell, Pool: "linux", Script: "true", Timeout: Duration(time.Second),
+	}); err != nil {
+		t.Fatalf("exactly 1s timeout should be accepted: %v", err)
 	}
 }
 
@@ -99,7 +132,7 @@ func TestSubmit_Success(t *testing.T) {
 		Ref:       "main",
 		Script:    "make test",
 		Env:       map[string]string{"FOO": "bar"},
-		Timeout:   30 * time.Second,
+		Timeout:   Duration(30 * time.Second),
 		Meta:      map[string]string{"bead": "123", "image": "golang:1.27"},
 		Requester: "cli",
 	}
@@ -803,6 +836,77 @@ func TestLogs_FollowOnAlreadyTerminalJobDoesNotHang(t *testing.T) {
 	if !strings.Contains(string(data), "boom") {
 		t.Errorf("logs = %q, want to contain boom", string(data))
 	}
+}
+
+// TestLogLines_FollowAndNoFollowAgreeOnTerminalJob is the regression test for the reported
+// "follow=1 may return only stdout" defect: for an already-terminal job with both stdout and
+// stderr non-empty, follow=true (which streamContext/isTerminal downgrades to a one-shot,
+// follow=false fetch against Nomad — see TestLogs_FollowOnAlreadyTerminalJobDoesNotHang) and
+// follow=false must return the exact same merged set of lines. Verified live against a real grove
+// server that the actual root cause was one layer deeper (internal/nomad/client.go's Logs — see
+// TestStreamLogs_FramesDrainedBeforeConcurrentErrSignal): both follow=true and follow=false
+// nondeterministically dropped lines there, not just follow=true relative to follow=false. This
+// test guards the dispatch-layer contract (both modes agree) regardless of which layer a future
+// regression reintroduces a discrepancy in.
+func TestLogLines_FollowAndNoFollowAgreeOnTerminalJob(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestServiceWithOpts(t, nc, Options{
+		LogTerminalPollInterval: 10 * time.Millisecond,
+		LogStreamGracePeriod:    10 * time.Millisecond,
+	})
+
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	dispatchedJobID := nc.dispatchCalls[0].jobName + "/dispatch-1"
+	nc.allocationsByJob = map[string][]nomad.Allocation{
+		dispatchedJobID: {{
+			ID: "alloc-1", ClientStatus: "failed", ExitCode: ptrInt(1),
+			CreatedAt: time.Now(), FinishedAt: ptrTime(time.Now()),
+		}},
+	}
+	nc.logsFunc = func(ctx context.Context, allocID, task, stream string, follow bool) (io.ReadCloser, error) {
+		if stream == "stdout" {
+			return io.NopCloser(strings.NewReader("out1\nout2\n")), nil
+		}
+		return io.NopCloser(strings.NewReader("err1\nerr2\n")), nil
+	}
+
+	collect := func(follow bool) []string {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		lines, err := svc.LogLines(ctx, job.ID, follow)
+		if err != nil {
+			t.Fatalf("LogLines(follow=%v): %v", follow, err)
+		}
+		var got []string
+		for ln := range lines {
+			got = append(got, ln.Stream+":"+ln.Line)
+		}
+		sort.Strings(got) // merge order across the two streams is best-effort; compare as sets
+		return got
+	}
+
+	want := []string{"stderr:err1", "stderr:err2", "stdout:out1", "stdout:out2"}
+	if got := collect(false); !slicesEqual(got, want) {
+		t.Fatalf("follow=false lines = %v, want %v", got, want)
+	}
+	if got := collect(true); !slicesEqual(got, want) {
+		t.Fatalf("follow=true lines = %v, want %v", got, want)
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestLogs_FollowEndsPromptlyWhenJobBecomesTerminal covers the other half of the same defect: a

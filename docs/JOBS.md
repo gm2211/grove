@@ -17,6 +17,26 @@ meant to run as a grove job (CI builds, agent sessions, `grove exec`).
 the server registers one job per (kind, pool) pair at startup by rendering
 `nomad/jobs/*.nomad.hcl` (see `nomad/jobs/README.md`).
 
+## `JobRequest.timeout` wire format
+
+`timeout` is a `dispatch.Duration` (`internal/dispatch/duration.go`), not a raw `time.Duration` —
+so it is never sent or received as nanoseconds. On the wire it is one of:
+
+- a JSON **string** parsed by Go's `time.ParseDuration`: `"30m"`, `"2h"`, `"90s"`, `"1h30m"`; or
+- a JSON **number** (integer or float), interpreted as **seconds** — `120` means 120 seconds, not
+  120 nanoseconds, no matter how large or "nanosecond-looking" the number is.
+
+Anything else (bool, object, array) is a 400. A completed `Job.request.timeout` read back from
+`GET /jobs/{id}` is always the string form (e.g. `"2m0s"`). `Submit` rejects `0 < timeout < 1s`
+with 400 `timeout must be at least 1s (send a duration string like "30m" or a number of seconds)`
+— a timeout that small is almost certainly a caller sending the wrong unit, and `run.sh`'s
+`timeout $T` would otherwise kill the job before it starts.
+
+This exists because a caller once sent `"timeout": 120000` meaning milliseconds; decoded as raw
+nanoseconds that's 120µs, which `FormatFloat`'d down to `"0"` seconds of `meta["timeout_seconds"]`
+and killed the job instantly (exit 124). Nobody should have to know grove's wire format uses
+nanoseconds — now it can't, because it doesn't.
+
 ## `JobRequest` → dispatch meta
 
 `Service.Submit` should map a `JobRequest` onto `nomad job dispatch` roughly as:
@@ -27,7 +47,7 @@ meta := map[string]string{
 }
 if req.Repo != "" { meta["repo"] = req.Repo }
 if req.Ref != ""  { meta["ref"] = req.Ref }
-if req.Timeout > 0 { meta["timeout_seconds"] = strconv.Itoa(int(req.Timeout.Seconds())) }
+if t := req.Timeout.Duration(); t > 0 { meta["timeout_seconds"] = strconv.Itoa(int(t.Seconds())) }
 if len(req.Env) > 0 {
     b, _ := json.Marshal(req.Env)
     meta["env_json"] = string(b)

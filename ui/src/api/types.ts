@@ -19,7 +19,10 @@ export interface JobRequest {
   script: string;
   env?: Record<string, string>;
   secrets?: string[];
-  timeout?: number; // nanoseconds, as encoded by Go's time.Duration
+  // A duration string ("30m", "2h", "90s") or a number of SECONDS — never nanoseconds. See
+  // internal/dispatch/duration.go's Duration type. Sent as a string; a completed Job.request
+  // read back from the server round-trips as a string too (e.g. "2m0s").
+  timeout?: string;
   meta?: Record<string, string>;
   requester?: string;
 }

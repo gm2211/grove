@@ -99,7 +99,7 @@ func (h *handlers) run(ctx context.Context, req *mcpsdk.CallToolRequest, args ru
 		Ref:       args.Ref,
 		Script:    args.Script,
 		Env:       args.Env,
-		Timeout:   timeout,
+		Timeout:   dispatch.Duration(timeout),
 		Requester: requester,
 	}
 

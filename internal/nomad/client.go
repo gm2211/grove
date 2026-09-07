@@ -350,34 +350,81 @@ func (c *client) Logs(ctx context.Context, allocID, task, stream string, follow 
 
 	go func() {
 		defer close(cancelCh)
-
-		for {
-			select {
-			case <-ctx.Done():
-				_ = pw.CloseWithError(ctx.Err())
-
-				return
-			case frame, ok := <-frames:
-				if !ok {
-					_ = pw.Close()
-
-					return
-				}
-
-				if _, werr := pw.Write(frame.Data); werr != nil {
-					return
-				}
-			case err, ok := <-errCh:
-				if ok && err != nil {
-					_ = pw.CloseWithError(err)
-
-					return
-				}
-			}
-		}
+		streamLogs(ctx, frames, errCh, pw)
 	}()
 
 	return pr, nil
+}
+
+// streamLogs copies frames from frames into pw until frames closes or ctx is done. frames always
+// takes priority over errCh: on every iteration it first drains whatever is *already* queued on
+// frames (non-blocking) before ever considering errCh, so a completion/error signal that becomes
+// ready at the same instant as still-unread frames can never win the select race and silently
+// truncate the stream.
+//
+// This exists because AllocFS().Logs() can signal "done" (closing frames, or sending a — possibly
+// benign — value on errCh) at effectively the same moment it finishes delivering the last frame(s)
+// for an already-terminal allocation's logs. A plain `select { case frames: ...; case errCh: ... }`
+// picks uniformly at random among ready cases, so without this priority drain, repeated identical
+// requests for one finished job's logs nondeterministically returned all, some, or none of its
+// buffered lines — reproduced live against a real Nomad server: the exact same request for a job
+// with 2 stdout + 2 stderr lines returned 4, 2, or 0 lines across otherwise-identical repeats,
+// while querying Nomad's own /v1/client/fs/logs endpoint directly was 100% consistent every time.
+// So the data was never actually lost in Nomad — it was dropped by this select race on grove's side
+// on the way out.
+func streamLogs(ctx context.Context, frames <-chan *nomadapi.StreamFrame, errCh <-chan error, pw *io.PipeWriter) {
+	for {
+		if !drainReadyFrames(frames, pw) {
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			_ = pw.CloseWithError(ctx.Err())
+
+			return
+		case frame, ok := <-frames:
+			if !ok {
+				_ = pw.Close()
+
+				return
+			}
+
+			if _, werr := pw.Write(frame.Data); werr != nil {
+				return
+			}
+		case err, ok := <-errCh:
+			if ok && err != nil {
+				_ = pw.CloseWithError(err)
+
+				return
+			}
+		}
+	}
+}
+
+// drainReadyFrames writes every frame already queued on frames (non-blocking — it stops as soon as
+// frames has nothing immediately available) to pw. It returns false once frames closes (having
+// already closed pw itself, mirroring streamLogs's own close-on-EOF case) or a write fails, telling
+// the caller to stop; true means frames is (for now) empty and the caller should go back to
+// blocking on its full select.
+func drainReadyFrames(frames <-chan *nomadapi.StreamFrame, pw *io.PipeWriter) bool {
+	for {
+		select {
+		case frame, ok := <-frames:
+			if !ok {
+				_ = pw.Close()
+
+				return false
+			}
+
+			if _, werr := pw.Write(frame.Data); werr != nil {
+				return false
+			}
+		default:
+			return true
+		}
+	}
 }
 
 func (c *client) StopJob(ctx context.Context, jobID string, purge bool) error {

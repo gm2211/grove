@@ -151,7 +151,7 @@ function makeJob(i: number): Job {
           ? "claude --print 'implement bd-1234'"
           : "df -h && uptime",
     env: { CI: "true" },
-    timeout: 3_600_000_000_000,
+    timeout: "1h0m0s",
     requester: requesters[i % requesters.length],
     meta: { bead: `bd-${1000 + i}` },
   };

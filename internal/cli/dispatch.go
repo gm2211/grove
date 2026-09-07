@@ -63,7 +63,7 @@ the task's working directory (shell). Example:
 				Ref:       ref,
 				Script:    script,
 				Env:       env,
-				Timeout:   timeout,
+				Timeout:   dispatch.Duration(timeout),
 				Requester: "cli",
 			}
 			id, err := client.SubmitJob(cmd.Context(), req)
