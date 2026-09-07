@@ -17,6 +17,11 @@ type Runner interface {
 	// Run executes name with args and returns captured stdout/stderr. err is non-nil on a
 	// non-zero exit or if the command could not be started.
 	Run(ctx context.Context, name string, args ...string) (stdout string, stderr string, err error)
+	// RunWithStdin is like Run but feeds stdin to the process's standard input, for commands that
+	// read a secret from stdin rather than accept it as an argument (e.g. `tart login <registry>
+	// --password-stdin`) so the secret never lands in argv, a process listing, or a shell history —
+	// and, by construction, never in the *args passed to a logged/rendered command line either.
+	RunWithStdin(ctx context.Context, stdin string, name string, args ...string) (stdout string, stderr string, err error)
 }
 
 // ExecRunner is the real Runner, shelling out via os/exec.
@@ -25,7 +30,18 @@ type ExecRunner struct{}
 var _ Runner = ExecRunner{}
 
 func (ExecRunner) Run(ctx context.Context, name string, args ...string) (string, string, error) {
+	return execRun(ctx, "", name, args...)
+}
+
+func (ExecRunner) RunWithStdin(ctx context.Context, stdin string, name string, args ...string) (string, string, error) {
+	return execRun(ctx, stdin, name, args...)
+}
+
+func execRun(ctx context.Context, stdin string, name string, args ...string) (string, string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -36,10 +52,13 @@ func (ExecRunner) Run(ctx context.Context, name string, args ...string) (string,
 	return stdout.String(), stderr.String(), err
 }
 
-// Call records one Run invocation, for assertions in tests.
+// Call records one Run/RunWithStdin invocation, for assertions in tests. Stdin is empty for a
+// plain Run call. String() (and so FakeRunner's Script/CalledWith keying) deliberately ignores
+// Stdin, so a secret fed via RunWithStdin never needs to appear in a scripted command line.
 type Call struct {
-	Name string
-	Args []string
+	Name  string
+	Args  []string
+	Stdin string
 }
 
 // String renders the call the way it would appear on a shell line, e.g. "brew install tart".
@@ -81,8 +100,15 @@ func (f *FakeRunner) Script(cmdLine string, result FakeResult) {
 	f.Results[cmdLine] = result
 }
 
-func (f *FakeRunner) Run(_ context.Context, name string, args ...string) (string, string, error) {
-	call := Call{Name: name, Args: args}
+func (f *FakeRunner) Run(ctx context.Context, name string, args ...string) (string, string, error) {
+	return f.run(Call{Name: name, Args: args})
+}
+
+func (f *FakeRunner) RunWithStdin(_ context.Context, stdin string, name string, args ...string) (string, string, error) {
+	return f.run(Call{Name: name, Args: args, Stdin: stdin})
+}
+
+func (f *FakeRunner) run(call Call) (string, string, error) {
 	f.Calls = append(f.Calls, call)
 	if res, ok := f.Results[call.String()]; ok {
 		return res.Stdout, res.Stderr, res.Err
@@ -101,4 +127,16 @@ func (f *FakeRunner) CalledWith(cmdLine string) bool {
 		}
 	}
 	return false
+}
+
+// StdinFor returns the stdin fed to the most recent recorded call whose rendered command line
+// equals cmdLine, and whether any such call was recorded at all. Useful for asserting a secret
+// went over stdin (RunWithStdin) rather than appearing in Call.Args.
+func (f *FakeRunner) StdinFor(cmdLine string) (string, bool) {
+	for i := len(f.Calls) - 1; i >= 0; i-- {
+		if f.Calls[i].String() == cmdLine {
+			return f.Calls[i].Stdin, true
+		}
+	}
+	return "", false
 }

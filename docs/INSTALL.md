@@ -51,6 +51,40 @@ grove install --role worker --controller https://<control-plane-host>:6120 --tok
   permission), and a `launchctl bootstrap` to load the worker's LaunchAgent. Run those yourself
   (or ask Claude Code to run them), then reboot if the local-network commands changed anything.
 
+#### Registry access for private worker images
+
+grove's own worker images (`ghcr.io/gm2211/grove-{linux,macos}-worker:latest`) are pushed to GHCR,
+which creates packages **private by default** — and GitHub has no API to change that, only the
+web UI. A worker that can't authenticate to a private registry fails to pull the image (see
+[Failure modes](#failure-modes) below), so before running fleet workloads, pick one of:
+
+1. **Make the packages public** (simplest, no per-worker credential to manage): on GitHub, go to
+   the organization/user that owns the package, **Packages -> `grove-macos-worker`** (and
+   `grove-linux-worker`) **-> Package settings -> Change visibility -> Public**. Do this once per
+   package; every worker can then pull without logging in.
+2. **Log each worker in to the registry**, via `grove install`:
+
+   ```bash
+   grove install --role worker --controller https://<control-plane-host>:6120 --token <bootstrap-token> \
+     --registry-user <github-username> --registry-token <PAT>
+   ```
+
+   The token needs at minimum the `read:packages` scope (a fine-grained PAT scoped to just the
+   package, or a classic PAT with `read:packages`, both work). It's read from `--registry-token`,
+   or — to avoid it ever landing in shell history — the `GROVE_REGISTRY_TOKEN` environment
+   variable:
+
+   ```bash
+   GROVE_REGISTRY_TOKEN=<PAT> grove install --role worker --controller ... --registry-user <github-username>
+   ```
+
+   `--registry` defaults to `ghcr.io` and rarely needs overriding. This runs an idempotent
+   "registry-login" step (`tart login <registry> --username <user> --password-stdin`, token piped
+   over stdin — never in argv, never logged) and records a marker file
+   (`~/.config/grove/registry-login.<registry>`, containing only the username and registry, never
+   the token) so re-running `grove install` doesn't log in again. Omitting `--registry-token`
+   entirely skips this step and prints a NOTE that the images must be public instead.
+
 ### Control plane (the always-on machine, Linux or a Mac)
 
 ```bash
@@ -78,6 +112,9 @@ Just writes `~/.config/grove/config.yaml` with the server URL/token. No local se
 | `--nomad` | Nomad HTTP API URL |
 | `--server` | grove server URL |
 | `--token` | bootstrap/server token (meaning depends on `--role`) |
+| `--registry` | container registry a worker authenticates to (worker role; default `ghcr.io`) |
+| `--registry-user` | registry username for `tart login` (worker role) |
+| `--registry-token` | registry password/PAT for `tart login` (worker role); also read from `$GROVE_REGISTRY_TOKEN` |
 | `--yes` | apply privileged steps too, **only takes effect when also running as root** |
 | `--dry-run` | print the whole plan, change nothing |
 
@@ -99,6 +136,11 @@ Apple's Virtualization.framework), disk free under `~/.tart`, and — for any th
 that's actually tapped on this machine (`openai/tools`, `cirruslabs/cli`, `hashicorp/tap`,
 `minio/stable`) — whether it's trusted, with the exact `brew trust <tap>` remediation if not. Non-
 zero exit if anything's red.
+
+If `fleet.yaml` has any pool pulling a `ghcr.io` image and this machine has no recorded `tart login
+ghcr.io` (see "Registry access for private worker images" above), doctor also warns with a
+`registry-login` check: make the packages public, or re-run `grove install --role worker
+--registry-token …`.
 
 ## Failure modes
 
@@ -124,6 +166,14 @@ zero exit if anything's red.
   throttle or the lid-closed sleep policy can override it on some macOS versions. Prefer running
   worker Macs with the lid open or on a dock, and keep an eye on thermals if it's doing sustained
   macOS VM builds (fanless MacBooks throttle hard).
+- **A worker's VM never starts / `grove vm ls` shows an error status referencing the image**: the
+  fleet reconciler's VM create sits `pending` (or fails outright) with an auth error when the
+  pool's image is a private `ghcr.io` package and the worker isn't logged in. Check `grove vm ls`'s
+  STATUS column and the Orchard worker's own log (`~/Library/Logs/grove/orchard-worker.err.log` —
+  see docs/OPERATIONS.md's Log locations table) for a `401`/`403`/"unauthorized" pulling the image.
+  Fix by either making the package public or re-running `grove install --role worker
+  --registry-token …` (see "Registry access for private worker images" above); `grove doctor`'s
+  `registry-login` check flags this proactively.
 - **First `grove install --role worker` run is slow**: if no `gm2211/orchard` release asset
   matches your OS/arch yet, it falls back to `git clone` + `go build ./cmd/orchard`, which needs a
   working Go toolchain and takes a minute or two the first time.

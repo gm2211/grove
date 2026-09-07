@@ -63,7 +63,14 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 				return err
 			},
 		},
-		{
+	}
+
+	if step := registryLoginStep(r, opts, out); step != nil {
+		steps = append(steps, *step)
+	}
+
+	steps = append(steps,
+		Step{
 			Name:        "orchard-binary",
 			Description: fmt.Sprintf("Install the Orchard fork binary to %s: download a github.com/gm2211/orchard release asset if one exists, else clone and `go build ./cmd/orchard` (the fork keeps the upstream module path, so `go install github.com/gm2211/orchard/...@main` can't resolve it — see docs/INSTALL.md for the manual build if this fails).", destOrchard),
 			Check: func(ctx context.Context) (bool, error) {
@@ -77,7 +84,7 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 				return ensureOrchardBinary(ctx, r, opts, destOrchard, out)
 			},
 		},
-		{
+		Step{
 			Name: "launchagent:orchard-worker",
 			Description: fmt.Sprintf(
 				"Render %s (KeepAlive+RunAtLoad, logs under %s) running `orchard worker run --name %s --labels host=%s,arch=arm64 %s`.",
@@ -111,10 +118,73 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 				return os.WriteFile(plistPath, []byte(content), 0o644)
 			},
 		},
-	}
+	)
 
 	steps = append(steps, workerPrivilegedSteps(r, opts, plistPath)...)
 	return steps
+}
+
+// registryLoginMarkerPath is where a successful `tart login <registry>` is recorded: "<user>
+// <registry>\n", under opts.ConfigDir(). It deliberately never records the token itself — only
+// enough to tell whether a *different* --registry-user needs a fresh login.
+func registryLoginMarkerPath(opts Options, registry string) string {
+	return filepath.Join(opts.ConfigDir(), "registry-login."+registry)
+}
+
+// registryLoginStep returns the idempotent "tart login <registry>" step, or nil if
+// opts.RegistryToken wasn't given. grove's own worker images (ghcr.io/gm2211/grove-{linux,macos}-
+// worker) are private by default — GHCR has no API to flip that, only the "Package settings ->
+// Change visibility" UI (see docs/IMAGES.md) — so a worker needs either that flip or credentials
+// cached by `tart login` before it can pull them.
+//
+// The token is fed to `tart login --password-stdin` over stdin via Runner.RunWithStdin — never as
+// a command argument, so it can't leak into a Call's rendered command line, a process listing, or
+// this step's own Description/logging. When no token is given, grove doesn't touch registry auth
+// at all: it just prints a NOTE that the images must be public instead, and buildWorkerSteps omits
+// the step entirely (there being nothing for its Check/Apply to do).
+func registryLoginStep(r Runner, opts Options, out io.Writer) *Step {
+	registry := opts.registry()
+	if opts.RegistryToken == "" {
+		fmt.Fprintf(out, "        NOTE: no --registry-token (or GROVE_REGISTRY_TOKEN) given; %s "+
+			"images must be public or workers will fail to pull them — make the packages public "+
+			"(GitHub -> Packages -> grove-*-worker -> Package settings -> Change visibility) or "+
+			"re-run `grove install --role worker --registry-token …`.\n", registry)
+		return nil
+	}
+
+	markerPath := registryLoginMarkerPath(opts, registry)
+	marker := opts.RegistryUser + " " + registry + "\n"
+
+	return &Step{
+		Name: "registry-login:" + registry,
+		Description: fmt.Sprintf(
+			"tart login %s --username %s --password-stdin  (token from --registry-token / GROVE_REGISTRY_TOKEN)",
+			registry, opts.RegistryUser,
+		),
+		Check: func(ctx context.Context) (bool, error) {
+			got, err := os.ReadFile(markerPath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return false, nil
+				}
+				return false, err
+			}
+			return string(got) == marker, nil
+		},
+		Apply: func(ctx context.Context) error {
+			if opts.RegistryUser == "" {
+				return fmt.Errorf("registry-login: --registry-user is required when --registry-token is set")
+			}
+			if _, _, err := r.RunWithStdin(ctx, opts.RegistryToken, "tart", "login", registry,
+				"--username", opts.RegistryUser, "--password-stdin"); err != nil {
+				return fmt.Errorf("tart login %s: %w", registry, err)
+			}
+			if err := os.MkdirAll(opts.ConfigDir(), 0o755); err != nil {
+				return err
+			}
+			return os.WriteFile(markerPath, []byte(marker), 0o644)
+		},
+	}
 }
 
 // workerLaunchAgentPlist renders the LaunchAgent that supervises `orchard worker run`.

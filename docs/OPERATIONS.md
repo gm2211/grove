@@ -40,6 +40,35 @@ POST /api/v1/workers/{name}/resume
 Existing VMs on that worker keep running (and draining/recycling normally) until you resume it or
 manually delete them.
 
+## Rotating the registry token
+
+If a worker authenticates to `ghcr.io` via `--registry-token` (rather than the packages being made
+public — see docs/IMAGES.md "Packages are private by default"), rotate that token like any other
+credential:
+
+1. On GitHub, revoke the old PAT (**Settings -> Developer settings -> Personal access tokens**) and
+   mint a new one with the same minimum `read:packages` scope.
+2. Re-run, on each affected worker:
+
+   ```bash
+   GROVE_REGISTRY_TOKEN=<new PAT> grove install --role worker --registry-user <github-username> \
+     --controller https://<control-plane-host>:6120 --token <bootstrap-token>
+   ```
+
+   (The `--controller`/`--token` flags are only needed if you're not re-supplying the whole
+   command from your notes — `grove install` re-running with the *same* role/controller/token is
+   idempotent and only the registry-login step actually does anything new.)
+3. `tart login` overwrites the previous credential in the worker's own keychain; grove's marker
+   file (`~/.config/grove/registry-login.ghcr.io`) only changes if `--registry-user` also changed,
+   so step 2 re-runs `tart login` regardless (it doesn't know the *old* token was revoked, only
+   that it was asked to log in again — the marker doesn't record a token or its age, so a "just
+   rotate periodically" workflow always needs to re-run this command manually, not something
+   `grove doctor` will nudge you about on a schedule).
+4. `grove doctor`'s `registry-login` check confirms the marker is present; it can't (and doesn't
+   try to) verify the *new* token actually works, since verifying would mean pulling a many-GB
+   image (see docs/IMAGES.md "Size expectations") — the first real signal is the next VM the fleet
+   reconciler creates (`grove vm ls`'s STATUS column) or the worker's Orchard log.
+
 ## Log locations
 
 | Component | macOS (launchd) | Linux (systemd --user) |
