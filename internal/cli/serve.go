@@ -70,7 +70,7 @@ func runServe(ctx context.Context, listen string) error {
 		return fmt.Errorf("dispatch service: %w", err)
 	}
 
-	if pools, perr := poolNames(cfg); perr != nil {
+	if pools, perr := poolConfigs(cfg); perr != nil {
 		slog.Warn("serve: could not determine pools for EnsureJobs; skipping job registration", "config", cfgPath, "err", perr)
 	} else if len(pools) > 0 {
 		if err := dispatch.EnsureJobs(ctx, nc, pools); err != nil {
@@ -85,10 +85,10 @@ func runServe(ctx context.Context, listen string) error {
 	return http.ListenAndServe(addr, srv)
 }
 
-// poolNames reads cfg.Fleet (fleet.yaml) and returns the configured pool names, so `grove serve`
-// can register grove-<kind>-<pool> jobs for each of them at startup. Returns (nil, nil) if no
-// fleet spec is configured.
-func poolNames(cfg *config.Config) ([]string, error) {
+// poolConfigs reads cfg.Fleet (fleet.yaml) and returns the configured pools' EnsureJobs config, so
+// `grove serve` can register grove-<kind>-<pool> jobs for each of them at startup. Returns (nil,
+// nil) if no fleet spec is configured.
+func poolConfigs(cfg *config.Config) ([]dispatch.PoolConfig, error) {
 	if cfg.Fleet == "" {
 		return nil, nil
 	}
@@ -100,9 +100,9 @@ func poolNames(cfg *config.Config) ([]string, error) {
 	if err := yaml.Unmarshal(data, &spec); err != nil {
 		return nil, fmt.Errorf("parse fleet spec %s: %w", cfg.Fleet, err)
 	}
-	names := make([]string, 0, len(spec.Pools))
+	pools := make([]dispatch.PoolConfig, 0, len(spec.Pools))
 	for _, p := range spec.Pools {
-		names = append(names, p.Name)
+		pools = append(pools, dispatch.PoolConfig{Name: p.Name, AllowDockerSocket: p.AllowDockerSocket})
 	}
-	return names, nil
+	return pools, nil
 }

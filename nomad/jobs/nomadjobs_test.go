@@ -10,10 +10,11 @@ import (
 // template (see README.md). CPU/Memory are optional — each template falls back to a default when
 // they're zero.
 type renderData struct {
-	Kind   string
-	Pool   string
-	CPU    int
-	Memory int
+	Kind              string
+	Pool              string
+	CPU               int
+	Memory            int
+	AllowDockerSocket bool
 }
 
 func render(t *testing.T, file string, data renderData) string {
@@ -123,5 +124,59 @@ func TestRenderDefaultsCPUAndMemoryWhenZero(t *testing.T) {
 	}
 	if !strings.Contains(out, "memory = 4096") {
 		t.Errorf("expected default memory 4096, got:\n%s", out)
+	}
+}
+
+// dockerRunMarkers maps each kind to the nested-`docker run` invocation form it uses in run.sh
+// ("build" uses plain `docker run --rm`, "agent"/"shell" use `exec docker run --rm` since their
+// run.sh replaces the shell process instead of capturing an exit code).
+var dockerRunMarkers = map[string]string{
+	"build": "docker run --rm",
+	"agent": "exec docker run --rm",
+	"shell": "exec docker run --rm",
+}
+
+// TestRenderDockerSocketOptOut asserts that with AllowDockerSocket left at its zero value (the
+// fleet.yaml default), the rendered HCL for every kind's docker-driver ("linux") task neither
+// mounts the VM's docker socket nor ever attempts a nested `docker run` — see
+// internal/fleet.Pool.AllowDockerSocket and docs/JOBS.md.
+func TestRenderDockerSocketOptOut(t *testing.T) {
+	files := map[string]string{
+		"build": "build.nomad.hcl",
+		"agent": "agent.nomad.hcl",
+		"shell": "shell.nomad.hcl",
+	}
+	for kind, file := range files {
+		t.Run(kind, func(t *testing.T) {
+			out := render(t, file, renderData{Kind: kind, Pool: "linux", AllowDockerSocket: false})
+			if strings.Contains(out, "/var/run/docker.sock") {
+				t.Errorf("rendered %s/linux with AllowDockerSocket=false unexpectedly mounts the docker socket\n---\n%s", kind, out)
+			}
+			if strings.Contains(out, dockerRunMarkers[kind]) {
+				t.Errorf("rendered %s/linux with AllowDockerSocket=false unexpectedly attempts a nested docker run\n---\n%s", kind, out)
+			}
+		})
+	}
+}
+
+// TestRenderDockerSocketOptIn asserts that with AllowDockerSocket true, the rendered HCL restores
+// exactly the previous (pre-opt-in) behavior: the docker socket is mounted and run.sh is able to
+// nest a `docker run` for a per-dispatch NOMAD_META_image override.
+func TestRenderDockerSocketOptIn(t *testing.T) {
+	files := map[string]string{
+		"build": "build.nomad.hcl",
+		"agent": "agent.nomad.hcl",
+		"shell": "shell.nomad.hcl",
+	}
+	for kind, file := range files {
+		t.Run(kind, func(t *testing.T) {
+			out := render(t, file, renderData{Kind: kind, Pool: "linux", AllowDockerSocket: true})
+			if !strings.Contains(out, "/var/run/docker.sock:/var/run/docker.sock") {
+				t.Errorf("rendered %s/linux with AllowDockerSocket=true missing docker socket mount\n---\n%s", kind, out)
+			}
+			if !strings.Contains(out, dockerRunMarkers[kind]) {
+				t.Errorf("rendered %s/linux with AllowDockerSocket=true missing nested docker run invocation\n---\n%s", kind, out)
+			}
+		})
 	}
 }

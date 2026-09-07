@@ -24,6 +24,12 @@ type Pool struct {
 	ShutdownTimeout Duration `yaml:"shutdownTimeout,omitempty" json:"shutdownTimeout,omitempty"`
 	Username        string   `yaml:"username,omitempty" json:"username,omitempty"`
 	Password        string   `yaml:"password,omitempty" json:"password,omitempty"`
+	// AllowDockerSocket opts this pool's build/agent/shell jobs into mounting the VM's docker
+	// socket, which lets a dispatched job request a different container image than the fixed
+	// grove-runner default (nested `docker run` — see docs/JOBS.md). Off by default: the socket
+	// gives any job on the VM root-equivalent host control and breaks job-to-job isolation within
+	// the pool, so this is a deliberate per-pool trade-off, not something grove enables silently.
+	AllowDockerSocket bool `yaml:"allowDockerSocket,omitempty" json:"allowDockerSocket,omitempty"`
 }
 
 // Spec is the whole fleet.yaml.

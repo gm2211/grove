@@ -8,7 +8,7 @@ import (
 
 func TestEnsureJobs_RegistersAllKindsPerPool(t *testing.T) {
 	nc := &fakeNomad{}
-	pools := []string{"linux", "macos"}
+	pools := []PoolConfig{{Name: "linux"}, {Name: "macos"}}
 	if err := EnsureJobs(context.Background(), nc, pools); err != nil {
 		t.Fatalf("EnsureJobs: %v", err)
 	}
@@ -20,7 +20,7 @@ func TestEnsureJobs_RegistersAllKindsPerPool(t *testing.T) {
 
 	for _, kind := range allKinds {
 		for _, pool := range pools {
-			name := `job "grove-` + string(kind) + "-" + pool + `"`
+			name := `job "grove-` + string(kind) + "-" + pool.Name + `"`
 			found := false
 			for _, hcl := range nc.registerCalls {
 				if strings.Contains(hcl, name) {
@@ -37,7 +37,7 @@ func TestEnsureJobs_RegistersAllKindsPerPool(t *testing.T) {
 
 func TestEnsureJobs_PropagatesRegisterError(t *testing.T) {
 	nc := &fakeNomad{registerErr: context.DeadlineExceeded}
-	if err := EnsureJobs(context.Background(), nc, []string{"linux"}); err == nil {
+	if err := EnsureJobs(context.Background(), nc, []PoolConfig{{Name: "linux"}}); err == nil {
 		t.Fatal("expected an error")
 	}
 }

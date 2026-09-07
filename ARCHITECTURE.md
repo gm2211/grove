@@ -105,6 +105,7 @@ pools:
     ttl: 12h
     labels: { pool: linux }
     workerSelector: {}      # only workers whose labels ⊇ this map
+    allowDockerSocket: false # opt-in only; mounts the VM's docker socket into jobs (see docs/JOBS.md)
   - name: macos
     image: ghcr.io/gm2211/grove-macos-worker:latest
     perWorker: 1
