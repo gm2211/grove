@@ -78,6 +78,17 @@ func (c *client) ListNodes(ctx context.Context) ([]Node, error) {
 	return out, nil
 }
 
+func (c *client) GetNode(ctx context.Context, id string) (*Node, error) {
+	n, _, err := c.raw.Nodes().Info(id, qOpts(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("get node %s: %w", id, err)
+	}
+	// runningAllocs isn't needed for placement lookups (the only current caller) — 0 avoids an
+	// extra API call; ListNodes still computes it properly for the /fleet view.
+	node := nodeFromAPI(n, 0)
+	return &node, nil
+}
+
 func runningAllocCount(allocs []*nomadapi.Allocation) int {
 	running := 0
 
@@ -187,18 +198,41 @@ func pickTask(states map[string]*nomadapi.TaskState) (string, *nomadapi.TaskStat
 	return names[0], states[names[0]]
 }
 
-func lastExitCode(ts *nomadapi.TaskState) (int, bool) {
+// terminalTaskDetails extracts an allocation's exit code, terminating signal (if any) and
+// infra-fault failure reason (if any) from its task events. It replaces the separate
+// per-call-site "walk Events backwards for the Terminated one" scan that allocFromStub and
+// allocFromFull used to duplicate.
+func terminalTaskDetails(ts *nomadapi.TaskState) (exitCode, signal *int, failureReason string) {
 	if ts == nil {
-		return 0, false
+		return nil, nil, ""
 	}
-
 	for i := len(ts.Events) - 1; i >= 0; i-- {
-		if ts.Events[i].Type == "Terminated" {
-			return ts.Events[i].ExitCode, true
+		ev := ts.Events[i]
+		if ev.Type != "Terminated" {
+			continue
+		}
+		code := ev.ExitCode
+		exitCode = &code
+		if ev.Signal != 0 {
+			sig := ev.Signal
+			signal = &sig
+		}
+		break
+	}
+	// Infra faults can show up on any event, not just the terminal one (e.g. a DriverError fires
+	// before the task ever starts, so there's no "Terminated" event at all).
+	for _, ev := range ts.Events {
+		if ev.DriverError != "" {
+			return exitCode, signal, ev.DriverError
+		}
+		if ev.SetupError != "" {
+			return exitCode, signal, ev.SetupError
+		}
+		if ev.DownloadError != "" {
+			return exitCode, signal, ev.DownloadError
 		}
 	}
-
-	return 0, false
+	return exitCode, signal, ""
 }
 
 func finishedAt(ts *nomadapi.TaskState) *time.Time {
@@ -213,43 +247,39 @@ func finishedAt(ts *nomadapi.TaskState) *time.Time {
 
 func allocFromStub(a *nomadapi.AllocationListStub) Allocation {
 	taskName, ts := pickTask(a.TaskStates)
-
-	var exitCode *int
-	if code, ok := lastExitCode(ts); ok {
-		exitCode = &code
-	}
+	exitCode, signal, failureReason := terminalTaskDetails(ts)
 
 	return Allocation{
-		ID:           a.ID,
-		JobID:        a.JobID,
-		NodeID:       a.NodeID,
-		NodeName:     a.NodeName,
-		ClientStatus: a.ClientStatus,
-		TaskName:     taskName,
-		ExitCode:     exitCode,
-		CreatedAt:    time.Unix(0, a.CreateTime),
-		FinishedAt:   finishedAt(ts),
+		ID:            a.ID,
+		JobID:         a.JobID,
+		NodeID:        a.NodeID,
+		NodeName:      a.NodeName,
+		ClientStatus:  a.ClientStatus,
+		TaskName:      taskName,
+		ExitCode:      exitCode,
+		CreatedAt:     time.Unix(0, a.CreateTime),
+		FinishedAt:    finishedAt(ts),
+		Signal:        signal,
+		FailureReason: failureReason,
 	}
 }
 
 func allocFromFull(a *nomadapi.Allocation) Allocation {
 	taskName, ts := pickTask(a.TaskStates)
-
-	var exitCode *int
-	if code, ok := lastExitCode(ts); ok {
-		exitCode = &code
-	}
+	exitCode, signal, failureReason := terminalTaskDetails(ts)
 
 	return Allocation{
-		ID:           a.ID,
-		JobID:        a.JobID,
-		NodeID:       a.NodeID,
-		NodeName:     a.NodeName,
-		ClientStatus: a.ClientStatus,
-		TaskName:     taskName,
-		ExitCode:     exitCode,
-		CreatedAt:    time.Unix(0, a.CreateTime),
-		FinishedAt:   finishedAt(ts),
+		ID:            a.ID,
+		JobID:         a.JobID,
+		NodeID:        a.NodeID,
+		NodeName:      a.NodeName,
+		ClientStatus:  a.ClientStatus,
+		TaskName:      taskName,
+		ExitCode:      exitCode,
+		CreatedAt:     time.Unix(0, a.CreateTime),
+		FinishedAt:    finishedAt(ts),
+		Signal:        signal,
+		FailureReason: failureReason,
 	}
 }
 

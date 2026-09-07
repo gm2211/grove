@@ -246,6 +246,133 @@ func TestGet_FailedExitCodeMapsToFailed(t *testing.T) {
 	}
 }
 
+func TestGet_ExitCode124MapsToTimedOut(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestService(t, nc)
+
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "sleep 999"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	dispatchedJobID := nc.dispatchCalls[0].jobName + "/dispatch-1"
+	exit := 124
+	nc.allocationsByJob = map[string][]nomad.Allocation{
+		dispatchedJobID: {{ID: "alloc-1", ClientStatus: "complete", ExitCode: &exit, CreatedAt: time.Now()}},
+	}
+
+	got, err := svc.Get(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.TimedOut {
+		t.Errorf("TimedOut = false, want true for exit code 124")
+	}
+}
+
+func TestGet_SignalPopulatesHumanName(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestService(t, nc)
+
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	dispatchedJobID := nc.dispatchCalls[0].jobName + "/dispatch-1"
+	exit := 137
+	sig := 9
+	nc.allocationsByJob = map[string][]nomad.Allocation{
+		dispatchedJobID: {{ID: "alloc-1", ClientStatus: "complete", ExitCode: &exit, Signal: &sig, CreatedAt: time.Now()}},
+	}
+
+	got, err := svc.Get(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Signal == nil || *got.Signal != "SIGKILL" {
+		t.Errorf("Signal = %v, want SIGKILL", got.Signal)
+	}
+}
+
+func TestGet_LostAllocationSetsFailureReason(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestService(t, nc)
+
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	dispatchedJobID := nc.dispatchCalls[0].jobName + "/dispatch-1"
+	nc.allocationsByJob = map[string][]nomad.Allocation{
+		dispatchedJobID: {{ID: "alloc-1", ClientStatus: "lost", CreatedAt: time.Now()}},
+	}
+
+	got, err := svc.Get(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusLost {
+		t.Fatalf("status = %v, want lost", got.Status)
+	}
+	if got.FailureReason == nil || *got.FailureReason == "" {
+		t.Errorf("FailureReason = %v, want non-empty for a lost allocation", got.FailureReason)
+	}
+}
+
+func TestGet_InfraFaultSetsFailureReasonFromNomadEvent(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestService(t, nc)
+
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	dispatchedJobID := nc.dispatchCalls[0].jobName + "/dispatch-1"
+	nc.allocationsByJob = map[string][]nomad.Allocation{
+		dispatchedJobID: {{ID: "alloc-1", ClientStatus: "failed", FailureReason: "failed to pull image", CreatedAt: time.Now()}},
+	}
+
+	got, err := svc.Get(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.FailureReason == nil || *got.FailureReason != "failed to pull image" {
+		t.Errorf("FailureReason = %v, want %q", got.FailureReason, "failed to pull image")
+	}
+}
+
+func TestGet_PopulatesPlacementFromNode(t *testing.T) {
+	nc := &fakeNomad{
+		nodesByID: map[string]nomad.Node{
+			"node-1": {ID: "node-1", Name: "linux-mac1-0", Meta: map[string]string{"vm": "linux-mac1-0", "host": "mac1"}},
+		},
+	}
+	svc := newTestService(t, nc)
+
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	dispatchedJobID := nc.dispatchCalls[0].jobName + "/dispatch-1"
+	exit := 0
+	nc.allocationsByJob = map[string][]nomad.Allocation{
+		dispatchedJobID: {{ID: "alloc-1", NodeID: "node-1", ClientStatus: "complete", ExitCode: &exit, CreatedAt: time.Now()}},
+	}
+
+	got, err := svc.Get(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Placement == nil {
+		t.Fatal("Placement = nil, want populated")
+	}
+	if got.Placement.AllocID != "alloc-1" || got.Placement.NodeID != "node-1" {
+		t.Errorf("Placement = %+v, want AllocID=alloc-1 NodeID=node-1", got.Placement)
+	}
+	if got.Placement.VMID != "linux-mac1-0" || got.Placement.WorkerID != "mac1" {
+		t.Errorf("Placement = %+v, want VMID=linux-mac1-0 WorkerID=mac1", got.Placement)
+	}
+}
+
 func TestList_ReturnsAllJobs(t *testing.T) {
 	nc := &fakeNomad{}
 	svc := newTestService(t, nc)

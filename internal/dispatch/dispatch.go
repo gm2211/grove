@@ -67,6 +67,27 @@ type Job struct {
 	FinishedAt  *time.Time        `json:"finishedAt,omitempty"`
 	Artifacts   []Artifact        `json:"artifacts,omitempty"`
 	Meta        map[string]string `json:"meta,omitempty"`
+	// TimedOut is true when the job's script was killed by run.sh's own `timeout` wrapper (exit code
+	// 124 is the POSIX `timeout(1)` convention for "killed for exceeding the deadline" — see
+	// nomad/jobs/*.nomad.hcl's run.sh).
+	TimedOut bool `json:"timedOut,omitempty"`
+	// Signal is a human name ("SIGTERM", "SIGKILL", …) for the Unix signal (if any) that ended the
+	// task, nil otherwise.
+	Signal *string `json:"signal,omitempty"`
+	// FailureReason is set for lost/infra faults (Nomad DriverError/SetupError/DownloadError, or a
+	// generic "node lost" message for a StatusLost job) so callers can classify it as transient/retryable
+	// rather than a genuine script failure.
+	FailureReason *string    `json:"failureReason,omitempty"`
+	Placement     *Placement `json:"placement,omitempty"`
+}
+
+// Placement is where a job's allocation landed, resolved via the Nomad node's meta (see
+// internal/fleet/scripts.go's nomadMetaScript, which writes meta.pool/meta.host/meta.vm).
+type Placement struct {
+	AllocID  string `json:"allocId,omitempty"`
+	NodeID   string `json:"nodeId,omitempty"`
+	VMID     string `json:"vmId,omitempty"`
+	WorkerID string `json:"workerId,omitempty"`
 }
 
 // Artifact is a file a job produced, stored in the artifact bucket.

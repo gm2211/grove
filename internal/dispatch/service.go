@@ -268,6 +268,26 @@ func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {
 		if alloc.FinishedAt != nil {
 			updated.FinishedAt = alloc.FinishedAt
 		}
+
+		if alloc.ExitCode != nil && *alloc.ExitCode == 124 {
+			updated.TimedOut = true
+		}
+		if alloc.Signal != nil {
+			name := signalName(*alloc.Signal)
+			updated.Signal = &name
+		}
+		if alloc.FailureReason != "" {
+			fr := alloc.FailureReason
+			updated.FailureReason = &fr
+		} else if updated.Status == StatusLost {
+			fr := "allocation lost — worker or node became unreachable"
+			updated.FailureReason = &fr
+		}
+		updated.Placement = &Placement{AllocID: alloc.ID, NodeID: alloc.NodeID}
+		if node, nerr := s.nomad.GetNode(ctx, alloc.NodeID); nerr == nil && node != nil {
+			updated.Placement.VMID = node.Meta["vm"]
+			updated.Placement.WorkerID = node.Meta["host"]
+		} // a GetNode error here is non-fatal — placement partially populated (AllocID/NodeID still set) beats failing the whole Get/List call over a node lookup blip.
 	}
 
 	rec.Job = updated
@@ -300,6 +320,27 @@ func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {
 
 	job := updated
 	return &job, nil
+}
+
+// signalName maps common Unix signal numbers to their conventional names; anything else falls
+// back to a numeric label rather than guessing.
+func signalName(n int) string {
+	switch n {
+	case 1:
+		return "SIGHUP"
+	case 2:
+		return "SIGINT"
+	case 3:
+		return "SIGQUIT"
+	case 6:
+		return "SIGABRT"
+	case 9:
+		return "SIGKILL"
+	case 15:
+		return "SIGTERM"
+	default:
+		return fmt.Sprintf("signal %d", n)
+	}
 }
 
 // escapeArtifactPath url-escapes each "/"-separated segment of an artifact path individually and

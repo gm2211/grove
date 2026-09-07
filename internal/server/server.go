@@ -24,6 +24,8 @@ type Options struct {
 	// RecyclePollInterval controls how often POST /vms/{name}/recycle polls Nomad while waiting
 	// for the drained node's allocations to reach zero. Defaults to 5s; tests shrink this.
 	RecyclePollInterval time.Duration
+	// Version is a caller-supplied build version string reported by GET /healthz. Empty is fine.
+	Version string
 }
 
 // Server implements http.Handler for grove's HTTP API + embedded UI.

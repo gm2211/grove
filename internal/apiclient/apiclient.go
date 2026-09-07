@@ -171,9 +171,12 @@ func (c *Client) JobLogs(ctx context.Context, id string, follow bool) (io.ReadCl
 	return resp.Body, nil
 }
 
-// Healthz reports control-plane health ({"orchard": "ok"/"error: …", "nomad": "ok"/"error: …"}).
-func (c *Client) Healthz(ctx context.Context) (map[string]string, error) {
-	var out map[string]string
-	err := c.doJSON(ctx, http.MethodGet, "/healthz", nil, &out)
-	return out, err
+// Healthz reports control-plane health: {ok, version, orchard, nomad, serverTime}, orchard/nomad
+// each "up" or "down".
+func (c *Client) Healthz(ctx context.Context) (*server.HealthzResponse, error) {
+	var out server.HealthzResponse
+	if err := c.doJSON(ctx, http.MethodGet, "/healthz", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }

@@ -136,14 +136,15 @@ All under `/api/v1`, `Authorization: Bearer <token>`, bind to the tailnet addres
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/fleet` | `{workers[], vms[], nodes[]}` normalised: name, host, arch, online, cordoned, capacity, running |
+| GET | `/fleet` | `{workers[], vms[], nodes[], fetchedAt, totals}` normalised: name, host, arch, online, cordoned, capacity, running; `totals` is at-a-glance counts (workersOnline/Cordoned, vmsRunning, nodesReady/Draining, jobsRunning/Pending) |
 | POST | `/vms/{name}/recycle` | drain (via Nomad) then delete; reconciler recreates |
 | POST | `/workers/{name}/pause` · `/resume` | Orchard cordon |
 | GET | `/jobs` · `/jobs/{id}` | list / status |
-| POST | `/jobs` | JobRequest → `{id}` |
-| GET | `/jobs/{id}/logs?follow=1` | SSE / chunked log stream |
-| DELETE | `/jobs/{id}` | cancel |
-| GET | `/healthz` | control-plane health incl. Orchard + Nomad reachability |
+| POST | `/jobs` | JobRequest → `{id}`; JobRequest.idempotencyKey replays the existing job (no re-dispatch) instead of creating a new one |
+| GET | `/jobs/{id}/logs?follow=1` | SSE / chunked log stream; `Accept: application/x-ndjson` + `&sinceOffset=N` streams `{offset,ts,stream,line}` objects, resumable by offset |
+| GET | `/jobs/{id}/artifacts/{path}` | streams one uploaded artifact from the bucket via the server's own credentials |
+| DELETE | `/jobs/{id}` · POST `/jobs/{id}/cancel` | cancel (same operation, two spellings) |
+| GET | `/healthz` | `{ok, version, orchard, nomad, serverTime}`; orchard/nomad are "up" or "down" |
 
 The same operations are exposed as MCP tools (`grove mcp`) so Claude Code / Codex can use the fleet
 directly, and consumed by Argos's `grove` executor.

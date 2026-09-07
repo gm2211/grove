@@ -32,6 +32,9 @@ type fakeNomad struct {
 
 	pingErr error
 	nodes   []nomad.Node
+
+	nodesByID  map[string]nomad.Node
+	getNodeErr error
 }
 
 type dispatchCall struct {
@@ -47,6 +50,17 @@ type stopCall struct {
 
 func (f *fakeNomad) ListNodes(ctx context.Context) ([]nomad.Node, error) {
 	return f.nodes, nil
+}
+
+func (f *fakeNomad) GetNode(ctx context.Context, id string) (*nomad.Node, error) {
+	if f.getNodeErr != nil {
+		return nil, f.getNodeErr
+	}
+	if n, ok := f.nodesByID[id]; ok {
+		cp := n
+		return &cp, nil
+	}
+	return nil, fmt.Errorf("fakeNomad: node %s not found", id)
 }
 
 func (f *fakeNomad) DrainNode(ctx context.Context, nodeID string, enable bool, deadline time.Duration) error {

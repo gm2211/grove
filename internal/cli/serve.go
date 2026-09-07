@@ -80,7 +80,7 @@ func runServe(ctx context.Context, listen string) error {
 		slog.Warn("serve: no pools found in fleet spec; no parameterized jobs registered", "fleet", cfg.Fleet)
 	}
 
-	srv := server.New(oc, nc, ds, ac, server.Options{Token: cfg.Server.Token})
+	srv := server.New(oc, nc, ds, ac, server.Options{Token: cfg.Server.Token, Version: Version})
 	slog.Info("grove serve: listening", "addr", addr)
 	return http.ListenAndServe(addr, srv)
 }
