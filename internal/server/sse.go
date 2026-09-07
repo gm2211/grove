@@ -51,6 +51,13 @@ func streamChunked(w http.ResponseWriter, r io.Reader) error {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	fl, _ := w.(http.Flusher)
+	// Flush right away so the client sees response headers immediately, even if r's first Read
+	// blocks for a while (e.g. a follow=true stream on a job that hasn't produced output yet) —
+	// without this, net/http buffers the header until the first Write/Flush, so a slow-to-produce
+	// stream looks like a hung connection with no response at all.
+	if fl != nil {
+		fl.Flush()
+	}
 
 	buf := make([]byte, 32*1024)
 	for {

@@ -45,6 +45,17 @@ const defaultPendingTimeout = 30 * time.Minute
 // DefaultReconcileInterval is the tick interval `grove serve` passes to RunReconciler.
 const DefaultReconcileInterval = 30 * time.Second
 
+// defaultLogTerminalPollInterval is how often a follow=true Logs/LogLines stream re-checks
+// whether the job it's following has gone terminal while already streaming, absent an
+// Options.LogTerminalPollInterval override. See watchForTerminal.
+const defaultLogTerminalPollInterval = 1 * time.Second
+
+// defaultLogStreamGracePeriod is how long a follow=true Logs/LogLines stream stays open after
+// observing its job go terminal, absent an Options.LogStreamGracePeriod override — long enough for
+// Nomad to deliver whatever log frames it already had buffered before the stream is severed. See
+// watchForTerminal.
+const defaultLogStreamGracePeriod = 2 * time.Second
+
 // Options configures a dispatch Service.
 type Options struct {
 	// ArtifactsBase optionally names the artifact bucket/base clients should assume artifact
@@ -76,6 +87,12 @@ type Options struct {
 	// Nomad allocation before reconcile marks it StatusLost (fleet full, or an unmatchable
 	// placement constraint — Nomad will otherwise leave it queued forever).
 	PendingTimeout time.Duration
+	// LogTerminalPollInterval overrides defaultLogTerminalPollInterval — mainly for tests. See
+	// watchForTerminal.
+	LogTerminalPollInterval time.Duration
+	// LogStreamGracePeriod overrides defaultLogStreamGracePeriod — mainly for tests. See
+	// watchForTerminal.
+	LogStreamGracePeriod time.Duration
 }
 
 type cachedStatus struct {
@@ -115,6 +132,12 @@ func New(nc nomad.Client, opts Options) (Service, error) {
 	}
 	if opts.PendingTimeout <= 0 {
 		opts.PendingTimeout = defaultPendingTimeout
+	}
+	if opts.LogTerminalPollInterval <= 0 {
+		opts.LogTerminalPollInterval = defaultLogTerminalPollInterval
+	}
+	if opts.LogStreamGracePeriod <= 0 {
+		opts.LogStreamGracePeriod = defaultLogStreamGracePeriod
 	}
 	pools := make(map[string]PoolConfig, len(opts.Pools))
 	for _, p := range opts.Pools {
@@ -653,39 +676,132 @@ func (s *service) resolveAllocID(ctx context.Context, rec *record) (string, erro
 	return job.AllocID, nil
 }
 
+// streamContext decides how a Logs/LogLines call should ask Nomad for logs: nomadFollow is what's
+// actually passed to nomad.Client.Logs, streamCtx is the context those calls (and any scan
+// goroutines reading from them) should use, and cancel (non-nil only when a watcher was started)
+// must be invoked once the caller is done reading, to stop that watcher goroutine.
+//
+// follow=false is untouched (nomadFollow=follow=false, streamCtx=ctx, cancel=nil) — a one-shot
+// request never needs any of this. For follow=true it branches on whether id is *already*
+// terminal:
+//
+//   - Already terminal: there's nothing left to "follow" — Nomad's AllocFS Logs API keeps a
+//     follow=true stream open past task completion, waiting for frames that will never arrive
+//     (this is the root cause of `curl .../logs?follow=1` hanging forever on an already-finished
+//     job). So nomadFollow is downgraded to false: Nomad hands back the captured log and closes
+//     the stream itself, the same as a plain `grove logs <id>` would get.
+//   - Not yet terminal: nomadFollow stays true and watchForTerminal is started on a child context,
+//     so that if/when the job goes terminal *while* the stream is open, the stream is severed
+//     shortly after (rather than staying open for the caller's full context budget — up to the
+//     HTTP handler's 10-minute `?wait=` default).
+func (s *service) streamContext(ctx context.Context, id string, follow bool) (streamCtx context.Context, nomadFollow bool, cancel context.CancelFunc) {
+	if !follow {
+		return ctx, false, nil
+	}
+	if job, err := s.Get(ctx, id); err == nil && isTerminal(job.Status) {
+		return ctx, false, nil
+	}
+	streamCtx, cancel = context.WithCancel(ctx)
+	s.watchForTerminal(streamCtx, cancel, id)
+	return streamCtx, true, cancel
+}
+
+// watchForTerminal polls id's job status (every Options.LogTerminalPollInterval) for as long as
+// streamCtx is alive and, once the job is observed terminal, waits Options.LogStreamGracePeriod
+// (giving Nomad a moment to deliver any log frames it already had buffered) and then calls cancel
+// — which severs the underlying nomad.Client.Logs stream (see internal/nomad/client.go's Logs:
+// it selects on ctx.Done() and closes its pipe with ctx.Err(), which mergedLogReader/LogLines's
+// scan loop both treat as "this source is done" rather than a real error, so the caller sees a
+// clean end of stream, not a failure).
+func (s *service) watchForTerminal(streamCtx context.Context, cancel context.CancelFunc, id string) {
+	go func() {
+		ticker := time.NewTicker(s.opts.LogTerminalPollInterval)
+		defer ticker.Stop()
+		for {
+			job, err := s.Get(streamCtx, id)
+			if err == nil && isTerminal(job.Status) {
+				select {
+				case <-time.After(s.opts.LogStreamGracePeriod):
+				case <-streamCtx.Done():
+				}
+				cancel()
+				return
+			}
+			select {
+			case <-streamCtx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+}
+
+// cancelOnCloseReader wraps a ReadCloser so that Close also invokes cancel, stopping a
+// watchForTerminal goroutine as soon as the caller is done with the stream instead of leaking it
+// until the outer ctx's own deadline.
+type cancelOnCloseReader struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnCloseReader) Close() error {
+	c.cancel()
+	return c.ReadCloser.Close()
+}
+
 func (s *service) Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error) {
 	allocID, err := s.allocIDFor(ctx, id, follow)
 	if err != nil {
 		return nil, err
 	}
+	streamCtx, nomadFollow, cancel := s.streamContext(ctx, id, follow)
 
-	stdout, err := s.nomad.Logs(ctx, allocID, "main", "stdout", follow)
+	stdout, err := s.nomad.Logs(streamCtx, allocID, "main", "stdout", nomadFollow)
 	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
 		return nil, fmt.Errorf("dispatch: stdout logs: %w", err)
 	}
-	stderr, err := s.nomad.Logs(ctx, allocID, "main", "stderr", follow)
+	stderr, err := s.nomad.Logs(streamCtx, allocID, "main", "stderr", nomadFollow)
 	if err != nil {
 		stdout.Close()
+		if cancel != nil {
+			cancel()
+		}
 		return nil, fmt.Errorf("dispatch: stderr logs: %w", err)
 	}
-	return newMergedLogReader(stdout, stderr), nil
+	rc := io.ReadCloser(newMergedLogReader(stdout, stderr))
+	if cancel != nil {
+		rc = &cancelOnCloseReader{ReadCloser: rc, cancel: cancel}
+	}
+	return rc, nil
 }
 
 // LogLines streams stdout/stderr as discrete, stream-tagged lines. See the Service interface doc
-// for the ordering caveat (best-effort across streams, same as Logs).
+// for the ordering caveat (best-effort across streams, same as Logs), and streamContext/
+// watchForTerminal for how a follow=true stream is kept from hanging past its job's terminal
+// status.
 func (s *service) LogLines(ctx context.Context, id string, follow bool) (<-chan LogLine, error) {
 	allocID, err := s.allocIDFor(ctx, id, follow)
 	if err != nil {
 		return nil, err
 	}
+	streamCtx, nomadFollow, cancel := s.streamContext(ctx, id, follow)
 
-	stdout, err := s.nomad.Logs(ctx, allocID, "main", "stdout", follow)
+	stdout, err := s.nomad.Logs(streamCtx, allocID, "main", "stdout", nomadFollow)
 	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
 		return nil, fmt.Errorf("dispatch: stdout logs: %w", err)
 	}
-	stderr, err := s.nomad.Logs(ctx, allocID, "main", "stderr", follow)
+	stderr, err := s.nomad.Logs(streamCtx, allocID, "main", "stderr", nomadFollow)
 	if err != nil {
 		stdout.Close()
+		if cancel != nil {
+			cancel()
+		}
 		return nil, fmt.Errorf("dispatch: stderr logs: %w", err)
 	}
 
@@ -700,14 +816,20 @@ func (s *service) LogLines(ctx context.Context, id string, follow bool) (<-chan 
 		for sc.Scan() {
 			select {
 			case out <- LogLine{Stream: stream, Line: sc.Text(), Time: time.Now().UTC()}:
-			case <-ctx.Done():
+			case <-streamCtx.Done():
 				return
 			}
 		}
 	}
 	go scan(stdout, "stdout")
 	go scan(stderr, "stderr")
-	go func() { wg.Wait(); close(out) }()
+	go func() {
+		wg.Wait()
+		close(out)
+		if cancel != nil {
+			cancel()
+		}
+	}()
 	return out, nil
 }
 

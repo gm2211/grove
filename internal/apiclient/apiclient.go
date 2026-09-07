@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -206,6 +207,58 @@ func (c *Client) JobLogs(ctx context.Context, id string, follow bool) (io.ReadCl
 		}
 		return resp.Body, nil
 	}
+}
+
+// LogLine mirrors one NDJSON record from GET /jobs/{id}/logs (Accept: application/x-ndjson) — see
+// internal/server/handlers_jobs.go's handleJobLogsNDJSON. Offset is a running byte counter into the
+// logical (server-replayed) log stream, used to resume a dropped connection via sinceOffset without
+// re-printing already-seen lines.
+type LogLine struct {
+	Offset int64  `json:"offset"`
+	Ts     string `json:"ts"`
+	Stream string `json:"stream"`
+	Line   string `json:"line"`
+}
+
+// JobLogsNDJSON opens a streaming NDJSON connection for a job's logs. follow keeps the connection
+// open (bounded server-side by its own allocation-wait deadline, and now — see
+// internal/dispatch/service.go's watchForTerminal — cut short shortly after the job goes terminal
+// rather than staying open indefinitely). sinceOffset resumes after a previous disconnect,
+// skipping bytes already delivered (0 replays from the start). jobStatus reports the
+// X-Grove-Job-Status response header (e.g. "pending" for a not-yet-allocated job, or the job's
+// current status once it has one; empty if the server didn't set it).
+//
+// This is what the CLI's --follow flag uses (see internal/cli/logs.go) instead of the older
+// plain-text JobLogs: NDJSON gives per-line stream tagging (so stderr lines can be printed to
+// stderr) and a resumable offset, matching what the UI already does in ui/src/api/client.ts.
+func (c *Client) JobLogsNDJSON(ctx context.Context, id string, follow bool, sinceOffset int64) (body io.ReadCloser, jobStatus string, err error) {
+	path := "/jobs/" + url.PathEscape(id) + "/logs"
+	q := url.Values{}
+	if follow {
+		q.Set("follow", "1")
+	}
+	if sinceOffset > 0 {
+		q.Set("sinceOffset", strconv.FormatInt(sinceOffset, 10))
+	}
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+
+	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("Accept", "application/x-ndjson")
+	resp, err := c.streamHTTP.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	if resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		return nil, "", fmt.Errorf("grove api: GET %s: %s: %s", path, resp.Status, strings.TrimSpace(string(data)))
+	}
+	return resp.Body, resp.Header.Get("X-Grove-Job-Status"), nil
 }
 
 // Healthz reports control-plane health: {ok, version, orchard, nomad, serverTime}, orchard/nomad
