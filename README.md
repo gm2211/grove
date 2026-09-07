@@ -133,7 +133,7 @@ Full design, fleet spec, job model, and HTTP API reference: [ARCHITECTURE.md](AR
 ## Not yet
 
 - only live-tested on a single-host smoke stack, not a multi-Mac fleet
-- Tart VM images aren't published to `ghcr.io` yet — you build your own from `images/`
+- Tart worker images are published to `ghcr.io/gm2211/grove-linux-worker` and `ghcr.io/gm2211/grove-macos-worker` (tags `latest` + date), but have only been exercised on a single-host smoke stack so far — the first multi-Mac fleet run is still ahead
   (see [docs/IMAGES.md](docs/IMAGES.md))
 - per-dispatch CPU/memory sizing (`JobRequest.Resources`) is validated but not yet applied to the
   running job — see [docs/JOBS.md](docs/JOBS.md) "Per-job resource sizing"
