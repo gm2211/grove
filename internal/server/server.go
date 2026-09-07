@@ -1,0 +1,100 @@
+// Package server is grove's HTTP API (/api/v1/…) plus the embedded web UI (mounted at "/").
+// See ARCHITECTURE.md → "grove HTTP API (v1)".
+package server
+
+import (
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/gm2211/grove/internal/dispatch"
+	"github.com/gm2211/grove/internal/nomad"
+	"github.com/gm2211/grove/internal/orchard"
+)
+
+// Options configures the grove HTTP server.
+type Options struct {
+	// Token is the Bearer token clients must present under /api/v1. Empty disables auth
+	// (a loud warning is logged at startup) — useful for local dev, never for a real deployment.
+	Token string
+	// Logger receives structured request/lifecycle logs. Defaults to slog.Default().
+	Logger *slog.Logger
+	// RecyclePollInterval controls how often POST /vms/{name}/recycle polls Nomad while waiting
+	// for the drained node's allocations to reach zero. Defaults to 5s; tests shrink this.
+	RecyclePollInterval time.Duration
+}
+
+// Server implements http.Handler for grove's HTTP API + embedded UI.
+type Server struct {
+	orchard  orchard.Client
+	nomad    nomad.Client
+	dispatch dispatch.Service
+	opts     Options
+	log      *slog.Logger
+	handler  http.Handler
+
+	// recycleDone, if non-nil, receives the vm name every time a background recycle finishes
+	// deleting a VM. Only set by tests, to synchronize on the async recycle flow.
+	recycleDone chan string
+}
+
+// New builds a Server wired to the given Orchard/Nomad clients and dispatch service.
+func New(oc orchard.Client, nc nomad.Client, ds dispatch.Service, opts Options) *Server {
+	log := opts.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	if opts.Token == "" {
+		log.Warn("grove server: no auth token configured — /api/v1 is UNAUTHENTICATED; set server.token in config.yaml")
+	}
+	if opts.RecyclePollInterval <= 0 {
+		opts.RecyclePollInterval = 5 * time.Second
+	}
+	s := &Server{
+		orchard:  oc,
+		nomad:    nc,
+		dispatch: ds,
+		opts:     opts,
+		log:      log,
+	}
+	s.handler = s.routes()
+	return s
+}
+
+// ServeHTTP implements http.Handler.
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.handler.ServeHTTP(w, r)
+}
+
+func (s *Server) routes() http.Handler {
+	api := http.NewServeMux()
+	api.HandleFunc("GET /fleet", s.handleFleet)
+	api.HandleFunc("POST /vms/{name}/recycle", s.handleRecycleVM)
+	api.HandleFunc("POST /workers/{name}/pause", s.handleWorkerPause)
+	api.HandleFunc("POST /workers/{name}/resume", s.handleWorkerResume)
+	api.HandleFunc("GET /jobs", s.handleListJobs)
+	api.HandleFunc("POST /jobs", s.handleSubmitJob)
+	api.HandleFunc("GET /jobs/{id}", s.handleGetJob)
+	api.HandleFunc("DELETE /jobs/{id}", s.handleCancelJob)
+	api.HandleFunc("GET /jobs/{id}/logs", s.handleJobLogs)
+	api.HandleFunc("GET /healthz", s.handleHealthz)
+
+	root := http.NewServeMux()
+	root.Handle("/api/v1/", http.StripPrefix("/api/v1", s.withMiddleware(api)))
+	root.Handle("/", UIHandler())
+	return root
+}
+
+func (s *Server) writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		s.log.Error("write json response failed", "err", err)
+	}
+}
+
+func (s *Server) writeError(w http.ResponseWriter, status int, err error) {
+	s.log.Error("request failed", "status", status, "err", err)
+	http.Error(w, err.Error(), status)
+}
