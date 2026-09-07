@@ -40,6 +40,20 @@ type JobRequest struct {
 	// IdempotencyKey, if set, makes a repeat Submit with the same key return the existing Job
 	// instead of dispatching again. Argos convention: "argos:<taskId>:<runId>".
 	IdempotencyKey string `json:"idempotencyKey,omitempty"`
+	// Resources optionally hints at this job's desired sizing. Nomad cannot resize a parameterized
+	// job's `resources` block per dispatch (there is no dispatch-time equivalent of job update), so
+	// this is *not* applied to the running job yet — it is only validated against the target pool's
+	// configured job defaults (fleet.yaml pool.jobCPU/jobMemory, see PoolConfig) and Submit rejects
+	// a request that exceeds them with a 400. See docs/JOBS.md "Per-job resource sizing" for the
+	// full limitation and the plan for real per-dispatch sizing.
+	Resources *ResourceHint `json:"resources,omitempty"`
+}
+
+// ResourceHint is JobRequest.Resources: a CPU/memory sizing hint, in the same units as
+// PoolConfig/fleet.Pool's job defaults (MHz / MiB).
+type ResourceHint struct {
+	CPU    int `json:"cpu,omitempty"`    // MHz
+	Memory int `json:"memory,omitempty"` // MiB
 }
 
 // Status of a Job.
@@ -114,12 +128,21 @@ type Service interface {
 	Get(ctx context.Context, id string) (*Job, error)
 	List(ctx context.Context) ([]Job, error)
 	// Logs streams combined stdout+stderr; follow keeps the stream open until the job ends.
+	//
+	// A job that hasn't been allocated yet (still StatusPending, no Nomad allocation) is not an
+	// error by itself: with follow=true, Logs polls for an allocation (roughly once a second) until
+	// one appears, the job reaches a terminal status, or ctx is done (the caller — the HTTP handler
+	// — bounds this with a deadline; see server docs), then streams normally. With follow=false, a
+	// missing allocation is reported as ErrNoAllocationYet without waiting — the caller (the HTTP
+	// handler) turns that into a 200 with an empty body rather than an error, since "no output yet"
+	// is a legitimate state for a pending job, not a failure.
 	Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error)
 	// LogLines streams stdout/stderr as discrete, stream-tagged lines (used for the NDJSON log mode;
 	// the plain/SSE modes keep using Logs). The channel is closed when both streams are drained (or,
 	// with follow, when ctx is done or the job reaches a terminal status). Line ORDER across the two
 	// streams is best-effort (same non-determinism the existing byte-level Logs merge already has —
-	// see mergedLogReader) since stdout/stderr are two independent goroutines racing to send.
+	// see mergedLogReader) since stdout/stderr are two independent goroutines racing to send. See
+	// Logs for the no-allocation-yet / ErrNoAllocationYet semantics, which apply identically here.
 	LogLines(ctx context.Context, id string, follow bool) (<-chan LogLine, error)
 	Cancel(ctx context.Context, id string) error
 }

@@ -2,9 +2,11 @@ package install
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,6 +111,103 @@ func TestRunDoctor_NeverHangs(t *testing.T) {
 	case <-done:
 	case <-time.After(15 * time.Second):
 		t.Fatal("RunDoctor did not return within 15s against a hanging server")
+	}
+}
+
+// fakeNomadNode is the minimal shape checkMacOSCPUFingerprint cares about, from both the
+// /v1/nodes list-stub and /v1/node/<id> full-node responses (internal/nomad.Client.ListNodes
+// calls both per node, plus /v1/node/<id>/allocations).
+type fakeNomadNode struct {
+	ID        string
+	Name      string
+	NodeClass string
+	cpuMHz    int64
+}
+
+// newFakeNomadServer serves just enough of the Nomad HTTP API (/v1/nodes, /v1/node/<id>,
+// /v1/node/<id>/allocations) for internal/nomad.Client.ListNodes to work against it, so
+// checkMacOSCPUFingerprint can be tested without a real Nomad cluster.
+func newFakeNomadServer(t *testing.T, nodes []fakeNomadNode) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/nodes", func(w http.ResponseWriter, r *http.Request) {
+		stubs := make([]map[string]any, 0, len(nodes))
+		for _, n := range nodes {
+			stubs = append(stubs, map[string]any{"ID": n.ID, "Name": n.Name, "NodeClass": n.NodeClass})
+		}
+		_ = json.NewEncoder(w).Encode(stubs)
+	})
+	for _, n := range nodes {
+		n := n
+		mux.HandleFunc("/v1/node/"+n.ID, func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ID":        n.ID,
+				"Name":      n.Name,
+				"NodeClass": n.NodeClass,
+				"NodeResources": map[string]any{
+					"Cpu":    map[string]any{"CpuShares": n.cpuMHz},
+					"Memory": map[string]any{"MemoryMB": 8192},
+				},
+			})
+		})
+		mux.HandleFunc("/v1/node/"+n.ID+"/allocations", func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode([]any{})
+		})
+	}
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestCheckMacOSCPUFingerprint_WarnsOnLowCompute(t *testing.T) {
+	srv := newFakeNomadServer(t, []fakeNomadNode{
+		{ID: "n1", Name: "macos-mac1-0", NodeClass: "macos", cpuMHz: 24}, // the real observed defect
+		{ID: "n2", Name: "linux-worker1-0", NodeClass: "linux", cpuMHz: 24},
+	})
+	cfg := &config.Config{Nomad: config.Endpoint{URL: srv.URL}}
+
+	r := checkMacOSCPUFingerprint(context.Background(), cfg)
+	if r.OK {
+		t.Fatalf("expected the check to fail on a 24 MHz macOS fingerprint, got %+v", r)
+	}
+	if !strings.Contains(r.Detail, "macos-mac1-0") {
+		t.Errorf("detail = %q, want it to name the offending node", r.Detail)
+	}
+	if strings.Contains(r.Detail, "linux-worker1-0") {
+		t.Errorf("detail = %q, should not flag a non-macos node even with a low fingerprint", r.Detail)
+	}
+}
+
+func TestCheckMacOSCPUFingerprint_OKWhenHealthy(t *testing.T) {
+	srv := newFakeNomadServer(t, []fakeNomadNode{
+		{ID: "n1", Name: "macos-mac1-0", NodeClass: "macos", cpuMHz: 36000},
+	})
+	cfg := &config.Config{Nomad: config.Endpoint{URL: srv.URL}}
+
+	r := checkMacOSCPUFingerprint(context.Background(), cfg)
+	if !r.OK {
+		t.Errorf("expected OK for a healthy 36000 MHz fingerprint, got %+v", r)
+	}
+}
+
+func TestCheckMacOSCPUFingerprint_SkippedWithoutNomadConfig(t *testing.T) {
+	r := checkMacOSCPUFingerprint(context.Background(), &config.Config{})
+	if !r.OK {
+		t.Errorf("expected the check to skip (OK) when nomad isn't configured, got %+v", r)
+	}
+}
+
+func TestRunDoctor_IncludesMacOSCPUFingerprintCheck(t *testing.T) {
+	srv := newFakeNomadServer(t, []fakeNomadNode{
+		{ID: "n1", Name: "macos-mac1-0", NodeClass: "macos", cpuMHz: 24},
+	})
+	cfg := &config.Config{Nomad: config.Endpoint{URL: srv.URL}}
+	opts := Options{Home: t.TempDir(), GOOS: "darwin", LookPath: alwaysFailLookPath, Exists: alwaysFalseExists}
+
+	results := RunDoctor(context.Background(), NewFakeRunner(), opts, cfg)
+	r := findResult(t, results, "macos-cpu-fingerprint")
+	if r.OK {
+		t.Errorf("expected macos-cpu-fingerprint to fail against the fake low-compute node, got %+v", r)
 	}
 }
 

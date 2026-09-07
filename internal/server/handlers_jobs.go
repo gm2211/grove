@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,6 +14,26 @@ import (
 	"github.com/gm2211/grove/internal/artifacts"
 	"github.com/gm2211/grove/internal/dispatch"
 )
+
+// defaultAllocationWait bounds how long a follow=true /logs request waits for a job to get a
+// Nomad allocation before giving up (see dispatch.Service.Logs/LogLines and
+// dispatch.ErrNoAllocationYet). Overridable per-request via the `?wait=` query
+// (time.ParseDuration syntax, e.g. "30s", "5m").
+const defaultAllocationWait = 10 * time.Minute
+
+// allocationWaitFor parses the `?wait=` query param (a time.ParseDuration string), falling back to
+// defaultAllocationWait when absent or invalid.
+func allocationWaitFor(r *http.Request) time.Duration {
+	raw := r.URL.Query().Get("wait")
+	if raw == "" {
+		return defaultAllocationWait
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return defaultAllocationWait
+	}
+	return d
+}
 
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	jobs, err := s.dispatch.List(r.Context())
@@ -79,10 +100,25 @@ func (s *Server) handleJobLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rc, err := s.dispatch.Logs(r.Context(), id, follow)
+	ctx := r.Context()
+	if follow {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, allocationWaitFor(r))
+		defer cancel()
+	}
+
+	rc, err := s.dispatch.Logs(ctx, id, follow)
 	if err != nil {
 		if errors.Is(err, dispatch.ErrNotFound) {
 			http.Error(w, "job not found", http.StatusNotFound)
+			return
+		}
+		if errors.Is(err, dispatch.ErrNoAllocationYet) {
+			// Not yet allocated is a legitimate state for a pending job, not a failure — see
+			// dispatch.ErrNoAllocationYet. Report it as an empty, successful stream rather than a
+			// 502, so `grove logs`/`grove dispatch --follow` can retry instead of hard-erroring.
+			w.Header().Set("X-Grove-Job-Status", "pending")
+			w.WriteHeader(http.StatusOK)
 			return
 		}
 		s.writeError(w, http.StatusBadGateway, err)
@@ -108,10 +144,25 @@ func (s *Server) handleJobLogs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleJobLogsNDJSON(w http.ResponseWriter, r *http.Request, id string, follow bool) {
 	sinceOffset, _ := strconv.ParseInt(r.URL.Query().Get("sinceOffset"), 10, 64)
 
-	lines, err := s.dispatch.LogLines(r.Context(), id, follow)
+	ctx := r.Context()
+	if follow {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, allocationWaitFor(r))
+		defer cancel()
+	}
+
+	lines, err := s.dispatch.LogLines(ctx, id, follow)
 	if err != nil {
 		if errors.Is(err, dispatch.ErrNotFound) {
 			http.Error(w, "job not found", http.StatusNotFound)
+			return
+		}
+		if errors.Is(err, dispatch.ErrNoAllocationYet) {
+			// See handleJobLogs — same "pending, not a failure" reasoning applies to the NDJSON
+			// mode: an empty NDJSON stream with the pending header, not a 502.
+			w.Header().Set("X-Grove-Job-Status", "pending")
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			w.WriteHeader(http.StatusOK)
 			return
 		}
 		s.writeError(w, http.StatusBadGateway, err)

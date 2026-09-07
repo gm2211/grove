@@ -496,8 +496,8 @@ func TestLogs_NoAllocationYet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
-	if _, err := svc.Logs(context.Background(), job.ID, false); err == nil {
-		t.Fatal("expected an error when no allocation exists yet")
+	if _, err := svc.Logs(context.Background(), job.ID, false); !errors.Is(err, ErrNoAllocationYet) {
+		t.Fatalf("Logs err = %v, want ErrNoAllocationYet", err)
 	}
 }
 
@@ -614,7 +614,138 @@ func TestLogLines_NoAllocationYet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
-	if _, err := svc.LogLines(context.Background(), job.ID, false); err == nil {
-		t.Fatal("expected an error when no allocation exists yet")
+	if _, err := svc.LogLines(context.Background(), job.ID, false); !errors.Is(err, ErrNoAllocationYet) {
+		t.Fatalf("LogLines err = %v, want ErrNoAllocationYet", err)
+	}
+}
+
+// newTestServiceWithOpts is like newTestService but lets the caller tweak Options (e.g.
+// AllocationPollInterval, Pools) before New is called.
+func newTestServiceWithOpts(t *testing.T, nc *fakeNomad, opts Options) Service {
+	t.Helper()
+	opts.StorePath = filepath.Join(t.TempDir(), "jobs.json")
+	if opts.StatusTTL <= 0 {
+		opts.StatusTTL = time.Millisecond
+	}
+	svc, err := New(nc, opts)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return svc
+}
+
+// TestLogs_FollowWaitsForAllocation reproduces the live-run defect: `grove dispatch --follow`
+// used to 502 immediately ("job has no allocation yet") because Logs/LogLines never waited for
+// Nomad to actually place the job. With follow=true, Logs must instead poll until an allocation
+// shows up (here, ListAllocations returns empty for the first 3 calls, simulating a job that
+// takes a few polls to get placed) and then stream normally.
+func TestLogs_FollowWaitsForAllocation(t *testing.T) {
+	nc := &fakeNomad{allocationsEmptyCalls: 3}
+	svc := newTestServiceWithOpts(t, nc, Options{AllocationPollInterval: 5 * time.Millisecond})
+
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	dispatchedJobID := nc.dispatchCalls[0].jobName + "/dispatch-1"
+	nc.allocationsByJob = map[string][]nomad.Allocation{
+		dispatchedJobID: {{ID: "alloc-1", ClientStatus: "running", CreatedAt: time.Now()}},
+	}
+	nc.logsFunc = func(ctx context.Context, allocID, task, stream string, follow bool) (io.ReadCloser, error) {
+		if stream == "stdout" {
+			return io.NopCloser(strings.NewReader("out-line\n")), nil
+		}
+		return io.NopCloser(strings.NewReader("")), nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	rc, err := svc.Logs(ctx, job.ID, true)
+	if err != nil {
+		t.Fatalf("Logs: %v", err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !strings.Contains(string(data), "out-line") {
+		t.Errorf("logs = %q, want to contain out-line", string(data))
+	}
+	if nc.allocationsCallCount < 4 {
+		t.Errorf("allocationsCallCount = %d, want >= 4 (3 empty + 1 hit)", nc.allocationsCallCount)
+	}
+}
+
+// TestLogs_FollowGivesUpAtContextDeadline asserts that a follow=true request bounded by a short
+// ctx deadline (mirroring the HTTP handler's `?wait=` timeout) gives up with ErrNoAllocationYet
+// instead of blocking forever when an allocation never shows up.
+func TestLogs_FollowGivesUpAtContextDeadline(t *testing.T) {
+	nc := &fakeNomad{} // ListAllocations always returns empty — no allocation ever appears.
+	svc := newTestServiceWithOpts(t, nc, Options{AllocationPollInterval: 5 * time.Millisecond})
+
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err = svc.Logs(ctx, job.ID, true)
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrNoAllocationYet) {
+		t.Fatalf("Logs err = %v, want ErrNoAllocationYet", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("Logs took %s to give up, want well under its bounding context's budget", elapsed)
+	}
+}
+
+func TestSubmit_RejectsResourceHintExceedingPoolDefaults(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestServiceWithOpts(t, nc, Options{Pools: []PoolConfig{{Name: "macos", CPU: 500, Memory: 1024}}})
+
+	_, _, err := svc.Submit(context.Background(), JobRequest{
+		Kind: KindShell, Pool: "macos", Script: "true",
+		Resources: &ResourceHint{CPU: 4000},
+	})
+	if err == nil {
+		t.Fatal("expected an error for a resources hint exceeding the pool's job CPU default")
+	}
+	if len(nc.dispatchCalls) != 0 {
+		t.Errorf("dispatchCalls = %d, want 0 — an over-budget request should never be dispatched", len(nc.dispatchCalls))
+	}
+}
+
+func TestSubmit_AcceptsResourceHintWithinPoolDefaults(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestServiceWithOpts(t, nc, Options{Pools: []PoolConfig{{Name: "macos", CPU: 500, Memory: 1024}}})
+
+	job, _, err := svc.Submit(context.Background(), JobRequest{
+		Kind: KindShell, Pool: "macos", Script: "true",
+		Resources: &ResourceHint{CPU: 250, Memory: 512},
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if job == nil {
+		t.Fatal("expected a job")
+	}
+}
+
+func TestSubmit_ResourceHintIgnoredForUnknownPool(t *testing.T) {
+	nc := &fakeNomad{}
+	// No Options.Pools configured at all — the service has nothing to validate against, so any
+	// hint is accepted rather than rejecting every request with resources set.
+	svc := newTestService(t, nc)
+
+	_, _, err := svc.Submit(context.Background(), JobRequest{
+		Kind: KindShell, Pool: "linux", Script: "true",
+		Resources: &ResourceHint{CPU: 999999},
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v, want no error when the service has no pool config to validate against", err)
 	}
 }

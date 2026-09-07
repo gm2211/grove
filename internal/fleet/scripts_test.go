@@ -42,6 +42,39 @@ func TestBuildStartupScript_Tailscale(t *testing.T) {
 	}
 }
 
+// TestBuildStartupScript_MacOSCPUTotalCompute is the regression test for the live-run defect:
+// Nomad on Apple Silicon fingerprints cpu.totalcompute in the single digits of MHz, which fails
+// placement for any job requesting a realistic CPU value. The startup script must compute and
+// write a sane cpu_total_compute override into the dynamic grove-meta.hcl on macOS — see
+// docs/OPERATIONS.md "jobs pending with DimensionExhausted cpu on macOS".
+func TestBuildStartupScript_MacOSCPUTotalCompute(t *testing.T) {
+	pool := Pool{Name: "macos"}
+	script := BuildStartupScript(pool, "mac1", "macos-mac1-0", "")
+
+	for _, want := range []string{
+		"grove_cpu_total_compute=$(( $(sysctl -n hw.ncpu) * 2000 ))",
+		"cpu_total_compute = $grove_cpu_total_compute",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("startup script missing %q:\n%s", want, script)
+		}
+	}
+
+	// The cpu_total_compute line must land inside the same `client { ... }` block as the meta
+	// stanza, not as a sibling top-level block (Nomad's client.hcl schema only allows one `client`
+	// block per merged config directory).
+	clientOpen := strings.Index(script, "client {")
+	metaIdx := strings.Index(script, "pool = \"$grove_pool\"")
+	cpuIdx := strings.Index(script, "cpu_total_compute = $grove_cpu_total_compute")
+	closeIdx := strings.Index(script, "\n}\nGROVE_META_END")
+	if clientOpen < 0 || metaIdx < 0 || cpuIdx < 0 || closeIdx < 0 {
+		t.Fatalf("could not locate client{}/meta/cpu_total_compute/close markers in:\n%s", script)
+	}
+	if !(clientOpen < metaIdx && metaIdx < cpuIdx && cpuIdx < closeIdx) {
+		t.Errorf("cpu_total_compute is not nested inside the client{} block as expected:\n%s", script)
+	}
+}
+
 func TestBuildStartupScript_AppendsPoolScript(t *testing.T) {
 	pool := Pool{Name: "linux", StartupScript: "echo custom-startup"}
 	script := BuildStartupScript(pool, "mac1", "linux-mac1-0", "")

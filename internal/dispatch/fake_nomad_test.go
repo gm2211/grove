@@ -21,6 +21,11 @@ type fakeNomad struct {
 
 	allocationsByJob map[string][]nomad.Allocation
 	allocationsErr   error
+	// allocationsEmptyCalls, when > 0, makes the first N ListAllocations calls (across every job)
+	// return an empty slice regardless of allocationsByJob — used to simulate a job that only gets
+	// its Nomad allocation a few polls after dispatch (see TestLogs_FollowWaitsForAllocation).
+	allocationsEmptyCalls int
+	allocationsCallCount  int
 
 	stopCalls []stopCall
 	stopErr   error
@@ -93,6 +98,10 @@ func (f *fakeNomad) ListAllocations(ctx context.Context, jobID string) ([]nomad.
 	defer f.mu.Unlock()
 	if f.allocationsErr != nil {
 		return nil, f.allocationsErr
+	}
+	f.allocationsCallCount++
+	if f.allocationsCallCount <= f.allocationsEmptyCalls {
+		return nil, nil
 	}
 	return f.allocationsByJob[jobID], nil
 }

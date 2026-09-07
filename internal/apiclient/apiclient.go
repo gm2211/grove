@@ -22,15 +22,23 @@ type Client struct {
 	baseURL string
 	token   string
 	http    *http.Client
+	// streamHTTP is used for /logs requests. It has no overall Timeout: net/http.Client.Timeout
+	// bounds the *entire* round trip including reading the response body, which is wrong for a
+	// potentially long-lived log stream (--follow keeps the connection open for as long as the job
+	// runs, and the server itself may now hold the connection open for up to ~10 minutes just
+	// waiting for an allocation — see internal/server/handlers_jobs.go's `?wait=`). doJSON's calls
+	// stay on the bounded http client; only streaming reads use this one.
+	streamHTTP *http.Client
 }
 
 // New builds a Client pointed at baseURL (e.g. config.Config.Server.URL), authenticating with
 // token (config.Config.Server.Token; empty is fine if the server has no token configured).
 func New(baseURL, token string) *Client {
 	return &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		token:   token,
-		http:    &http.Client{Timeout: 30 * time.Second},
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		token:      token,
+		http:       &http.Client{Timeout: 30 * time.Second},
+		streamHTTP: &http.Client{},
 	}
 }
 
@@ -147,28 +155,57 @@ func (c *Client) CancelJob(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodDelete, "/jobs/"+url.PathEscape(id), nil, nil)
 }
 
+// maxPendingLogRetries/pendingLogRetryBackoff bound JobLogs's client-side retry of a "not
+// allocated yet" response — see JobLogs's doc comment.
+const (
+	maxPendingLogRetries   = 5
+	pendingLogRetryBackoff = 500 * time.Millisecond
+)
+
 // JobLogs streams a job's combined stdout+stderr as plain text; follow keeps the connection open
 // until the job ends.
+//
+// A job with no Nomad allocation yet is not an error server-side (see
+// internal/server/handlers_jobs.go): the server responds 200 with an empty body and
+// X-Grove-Job-Status: pending rather than failing the request. With follow=true, the server itself
+// already waits (polling for an allocation up to its own bounded deadline) before responding, so
+// by the time a response comes back there's nothing left for the client to retry. With
+// follow=false (a one-shot `grove logs <id>`), the server does a single check and returns
+// "pending" immediately if there's still no allocation — that's normal for a job that was just
+// submitted, so JobLogs retries a few times with a short backoff before giving up and handing back
+// the (still empty) pending response, rather than making every caller reimplement this.
 func (c *Client) JobLogs(ctx context.Context, id string, follow bool) (io.ReadCloser, error) {
 	path := "/jobs/" + url.PathEscape(id) + "/logs"
 	if follow {
 		path += "?follow=1"
 	}
-	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
-	if err != nil {
-		return nil, err
+
+	for attempt := 0; ; attempt++ {
+		req, err := c.newRequest(ctx, http.MethodGet, path, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "text/plain")
+		resp, err := c.streamHTTP.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode >= 300 {
+			data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			return nil, fmt.Errorf("grove api: GET %s: %s: %s", path, resp.Status, strings.TrimSpace(string(data)))
+		}
+		if !follow && resp.Header.Get("X-Grove-Job-Status") == "pending" && attempt < maxPendingLogRetries {
+			resp.Body.Close()
+			select {
+			case <-time.After(pendingLogRetryBackoff):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			continue
+		}
+		return resp.Body, nil
 	}
-	req.Header.Set("Accept", "text/plain")
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode >= 300 {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		resp.Body.Close()
-		return nil, fmt.Errorf("grove api: GET %s: %s: %s", path, resp.Status, strings.TrimSpace(string(data)))
-	}
-	return resp.Body, nil
 }
 
 // Healthz reports control-plane health: {ok, version, orchard, nomad, serverTime}, orchard/nomad
