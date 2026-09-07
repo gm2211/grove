@@ -163,6 +163,9 @@ func (f *fakeNomad) ListAllocations(ctx context.Context, jobID string) ([]nomad.
 func (f *fakeNomad) GetAllocation(ctx context.Context, allocID string) (*nomad.Allocation, error) {
 	return nil, nil
 }
+func (f *fakeNomad) JobEvaluations(ctx context.Context, jobID string) ([]nomad.Evaluation, error) {
+	return nil, nil
+}
 func (f *fakeNomad) Logs(ctx context.Context, allocID, task, stream string, follow bool) (io.ReadCloser, error) {
 	return nil, nil
 }
@@ -268,4 +271,9 @@ func (f *fakeDispatch) Cancel(ctx context.Context, id string) error {
 		return dispatch.ErrNotFound
 	}
 	return nil
+}
+
+func (f *fakeDispatch) RunReconciler(ctx context.Context, interval time.Duration) error {
+	<-ctx.Done()
+	return ctx.Err()
 }

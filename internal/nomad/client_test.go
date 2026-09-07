@@ -1,6 +1,10 @@
 package nomad
 
 import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -217,5 +221,98 @@ func TestJobNameOf(t *testing.T) {
 	id := "build-123"
 	if got := jobNameOf(&nomadapi.Job{ID: &id}); got != id {
 		t.Errorf("want %q, got %q", id, got)
+	}
+}
+
+// TestWrapNotFound_MapsHTTP404ToErrNotFound reproduces the live orphaned-job defect: after a dev
+// Nomad agent restarts with its data dir wiped, ListAllocations/GetAllocation/JobEvaluations for a
+// job dispatched against the old agent 404. Every call site must surface that as ErrNotFound (via
+// errors.Is) so internal/dispatch can distinguish "Nomad no longer knows about this job" from a
+// generic API failure.
+func TestWrapNotFound_MapsHTTP404ToErrNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("job not found"))
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL, "")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if _, err := c.ListAllocations(context.Background(), "missing-job"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ListAllocations err = %v, want wrapped ErrNotFound", err)
+	}
+	if _, err := c.GetAllocation(context.Background(), "missing-alloc"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetAllocation err = %v, want wrapped ErrNotFound", err)
+	}
+	if _, err := c.JobEvaluations(context.Background(), "missing-job"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("JobEvaluations err = %v, want wrapped ErrNotFound", err)
+	}
+	if _, err := c.GetNode(context.Background(), "missing-node"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetNode err = %v, want wrapped ErrNotFound", err)
+	}
+}
+
+// TestWrapNotFound_PassesThroughOtherErrors asserts a non-404 failure (e.g. Nomad itself erroring)
+// is NOT misreported as ErrNotFound — only an actual 404 means "Nomad has no record of this".
+func TestWrapNotFound_PassesThroughOtherErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("boom"))
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL, "")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if _, err := c.ListAllocations(context.Background(), "job"); err == nil || errors.Is(err, ErrNotFound) {
+		t.Fatalf("ListAllocations err = %v, want a non-nil, non-ErrNotFound error", err)
+	}
+}
+
+func TestEvaluationFromAPI_MapsFailedTGAllocs(t *testing.T) {
+	e := &nomadapi.Evaluation{
+		Status:            "blocked",
+		StatusDescription: "queued allocations still pending",
+		FailedTGAllocs: map[string]*nomadapi.AllocationMetric{
+			"main": {
+				NodesEvaluated:     3,
+				NodesAvailable:     map[string]int{"dc1": 3},
+				ConstraintFiltered: map[string]int{"missing meta.pool=macos": 3},
+				DimensionExhausted: map[string]int{"cpu": 1},
+				ClassFiltered:      map[string]int{"linux": 2},
+			},
+			// A nil metric shouldn't happen in practice, but must not panic the mapping.
+			"nilled": nil,
+		},
+	}
+
+	out := evaluationFromAPI(e)
+
+	if out.Status != "blocked" || out.StatusDescription != "queued allocations still pending" {
+		t.Fatalf("unexpected top-level mapping: %+v", out)
+	}
+	main, ok := out.FailedTGAllocs["main"]
+	if !ok {
+		t.Fatalf("FailedTGAllocs missing %q: %+v", "main", out.FailedTGAllocs)
+	}
+	if main.NodesEvaluated != 3 || main.NodesAvailable["dc1"] != 3 {
+		t.Errorf("main metric = %+v, want NodesEvaluated=3 NodesAvailable[dc1]=3", main)
+	}
+	if main.ConstraintFiltered["missing meta.pool=macos"] != 3 {
+		t.Errorf("ConstraintFiltered = %+v", main.ConstraintFiltered)
+	}
+	if main.DimensionExhausted["cpu"] != 1 {
+		t.Errorf("DimensionExhausted = %+v", main.DimensionExhausted)
+	}
+	if main.ClassFiltered["linux"] != 2 {
+		t.Errorf("ClassFiltered = %+v", main.ClassFiltered)
+	}
+	if _, ok := out.FailedTGAllocs["nilled"]; ok {
+		t.Errorf("nil metric should be skipped, got an entry for %q", "nilled")
 	}
 }

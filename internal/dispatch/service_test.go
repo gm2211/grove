@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
@@ -733,6 +734,226 @@ func TestSubmit_AcceptsResourceHintWithinPoolDefaults(t *testing.T) {
 	if job == nil {
 		t.Fatal("expected a job")
 	}
+}
+
+// TestGet_OrphanedNomadJobMarksLost reproduces the live defect: job b1a0ea873e6e3ad3 sat pending
+// forever because the dev Nomad agent it was dispatched against restarted with its data dir wiped
+// — its dispatched Nomad job no longer exists, so ListAllocations 404s. Get must recognize that
+// (via errors.Is(err, nomad.ErrNotFound)) and mark the job StatusLost with an explanatory
+// FailureReason + FinishedAt, rather than surfacing the 404 as an opaque error or leaving the job
+// stuck pending.
+func TestGet_OrphanedNomadJobMarksLost(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestService(t, nc)
+
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	nc.allocationsErr = fmt.Errorf("job not found: %w", nomad.ErrNotFound)
+
+	got, err := svc.Get(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusLost {
+		t.Fatalf("status = %v, want lost", got.Status)
+	}
+	if got.FailureReason == nil || !strings.Contains(*got.FailureReason, "not found") {
+		t.Errorf("FailureReason = %v, want it to mention the job wasn't found", got.FailureReason)
+	}
+	if got.FinishedAt == nil {
+		t.Error("FinishedAt = nil, want set once a job is marked lost")
+	}
+
+	// The job is now terminal — a further Get must never re-query Nomad for it.
+	nc.allocationsErr = errors.New("must not be called for a terminal (lost) job")
+	if _, err := svc.Get(context.Background(), job.ID); err != nil {
+		t.Fatalf("Get after orphan-detection unexpectedly re-queried nomad: %v", err)
+	}
+}
+
+// TestGet_StuckPendingPastTimeoutMarksLost covers a job Nomad still knows about but never placed
+// (fleet full for the pool, or an unmatchable constraint) — it must stop reporting pending forever
+// once Options.PendingTimeout elapses.
+func TestGet_StuckPendingPastTimeoutMarksLost(t *testing.T) {
+	nc := &fakeNomad{} // ListAllocations always returns empty — no allocation ever appears.
+	svc := newTestServiceWithOpts(t, nc, Options{PendingTimeout: time.Millisecond})
+
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	time.Sleep(5 * time.Millisecond)
+
+	got, err := svc.Get(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusLost {
+		t.Fatalf("status = %v, want lost", got.Status)
+	}
+	if got.FailureReason == nil || !strings.Contains(*got.FailureReason, "no allocation within") {
+		t.Errorf("FailureReason = %v, want it to mention the pending timeout", got.FailureReason)
+	}
+}
+
+// TestGet_PendingWithinTimeoutStaysPending guards against a false-positive: a freshly submitted job
+// that just hasn't been placed yet (well within PendingTimeout) must stay pending, not lost.
+func TestGet_PendingWithinTimeoutStaysPending(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestServiceWithOpts(t, nc, Options{PendingTimeout: time.Hour})
+
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	got, err := svc.Get(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusPending {
+		t.Fatalf("status = %v, want pending", got.Status)
+	}
+}
+
+// TestGet_PendingReasonFromBlockedEvaluation covers the pending-placement diagnostics: a pending
+// job's Get should surface Nomad's blocked-evaluation metrics (constraint filtered / dimension
+// exhausted / class filtered / nodes available) as a human-readable Job.PendingReason.
+func TestGet_PendingReasonFromBlockedEvaluation(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestService(t, nc)
+
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "macos", Script: "true"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	dispatchedJobID := nc.dispatchCalls[0].jobName + "/dispatch-1"
+	nc.evaluationsByJob = map[string][]nomad.Evaluation{
+		dispatchedJobID: {
+			{
+				Status:            "blocked",
+				StatusDescription: "queued allocations still pending",
+				FailedTGAllocs: map[string]nomad.AllocationMetric{
+					"main": {
+						NodesEvaluated:     2,
+						NodesAvailable:     map[string]int{"dc1": 2},
+						DimensionExhausted: map[string]int{"cpu": 2},
+					},
+				},
+			},
+		},
+	}
+
+	got, err := svc.Get(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusPending {
+		t.Fatalf("status = %v, want pending", got.Status)
+	}
+	if got.PendingReason == "" {
+		t.Fatal("PendingReason = \"\", want a non-empty reason derived from the blocked evaluation")
+	}
+	if !strings.Contains(got.PendingReason, "resources exhausted") || !strings.Contains(got.PendingReason, "cpu=2") {
+		t.Errorf("PendingReason = %q, want it to mention the exhausted cpu dimension", got.PendingReason)
+	}
+}
+
+// TestGet_PendingReasonEmptyWithoutEvaluations covers the common case (no evaluations recorded
+// yet, or none blocked) — PendingReason must stay empty rather than reporting something bogus.
+func TestGet_PendingReasonEmptyWithoutEvaluations(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestService(t, nc)
+
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	got, err := svc.Get(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.PendingReason != "" {
+		t.Errorf("PendingReason = %q, want empty with no recorded evaluations", got.PendingReason)
+	}
+}
+
+// TestGet_PendingReasonClearedOnceRunning ensures a stale PendingReason from an earlier pending
+// poll doesn't linger once the job actually starts running.
+func TestGet_PendingReasonClearedOnceRunning(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestService(t, nc)
+
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "macos", Script: "true"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	dispatchedJobID := nc.dispatchCalls[0].jobName + "/dispatch-1"
+	nc.evaluationsByJob = map[string][]nomad.Evaluation{
+		dispatchedJobID: {{
+			Status: "blocked",
+			FailedTGAllocs: map[string]nomad.AllocationMetric{
+				"main": {NodesEvaluated: 1, DimensionExhausted: map[string]int{"cpu": 1}},
+			},
+		}},
+	}
+	if got, err := svc.Get(context.Background(), job.ID); err != nil || got.PendingReason == "" {
+		t.Fatalf("Get (pending): got=%+v err=%v, want a non-empty PendingReason", got, err)
+	}
+
+	nc.allocationsByJob = map[string][]nomad.Allocation{
+		dispatchedJobID: {{ID: "alloc-1", ClientStatus: "running", CreatedAt: time.Now()}},
+	}
+	time.Sleep(2 * time.Millisecond) // let the newTestService StatusTTL cache entry from the pending Get expire
+	got, err := svc.Get(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("Get (running): %v", err)
+	}
+	if got.Status != StatusRunning {
+		t.Fatalf("status = %v, want running", got.Status)
+	}
+	if got.PendingReason != "" {
+		t.Errorf("PendingReason = %q, want cleared once running", got.PendingReason)
+	}
+}
+
+// TestRunReconciler_MarksOrphanedJobLostWithoutAnyGetCall is the periodic-sweep counterpart to
+// TestGet_OrphanedNomadJobMarksLost: nothing calls Get/List for the job — RunReconciler's own tick
+// must reconcile it (and thus detect the 404 and mark it lost) on its own.
+func TestRunReconciler_MarksOrphanedJobLostWithoutAnyGetCall(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestService(t, nc)
+
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	nc.allocationsErr = nomad.ErrNotFound
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- svc.RunReconciler(ctx, time.Millisecond) }()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		rec, ok := svc.(*service).store.get(job.ID)
+		if ok && rec.Status == StatusLost {
+			break
+		}
+		select {
+		case <-deadline:
+			cancel()
+			t.Fatal("timed out waiting for RunReconciler to mark the orphaned job lost")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	cancel()
+	<-done
 }
 
 func TestSubmit_ResourceHintIgnoredForUnknownPool(t *testing.T) {

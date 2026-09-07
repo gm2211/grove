@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,6 +36,14 @@ var ErrNoAllocationYet = errors.New("dispatch: job has no allocation yet")
 // defaultAllocationPollInterval is how often allocIDFor re-checks Nomad for a job's allocation
 // while waiting on follow=true, absent an Options.AllocationPollInterval override.
 const defaultAllocationPollInterval = 1 * time.Second
+
+// defaultPendingTimeout is how long a job may sit StatusPending with no Nomad allocation before
+// reconcile gives up on it and marks it StatusLost, absent an Options.PendingTimeout override —
+// see markLost's "no allocation within" reason.
+const defaultPendingTimeout = 30 * time.Minute
+
+// DefaultReconcileInterval is the tick interval `grove serve` passes to RunReconciler.
+const DefaultReconcileInterval = 30 * time.Second
 
 // Options configures a dispatch Service.
 type Options struct {
@@ -63,6 +72,10 @@ type Options struct {
 	// AllocationPollInterval overrides defaultAllocationPollInterval — mainly for tests, so a
 	// follow=true wait-for-allocation test isn't stuck sleeping in real seconds.
 	AllocationPollInterval time.Duration
+	// PendingTimeout overrides defaultPendingTimeout: how long a job may sit StatusPending with no
+	// Nomad allocation before reconcile marks it StatusLost (fleet full, or an unmatchable
+	// placement constraint — Nomad will otherwise leave it queued forever).
+	PendingTimeout time.Duration
 }
 
 type cachedStatus struct {
@@ -99,6 +112,9 @@ func New(nc nomad.Client, opts Options) (Service, error) {
 	}
 	if opts.AllocationPollInterval <= 0 {
 		opts.AllocationPollInterval = defaultAllocationPollInterval
+	}
+	if opts.PendingTimeout <= 0 {
+		opts.PendingTimeout = defaultPendingTimeout
 	}
 	pools := make(map[string]PoolConfig, len(opts.Pools))
 	for _, p := range opts.Pools {
@@ -307,7 +323,21 @@ func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {
 
 	allocs, err := s.nomad.ListAllocations(ctx, rec.NomadJobID)
 	if err != nil {
+		if errors.Is(err, nomad.ErrNotFound) {
+			// The dispatched job no longer exists in Nomad — most commonly a dev/test Nomad agent
+			// restarted with its data dir wiped, or the job was purged out from under us. It will
+			// never report a status again, so there's nothing to keep polling for: mark it lost
+			// rather than leaving it stuck non-terminal forever.
+			return s.markLost(rec, fmt.Sprintf("nomad job %s not found (server restarted or job purged)", rec.NomadJobID))
+		}
 		return nil, fmt.Errorf("dispatch: list allocations for %s: %w", rec.ID, err)
+	}
+
+	if len(allocs) == 0 && rec.Status == StatusPending && time.Since(rec.SubmittedAt) > s.opts.PendingTimeout {
+		// Nomad still knows about the job but has never placed it — the fleet is full for this
+		// pool, or a constraint (e.g. meta.pool) can't be satisfied by any current node. Waiting
+		// longer won't help without an operator noticing, so stop showing it as merely "pending".
+		return s.markLost(rec, fmt.Sprintf("no allocation within %s (fleet full or constraint unmatchable)", s.opts.PendingTimeout))
 	}
 
 	updated := rec.Job
@@ -346,6 +376,18 @@ func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {
 		} // a GetNode error here is non-fatal — placement partially populated (AllocID/NodeID still set) beats failing the whole Get/List call over a node lookup blip.
 	}
 
+	if updated.Status == StatusPending {
+		if evals, everr := s.nomad.JobEvaluations(ctx, rec.NomadJobID); everr != nil {
+			// Best-effort, same rationale as the GetNode lookup above — a diagnostics lookup
+			// failing shouldn't fail the whole reconcile.
+			slog.Warn("dispatch: job evaluations lookup failed", "id", rec.ID, "err", everr)
+		} else {
+			updated.PendingReason = pendingReason(evals)
+		}
+	} else {
+		updated.PendingReason = ""
+	}
+
 	rec.Job = updated
 	if isTerminal(updated.Status) && len(rec.Job.Artifacts) == 0 && s.artifacts != nil {
 		if objs, aerr := s.artifacts.List(ctx, artifactPrefix(rec.ID)); aerr != nil {
@@ -376,6 +418,116 @@ func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {
 
 	job := updated
 	return &job, nil
+}
+
+// markLost marks rec StatusLost with reason, persists it, refreshes the status cache, and returns
+// the updated Job. Used by reconcile when Nomad no longer knows about rec's dispatched job (a 404
+// — the server restarted with a wiped data dir, or the job was purged) or when a job has sat
+// pending longer than Options.PendingTimeout without ever getting an allocation.
+func (s *service) markLost(rec *record, reason string) (*Job, error) {
+	now := time.Now().UTC()
+	rec.Status = StatusLost
+	rec.FailureReason = &reason
+	rec.FinishedAt = &now
+	rec.PendingReason = ""
+	if err := s.store.put(rec); err != nil {
+		return nil, fmt.Errorf("dispatch: persist job %s: %w", rec.ID, err)
+	}
+
+	s.mu.Lock()
+	s.cache[rec.ID] = cachedStatus{at: time.Now(), job: rec.Job}
+	s.mu.Unlock()
+
+	job := rec.Job
+	return &job, nil
+}
+
+// pendingReason summarizes why Nomad hasn't placed a job yet from its evaluations' FailedTGAllocs
+// (see nomad.AllocationMetric), for Job.PendingReason. evals is Nomad's own ordering (most recent
+// first); the first evaluation carrying a placement-failure metric wins. Returns "" when there's
+// nothing to report yet (no evaluations at all, or none have recorded a placement failure — e.g.
+// the job was *just* dispatched and Nomad hasn't run a scheduling pass on it yet).
+func pendingReason(evals []nomad.Evaluation) string {
+	for _, e := range evals {
+		for _, m := range e.FailedTGAllocs {
+			var reasons []string
+			if n := sumCounts(m.ConstraintFiltered); n > 0 {
+				reasons = append(reasons, fmt.Sprintf("constraint filtered (%s)", describeCounts(m.ConstraintFiltered)))
+			}
+			if n := sumCounts(m.DimensionExhausted); n > 0 {
+				reasons = append(reasons, fmt.Sprintf("resources exhausted (%s)", describeCounts(m.DimensionExhausted)))
+			}
+			if n := sumCounts(m.ClassFiltered); n > 0 {
+				reasons = append(reasons, fmt.Sprintf("node class filtered (%s)", describeCounts(m.ClassFiltered)))
+			}
+			available := sumCounts(m.NodesAvailable)
+			if len(reasons) == 0 && available == 0 {
+				return fmt.Sprintf("no nodes available in any datacenter (%d nodes evaluated)", m.NodesEvaluated)
+			}
+			if len(reasons) == 0 {
+				continue // this metric didn't explain a filter — keep looking at other task groups/evals
+			}
+			return fmt.Sprintf("%s — %d/%d nodes available", strings.Join(reasons, ", "), available, m.NodesEvaluated)
+		}
+		if e.Status == "blocked" && e.StatusDescription != "" {
+			return e.StatusDescription
+		}
+	}
+	return ""
+}
+
+// sumCounts totals an AllocationMetric count map's values (e.g. how many nodes a constraint
+// filtered out, across every distinct constraint description).
+func sumCounts(m map[string]int) int {
+	total := 0
+	for _, v := range m {
+		total += v
+	}
+	return total
+}
+
+// describeCounts renders an AllocationMetric count map as "key=n, key=n", sorted by key for
+// deterministic output.
+func describeCounts(m map[string]int) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%d", k, m[k]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// RunReconciler implements Service.RunReconciler.
+func (s *service) RunReconciler(ctx context.Context, interval time.Duration) error {
+	tick := func() {
+		recs := s.store.list()
+		for i := range recs {
+			if isTerminal(recs[i].Status) {
+				continue
+			}
+			if _, err := s.reconcile(ctx, &recs[i]); err != nil {
+				slog.Warn("dispatch: reconcile sweep failed for job", "id", recs[i].ID, "err", err)
+			}
+		}
+	}
+
+	tick()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			tick()
+		}
+	}
 }
 
 // signalName maps common Unix signal numbers to their conventional names; anything else falls

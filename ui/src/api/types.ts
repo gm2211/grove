@@ -42,6 +42,9 @@ export interface Job {
   finishedAt?: string | null;
   artifacts?: Artifact[];
   meta?: Record<string, string>;
+  // Set only while status is "pending": why Nomad hasn't placed this job yet (constraint
+  // filtered / resources exhausted / no nodes available), derived from its blocked evaluation.
+  pendingReason?: string;
 }
 
 export type FleetEntryKind = "worker" | "vm" | "node";

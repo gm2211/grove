@@ -72,6 +72,9 @@ export function JobDetailPage() {
           <Field label="requester" value={job.request.requester ?? "—"} />
           <Field label="node" value={job.node ?? "—"} mono />
           <Field label="alloc" value={job.allocId ?? "—"} mono />
+          {job.status === "pending" && job.pendingReason && (
+            <Field label="pending reason" value={job.pendingReason} />
+          )}
           <Field label="submitted" value={formatRelativeAge(job.submittedAt)} />
           <Field label="duration" value={formatJobDuration(job.startedAt, job.finishedAt)} />
           <Field label="exit code" value={job.exitCode === null || job.exitCode === undefined ? "—" : String(job.exitCode)} />
