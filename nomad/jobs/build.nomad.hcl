@@ -81,49 +81,49 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         set -euo pipefail
 
         DEFAULT_IMAGE="ghcr.io/gm2211/grove-runner:latest"
-        script_src="${NOMAD_TASK_DIR}/script.sh"
+        script_src="$NOMAD_TASK_DIR/script.sh"
 
-        if [ -n "${NOMAD_META_env_json:-}" ]; then
+        if [ -n "$${NOMAD_META_env_json:-}" ]; then
           eval "$(printf '%s' "$NOMAD_META_env_json" | jq -r 'to_entries[] | "export " + .key + "=" + (.value|tostring|@sh)')"
         fi
 
-        if [ -n "${NOMAD_META_repo:-}" ]; then
-          if [ -n "${GH_TOKEN:-}${GIT_TOKEN:-}" ]; then
-            export GH_TOKEN="${GH_TOKEN:-$GIT_TOKEN}"
+        if [ -n "$${NOMAD_META_repo:-}" ]; then
+          if [ -n "$${GH_TOKEN:-}$${GIT_TOKEN:-}" ]; then
+            export GH_TOKEN="$${GH_TOKEN:-$GIT_TOKEN}"
             gh auth setup-git || true
           fi
           git clone --depth 50 "$NOMAD_META_repo" work
           cd work
-          git checkout "${NOMAD_META_ref:-HEAD}"
+          git checkout "$${NOMAD_META_ref:-HEAD}"
           cp "$script_src" ./script.sh
           script_src="$PWD/script.sh"
         fi
 
         set +e
 {{if .AllowDockerSocket}}
-        if command -v docker >/dev/null 2>&1 && [ -n "${NOMAD_META_image:-}" ] && [ "${NOMAD_META_image}" != "$DEFAULT_IMAGE" ]; then
+        if command -v docker >/dev/null 2>&1 && [ -n "$${NOMAD_META_image:-}" ] && [ "$NOMAD_META_image" != "$DEFAULT_IMAGE" ]; then
           docker run --rm \
             -v "$PWD":/workspace -w /workspace \
             $(env | awk -F= '/^(NOMAD_META_|GH_TOKEN|GIT_TOKEN)/{print "-e", $1}') \
-            "${NOMAD_META_image}" \
-            timeout "${NOMAD_META_timeout_seconds:-3600}" bash -eo pipefail "$(basename "$script_src")"
+            "$NOMAD_META_image" \
+            timeout "$${NOMAD_META_timeout_seconds:-3600}" bash -eo pipefail "$(basename "$script_src")"
         else
-          timeout "${NOMAD_META_timeout_seconds:-3600}" bash -eo pipefail "$script_src"
+          timeout "$${NOMAD_META_timeout_seconds:-3600}" bash -eo pipefail "$script_src"
         fi
 {{else}}
         # This pool has no docker-socket access (fleet.yaml pool.allowDockerSocket is unset or
         # false — the grove default). NOMAD_META_image is still accepted for dispatch-contract
         # symmetry with opted-in pools, but it's ignored here: every job runs in this fixed
         # grove-runner image, no nested `docker run` is ever attempted.
-        timeout "${NOMAD_META_timeout_seconds:-3600}" bash -eo pipefail "$script_src"
+        timeout "$${NOMAD_META_timeout_seconds:-3600}" bash -eo pipefail "$script_src"
 {{end}}
         code=$?
         set -e
 
-        if [ -d ./artifacts ] && [ -n "${ARTIFACT_ENDPOINT:-}" ]; then
-          prefix="${NOMAD_META_artifact_prefix:-${NOMAD_ALLOC_ID}}"
+        if [ -d ./artifacts ] && [ -n "$${ARTIFACT_ENDPOINT:-}" ]; then
+          prefix="$${NOMAD_META_artifact_prefix:-$NOMAD_ALLOC_ID}"
           mc alias set grove "$ARTIFACT_ENDPOINT" "$ARTIFACT_ACCESS_KEY" "$ARTIFACT_SECRET_KEY" >/dev/null
-          mc cp --recursive ./artifacts/ "grove/${ARTIFACT_BUCKET}/${prefix}/" || true
+          mc cp --recursive ./artifacts/ "grove/$ARTIFACT_BUCKET/$prefix/" || true
         fi
 
         exit $code

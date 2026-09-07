@@ -122,12 +122,52 @@ entirely. That's a meaningful security/blast-radius trade-off in exchange for pe
 selection, so grove requires an operator to opt a pool into it explicitly rather than enabling it
 silently for everyone.
 
+## HCL escaping in `run.sh`
+
+Each `nomad/jobs/*.nomad.hcl` template embeds its `run.sh` as a `template { data = <<-EOF ... EOF }`
+heredoc. Nomad parses the **entire** job file — including that heredoc — as HCL2, and HCL2 treats
+any `${...}` anywhere in a string (heredocs included) as *its own* template interpolation, not as
+bash. `run.sh` is bash, and bash's default-value syntax (`${VAR:-default}`) is not valid HCL
+expression syntax, so an unescaped bash expansion like `${NOMAD_META_timeout_seconds:-3600}` fails
+Nomad's parser with an error like `Invalid character` / `Template interpolation doesn't expect a
+colon at this location`. This is a real bug that broke every `grove serve` startup (`EnsureJobs`
+failed to register all three job kinds) before it was fixed here.
+
+**Rule for editing `run.sh` inside any of these templates:**
+
+- **Plain env var read, no default** (`${FOO}`) — drop the braces and write bash's bare form,
+  `$FOO`, instead (valid whenever `$FOO` isn't immediately followed by another identifier
+  character). HCL only treats `${` specially, so a brace-less `$FOO` passes through untouched and
+  bash still expands it normally at runtime, since Nomad exports `NOMAD_TASK_DIR`,
+  `NOMAD_META_<key>`, `NOMAD_ALLOC_ID`, etc. as real environment variables in the task's process.
+- **Needs bash syntax that requires braces** (`${VAR:-default}`, `${VAR:+alt}`, nested defaults,
+  etc.) — keep the braces but escape the leading `$` by doubling it: `$${VAR:-default}`. Nomad's
+  HCL2 template parser turns a literal `$${` into a literal single `$` in the rendered output,
+  which is exactly the bash syntax you want; a stray `%{` (Nomad's *directive* syntax, used for
+  `for`/`if` inside templates) would need the same doubling (`%%{`) if it ever shows up in bash
+  content, though none of these templates currently need it.
+- **Genuine Nomad-side interpolation** — `${meta.pool}` in a `constraint` block, `${NOMAD_TASK_DIR}`
+  in `config.args` (outside any heredoc) — stays exactly as `${...}`, unescaped. These are resolved
+  by Nomad itself, not by bash, and are unaffected by this bug (they're not inside the `run.sh`
+  heredoc).
+
+When in doubt, prefer the plain-`$NAME` form — it sidesteps the escaping question entirely and is
+what most of `run.sh` uses today.
+
 ## Testing the contract
 
 ```console
-$ go test ./nomad/...                    # renders every (kind × pool) job and asserts the shape
+$ go test ./nomad/...                    # renders every (kind × pool × AllowDockerSocket) job,
+                                          # asserts its shape, and parses it with Nomad's own
+                                          # jobspec2 library (github.com/hashicorp/nomad/jobspec2)
+                                          # offline — the same regression check that would have
+                                          # caught the HCL-escaping bug above without needing a
+                                          # live Nomad cluster.
 
-# against a real cluster:
+# against a real cluster: nomad/jobs/*.nomad.hcl is a Go text/template (see the {{.Kind}}/{{.Pool}}
+# placeholders), not valid HCL on its own — render it first (e.g. via the `render` helper used in
+# nomadjobs_test.go, or by having grove's own EnsureJobs write it out), then:
+$ nomad job validate /tmp/rendered-build-macos.hcl
 $ echo 'echo hello from grove' > /tmp/script.sh
 $ nomad job dispatch -meta requester=cli -payload /tmp/script.sh grove-shell-linux
 $ nomad job dispatch -meta requester=cli -meta repo=https://github.com/gm2211/grove -meta ref=main \

@@ -66,28 +66,28 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         set -euo pipefail
 
         DEFAULT_IMAGE="ghcr.io/gm2211/grove-runner:latest"
-        script_src="${NOMAD_TASK_DIR}/script.sh"
+        script_src="$NOMAD_TASK_DIR/script.sh"
 
-        if [ -n "${NOMAD_META_env_json:-}" ]; then
+        if [ -n "$${NOMAD_META_env_json:-}" ]; then
           eval "$(printf '%s' "$NOMAD_META_env_json" | jq -r 'to_entries[] | "export " + .key + "=" + (.value|tostring|@sh)')"
         fi
 
 {{if .AllowDockerSocket}}
-        if command -v docker >/dev/null 2>&1 && [ -n "${NOMAD_META_image:-}" ] && [ "${NOMAD_META_image}" != "$DEFAULT_IMAGE" ]; then
+        if command -v docker >/dev/null 2>&1 && [ -n "$${NOMAD_META_image:-}" ] && [ "$NOMAD_META_image" != "$DEFAULT_IMAGE" ]; then
           exec docker run --rm \
-            -v "${NOMAD_TASK_DIR}":/workspace -w /workspace \
+            -v "$NOMAD_TASK_DIR":/workspace -w /workspace \
             $(env | awk -F= '/^(NOMAD_META_|GH_TOKEN|GIT_TOKEN)/{print "-e", $1}') \
-            "${NOMAD_META_image}" \
-            timeout "${NOMAD_META_timeout_seconds:-3600}" bash -eo pipefail script.sh
+            "$NOMAD_META_image" \
+            timeout "$${NOMAD_META_timeout_seconds:-3600}" bash -eo pipefail script.sh
         else
-          exec timeout "${NOMAD_META_timeout_seconds:-3600}" bash -eo pipefail "$script_src"
+          exec timeout "$${NOMAD_META_timeout_seconds:-3600}" bash -eo pipefail "$script_src"
         fi
 {{else}}
         # This pool has no docker-socket access (fleet.yaml pool.allowDockerSocket is unset or
         # false — the grove default). NOMAD_META_image is still accepted for dispatch-contract
         # symmetry with opted-in pools, but it's ignored here: every job runs in this fixed
         # grove-runner image, no nested `docker run` is ever attempted.
-        exec timeout "${NOMAD_META_timeout_seconds:-3600}" bash -eo pipefail "$script_src"
+        exec timeout "$${NOMAD_META_timeout_seconds:-3600}" bash -eo pipefail "$script_src"
 {{end}}
         EOF
         destination = "local/run.sh"
