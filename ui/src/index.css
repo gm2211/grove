@@ -1,0 +1,90 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #f5f6f4;
+  --bg-elevated: #ffffff;
+  --bg-inset: #eceee9;
+  --border: #d8dcd3;
+  --fg: #1b1f18;
+  --fg-muted: #5b6357;
+  --fg-faint: #8a9182;
+  --accent: #2f6f4f;
+  --accent-fg: #ffffff;
+
+  --status-pending: #8a8f98;
+  --status-running: #2563eb;
+  --status-success: #1f8a4c;
+  --status-failed: #d92d20;
+  --status-lost: #d97706;
+
+  --font-mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141712;
+    --bg-elevated: #1b1f18;
+    --bg-inset: #10130f;
+    --border: #2c322a;
+    --fg: #e8ebe3;
+    --fg-muted: #a3aa9b;
+    --fg-faint: #6b7264;
+    --accent: #4fae7f;
+    --accent-fg: #06120b;
+
+    --status-pending: #9aa0a8;
+    --status-running: #5b9dff;
+    --status-success: #3fbf76;
+    --status-failed: #ff6b60;
+    --status-lost: #f0a94e;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+code,
+pre,
+.mono {
+  font-family: var(--font-mono);
+}
+
+a {
+  color: inherit;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
