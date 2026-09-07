@@ -1,0 +1,67 @@
+name: images
+
+# Builds and pushes images/runner (the default container for linux build/agent/shell jobs) on
+# changes to it. The Tart worker images (images/macos-worker, images/linux-worker) CANNOT be built
+# here: Tart is built on Apple's Virtualization.framework and only runs on Apple Silicon Macs,
+# which GitHub-hosted runners are not (even the macos-14 arm64 runners run inside a VM that
+# doesn't support nested virtualization). Build those locally with `make images` — see
+# docs/IMAGES.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "images/runner/**"
+      - ".github/workflows/images.yml"
+  pull_request:
+    paths:
+      - "images/runner/**"
+      - ".github/workflows/images.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  runner:
+    name: build & push grove-runner
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (cross-arch emulation for the amd64 leg on arm64 and vice versa)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/gm2211/grove-runner
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+
+      - name: Build (and push on main)
+        uses: docker/build-push-action@v6
+        with:
+          context: images/runner
+          file: images/runner/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

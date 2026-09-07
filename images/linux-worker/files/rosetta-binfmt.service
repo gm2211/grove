@@ -1,0 +1,13 @@
+[Unit]
+Description=Register Rosetta 2 binfmt_misc handler for amd64 containers (grove)
+After=local-fs.target
+Before=docker.service nomad.service
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/rosetta-binfmt.sh
+RemainAfterExit=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.grove.nomad</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/homebrew/bin/nomad</string>
+		<string>agent</string>
+		<string>-config</string>
+		<string>/usr/local/etc/nomad.d</string>
+	</array>
+
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+
+	<key>UserName</key>
+	<string>root</string>
+
+	<key>StandardOutPath</key>
+	<string>/var/log/grove-nomad.log</string>
+	<key>StandardErrorPath</key>
+	<string>/var/log/grove-nomad.log</string>
+
+	<key>WorkingDirectory</key>
+	<string>/opt/nomad/data</string>
+
+	<key>SoftResourceLimits</key>
+	<dict>
+		<key>NumberOfFiles</key>
+		<integer>65536</integer>
+	</dict>
+</dict>
+</plist>
