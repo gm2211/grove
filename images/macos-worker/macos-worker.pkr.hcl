@@ -181,6 +181,7 @@ build {
   provisioner "shell" {
     inline = [
       "set -eu",
+      "export PATH=/opt/homebrew/bin:/opt/homebrew/sbin:$PATH",
       "brew cleanup -s || true",
       "rm -rf $(brew --cache) || true",
       "sudo rm -rf /private/var/log/*.log || true",
