@@ -23,6 +23,15 @@ type Config struct {
 	Artifacts ArtifactsConfig `yaml:"artifacts"`
 	// Path to fleet.yaml. Relative paths resolve against the config file's directory.
 	Fleet string `yaml:"fleet"`
+	// Tailscale configures worker VMs to join the tailnet on boot (see fleet.BuildStartupScript).
+	// Additive: not required by any existing consumer of Config.
+	Tailscale TailscaleConfig `yaml:"tailscale,omitempty"`
+}
+
+type TailscaleConfig struct {
+	// AuthKey is an ephemeral, tagged Tailscale auth key used by worker VMs' StartupScript to
+	// join the tailnet (see ARCHITECTURE.md → "Recycling / hygiene").
+	AuthKey string `yaml:"authKey,omitempty"`
 }
 
 type Endpoint struct {
