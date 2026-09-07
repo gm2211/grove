@@ -83,7 +83,7 @@ func TestPickTask_Empty(t *testing.T) {
 	}
 }
 
-func TestLastExitCode(t *testing.T) {
+func TestTerminalTaskDetails_ExitCode(t *testing.T) {
 	ts := &nomadapi.TaskState{
 		Events: []*nomadapi.TaskEvent{
 			{Type: "Started"},
@@ -93,17 +93,74 @@ func TestLastExitCode(t *testing.T) {
 		},
 	}
 
-	code, ok := lastExitCode(ts)
-	if !ok || code != 0 {
-		t.Errorf("want the most recent Terminated exit code (0), got (%d, %v)", code, ok)
+	exitCode, signal, failureReason := terminalTaskDetails(ts)
+	if exitCode == nil || *exitCode != 0 {
+		t.Errorf("want the most recent Terminated exit code (0), got %v", exitCode)
+	}
+	if signal != nil {
+		t.Errorf("want nil signal, got %v", *signal)
+	}
+	if failureReason != "" {
+		t.Errorf("want empty failureReason, got %q", failureReason)
 	}
 }
 
-func TestLastExitCode_NoTerminatedEvent(t *testing.T) {
+func TestTerminalTaskDetails_NoTerminatedEvent(t *testing.T) {
 	ts := &nomadapi.TaskState{Events: []*nomadapi.TaskEvent{{Type: "Started"}}}
 
-	if _, ok := lastExitCode(ts); ok {
-		t.Error("want ok=false when there's no Terminated event")
+	exitCode, signal, failureReason := terminalTaskDetails(ts)
+	if exitCode != nil {
+		t.Errorf("want nil exitCode when there's no Terminated event, got %v", *exitCode)
+	}
+	if signal != nil {
+		t.Errorf("want nil signal, got %v", *signal)
+	}
+	if failureReason != "" {
+		t.Errorf("want empty failureReason, got %q", failureReason)
+	}
+}
+
+func TestTerminalTaskDetails_Nil(t *testing.T) {
+	exitCode, signal, failureReason := terminalTaskDetails(nil)
+	if exitCode != nil || signal != nil || failureReason != "" {
+		t.Errorf("want all-zero for a nil TaskState, got (%v, %v, %q)", exitCode, signal, failureReason)
+	}
+}
+
+func TestTerminalTaskDetails_Signal(t *testing.T) {
+	ts := &nomadapi.TaskState{
+		Events: []*nomadapi.TaskEvent{
+			{Type: "Started"},
+			{Type: "Terminated", ExitCode: 137, Signal: 9},
+		},
+	}
+
+	exitCode, signal, _ := terminalTaskDetails(ts)
+	if exitCode == nil || *exitCode != 137 {
+		t.Errorf("want exit code 137, got %v", exitCode)
+	}
+	if signal == nil || *signal != 9 {
+		t.Errorf("want signal 9, got %v", signal)
+	}
+}
+
+func TestTerminalTaskDetails_InfraFault(t *testing.T) {
+	cases := []struct {
+		name string
+		ev   nomadapi.TaskEvent
+	}{
+		{"driver error", nomadapi.TaskEvent{Type: "Driver Failure", DriverError: "failed to start task"}},
+		{"setup error", nomadapi.TaskEvent{Type: "Setup Failure", SetupError: "failed to setup task"}},
+		{"download error", nomadapi.TaskEvent{Type: "Failed Artifact Download", DownloadError: "failed to download artifact"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ts := &nomadapi.TaskState{Events: []*nomadapi.TaskEvent{&c.ev}}
+			_, _, failureReason := terminalTaskDetails(ts)
+			if failureReason == "" {
+				t.Error("want a non-empty failureReason for an infra fault event")
+			}
+		})
 	}
 }
 

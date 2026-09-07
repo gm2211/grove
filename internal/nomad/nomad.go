@@ -11,18 +11,18 @@ import (
 
 // Node is a Nomad client node (one per worker VM, plus any bare-metal clients).
 type Node struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Status      string            `json:"status"` // ready | down | initializing
-	Eligibility string            `json:"eligibility"`
-	Drain       bool              `json:"drain"`
-	NodeClass   string            `json:"nodeClass"`
-	Datacenter  string            `json:"datacenter"`
-	Attributes  map[string]string `json:"attributes"` // os.name, cpu.arch, …
-	Meta        map[string]string `json:"meta"`       // pool, host — set by the guest image
-	CPUMHz      int               `json:"cpuMHz"`
-	MemoryMiB   int               `json:"memoryMiB"`
-	RunningAllocs int             `json:"runningAllocs"`
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	Status        string            `json:"status"` // ready | down | initializing
+	Eligibility   string            `json:"eligibility"`
+	Drain         bool              `json:"drain"`
+	NodeClass     string            `json:"nodeClass"`
+	Datacenter    string            `json:"datacenter"`
+	Attributes    map[string]string `json:"attributes"` // os.name, cpu.arch, …
+	Meta          map[string]string `json:"meta"`       // pool, host — set by the guest image
+	CPUMHz        int               `json:"cpuMHz"`
+	MemoryMiB     int               `json:"memoryMiB"`
+	RunningAllocs int               `json:"runningAllocs"`
 }
 
 // Allocation is a scheduled task group instance.
@@ -36,6 +36,13 @@ type Allocation struct {
 	ExitCode     *int       `json:"exitCode,omitempty"`
 	CreatedAt    time.Time  `json:"createdAt"`
 	FinishedAt   *time.Time `json:"finishedAt,omitempty"`
+	// Signal is the raw Unix signal number (if any) from the allocation's terminal task event, e.g.
+	// 15 (SIGTERM) or 9 (SIGKILL). nil when the task didn't end via a caught signal.
+	Signal *int `json:"signal,omitempty"`
+	// FailureReason is a human-readable infra-fault description (Nomad DriverError/SetupError/
+	// DownloadError on the terminal task event), empty for an ordinary script failure (non-zero exit,
+	// no infra fault) or a still-running/pending allocation.
+	FailureReason string `json:"failureReason,omitempty"`
 }
 
 // DispatchResult is what Nomad returns for a parameterized job dispatch.
@@ -47,6 +54,9 @@ type DispatchResult struct {
 // Client is the seam between grove and Nomad.
 type Client interface {
 	ListNodes(ctx context.Context) ([]Node, error)
+	// GetNode fetches one Nomad client node by ID — used to resolve an allocation's placement
+	// (node meta.vm / meta.host) without listing every node.
+	GetNode(ctx context.Context, id string) (*Node, error)
 	// DrainNode enables/disables drain; deadline applies when enabling.
 	DrainNode(ctx context.Context, nodeID string, enable bool, deadline time.Duration) error
 

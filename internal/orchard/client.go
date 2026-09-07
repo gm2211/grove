@@ -168,8 +168,9 @@ func vmFromV1(vm v1.VM) VM {
 		RestartCount:  vm.RestartCount,
 		CreatedAt:     vm.CreatedAt,
 		StartedAt:     vm.StartedAt,
-		// TODO(gm2211/orchard): populate TTL once ttl_seconds lands on v1.VM — see the note in
-		// vmToV1 below, and ARCHITECTURE.md's "Fork of Orchard" section.
+		// TODO(gm2211/orchard): populate TTL once ttl_seconds lands on v1.VM — no such field
+		// or PR exists upstream yet; see the note in vmToV1 below and ARCHITECTURE.md's
+		// "Fork of Orchard" section.
 	}
 }
 
@@ -208,17 +209,18 @@ func vmToV1(spec VMSpec) *v1.VM {
 		vm.StartupScript = &v1.VMScript{ScriptContent: spec.StartupScript}
 	}
 
-	// TODO(gm2211/orchard): shutdown_script / shutdown_script_timeout_seconds / ttl_seconds are
-	// landing on v1.VM via two PRs against github.com/gm2211/orchard main (tracked in
-	// ARCHITECTURE.md's "Fork of Orchard" section); they aren't there yet as of the pinned
-	// replace version in go.mod. Once they land, wire them up here as:
-	//
-	//   vm.ShutdownScript = &v1.VMScript{ScriptContent: spec.ShutdownScript}
-	//   vm.ShutdownScriptTimeoutSeconds = uint64(spec.ShutdownTimeout.Seconds())
-	//   vm.TTLSeconds = uint64(spec.TTL.Seconds())
-	//
-	// Until then, grove's VMSpec still accepts these fields (fleet.Reconciler sets them from
-	// fleet.yaml) but they are silently dropped rather than sent to the controller.
+	if spec.ShutdownScript != "" {
+		vm.ShutdownScript = &v1.VMScript{ScriptContent: spec.ShutdownScript}
+	}
+	if spec.ShutdownTimeout > 0 {
+		vm.ShutdownScriptTimeoutSeconds = uint64(spec.ShutdownTimeout.Seconds())
+	}
+
+	// TODO(gm2211/orchard): spec.TTL is still NOT wired here — ttl_seconds has not landed on
+	// v1.VM (no such PR exists against github.com/gm2211/orchard, open or merged, as of the
+	// pinned replace version in go.mod; see ARCHITECTURE.md's "Fork of Orchard" section).
+	// fleet.Reconciler still threads spec.TTL through from fleet.yaml, it's just silently
+	// dropped here until the fork adds a field to carry it.
 
 	return vm
 }

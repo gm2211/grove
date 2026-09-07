@@ -99,6 +99,29 @@ itself has not been exercised against a live Nomad cluster (no server available 
 environment) — see `nomad/jobs/README.md`'s testing section for what *was* verified
 (template rendering via `go test ./nomad/...`).
 
+### The socket mount is opt-in per pool, off by default
+
+The docker-socket-mount-plus-nested-`docker run` mechanism described above is **not** unconditional
+— it's gated behind `fleet.yaml`'s `pools[].allowDockerSocket` (default `false`, see
+`internal/fleet.Pool.AllowDockerSocket`), threaded through `dispatch.PoolConfig` into each job
+template's `{{.AllowDockerSocket}}`.
+
+- When `allowDockerSocket` is unset or `false` (the default): the docker task's `config` block
+  never mounts `/var/run/docker.sock`, and `run.sh` never attempts a nested `docker run`.
+  `NOMAD_META_image` is still accepted (it stays in every template's `meta_optional` list for
+  dispatch-contract symmetry across pools) but it is silently ignored — every job on the pool runs
+  in the fixed `grove-runner` image.
+- When `allowDockerSocket` is `true`: behavior is exactly as described above — the socket is
+  mounted and `run.sh` nests a `docker run` whenever `NOMAD_META_image` differs from the default.
+
+**Why default to off**: the docker socket gives a container root-equivalent control of the VM
+host it's running on, and it lets any job on the pool reach every other job's containers through
+the same daemon. On a shared multi-tenant pool that's a real isolation hole — one job's
+`docker run` can inspect, exec into, or kill any other job's container, or escape to the host
+entirely. That's a meaningful security/blast-radius trade-off in exchange for per-dispatch image
+selection, so grove requires an operator to opt a pool into it explicitly rather than enabling it
+silently for everyone.
+
 ## Testing the contract
 
 ```console

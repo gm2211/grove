@@ -85,6 +85,20 @@ func (s *store) get(id string) (*record, bool) {
 	return &cp, true
 }
 
+// findByIdempotencyKey returns the first record whose JobRequest.IdempotencyKey matches key.
+// Linear scan over s.jobs is fine — job counts are small.
+func (s *store) findByIdempotencyKey(key string) (*record, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, r := range s.jobs {
+		if r.Request.IdempotencyKey == key {
+			cp := *r
+			return &cp, true
+		}
+	}
+	return nil, false
+}
+
 func (s *store) list() []record {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

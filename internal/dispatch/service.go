@@ -1,18 +1,23 @@
 package dispatch
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"context"
 
+	"github.com/gm2211/grove/internal/artifacts"
 	"github.com/gm2211/grove/internal/nomad"
 )
 
@@ -25,6 +30,9 @@ type Options struct {
 	// paths (artifact_prefix) are relative to. Purely informational for now — the running job
 	// is the one that actually uploads to it.
 	ArtifactsBase string
+	// Artifacts, when non-nil, is used to populate Job.Artifacts once a job reaches a terminal
+	// status. Nil means "no artifact store configured" — Job.Artifacts is just never populated.
+	Artifacts artifacts.Client
 	// StorePath overrides the on-disk job history location. Empty uses
 	// $XDG_STATE_HOME/grove/jobs.json (default ~/.local/state/grove/jobs.json). Pass a path in a
 	// throwaway directory (or leave the default empty-string sentinel via NewForTest) to disable
@@ -40,9 +48,10 @@ type cachedStatus struct {
 }
 
 type service struct {
-	nomad nomad.Client
-	opts  Options
-	store *store
+	nomad     nomad.Client
+	artifacts artifacts.Client
+	opts      Options
+	store     *store
 
 	mu    sync.Mutex
 	cache map[string]cachedStatus
@@ -64,7 +73,7 @@ func New(nc nomad.Client, opts Options) (Service, error) {
 	if opts.StatusTTL <= 0 {
 		opts.StatusTTL = 3 * time.Second
 	}
-	return &service{nomad: nc, opts: opts, store: st, cache: map[string]cachedStatus{}}, nil
+	return &service{nomad: nc, artifacts: opts.Artifacts, opts: opts, store: st, cache: map[string]cachedStatus{}}, nil
 }
 
 // jobName returns the parameterized Nomad job name for a kind×pool pair, e.g. "grove-build-linux".
@@ -104,14 +113,24 @@ func artifactPrefix(id string) string {
 	return "jobs/" + id + "/"
 }
 
-func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, error) {
+func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error) {
 	if err := validate(req); err != nil {
-		return nil, err
+		return nil, false, err
+	}
+
+	if req.IdempotencyKey != "" {
+		if rec, ok := s.store.findByIdempotencyKey(req.IdempotencyKey); ok {
+			job, err := s.reconcile(ctx, rec)
+			if err != nil {
+				return nil, false, err
+			}
+			return job, false, nil
+		}
 	}
 
 	id, err := randomID()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	// Meta mapping follows docs/JOBS.md exactly (the images/jobs agent's authoritative dispatch
@@ -135,14 +154,14 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, error) {
 	if len(req.Env) > 0 {
 		envJSON, err := json.Marshal(req.Env)
 		if err != nil {
-			return nil, fmt.Errorf("dispatch: marshal env: %w", err)
+			return nil, false, fmt.Errorf("dispatch: marshal env: %w", err)
 		}
 		meta["env_json"] = string(envJSON)
 	}
 	if len(req.Meta) > 0 {
 		metaJSON, err := json.Marshal(req.Meta)
 		if err != nil {
-			return nil, fmt.Errorf("dispatch: marshal meta: %w", err)
+			return nil, false, fmt.Errorf("dispatch: marshal meta: %w", err)
 		}
 		meta["grove_meta_json"] = string(metaJSON)
 	}
@@ -154,7 +173,7 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, error) {
 	name := jobName(req.Kind, req.Pool)
 	res, err := s.nomad.Dispatch(ctx, name, meta, []byte(req.Script))
 	if err != nil {
-		return nil, fmt.Errorf("dispatch %s: %w", name, err)
+		return nil, false, fmt.Errorf("dispatch %s: %w", name, err)
 	}
 
 	now := time.Now().UTC()
@@ -169,10 +188,10 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, error) {
 		NomadJobID: res.DispatchedJobID,
 	}
 	if err := s.store.put(rec); err != nil {
-		return nil, fmt.Errorf("dispatch: persist job %s: %w", id, err)
+		return nil, false, fmt.Errorf("dispatch: persist job %s: %w", id, err)
 	}
 	job := rec.Job
-	return &job, nil
+	return &job, true, nil
 }
 
 func isTerminal(status Status) bool {
@@ -249,9 +268,48 @@ func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {
 		if alloc.FinishedAt != nil {
 			updated.FinishedAt = alloc.FinishedAt
 		}
+
+		if alloc.ExitCode != nil && *alloc.ExitCode == 124 {
+			updated.TimedOut = true
+		}
+		if alloc.Signal != nil {
+			name := signalName(*alloc.Signal)
+			updated.Signal = &name
+		}
+		if alloc.FailureReason != "" {
+			fr := alloc.FailureReason
+			updated.FailureReason = &fr
+		} else if updated.Status == StatusLost {
+			fr := "allocation lost — worker or node became unreachable"
+			updated.FailureReason = &fr
+		}
+		updated.Placement = &Placement{AllocID: alloc.ID, NodeID: alloc.NodeID}
+		if node, nerr := s.nomad.GetNode(ctx, alloc.NodeID); nerr == nil && node != nil {
+			updated.Placement.VMID = node.Meta["vm"]
+			updated.Placement.WorkerID = node.Meta["host"]
+		} // a GetNode error here is non-fatal — placement partially populated (AllocID/NodeID still set) beats failing the whole Get/List call over a node lookup blip.
 	}
 
 	rec.Job = updated
+	if isTerminal(updated.Status) && len(rec.Job.Artifacts) == 0 && s.artifacts != nil {
+		if objs, aerr := s.artifacts.List(ctx, artifactPrefix(rec.ID)); aerr != nil {
+			// Artifact listing is best-effort — a bucket hiccup shouldn't fail the whole
+			// reconcile, since the running job itself already succeeded or failed on its own.
+			slog.Warn("dispatch: listing artifacts failed", "id", rec.ID, "err", aerr)
+		} else if len(objs) > 0 {
+			arts := make([]Artifact, 0, len(objs))
+			for _, obj := range objs {
+				arts = append(arts, Artifact{
+					Path:        obj.Path,
+					URL:         "/api/v1/jobs/" + url.PathEscape(rec.ID) + "/artifacts/" + escapeArtifactPath(obj.Path),
+					Size:        obj.Size,
+					ContentType: obj.ContentType,
+				})
+			}
+			updated.Artifacts = arts
+			rec.Job = updated
+		}
+	}
 	if err := s.store.put(rec); err != nil {
 		return nil, fmt.Errorf("dispatch: persist job %s: %w", rec.ID, err)
 	}
@@ -262,6 +320,38 @@ func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {
 
 	job := updated
 	return &job, nil
+}
+
+// signalName maps common Unix signal numbers to their conventional names; anything else falls
+// back to a numeric label rather than guessing.
+func signalName(n int) string {
+	switch n {
+	case 1:
+		return "SIGHUP"
+	case 2:
+		return "SIGINT"
+	case 3:
+		return "SIGQUIT"
+	case 6:
+		return "SIGABRT"
+	case 9:
+		return "SIGKILL"
+	case 15:
+		return "SIGTERM"
+	default:
+		return fmt.Sprintf("signal %d", n)
+	}
+}
+
+// escapeArtifactPath url-escapes each "/"-separated segment of an artifact path individually and
+// rejoins with "/", so a path with subdirectories keeps its slashes literal while every other
+// character is safely embedded in the download URL.
+func escapeArtifactPath(p string) string {
+	parts := strings.Split(p, "/")
+	for i, part := range parts {
+		parts[i] = url.PathEscape(part)
+	}
+	return strings.Join(parts, "/")
 }
 
 func (s *service) Get(ctx context.Context, id string) (*Job, error) {
@@ -288,21 +378,31 @@ func (s *service) List(ctx context.Context) ([]Job, error) {
 	return out, nil
 }
 
-func (s *service) Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error) {
+// allocIDFor resolves the current allocation id for a job, reconciling from Nomad if the store's
+// cached AllocID is still empty. Shared by Logs and LogLines.
+func (s *service) allocIDFor(ctx context.Context, id string) (string, error) {
 	rec, ok := s.store.get(id)
 	if !ok {
-		return nil, ErrNotFound
+		return "", ErrNotFound
 	}
 	allocID := rec.AllocID
 	if allocID == "" {
 		job, err := s.reconcile(ctx, rec)
 		if err != nil {
-			return nil, err
+			return "", err
 		}
 		allocID = job.AllocID
 	}
 	if allocID == "" {
-		return nil, fmt.Errorf("dispatch: job %s has no allocation yet", id)
+		return "", fmt.Errorf("dispatch: job %s has no allocation yet", id)
+	}
+	return allocID, nil
+}
+
+func (s *service) Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error) {
+	allocID, err := s.allocIDFor(ctx, id)
+	if err != nil {
+		return nil, err
 	}
 
 	stdout, err := s.nomad.Logs(ctx, allocID, "main", "stdout", follow)
@@ -315,6 +415,46 @@ func (s *service) Logs(ctx context.Context, id string, follow bool) (io.ReadClos
 		return nil, fmt.Errorf("dispatch: stderr logs: %w", err)
 	}
 	return newMergedLogReader(stdout, stderr), nil
+}
+
+// LogLines streams stdout/stderr as discrete, stream-tagged lines. See the Service interface doc
+// for the ordering caveat (best-effort across streams, same as Logs).
+func (s *service) LogLines(ctx context.Context, id string, follow bool) (<-chan LogLine, error) {
+	allocID, err := s.allocIDFor(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	stdout, err := s.nomad.Logs(ctx, allocID, "main", "stdout", follow)
+	if err != nil {
+		return nil, fmt.Errorf("dispatch: stdout logs: %w", err)
+	}
+	stderr, err := s.nomad.Logs(ctx, allocID, "main", "stderr", follow)
+	if err != nil {
+		stdout.Close()
+		return nil, fmt.Errorf("dispatch: stderr logs: %w", err)
+	}
+
+	out := make(chan LogLine, 64)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	scan := func(r io.ReadCloser, stream string) {
+		defer wg.Done()
+		defer r.Close()
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 64*1024), 1<<20)
+		for sc.Scan() {
+			select {
+			case out <- LogLine{Stream: stream, Line: sc.Text(), Time: time.Now().UTC()}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+	go scan(stdout, "stdout")
+	go scan(stderr, "stderr")
+	go func() { wg.Wait(); close(out) }()
+	return out, nil
 }
 
 func (s *service) Cancel(ctx context.Context, id string) error {

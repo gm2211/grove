@@ -1,6 +1,6 @@
 ## Parameterized "shell" job template — rendered by the grove server (package nomadjobs) with a
-## struct carrying at least {Kind: "shell", Pool: "linux"|"macos", CPU, Memory}. See README.md for
-## the full dispatch contract and docs/JOBS.md.
+## struct carrying at least {Kind: "shell", Pool: "linux"|"macos", CPU, Memory, AllowDockerSocket}.
+## See README.md for the full dispatch contract and docs/JOBS.md.
 ##
 ## shell: runs the dispatched script as-is, no git clone (what `grove exec` and the MCP
 ## `grove_run` tool use). meta_optional still accepts repo/ref for contract symmetry with
@@ -48,7 +48,11 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         # See build.nomad.hcl: docker `image` cannot be interpolated from dispatch meta
         # (hashicorp/nomad#6247); a NOMAD_META_image override is honored via nested `docker run`
         # in run.sh instead.
+{{if .AllowDockerSocket}}
+        # OPT-IN (fleet.yaml pool.allowDockerSocket: true) — see build.nomad.hcl for the
+        # isolation trade-off this mount makes. Default is false.
         volumes = ["/var/run/docker.sock:/var/run/docker.sock"]
+{{end}}
       }
 {{end}}
 
@@ -68,6 +72,7 @@ job "grove-{{.Kind}}-{{.Pool}}" {
           eval "$(printf '%s' "$NOMAD_META_env_json" | jq -r 'to_entries[] | "export " + .key + "=" + (.value|tostring|@sh)')"
         fi
 
+{{if .AllowDockerSocket}}
         if command -v docker >/dev/null 2>&1 && [ -n "${NOMAD_META_image:-}" ] && [ "${NOMAD_META_image}" != "$DEFAULT_IMAGE" ]; then
           exec docker run --rm \
             -v "${NOMAD_TASK_DIR}":/workspace -w /workspace \
@@ -77,6 +82,13 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         else
           exec timeout "${NOMAD_META_timeout_seconds:-3600}" bash -eo pipefail "$script_src"
         fi
+{{else}}
+        # This pool has no docker-socket access (fleet.yaml pool.allowDockerSocket is unset or
+        # false — the grove default). NOMAD_META_image is still accepted for dispatch-contract
+        # symmetry with opted-in pools, but it's ignored here: every job runs in this fixed
+        # grove-runner image, no nested `docker run` is ever attempted.
+        exec timeout "${NOMAD_META_timeout_seconds:-3600}" bash -eo pipefail "$script_src"
+{{end}}
         EOF
         destination = "local/run.sh"
         perms       = "0755"

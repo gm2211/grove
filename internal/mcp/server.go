@@ -5,6 +5,10 @@
 package mcp
 
 import (
+	"errors"
+	"strings"
+
+	"github.com/gm2211/grove/internal/apiclient"
 	"github.com/gm2211/grove/internal/config"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -21,14 +25,15 @@ fleet-maintenance actions — use them deliberately, they affect real machines.`
 // (Authorization: Bearer cfg.Server.Token). version is reported to clients as the server's
 // implementation version (e.g. the grove CLI version).
 func NewServer(cfg *config.Config, version string) (*mcpsdk.Server, error) {
-	client, err := newAPIClient(cfg.Server.URL, cfg.Server.Token)
-	if err != nil {
-		return nil, err
+	baseURL := strings.TrimSpace(cfg.Server.URL)
+	if baseURL == "" {
+		return nil, errors.New("grove server URL is not configured — set server.url in ~/.config/grove/config.yaml (or $GROVE_CONFIG)")
 	}
+	client := apiclient.New(baseURL, cfg.Server.Token)
 	return newServerWithClient(client, version), nil
 }
 
-func newServerWithClient(client *apiClient, version string) *mcpsdk.Server {
+func newServerWithClient(client *apiclient.Client, version string) *mcpsdk.Server {
 	h := &handlers{client: client}
 
 	impl := &mcpsdk.Implementation{

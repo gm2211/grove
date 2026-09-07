@@ -3,6 +3,7 @@
 package wire
 
 import (
+	"github.com/gm2211/grove/internal/artifacts"
 	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
@@ -16,4 +17,10 @@ func NewOrchardClient(cfg config.Endpoint) (orchard.Client, error) {
 // NewNomadClient builds the concrete Nomad client from an endpoint config.
 func NewNomadClient(cfg config.Endpoint) (nomad.Client, error) {
 	return nomad.New(cfg.URL, cfg.Token)
+}
+
+// NewArtifactsClient builds the concrete artifact-bucket client from config. Returns
+// artifacts.ErrNotConfigured (not fatal) when no bucket is configured.
+func NewArtifactsClient(cfg config.ArtifactsConfig) (artifacts.Client, error) {
+	return artifacts.New(cfg)
 }

@@ -18,7 +18,7 @@ func newTestServer(oc *fakeOrchard, nc *fakeNomad, ds *fakeDispatch, opts Option
 	if ds == nil {
 		ds = &fakeDispatch{jobs: map[string]*dispatch.Job{}}
 	}
-	return New(oc, nc, ds, opts)
+	return New(oc, nc, ds, nil, opts)
 }
 
 func TestAuth_TokenRequired(t *testing.T) {
