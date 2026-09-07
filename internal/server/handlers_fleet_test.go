@@ -26,7 +26,7 @@ func TestHandleFleet_Normalizes(t *testing.T) {
 			},
 		},
 		vms: []orchard.VM{
-			{Name: "linux-mac1-0", Worker: "mac1", Status: "running", CPU: 4, Memory: 8192, Labels: map[string]string{"pool": "linux"}},
+			{Name: "linux-mac1-0", Worker: "mac1", Status: "running", CPU: 4, Memory: 8192, Labels: map[string]string{"org.cirruslabs.orchard.worker-name": "mac1"}},
 		},
 	}
 	nc := &fakeNomad{
@@ -66,6 +66,9 @@ func TestHandleFleet_Normalizes(t *testing.T) {
 	}
 	if resp.VMs[0].Host != "mac1" {
 		t.Errorf("vm host = %q, want mac1", resp.VMs[0].Host)
+	}
+	if resp.VMs[0].Pool != "linux" {
+		t.Errorf("vm pool = %q, want linux (derived from the VM name, not a label)", resp.VMs[0].Pool)
 	}
 
 	if len(resp.Nodes) != 1 || resp.Nodes[0].Kind != "node" || !resp.Nodes[0].Online {

@@ -103,7 +103,7 @@ pools:
     cpu: 4
     memory: 8192            # MiB
     ttl: 12h
-    labels: { pool: linux }
+    labels: {}               # extra Orchard *worker selectors* — see below, usually left empty
     workerSelector: {}      # only workers whose labels ⊇ this map
     allowDockerSocket: false # opt-in only; mounts the VM's docker socket into jobs (see docs/JOBS.md)
   - name: macos
@@ -114,10 +114,28 @@ pools:
     ttl: 12h
 ```
 
-Reconciler: for each online, non-paused worker matching `workerSelector`, ensure `perWorker` VMs named
-`<pool>-<worker>-<n>` exist, labelled `pool=<pool> host=<worker>`, `restart_policy: OnFailure`,
-`ttl_seconds` set, startup/shutdown scripts from the pool. VMs are pinned to their host via label so
-they never wander. Missing → create; extra → delete; spec drift → delete + recreate.
+Pool names are restricted to lowercase letters/digits, no dashes or dots (`fleet.Load`'s
+validation) — VM names are parsed back as `<pool>-<worker>-<n>` (`fleet.ParseVMName`), and worker
+names (real hostnames) routinely contain both, so the pool component must be unambiguous.
+
+Reconciler: for each online, non-paused worker matching `workerSelector`, ensure `perWorker` VMs
+named `<pool>-<worker>-<n>` exist, `restart_policy: OnFailure`, `ttl_seconds` set, startup/shutdown
+scripts from the pool. A VM's pool and host are never labelled — they're derived from its name and
+its observed placement (`fleet.PoolAndHost`): pool from parsing the name, host from Orchard's
+`worker` field once scheduled, falling back to the pinned worker while still pending. Missing →
+create; extra → delete; spec drift (image/cpu/memory/diskSize/restartPolicy/ttl/scripts) → delete +
+recreate.
+
+**VM labels are a hard scheduler selector, not free-form tags.** Orchard's scheduler only ever
+places a VM on a worker whose own labels are a *superset* of the VM's
+(`internal/controller/scheduler` in the gm2211/orchard fork, `worker.Labels.Contains(vm.Labels)`).
+So the VM labels grove sends are ONLY the `org.cirruslabs.orchard.worker-name` pin (which every
+worker automatically satisfies for itself) plus whatever a pool's `labels:` map declares — and a
+label in that map must also be present, with the same value, on any worker meant to run the pool
+(`orchard worker run --labels k=v`), or that worker can never satisfy the selector and the pool's
+VMs sit `pending` on it forever. This is why pool/host bookkeeping moved out of VM labels
+entirely: `pool=<pool> host=<worker>` labels grove used to add had no matching worker labels by
+default, so every VM stuck pending.
 
 ## Job model
 
@@ -137,7 +155,7 @@ All under `/api/v1`, `Authorization: Bearer <token>`, bind to the tailnet addres
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/fleet` | `{workers[], vms[], nodes[], fetchedAt, totals}` normalised: name, host, arch, online, cordoned, capacity, running; `totals` is at-a-glance counts (workersOnline/Cordoned, vmsRunning, nodesReady/Draining, jobsRunning/Pending) |
+| GET | `/fleet` | `{workers[], vms[], nodes[], fetchedAt, totals}` normalised: name, host, pool (vm entries only, derived — see above), arch, online, cordoned, capacity, running; `totals` is at-a-glance counts (workersOnline/Cordoned, vmsRunning, nodesReady/Draining, jobsRunning/Pending) |
 | POST | `/vms/{name}/recycle` | drain (via Nomad) then delete; reconciler recreates |
 | POST | `/workers/{name}/pause` · `/resume` | Orchard cordon |
 | GET | `/jobs` · `/jobs/{id}` | list / status |

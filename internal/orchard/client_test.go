@@ -33,10 +33,11 @@ func TestSplitToken(t *testing.T) {
 	}
 }
 
-func TestVMToV1_PinsWorkerLabelFromHost(t *testing.T) {
+func TestVMToV1_PinsWorkerFromSpecWorker(t *testing.T) {
 	spec := VMSpec{
 		Name:   "linux-mac1-0",
-		Labels: map[string]string{"pool": "linux", "host": "mac1"},
+		Worker: "mac1",
+		Labels: map[string]string{"arch": "arm64"}, // a pool-declared worker selector
 	}
 
 	vm := vmToV1(spec)
@@ -45,8 +46,28 @@ func TestVMToV1_PinsWorkerLabelFromHost(t *testing.T) {
 		t.Errorf("want %s=%q, got %+v", v1.LabelWorkerName, "mac1", vm.Labels)
 	}
 
-	if vm.Labels["pool"] != "linux" || vm.Labels["host"] != "mac1" {
+	if vm.Labels["arch"] != "arm64" {
 		t.Errorf("want original labels preserved, got %+v", vm.Labels)
+	}
+}
+
+func TestVMToV1_NoWorker_NoPinLabel(t *testing.T) {
+	vm := vmToV1(VMSpec{Name: "vm1"})
+
+	if _, ok := vm.Labels[v1.LabelWorkerName]; ok {
+		t.Errorf("want no %s label when Spec.Worker is unset, got %+v", v1.LabelWorkerName, vm.Labels)
+	}
+}
+
+func TestVMToV1_EmptyLabels_OnlyThePin(t *testing.T) {
+	// The bug this guards against: grove used to also stuff "pool"/"host"/a spec-hash into VM
+	// labels, but Orchard's scheduler treats VM labels as a hard selector a worker's own labels
+	// must be a superset of — a worker only ever carries the pin label plus whatever --labels an
+	// operator passed, so any extra label with no matching worker left the VM "pending" forever.
+	vm := vmToV1(VMSpec{Name: "vm1", Worker: "mac1"})
+
+	if len(vm.Labels) != 1 || vm.Labels[v1.LabelWorkerName] != "mac1" {
+		t.Errorf("want only the worker pin label, got %+v", vm.Labels)
 	}
 }
 
@@ -134,15 +155,19 @@ func TestVMFromV1_MapsAssignedResources(t *testing.T) {
 	created := time.Now().Add(-time.Hour).Truncate(time.Second)
 
 	v := v1.VM{
-		Meta:           v1.Meta{Name: "vm1", CreatedAt: created},
-		Image:          "img:latest",
-		Status:         v1.VMStatusRunning,
-		Worker:         "mac1",
-		AssignedCPU:    4,
-		AssignedMemory: 8192,
-		RestartPolicy:  v1.RestartPolicyOnFailure,
-		RestartCount:   2,
-		Labels:         v1.Labels{"pool": "linux"},
+		Meta:                         v1.Meta{Name: "vm1", CreatedAt: created},
+		Image:                        "img:latest",
+		Status:                       v1.VMStatusRunning,
+		Worker:                       "mac1",
+		AssignedCPU:                  4,
+		AssignedMemory:               8192,
+		DiskSize:                     100,
+		RestartPolicy:                v1.RestartPolicyOnFailure,
+		RestartCount:                 2,
+		Labels:                       v1.Labels{"org.cirruslabs.orchard.worker-name": "mac1"},
+		StartupScript:                &v1.VMScript{ScriptContent: "echo start"},
+		ShutdownScript:               &v1.VMScript{ScriptContent: "echo stop"},
+		ShutdownScriptTimeoutSeconds: 45,
 	}
 
 	out := vmFromV1(v)
@@ -151,8 +176,8 @@ func TestVMFromV1_MapsAssignedResources(t *testing.T) {
 		t.Fatalf("unexpected mapping: %+v", out)
 	}
 
-	if out.CPU != 4 || out.Memory != 8192 {
-		t.Errorf("want assigned cpu/memory 4/8192, got %d/%d", out.CPU, out.Memory)
+	if out.CPU != 4 || out.Memory != 8192 || out.DiskSize != 100 {
+		t.Errorf("want assigned cpu/memory/diskSize 4/8192/100, got %d/%d/%d", out.CPU, out.Memory, out.DiskSize)
 	}
 
 	if out.Status != string(v1.VMStatusRunning) || out.RestartPolicy != string(v1.RestartPolicyOnFailure) {
@@ -163,8 +188,24 @@ func TestVMFromV1_MapsAssignedResources(t *testing.T) {
 		t.Errorf("want createdAt %v, got %v", created, out.CreatedAt)
 	}
 
-	if out.Labels["pool"] != "linux" {
-		t.Errorf("want label pool=linux, got %+v", out.Labels)
+	if out.Labels["org.cirruslabs.orchard.worker-name"] != "mac1" {
+		t.Errorf("want worker-pin label preserved, got %+v", out.Labels)
+	}
+
+	if out.StartupScript != "echo start" || out.ShutdownScript != "echo stop" {
+		t.Errorf("want startup/shutdown script content mapped, got %+v", out)
+	}
+
+	if out.ShutdownTimeout != 45*time.Second {
+		t.Errorf("want shutdown timeout 45s, got %v", out.ShutdownTimeout)
+	}
+}
+
+func TestVMFromV1_NilScripts_EmptyStrings(t *testing.T) {
+	out := vmFromV1(v1.VM{Meta: v1.Meta{Name: "vm1"}})
+
+	if out.StartupScript != "" || out.ShutdownScript != "" {
+		t.Errorf("want empty script strings when v1.VM has none, got %+v", out)
 	}
 }
 
@@ -324,8 +365,8 @@ func TestClient_EndToEnd(t *testing.T) {
 
 	created, err := c.CreateVM(ctx, VMSpec{
 		Name:   "linux-mac1-0",
+		Worker: "mac1",
 		Image:  "ghcr.io/example/linux:latest",
-		Labels: map[string]string{"pool": "linux", "host": "mac1"},
 	})
 	if err != nil {
 		t.Fatalf("CreateVM: %v", err)

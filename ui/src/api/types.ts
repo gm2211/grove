@@ -56,6 +56,10 @@ export interface FleetEntry {
   name: string;
   kind: FleetEntryKind;
   host?: string;
+  // Set for vm entries: which fleet.yaml pool the VM belongs to. Derived server-side from the VM
+  // name, not from `labels` — Orchard VM labels are worker selectors the scheduler enforces, not
+  // free-form metadata (see ARCHITECTURE.md's "Fleet spec" section).
+  pool?: string;
   arch?: string;
   online: boolean;
   cordoned: boolean;

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gm2211/grove/internal/dispatch"
+	"github.com/gm2211/grove/internal/fleet"
 	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
 )
@@ -19,9 +20,13 @@ type Capacity struct {
 
 // FleetEntry is one normalised row of GET /fleet, whichever of the three sources it came from.
 type FleetEntry struct {
-	Name     string            `json:"name"`
-	Kind     string            `json:"kind"` // worker | vm | node
-	Host     string            `json:"host,omitempty"`
+	Name string `json:"name"`
+	Kind string `json:"kind"` // worker | vm | node
+	Host string `json:"host,omitempty"`
+	// Pool is set for vm entries: which fleet.yaml pool the VM belongs to, derived from its name
+	// (orchard.VM no longer carries a usable "pool" label — see internal/fleet.PoolAndHost and
+	// fleet.Pool.Labels' doc comment for why).
+	Pool     string            `json:"pool,omitempty"`
 	Arch     string            `json:"arch,omitempty"`
 	Online   bool              `json:"online"`
 	Cordoned bool              `json:"cordoned"`
@@ -179,10 +184,14 @@ func normalizeVM(v orchard.VM) FleetEntry {
 	if v.Status == "running" {
 		running = 1
 	}
+
+	pool, host := fleet.PoolAndHost(v)
+
 	return FleetEntry{
 		Name:   v.Name,
 		Kind:   "vm",
-		Host:   v.Worker,
+		Host:   host,
+		Pool:   pool,
 		Online: v.Status == "running",
 		Status: v.Status,
 		Capacity: Capacity{

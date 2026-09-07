@@ -3,9 +3,15 @@ package fleet
 import (
 	"fmt"
 	"os"
+	"regexp"
 
 	"gopkg.in/yaml.v3"
 )
+
+// poolNameRE restricts pool names to lowercase letters/digits with no dashes or dots, so
+// ParseVMName can unambiguously split a VM name "<pool>-<worker>-<n>" on the first "-" even
+// though worker names (real hostnames) commonly contain both.
+var poolNameRE = regexp.MustCompile(`^[a-z][a-z0-9]*$`)
 
 // Load reads and validates a fleet.yaml spec from path.
 func Load(path string) (*Spec, error) {
@@ -33,6 +39,14 @@ func (s *Spec) Validate() error {
 	for i, p := range s.Pools {
 		if p.Name == "" {
 			return fmt.Errorf("pools[%d]: name is required", i)
+		}
+
+		if !poolNameRE.MatchString(p.Name) {
+			return fmt.Errorf(
+				"pool %q: name must match %s (lowercase letters/digits only, no dashes or dots) "+
+					"so VM names \"<pool>-<worker>-<n>\" can be parsed back unambiguously",
+				p.Name, poolNameRE.String(),
+			)
 		}
 
 		if seen[p.Name] {

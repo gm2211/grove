@@ -97,6 +97,61 @@ pools:
 	}
 }
 
+func TestLoad_PoolNameWithDash_Rejected(t *testing.T) {
+	// Pool names must be dash/dot-free so ParseVMName can split a VM name
+	// "<pool>-<worker>-<n>" on the first "-" unambiguously, even though worker names (real
+	// hostnames) commonly contain dashes.
+	path := writeTempSpec(t, `
+pools:
+  - name: mac-os
+    image: a
+    perWorker: 1
+`)
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("want error for pool name containing a dash, got nil")
+	}
+}
+
+func TestLoad_PoolNameWithDot_Rejected(t *testing.T) {
+	path := writeTempSpec(t, `
+pools:
+  - name: mac.os
+    image: a
+    perWorker: 1
+`)
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("want error for pool name containing a dot, got nil")
+	}
+}
+
+func TestLoad_PoolNameUppercase_Rejected(t *testing.T) {
+	path := writeTempSpec(t, `
+pools:
+  - name: MacOS
+    image: a
+    perWorker: 1
+`)
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("want error for uppercase pool name, got nil")
+	}
+}
+
+func TestLoad_PoolNameAlphanumeric_Accepted(t *testing.T) {
+	path := writeTempSpec(t, `
+pools:
+  - name: macos2
+    image: a
+    perWorker: 1
+`)
+
+	if _, err := Load(path); err != nil {
+		t.Fatalf("want alphanumeric pool name accepted, got: %v", err)
+	}
+}
+
 func TestLoad_MissingFile(t *testing.T) {
 	if _, err := Load(filepath.Join(t.TempDir(), "does-not-exist.yaml")); err == nil {
 		t.Fatal("want error for missing file, got nil")

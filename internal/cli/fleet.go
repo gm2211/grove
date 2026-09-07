@@ -135,8 +135,7 @@ var fleetStatusCmd = &cobra.Command{
 		fmt.Fprintln(w, "POOL\tWORKER\tVM\tSTATUS\tAGE\tTTL")
 
 		for _, vm := range vms {
-			pool := vm.Labels[fleet.LabelPool]
-			worker := vm.Labels[fleet.LabelHost]
+			pool, worker := fleet.PoolAndHost(vm)
 
 			age := "-"
 			if !vm.CreatedAt.IsZero() {
