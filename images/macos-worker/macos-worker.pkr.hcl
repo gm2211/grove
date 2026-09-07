@@ -36,7 +36,7 @@ variable "memory_gb" {
 
 variable "disk_size_gb" {
   type    = number
-  default = 100
+  default = 150
 }
 
 variable "ssh_username" {

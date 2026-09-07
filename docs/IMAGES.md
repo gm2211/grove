@@ -5,6 +5,11 @@ one plain container image (`images/runner`, the default image for linux jobs). T
 building and pushing them, why they're shaped the way they are, and the contract between an image
 and the fleet reconciler / startup-shutdown scripts (`internal/fleet`).
 
+> **Disk size:** the Xcode base image (`ghcr.io/cirruslabs/macos-sequoia-xcode`) is already 140 GB, and Tart
+> can only grow a disk, never shrink it — so `disk_size_gb` must be ≥ the base image's size (default 150).
+> A build that fails with `new disk size of N GB should be larger than the current disk size of 140 GB`
+> means the variable is too small.
+
 ## Prerequisites (build machine — must be a Mac)
 
 Tart only runs on Apple Silicon Macs (it's built on `Virtualization.framework`), so both worker
