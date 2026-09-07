@@ -1,0 +1,36 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # goreleaser needs write access to a SEPARATE repo (gm2211/homebrew-tap) to publish
+          # Formula/grove.rb, so the default GITHUB_TOKEN (scoped to this repo only) isn't
+          # enough. Add a repo secret named HOMEBREW_TAP_TOKEN: a GitHub personal access token
+          # (classic with `repo` scope, or fine-grained with Contents: read/write) on
+          # gm2211/homebrew-tap. Settings -> Secrets and variables -> Actions -> New repository
+          # secret, in gm2211/grove.
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

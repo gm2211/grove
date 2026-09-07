@@ -1,0 +1,600 @@
+package install
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"net"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/gm2211/grove/internal/config"
+	"github.com/gm2211/grove/internal/fleet"
+	"gopkg.in/yaml.v3"
+)
+
+// Default ports for the services grove renders on a control-plane host. Only used to fill in a
+// bind address when the corresponding --controller/--nomad/--server flag wasn't given (on this
+// role those flags describe the service being stood up here, not one to dial out to).
+const (
+	defaultOrchardControllerPort = "6120"
+	defaultNomadPort             = "4646"
+	defaultMinIOPort             = "9000"
+	defaultGroveServerPort       = "6130"
+)
+
+// buildControlPlaneSteps assembles the control-plane role plan. Works on macOS or Linux.
+func buildControlPlaneSteps(r Runner, opts Options, out io.Writer) []Step {
+	cfgDir := opts.ConfigDir()
+	destOrchard := filepath.Join(orchardBinDir(opts), orchardBinName)
+	isDarwin := opts.goos() == "darwin"
+
+	var steps []Step
+	steps = append(steps, controlPlaneDependencySteps(r, opts, destOrchard, isDarwin)...)
+	steps = append(steps, controlPlaneConfigSteps(r, opts, cfgDir, destOrchard)...)
+	steps = append(steps, controlPlaneServiceSteps(r, opts, cfgDir, destOrchard, isDarwin)...)
+	steps = append(steps, Step{
+		Name:        "orchard-service-account",
+		Description: "Create the Orchard `grove` service account (compute:read,compute:write,compute:connect) and store its token in config.yaml.",
+		Check: func(ctx context.Context) (bool, error) {
+			cfg, err := loadOrInitConfig(cfgDir)
+			if err != nil {
+				return false, err
+			}
+			return cfg.Orchard.Token != "", nil
+		},
+		Apply: func(ctx context.Context) error {
+			stdout, _, err := r.Run(ctx, destOrchard, "create", "service-account", "grove",
+				"--roles", "compute:read,compute:write,compute:connect")
+			if err != nil {
+				return fmt.Errorf("create orchard service account (adjust flags to match `orchard create service-account --help` on the fork if needed): %w", err)
+			}
+			token := extractToken(stdout)
+			if token == "" {
+				return fmt.Errorf("orchard create service-account did not print a token on stdout; see docs/OPERATIONS.md to set config.orchard.token by hand")
+			}
+			return updateConfig(cfgDir, func(cfg *config.Config) { cfg.Orchard.Token = token })
+		},
+	})
+	return steps
+}
+
+func controlPlaneDependencySteps(r Runner, opts Options, destOrchard string, isDarwin bool) []Step {
+	lookPath := opts.lookPath()
+	steps := []Step{
+		{
+			Name:        "nomad-binary",
+			Description: nomadInstallDescription(isDarwin),
+			Check: func(ctx context.Context) (bool, error) {
+				_, err := lookPath("nomad")
+				return err == nil, nil
+			},
+			Apply: func(ctx context.Context) error {
+				return installNomad(ctx, r, opts, isDarwin)
+			},
+		},
+		{
+			Name:        "orchard-binary",
+			Description: fmt.Sprintf("Install the Orchard fork binary to %s (release asset if available, else build from source).", destOrchard),
+			Check: func(ctx context.Context) (bool, error) {
+				if _, err := lookPath("orchard"); err == nil {
+					return true, nil
+				}
+				_, err := os.Stat(destOrchard)
+				return err == nil, nil
+			},
+			Apply: func(ctx context.Context) error {
+				return ensureOrchardBinary(ctx, r, opts, destOrchard, io.Discard)
+			},
+		},
+		{
+			Name:        "minio-binary",
+			Description: minioInstallDescription(isDarwin),
+			Check: func(ctx context.Context) (bool, error) {
+				_, err := lookPath("minio")
+				return err == nil, nil
+			},
+			Apply: func(ctx context.Context) error {
+				return installMinIO(ctx, r, opts, isDarwin)
+			},
+		},
+	}
+	return steps
+}
+
+func nomadInstallDescription(isDarwin bool) string {
+	if isDarwin {
+		return "Install Nomad (`brew install hashicorp/tap/nomad`)."
+	}
+	return "Install Nomad by downloading the HashiCorp release zip for this arch to ~/.local/bin."
+}
+
+func installNomad(ctx context.Context, r Runner, opts Options, isDarwin bool) error {
+	if isDarwin {
+		_, _, err := r.Run(ctx, "brew", "install", "hashicorp/tap/nomad")
+		return err
+	}
+	return downloadHashicorpBinary(ctx, r, opts, "nomad")
+}
+
+func minioInstallDescription(isDarwin bool) string {
+	if isDarwin {
+		return "Install MinIO (`brew install minio/stable/minio`)."
+	}
+	return "Install MinIO by downloading the linux binary from https://dl.min.io to ~/.local/bin."
+}
+
+func installMinIO(ctx context.Context, r Runner, opts Options, isDarwin bool) error {
+	if isDarwin {
+		_, _, err := r.Run(ctx, "brew", "install", "minio/stable/minio")
+		return err
+	}
+	destDir := orchardBinDir(opts) // ~/.local/bin, shared by all downloaded binaries
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return err
+	}
+	dest := filepath.Join(destDir, "minio")
+	downloadURL := fmt.Sprintf("https://dl.min.io/server/minio/release/linux-%s/minio", opts.goarch())
+	if _, _, err := r.Run(ctx, "curl", "-fsSL", "-o", dest, downloadURL); err != nil {
+		return fmt.Errorf("download minio: %w", err)
+	}
+	// chmod goes through r too (not os.Chmod) so the whole install is inert under a FakeRunner:
+	// nothing here actually touches the filesystem outside of directories grove itself owns.
+	_, _, err := r.Run(ctx, "chmod", "+x", dest)
+	return err
+}
+
+// downloadHashicorpBinary fetches a HashiCorp product's "latest" release zip for this GOOS/GOARCH
+// and unzips the single binary into ~/.local/bin. Used for Nomad on Linux (macOS uses brew).
+func downloadHashicorpBinary(ctx context.Context, r Runner, opts Options, product string) error {
+	destDir := orchardBinDir(opts)
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.MkdirTemp("", "grove-"+product+"-")
+	if err != nil {
+		return err
+	}
+	zipPath := filepath.Join(tmp, product+".zip")
+	// releases.hashicorp.com always redirects "latest" version lookups through their JSON index;
+	// checkpoint-style "latest" download links aren't stable, so this relies on `curl` following
+	// the versioned index page grove fetches first.
+	indexURL := fmt.Sprintf("https://api.releases.hashicorp.com/v1/releases/%s/latest", product)
+	shell := fmt.Sprintf(
+		`set -e
+version=$(curl -fsSL %q | tr ',' '\n' | grep -m1 '"version"' | cut -d'"' -f4)
+arch=%s
+os=%s
+curl -fsSL -o %q "https://releases.hashicorp.com/%s/${version}/%s_${version}_${os}_${arch}.zip"
+unzip -o %q -d %q
+`, indexURL, opts.goarch(), opts.goos(), zipPath, product, product, zipPath, tmp)
+	if _, _, err := r.Run(ctx, "/bin/sh", "-c", shell); err != nil {
+		return fmt.Errorf("download %s: %w", product, err)
+	}
+	shell2 := fmt.Sprintf("mv %q %q && chmod +x %q", filepath.Join(tmp, product), filepath.Join(destDir, product), filepath.Join(destDir, product))
+	_, _, err = r.Run(ctx, "/bin/sh", "-c", shell2)
+	return err
+}
+
+// controlPlaneConfigSteps render the files under ~/.config/grove/ that the supervised processes
+// and the grove CLI itself read.
+func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string) []Step {
+	tailnetHost := resolvedTailnetHost(r, opts)
+	orchardAddr := hostPortOrDefault(opts.Controller, tailnetHost, defaultOrchardControllerPort)
+	nomadAddr := hostPortOrDefault(opts.NomadAddr, tailnetHost, defaultNomadPort)
+	minioAddr := tailnetHost + ":" + defaultMinIOPort
+	serverAddr := hostPortOrDefault(opts.ServerURL, tailnetHost, defaultGroveServerPort)
+
+	orchardEnvPath := filepath.Join(cfgDir, "orchard-controller", "env")
+	nomadConfPath := filepath.Join(cfgDir, "nomad", "server.hcl")
+	minioEnvPath := filepath.Join(cfgDir, "minio", "env")
+	fleetPath := filepath.Join(cfgDir, "fleet.yaml")
+
+	return []Step{
+		{
+			Name:        "config:orchard-controller-env",
+			Description: fmt.Sprintf("Render %s (ORCHARD_HOME, ORCHARD_ADDRESS=%s).", orchardEnvPath, orchardAddr),
+			Check: fileHasContent(orchardEnvPath, func() (string, error) {
+				return RenderOrchardControllerEnv(OrchardControllerEnvSpec{
+					Home:    filepath.Join(cfgDir, "orchard-controller", "data"),
+					Address: orchardAddr,
+				})
+			}),
+			Apply: writeRenderedFile(orchardEnvPath, func() (string, error) {
+				return RenderOrchardControllerEnv(OrchardControllerEnvSpec{
+					Home:    filepath.Join(cfgDir, "orchard-controller", "data"),
+					Address: orchardAddr,
+				})
+			}),
+		},
+		{
+			Name:        "config:nomad-server",
+			Description: fmt.Sprintf("Render %s (single-node server, bootstrap_expect=1, ACL off, bind %s).", nomadConfPath, nomadAddr),
+			Check: fileHasContent(nomadConfPath, func() (string, error) {
+				return RenderNomadServerConfig(NomadServerConfigSpec{
+					DataDir:  filepath.Join(cfgDir, "nomad", "data"),
+					BindAddr: hostOnly(nomadAddr),
+				})
+			}),
+			Apply: writeRenderedFile(nomadConfPath, func() (string, error) {
+				return RenderNomadServerConfig(NomadServerConfigSpec{
+					DataDir:  filepath.Join(cfgDir, "nomad", "data"),
+					BindAddr: hostOnly(nomadAddr),
+				})
+			}),
+		},
+		{
+			Name:        "config:minio-env",
+			Description: fmt.Sprintf("Render %s with generated MinIO root credentials, recorded in config.yaml's artifacts section.", minioEnvPath),
+			Check: func(ctx context.Context) (bool, error) {
+				_, err := os.Stat(minioEnvPath)
+				if os.IsNotExist(err) {
+					return false, nil
+				}
+				return err == nil, err
+			},
+			Apply: func(ctx context.Context) error {
+				accessKey, err := randomHex(16)
+				if err != nil {
+					return err
+				}
+				secretKey, err := randomHex(32)
+				if err != nil {
+					return err
+				}
+				content, err := RenderMinIOEnv(MinIOEnvSpec{
+					RootUser:     accessKey,
+					RootPassword: secretKey,
+					DataDir:      filepath.Join(cfgDir, "minio", "data"),
+					Address:      minioAddr,
+				})
+				if err != nil {
+					return err
+				}
+				if err := writeFile(minioEnvPath, content); err != nil {
+					return err
+				}
+				return updateConfig(cfgDir, func(cfg *config.Config) {
+					cfg.Artifacts = config.ArtifactsConfig{
+						Endpoint:  "http://" + minioAddr,
+						Bucket:    "grove",
+						AccessKey: accessKey,
+						SecretKey: secretKey,
+					}
+				})
+			},
+		},
+		{
+			Name:        "config:grove-config-yaml",
+			Description: fmt.Sprintf("Write %s/config.yaml (orchard/nomad/server endpoints, generated server token).", cfgDir),
+			Check: func(ctx context.Context) (bool, error) {
+				cfg, err := loadOrInitConfig(cfgDir)
+				if err != nil {
+					return false, err
+				}
+				return cfg.Server.Token != "" && cfg.Orchard.URL != "" && cfg.Nomad.URL != "", nil
+			},
+			Apply: func(ctx context.Context) error {
+				return updateConfig(cfgDir, func(cfg *config.Config) {
+					cfg.Orchard.URL = "http://" + orchardAddr
+					cfg.Nomad.URL = "http://" + nomadAddr
+					cfg.Server.Listen = serverAddr
+					cfg.Server.URL = "http://" + serverAddr
+					if cfg.Server.Token == "" {
+						if tok, err := randomHex(32); err == nil {
+							cfg.Server.Token = tok
+						}
+					}
+					cfg.Fleet = fleetPath
+				})
+			},
+		},
+		{
+			Name:        "config:fleet-yaml",
+			Description: fmt.Sprintf("Write starter %s (linux + macos pools, per ARCHITECTURE.md).", fleetPath),
+			Check: func(ctx context.Context) (bool, error) {
+				_, err := os.Stat(fleetPath)
+				if os.IsNotExist(err) {
+					return false, nil
+				}
+				return err == nil, err
+			},
+			Apply: func(ctx context.Context) error {
+				return writeFile(fleetPath, starterFleetYAML())
+			},
+		},
+	}
+}
+
+// controlPlaneServiceSteps render the process supervisors (launchd on macOS, systemd --user on
+// Linux) for orchard controller, nomad, minio and `grove serve`.
+func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string, isDarwin bool) []Step {
+	groveBin := "grove" // resolved via PATH at runtime by the supervisor
+	nomadConf := filepath.Join(cfgDir, "nomad", "server.hcl")
+	nomadDataDir := filepath.Join(cfgDir, "nomad", "data")
+	minioEnv := filepath.Join(cfgDir, "minio", "env")
+	minioDataDir := filepath.Join(cfgDir, "minio", "data")
+	orchardHome := filepath.Join(cfgDir, "orchard-controller", "data")
+
+	units := []struct {
+		name        string
+		label       string
+		description string
+		program     string
+		args        []string
+		env         map[string]string
+		workingDir  string
+	}{
+		{
+			name:        "orchard-controller",
+			label:       "com.grove.orchard-controller",
+			description: "Orchard controller",
+			program:     destOrchard,
+			args:        []string{"controller", "run"},
+			env:         map[string]string{"ORCHARD_HOME": orchardHome},
+		},
+		{
+			name:        "nomad",
+			label:       "com.grove.nomad",
+			description: "Nomad server",
+			program:     "nomad",
+			args:        []string{"agent", "-config", nomadConf},
+			workingDir:  nomadDataDir,
+		},
+		{
+			name:        "minio",
+			label:       "com.grove.minio",
+			description: "MinIO artifact store",
+			program:     "minio",
+			args:        []string{"server", minioDataDir},
+			env:         map[string]string{"MINIO_CONFIG_ENV_FILE": minioEnv},
+		},
+		{
+			name:        "server",
+			label:       "com.grove.server",
+			description: "grove server (API + UI)",
+			program:     groveBin,
+			args:        []string{"serve"},
+		},
+	}
+
+	var steps []Step
+	for _, u := range units {
+		u := u
+		if isDarwin {
+			plistPath := filepath.Join(opts.LaunchAgentsDir(), u.label+".plist")
+			logDir := opts.LogDir()
+			steps = append(steps, Step{
+				Name:        "launchagent:" + u.name,
+				Description: fmt.Sprintf("Render %s for %s (KeepAlive+RunAtLoad, logs under %s).", plistPath, u.description, logDir),
+				Check: fileHasContent(plistPath, func() (string, error) {
+					return RenderLaunchAgent(LaunchAgentSpec{
+						Label: u.label, Program: u.program, Args: u.args, Env: u.env,
+						WorkingDir: u.workingDir, KeepAlive: true, RunAtLoad: true,
+						StdoutPath: filepath.Join(logDir, u.name+".log"),
+						StderrPath: filepath.Join(logDir, u.name+".err.log"),
+					})
+				}),
+				Apply: func(ctx context.Context) error {
+					content, err := RenderLaunchAgent(LaunchAgentSpec{
+						Label: u.label, Program: u.program, Args: u.args, Env: u.env,
+						WorkingDir: u.workingDir, KeepAlive: true, RunAtLoad: true,
+						StdoutPath: filepath.Join(logDir, u.name+".log"),
+						StderrPath: filepath.Join(logDir, u.name+".err.log"),
+					})
+					if err != nil {
+						return err
+					}
+					if err := os.MkdirAll(opts.LaunchAgentsDir(), 0o755); err != nil {
+						return err
+					}
+					if err := os.MkdirAll(logDir, 0o755); err != nil {
+						return err
+					}
+					return writeFile(plistPath, content)
+				},
+			})
+		} else {
+			unitPath := filepath.Join(opts.SystemdUserDir(), "grove-"+u.name+".service")
+			steps = append(steps, Step{
+				Name:        "systemd-unit:" + u.name,
+				Description: fmt.Sprintf("Render %s for %s (`systemctl --user enable --now grove-%s`).", unitPath, u.description, u.name),
+				Check: fileHasContent(unitPath, func() (string, error) {
+					return RenderSystemdUnit(SystemdUnitSpec{
+						Description: u.description, Program: u.program, Args: u.args,
+						Env: u.env, WorkingDir: u.workingDir,
+					})
+				}),
+				Apply: func(ctx context.Context) error {
+					content, err := RenderSystemdUnit(SystemdUnitSpec{
+						Description: u.description, Program: u.program, Args: u.args,
+						Env: u.env, WorkingDir: u.workingDir,
+					})
+					if err != nil {
+						return err
+					}
+					if err := os.MkdirAll(opts.SystemdUserDir(), 0o755); err != nil {
+						return err
+					}
+					return writeFile(unitPath, content)
+				},
+			})
+		}
+	}
+	return steps
+}
+
+// --- small shared helpers ---
+
+func fileHasContent(path string, render func() (string, error)) func(context.Context) (bool, error) {
+	return func(ctx context.Context) (bool, error) {
+		want, err := render()
+		if err != nil {
+			return false, err
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		return string(got) == want, nil
+	}
+}
+
+func writeRenderedFile(path string, render func() (string, error)) func(context.Context) error {
+	return func(ctx context.Context) error {
+		content, err := render()
+		if err != nil {
+			return err
+		}
+		return writeFile(path, content)
+	}
+}
+
+func writeFile(path, content string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(content), 0o600)
+}
+
+func randomHex(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// loadOrInitConfig loads config.yaml from dir, returning a zero Config if it doesn't exist yet
+// (not an error here: install renders it incrementally, step by step).
+func loadOrInitConfig(dir string) (*config.Config, error) {
+	path := filepath.Join(dir, "config.yaml")
+	cfg, err := config.LoadFrom(path)
+	if err != nil {
+		if err == config.ErrNotFound {
+			return &config.Config{}, nil
+		}
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// updateConfig loads config.yaml (or starts from zero value), applies mutate, and saves it back.
+func updateConfig(dir string, mutate func(*config.Config)) error {
+	cfg, err := loadOrInitConfig(dir)
+	if err != nil {
+		return err
+	}
+	mutate(cfg)
+	return config.Save(filepath.Join(dir, "config.yaml"), cfg)
+}
+
+func starterFleetYAML() string {
+	spec := fleet.Spec{
+		Pools: []fleet.Pool{
+			{
+				Name:      "linux",
+				Image:     "ghcr.io/gm2211/grove-linux-worker:latest",
+				PerWorker: 1,
+				CPU:       4,
+				Memory:    8192,
+				TTL:       fleet.Duration(12 * hour),
+				Labels:    map[string]string{"pool": "linux"},
+			},
+			{
+				Name:      "macos",
+				Image:     "ghcr.io/gm2211/grove-macos-worker:latest",
+				PerWorker: 1,
+				CPU:       4,
+				Memory:    8192,
+				TTL:       fleet.Duration(12 * hour),
+				Labels:    map[string]string{"pool": "macos"},
+			},
+		},
+	}
+	out, err := yaml.Marshal(spec)
+	if err != nil {
+		// Spec marshals unconditionally in practice (plain structs); keep Apply infallible-looking
+		// callers honest by surfacing this rather than silently writing an empty file.
+		return "# error rendering fleet.yaml: " + err.Error() + "\n"
+	}
+	return string(out)
+}
+
+// resolvedTailnetHost is the host grove binds/advertises control-plane services on when a flag
+// doesn't say otherwise: per ARCHITECTURE.md, that's this machine's tailnet IP. Falls back to the
+// plain hostname if Tailscale can't be queried (e.g. --dry-run planning docs, or not installed
+// yet — the "tailscale" step will already be flagging that).
+func resolvedTailnetHost(r Runner, opts Options) string {
+	bin, err := FindTailscale(opts.lookPath(), opts.exists())
+	if err != nil {
+		return opts.hostname()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), httpCheckTimeout)
+	defer cancel()
+	st, err := GetTailscaleStatus(ctx, r, bin)
+	if err != nil || st.TailnetIP() == "" {
+		return opts.hostname()
+	}
+	return st.TailnetIP()
+}
+
+// normalizeURL prepends "http://" when raw has no scheme, so url.Parse treats "host:port" as a
+// host+port rather than as "scheme:opaque".
+func normalizeURL(raw string) string {
+	if raw == "" || strings.Contains(raw, "://") {
+		return raw
+	}
+	return "http://" + raw
+}
+
+// hostPortOrDefault returns "host:port" from raw if it parses as a URL with a host, else
+// "fallbackHost:defaultPort".
+func hostPortOrDefault(raw, fallbackHost, defaultPort string) string {
+	if raw != "" {
+		if u, err := url.Parse(normalizeURL(raw)); err == nil && u.Host != "" {
+			if u.Port() != "" {
+				return u.Host
+			}
+			return u.Host + ":" + defaultPort
+		}
+	}
+	return fallbackHost + ":" + defaultPort
+}
+
+func hostOnly(hostPort string) string {
+	if h, _, err := net.SplitHostPort(hostPort); err == nil {
+		return h
+	}
+	return hostPort
+}
+
+const hour = time.Hour
+
+// extractToken pulls a service-account token out of `orchard create service-account` output.
+// Best-effort: the fork CLI isn't documented publicly, so this looks for a "token: <value>" or
+// "Token: <value>" line and falls back to the last non-empty line. Adjust if the fork's actual
+// output format differs (see docs/OPERATIONS.md).
+func extractToken(stdout string) string {
+	lines := strings.Split(stdout, "\n")
+	for _, line := range lines {
+		lower := strings.ToLower(line)
+		if idx := strings.Index(lower, "token:"); idx >= 0 {
+			return strings.TrimSpace(line[idx+len("token:"):])
+		}
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			return strings.TrimSpace(lines[i])
+		}
+	}
+	return ""
+}
