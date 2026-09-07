@@ -2,9 +2,6 @@ package fleet
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log"
 	"sort"
@@ -13,14 +10,13 @@ import (
 	"github.com/gm2211/grove/internal/orchard"
 )
 
-// Label keys the Reconciler uses to identify and group the VMs it manages. LabelSpecHash lets it
-// detect drift between fleet.yaml and what's actually running: when a pool's config changes, its
-// hash changes, and every VM carrying the old hash is deleted and recreated.
-const (
-	LabelPool     = "pool"
-	LabelHost     = "host"
-	LabelSpecHash = "grove.spec"
-)
+// LabelWorkerPin mirrors github.com/cirruslabs/orchard/pkg/resource/v1.LabelWorkerName (the fork
+// can't be imported from this package without pulling Orchard's own types into fleet's contract
+// surface — see internal/orchard/client.go's vmToV1, which sets this same key). Every VM grove
+// creates carries it, pinning the VM to the worker it was planned for; the Reconciler also reads
+// it back as the fallback source of a VM's "host" while the VM is still pending and Orchard's own
+// Worker field is empty (see PoolAndHost below).
+const LabelWorkerPin = "org.cirruslabs.orchard.worker-name"
 
 // Options tunes the Reconciler's behaviour. The zero value is usable.
 type Options struct {
@@ -94,8 +90,6 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 	desired := make(map[string]bool)
 
 	for _, pool := range r.Spec.Pools {
-		hash := specHash(pool)
-
 		for _, worker := range workers {
 			if worker.Offline || worker.SchedulingPaused {
 				continue
@@ -109,8 +103,10 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 				name := VMName(pool.Name, worker.Name, n)
 				desired[name] = true
 
+				spec := r.vmSpec(pool, worker.Name, name)
+
 				existing, ok := findVM(vms, name)
-				if ok && existing.Labels[LabelSpecHash] == hash {
+				if ok && !specDrifted(spec, existing) {
 					continue // already up to date
 				}
 
@@ -126,7 +122,7 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 				plan.Creates = append(plan.Creates, PlannedCreate{
 					Pool:   pool.Name,
 					Worker: worker.Name,
-					Spec:   r.vmSpec(pool, worker.Name, name, hash),
+					Spec:   spec,
 				})
 			}
 		}
@@ -134,9 +130,15 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 
 	// Anything grove-managed that isn't desired anymore: worker went offline/paused, pool or
 	// workerSelector no longer matches, perWorker shrank, or the pool was removed entirely.
+	//
+	// VM labels can't tell us that anymore (they're worker selectors now, see Pool.Labels), so
+	// "grove-managed" is determined the same way pool/host are derived for display: the name
+	// parses as "<pool>-<worker>-<n>" (ParseVMName) *and* the VM is pinned to that same worker
+	// (LabelWorkerPin) — every VM grove creates satisfies both, so this only ever picks up VMs
+	// grove itself made, never an unrelated resource that happens to share the naming shape.
 	for _, vm := range vms {
-		pool, managed := vm.Labels[LabelPool]
-		if !managed {
+		pool, worker, _, ok := ParseVMName(vm.Name)
+		if !ok || vm.Labels[LabelWorkerPin] != worker {
 			continue
 		}
 
@@ -147,7 +149,7 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 		plan.Deletes = append(plan.Deletes, PlannedDelete{
 			Name:   vm.Name,
 			Pool:   pool,
-			Worker: vm.Labels[LabelHost],
+			Worker: hostOf(vm, worker),
 			Reason: "no longer desired",
 		})
 	}
@@ -209,26 +211,22 @@ func (r *Reconciler) Run(ctx context.Context, interval time.Duration) error {
 	}
 }
 
-func (r *Reconciler) vmSpec(pool Pool, worker, name, hash string) orchard.VMSpec {
-	labels := make(map[string]string, len(pool.Labels)+3)
-	for k, v := range pool.Labels {
-		labels[k] = v
-	}
-
-	labels[LabelPool] = pool.Name
-	labels[LabelHost] = worker
-	labels[LabelSpecHash] = hash
-
+// vmSpec builds the orchard.VMSpec grove wants running for the n-th VM of pool on worker. Its
+// Labels are pool.Labels verbatim (nothing derived is added — see Pool.Labels' doc comment) plus
+// the worker pin vmToV1 applies from Worker; pool/host bookkeeping lives in the VM's *name* and
+// in Worker, not in labels.
+func (r *Reconciler) vmSpec(pool Pool, worker, name string) orchard.VMSpec {
 	startup := BuildStartupScript(pool, worker, name, r.Options.TailscaleAuthKey)
 	shutdown, shutdownTimeout := BuildShutdownScript(pool)
 
 	return orchard.VMSpec{
 		Name:            name,
+		Worker:          worker,
 		Image:           pool.Image,
 		CPU:             pool.CPU,
 		Memory:          pool.Memory,
 		DiskSize:        pool.DiskSize,
-		Labels:          labels,
+		Labels:          pool.Labels,
 		RestartPolicy:   "OnFailure",
 		Headless:        true,
 		Username:        pool.Username,
@@ -260,45 +258,61 @@ func labelsContain(have, want map[string]string) bool {
 	return true
 }
 
-// specHash fingerprints the parts of a Pool that determine what a VM created for it looks like,
-// so that changing any of them (in fleet.yaml) causes existing VMs to be recreated. It
-// deliberately excludes per-VM values (worker, VM name) — those come from vmSpec, not the pool.
-type specFingerprint struct {
-	Image           string
-	CPU             uint64
-	Memory          uint64
-	DiskSize        uint64
-	TTL             string
-	Labels          map[string]string
-	StartupScript   string
-	ShutdownScript  string
-	ShutdownTimeout string
-	Username        string
-	Password        string
+// specDrifted reports whether an already-existing VM no longer matches what fleet.yaml now
+// wants, field by field. This replaces the old grove.spec label-hash comparison now that VM
+// labels are worker selectors Orchard evaluates (see Pool.Labels) rather than free-form grove
+// bookkeeping: there's nowhere left to stash a hash, so the desired orchard.VMSpec (built fresh
+// from the current Pool) is compared directly against the observed orchard.VM.
+func specDrifted(desired orchard.VMSpec, existing orchard.VM) bool {
+	if desired.Image != existing.Image ||
+		desired.DiskSize != existing.DiskSize ||
+		desired.RestartPolicy != existing.RestartPolicy ||
+		desired.StartupScript != existing.StartupScript ||
+		desired.ShutdownScript != existing.ShutdownScript ||
+		desired.ShutdownTimeout != existing.ShutdownTimeout ||
+		desired.TTL != existing.TTL {
+		return true
+	}
+
+	// CPU/Memory come from Orchard's *assigned* resources (v1.VM's AssignedCPU/AssignedMemory —
+	// see vmFromV1), which the controller only populates once it has actually scheduled the VM
+	// onto a worker. Comparing them while the VM is still "pending" would read them as zero and
+	// treat every freshly created, not-yet-scheduled VM as instantly drifted — recreating it
+	// forever instead of ever letting it reach a worker. Skip that comparison until Orchard has
+	// something to report.
+	if existing.Status == "pending" {
+		return false
+	}
+
+	return desired.CPU != existing.CPU || desired.Memory != existing.Memory
 }
 
-func specHash(p Pool) string {
-	fp := specFingerprint{
-		Image:           p.Image,
-		CPU:             p.CPU,
-		Memory:          p.Memory,
-		DiskSize:        p.DiskSize,
-		TTL:             p.TTL.Std().String(),
-		Labels:          p.Labels,
-		StartupScript:   p.StartupScript,
-		ShutdownScript:  p.ShutdownScript,
-		ShutdownTimeout: p.ShutdownTimeout.Std().String(),
-		Username:        p.Username,
-		Password:        p.Password,
+// hostOf is a VM's best-known host: the controller-observed Worker once Orchard has actually
+// scheduled it, falling back to the worker grove pinned/planned it for (fallback, typically
+// parsed from the VM's own name) while it's still pending and Worker is empty.
+func hostOf(vm orchard.VM, fallback string) string {
+	if vm.Worker != "" {
+		return vm.Worker
 	}
 
-	b, err := json.Marshal(fp)
-	if err != nil {
-		// json.Marshal on this struct (plain strings/uints/map[string]string) cannot fail.
-		panic(fmt.Sprintf("fleet: marshal spec fingerprint: %v", err))
+	return fallback
+}
+
+// PoolAndHost derives a VM's pool and host the same way the Reconciler does internally, for
+// callers that only observe VMs (internal/server's /fleet normalisation, `grove fleet status`)
+// and never plan against them: pool comes from parsing the VM's name (see ParseVMName), and host
+// prefers the controller-observed Worker, falling back first to the VM's own worker-pin label and
+// then to the worker parsed out of its name, in case Worker is empty because Orchard hasn't
+// scheduled it yet.
+func PoolAndHost(vm orchard.VM) (pool, host string) {
+	pool, worker, _, ok := ParseVMName(vm.Name)
+	if !ok {
+		worker = ""
 	}
 
-	sum := sha256.Sum256(b)
+	if pin := vm.Labels[LabelWorkerPin]; pin != "" {
+		worker = pin
+	}
 
-	return hex.EncodeToString(sum[:])[:12]
+	return pool, hostOf(vm, worker)
 }

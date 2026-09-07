@@ -154,22 +154,36 @@ func (c *client) DeleteVM(ctx context.Context, name string) error {
 
 func vmFromV1(vm v1.VM) VM {
 	return VM{
-		Name:          vm.Name,
-		UID:           vm.UID,
-		Image:         vm.Image,
-		Status:        string(vm.Status),
-		StatusMessage: vm.StatusMessage,
-		Worker:        vm.Worker,
-		CPU:           vm.AssignedCPU,
-		Memory:        vm.AssignedMemory,
-		Labels:        map[string]string(vm.Labels.Copy()),
-		Resources:     map[string]uint64(vm.Resources.Copy()),
-		RestartPolicy: string(vm.RestartPolicy),
-		RestartCount:  vm.RestartCount,
-		CreatedAt:     vm.CreatedAt,
-		StartedAt:     vm.StartedAt,
-		TTL:           time.Duration(vm.TTLSeconds) * time.Second,
+		Name:            vm.Name,
+		UID:             vm.UID,
+		Image:           vm.Image,
+		Status:          string(vm.Status),
+		StatusMessage:   vm.StatusMessage,
+		Worker:          vm.Worker,
+		CPU:             vm.AssignedCPU,
+		Memory:          vm.AssignedMemory,
+		DiskSize:        vm.DiskSize,
+		Labels:          map[string]string(vm.Labels.Copy()),
+		Resources:       map[string]uint64(vm.Resources.Copy()),
+		RestartPolicy:   string(vm.RestartPolicy),
+		RestartCount:    vm.RestartCount,
+		CreatedAt:       vm.CreatedAt,
+		StartedAt:       vm.StartedAt,
+		TTL:             time.Duration(vm.TTLSeconds) * time.Second,
+		StartupScript:   scriptContent(vm.StartupScript),
+		ShutdownScript:  scriptContent(vm.ShutdownScript),
+		ShutdownTimeout: time.Duration(vm.ShutdownScriptTimeoutSeconds) * time.Second,
 	}
+}
+
+// scriptContent unwraps a v1.VMScript pointer (nil when Orchard has no startup/shutdown script
+// recorded for the VM) into the plain string orchard.VM carries.
+func scriptContent(s *v1.VMScript) string {
+	if s == nil {
+		return ""
+	}
+
+	return s.ScriptContent
 }
 
 func vmToV1(spec VMSpec) *v1.VM {
@@ -178,15 +192,15 @@ func vmToV1(spec VMSpec) *v1.VM {
 		labels[k] = v
 	}
 
-	// Pin the VM to its intended worker using Orchard's own scheduler-matched label:
-	// every Worker automatically carries v1.LabelWorkerName, and the scheduler only ever
-	// places a VM on a Worker whose Labels are a superset of the VM's
-	// (see internal/controller/scheduler.schedulingLoopIteration in the fork, the
-	// "!worker.Labels.Contains(unscheduledVM.Labels)" check). fleet.Reconciler sets
-	// spec.Labels["host"] to the target worker's name; mirror it into the real pinning label
-	// here so grove callers only ever need to know about "host".
-	if host, ok := spec.Labels["host"]; ok && host != "" {
-		labels[v1.LabelWorkerName] = host
+	// Pin the VM to its intended worker using Orchard's own scheduler-matched label: every
+	// Worker automatically carries v1.LabelWorkerName, and the scheduler only ever places a VM
+	// on a Worker whose Labels are a *superset* of the VM's (see
+	// internal/controller/scheduler.schedulingLoopIteration in the fork, the
+	// "!worker.Labels.Contains(unscheduledVM.Labels)" check) — so spec.Labels must only ever
+	// contain entries the target worker's own labels also carry (see fleet.Pool.Labels), and
+	// the pin below is what actually places the VM.
+	if spec.Worker != "" {
+		labels[v1.LabelWorkerName] = spec.Worker
 	}
 
 	vm := &v1.VM{

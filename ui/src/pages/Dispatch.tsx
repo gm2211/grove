@@ -17,7 +17,7 @@ export function DispatchPage() {
 
   const pools = useMemo(() => {
     const set = new Set<string>();
-    for (const vm of fleet?.vms ?? []) if (vm.labels?.pool) set.add(vm.labels.pool);
+    for (const vm of fleet?.vms ?? []) if (vm.pool) set.add(vm.pool);
     for (const n of fleet?.nodes ?? []) if (n.labels?.pool) set.add(n.labels.pool);
     return Array.from(set).sort();
   }, [fleet]);

@@ -33,7 +33,8 @@ type VM struct {
 	StatusMessage string            `json:"statusMessage,omitempty"`
 	Worker        string            `json:"worker"`
 	CPU           uint64            `json:"cpu"`
-	Memory        uint64            `json:"memory"` // MiB
+	Memory        uint64            `json:"memory"`             // MiB
+	DiskSize      uint64            `json:"diskSize,omitempty"` // GiB, 0 = image default
 	Labels        map[string]string `json:"labels"`
 	Resources     map[string]uint64 `json:"resources"`
 	RestartPolicy string            `json:"restartPolicy"`
@@ -41,11 +42,24 @@ type VM struct {
 	CreatedAt     time.Time         `json:"createdAt"`
 	StartedAt     time.Time         `json:"startedAt,omitempty"`
 	TTL           time.Duration     `json:"ttl,omitempty"`
+	// StartupScript, ShutdownScript and ShutdownTimeout mirror what the VM was actually created
+	// with, so fleet.Reconciler can detect drift against fleet.yaml field-by-field instead of via
+	// a label (see internal/fleet/reconcile.go). Populated from v1.VM's startup_script/
+	// shutdown_script/shutdown_script_timeout_seconds by vmFromV1 in client.go.
+	StartupScript   string        `json:"startupScript,omitempty"`
+	ShutdownScript  string        `json:"shutdownScript,omitempty"`
+	ShutdownTimeout time.Duration `json:"shutdownTimeout,omitempty"`
 }
 
 // VMSpec is what grove asks Orchard to create.
 type VMSpec struct {
-	Name            string
+	Name string
+	// Worker pins this VM to a specific Orchard worker via the controller's own
+	// org.cirruslabs.orchard.worker-name scheduling label (see internal/orchard/client.go
+	// vmToV1). It is not part of Labels below: Labels are a pool's *additional* worker
+	// selectors (see fleet.Pool.Labels), whereas Worker is grove's own placement decision and
+	// always gets pinned regardless of what Labels contains.
+	Worker          string
 	Image           string
 	CPU             uint64
 	Memory          uint64 // MiB

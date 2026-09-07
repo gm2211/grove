@@ -94,7 +94,7 @@ export function HostCard({
                   className="rounded px-1.5 py-0.5 font-medium"
                   style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
                 >
-                  {vm.labels?.pool ?? "?"}
+                  {vm.pool ?? "?"}
                 </span>
                 <span className="mono truncate">{vm.name}</span>
               </div>

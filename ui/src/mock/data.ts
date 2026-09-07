@@ -61,13 +61,16 @@ function makeVMs(): FleetEntry[] {
         name: `${pool}-${h.host}-${i}`,
         kind: "vm",
         host: h.host,
+        pool,
         arch: h.arch,
         online: true,
         cordoned: false,
         status: Math.random() > 0.9 ? "pending" : "running",
         capacity: { cpu: 4, memoryMiB: 8192 },
         running: Math.floor(Math.random() * 3),
-        labels: { pool, host: h.host },
+        // Real VM labels are worker selectors (see ARCHITECTURE.md), not pool/host bookkeeping —
+        // pool/host above are what the server actually derives and returns.
+        labels: {},
         raw: {
           ageMinutes,
           ttlRemainingMinutes: Math.max(0, ttlMinutes - ageMinutes),
@@ -89,7 +92,7 @@ function makeNodes(vms: FleetEntry[]): FleetEntry[] {
     status: vm.status === "running" ? "ready" : "initializing",
     capacity: { cpu: vm.capacity?.cpu, memoryMiB: vm.capacity?.memoryMiB },
     running: vm.running,
-    labels: { pool: vm.labels?.pool ?? "", host: vm.host ?? "" },
+    labels: { pool: vm.pool ?? "", host: vm.host ?? "" },
     raw: {},
   }));
 }
