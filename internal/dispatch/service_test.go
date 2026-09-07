@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gm2211/grove/internal/artifacts"
 	"github.com/gm2211/grove/internal/nomad"
 )
 
@@ -39,7 +40,7 @@ func TestSubmit_Validation(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if _, err := svc.Submit(context.Background(), c.req); err == nil {
+			if _, _, err := svc.Submit(context.Background(), c.req); err == nil {
 				t.Fatal("expected a validation error, got nil")
 			}
 		})
@@ -64,7 +65,7 @@ func TestSubmit_Success(t *testing.T) {
 		Meta:      map[string]string{"bead": "123", "image": "golang:1.27"},
 		Requester: "cli",
 	}
-	job, err := svc.Submit(context.Background(), req)
+	job, _, err := svc.Submit(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
@@ -124,8 +125,60 @@ func TestSubmit_Success(t *testing.T) {
 func TestSubmit_ShellDoesNotRequireRepo(t *testing.T) {
 	nc := &fakeNomad{}
 	svc := newTestService(t, nc)
-	if _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "echo hi"}); err != nil {
+	if _, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "echo hi"}); err != nil {
 		t.Fatalf("Submit: %v", err)
+	}
+}
+
+func TestSubmit_IdempotencyKey_ReturnsExistingWithoutRedispatch(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestService(t, nc)
+
+	first, created1, err := svc.Submit(context.Background(), JobRequest{
+		Kind: KindShell, Pool: "linux", Script: "true", IdempotencyKey: "argos:t1:r1",
+	})
+	if err != nil {
+		t.Fatalf("Submit (first): %v", err)
+	}
+	if !created1 {
+		t.Errorf("created (first) = false, want true")
+	}
+
+	second, created2, err := svc.Submit(context.Background(), JobRequest{
+		Kind: KindShell, Pool: "linux", Script: "false", IdempotencyKey: "argos:t1:r1",
+	})
+	if err != nil {
+		t.Fatalf("Submit (second): %v", err)
+	}
+	if created2 {
+		t.Errorf("created (second) = true, want false")
+	}
+	if second.ID != first.ID {
+		t.Errorf("second.ID = %q, want %q (same job)", second.ID, first.ID)
+	}
+	if len(nc.dispatchCalls) != 1 {
+		t.Fatalf("expected 1 Dispatch call (no re-dispatch), got %d", len(nc.dispatchCalls))
+	}
+}
+
+func TestSubmit_DifferentOrEmptyIdempotencyKeys_BothDispatch(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestService(t, nc)
+
+	if _, created, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true", IdempotencyKey: "key-a"}); err != nil || !created {
+		t.Fatalf("Submit (key-a): created=%v err=%v", created, err)
+	}
+	if _, created, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true", IdempotencyKey: "key-b"}); err != nil || !created {
+		t.Fatalf("Submit (key-b): created=%v err=%v", created, err)
+	}
+	if _, created, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"}); err != nil || !created {
+		t.Fatalf("Submit (no key, 1st): created=%v err=%v", created, err)
+	}
+	if _, created, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"}); err != nil || !created {
+		t.Fatalf("Submit (no key, 2nd): created=%v err=%v", created, err)
+	}
+	if len(nc.dispatchCalls) != 4 {
+		t.Fatalf("expected 4 Dispatch calls, got %d", len(nc.dispatchCalls))
 	}
 }
 
@@ -142,7 +195,7 @@ func TestGet_ReconcilesFromAllocations(t *testing.T) {
 	nc := &fakeNomad{}
 	svc := newTestService(t, nc)
 
-	job, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
@@ -174,7 +227,7 @@ func TestGet_FailedExitCodeMapsToFailed(t *testing.T) {
 	nc := &fakeNomad{}
 	svc := newTestService(t, nc)
 
-	job, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "false"})
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "false"})
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
@@ -197,7 +250,7 @@ func TestList_ReturnsAllJobs(t *testing.T) {
 	nc := &fakeNomad{}
 	svc := newTestService(t, nc)
 	for i := 0; i < 3; i++ {
-		if _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"}); err != nil {
+		if _, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"}); err != nil {
 			t.Fatalf("Submit: %v", err)
 		}
 	}
@@ -214,7 +267,7 @@ func TestCancel_MarksCanceledAndStopsQuerying(t *testing.T) {
 	nc := &fakeNomad{}
 	svc := newTestService(t, nc)
 
-	job, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
@@ -256,7 +309,7 @@ func TestStore_PersistsAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	job, err := svc1.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	job, _, err := svc1.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
@@ -278,7 +331,7 @@ func TestLogs_MergesStdoutAndStderr(t *testing.T) {
 	nc := &fakeNomad{}
 	svc := newTestService(t, nc)
 
-	job, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
@@ -312,11 +365,129 @@ func TestLogs_MergesStdoutAndStderr(t *testing.T) {
 func TestLogs_NoAllocationYet(t *testing.T) {
 	nc := &fakeNomad{}
 	svc := newTestService(t, nc)
-	job, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
 	if _, err := svc.Logs(context.Background(), job.ID, false); err == nil {
+		t.Fatal("expected an error when no allocation exists yet")
+	}
+}
+
+func TestLogLines_TagsStreamPerLine(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestService(t, nc)
+
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	dispatchedJobID := nc.dispatchCalls[0].jobName + "/dispatch-1"
+	nc.allocationsByJob = map[string][]nomad.Allocation{
+		dispatchedJobID: {{ID: "alloc-1", ClientStatus: "running", CreatedAt: time.Now()}},
+	}
+	nc.logsFunc = func(ctx context.Context, allocID, task, stream string, follow bool) (io.ReadCloser, error) {
+		if stream == "stdout" {
+			return io.NopCloser(strings.NewReader("out-1\nout-2\n")), nil
+		}
+		return io.NopCloser(strings.NewReader("err-1\n")), nil
+	}
+
+	lines, err := svc.LogLines(context.Background(), job.ID, false)
+	if err != nil {
+		t.Fatalf("LogLines: %v", err)
+	}
+
+	var stdoutLines, stderrLines []string
+	for ln := range lines {
+		switch ln.Stream {
+		case "stdout":
+			stdoutLines = append(stdoutLines, ln.Line)
+		case "stderr":
+			stderrLines = append(stderrLines, ln.Line)
+		default:
+			t.Errorf("unexpected stream %q for line %q", ln.Stream, ln.Line)
+		}
+		if ln.Time.IsZero() {
+			t.Errorf("line %q has zero Time", ln.Line)
+		}
+	}
+
+	if len(stdoutLines) != 2 || stdoutLines[0] != "out-1" || stdoutLines[1] != "out-2" {
+		t.Errorf("stdoutLines = %v, want [out-1 out-2]", stdoutLines)
+	}
+	if len(stderrLines) != 1 || stderrLines[0] != "err-1" {
+		t.Errorf("stderrLines = %v, want [err-1]", stderrLines)
+	}
+}
+
+func TestGet_PopulatesArtifactsOnTerminalStatus(t *testing.T) {
+	nc := &fakeNomad{}
+	fa := &fakeArtifacts{
+		objectsByPrefix: map[string][]artifacts.Object{},
+	}
+	svc, err := New(nc, Options{
+		StorePath: filepath.Join(t.TempDir(), "jobs.json"),
+		StatusTTL: time.Millisecond,
+		Artifacts: fa,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindBuild, Pool: "linux", Repo: "https://example.com/repo.git", Script: "true"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	prefix := artifactPrefix(job.ID)
+	fa.objectsByPrefix[prefix] = []artifacts.Object{
+		{Path: "out.bin", Size: 42, ContentType: "application/octet-stream"},
+	}
+
+	dispatchedJobID := nc.dispatchCalls[0].jobName + "/dispatch-1"
+	exit := 0
+	nc.allocationsByJob = map[string][]nomad.Allocation{
+		dispatchedJobID: {{ID: "alloc-1", ClientStatus: "complete", ExitCode: &exit, CreatedAt: time.Now()}},
+	}
+
+	got, err := svc.Get(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got.Artifacts) != 1 {
+		t.Fatalf("artifacts = %+v, want 1 entry", got.Artifacts)
+	}
+	art := got.Artifacts[0]
+	if art.Path != "out.bin" || art.Size != 42 || art.ContentType != "application/octet-stream" {
+		t.Errorf("artifact = %+v", art)
+	}
+	wantURL := "/api/v1/jobs/" + job.ID + "/artifacts/out.bin"
+	if art.URL != wantURL {
+		t.Errorf("artifact URL = %q, want %q", art.URL, wantURL)
+	}
+	if len(fa.listCalls) != 1 || fa.listCalls[0] != prefix {
+		t.Errorf("listCalls = %v, want [%s]", fa.listCalls, prefix)
+	}
+
+	// A second Get shouldn't re-list — Artifacts are already populated.
+	if _, err := svc.Get(context.Background(), job.ID); err != nil {
+		t.Fatalf("Get (second): %v", err)
+	}
+	if len(fa.listCalls) != 1 {
+		t.Errorf("listCalls after second Get = %d, want still 1 (terminal job, no re-list)", len(fa.listCalls))
+	}
+}
+
+func TestLogLines_NoAllocationYet(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestService(t, nc)
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if _, err := svc.LogLines(context.Background(), job.ID, false); err == nil {
 		t.Fatal("expected an error when no allocation exists yet")
 	}
 }

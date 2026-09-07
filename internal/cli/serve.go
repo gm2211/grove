@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/gm2211/grove/internal/artifacts"
 	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/fleet"
@@ -53,7 +55,17 @@ func runServe(ctx context.Context, listen string) error {
 		return fmt.Errorf("nomad client: %w", err)
 	}
 
-	ds, err := dispatch.New(nc, dispatch.Options{ArtifactsBase: cfg.Artifacts.Bucket})
+	ac, err := wire.NewArtifactsClient(cfg.Artifacts)
+	if err != nil {
+		if errors.Is(err, artifacts.ErrNotConfigured) {
+			slog.Info("serve: no artifact store configured; job artifact download/listing is disabled", "err", err)
+			ac = nil
+		} else {
+			return fmt.Errorf("artifacts client: %w", err)
+		}
+	}
+
+	ds, err := dispatch.New(nc, dispatch.Options{ArtifactsBase: cfg.Artifacts.Bucket, Artifacts: ac})
 	if err != nil {
 		return fmt.Errorf("dispatch service: %w", err)
 	}
@@ -68,7 +80,7 @@ func runServe(ctx context.Context, listen string) error {
 		slog.Warn("serve: no pools found in fleet spec; no parameterized jobs registered", "fleet", cfg.Fleet)
 	}
 
-	srv := server.New(oc, nc, ds, server.Options{Token: cfg.Server.Token})
+	srv := server.New(oc, nc, ds, ac, server.Options{Token: cfg.Server.Token})
 	slog.Info("grove serve: listening", "addr", addr)
 	return http.ListenAndServe(addr, srv)
 }

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gm2211/grove/internal/artifacts"
 	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
@@ -27,20 +28,23 @@ type Options struct {
 
 // Server implements http.Handler for grove's HTTP API + embedded UI.
 type Server struct {
-	orchard  orchard.Client
-	nomad    nomad.Client
-	dispatch dispatch.Service
-	opts     Options
-	log      *slog.Logger
-	handler  http.Handler
+	orchard   orchard.Client
+	nomad     nomad.Client
+	dispatch  dispatch.Service
+	artifacts artifacts.Client
+	opts      Options
+	log       *slog.Logger
+	handler   http.Handler
 
 	// recycleDone, if non-nil, receives the vm name every time a background recycle finishes
 	// deleting a VM. Only set by tests, to synchronize on the async recycle flow.
 	recycleDone chan string
 }
 
-// New builds a Server wired to the given Orchard/Nomad clients and dispatch service.
-func New(oc orchard.Client, nc nomad.Client, ds dispatch.Service, opts Options) *Server {
+// New builds a Server wired to the given Orchard/Nomad clients, dispatch service and artifact
+// store client. ac may be nil — GET /jobs/{id}/artifacts/{path} then returns 404, and
+// dispatch.Job.Artifacts is simply never populated (see dispatch.Options.Artifacts).
+func New(oc orchard.Client, nc nomad.Client, ds dispatch.Service, ac artifacts.Client, opts Options) *Server {
 	log := opts.Logger
 	if log == nil {
 		log = slog.Default()
@@ -52,11 +56,12 @@ func New(oc orchard.Client, nc nomad.Client, ds dispatch.Service, opts Options) 
 		opts.RecyclePollInterval = 5 * time.Second
 	}
 	s := &Server{
-		orchard:  oc,
-		nomad:    nc,
-		dispatch: ds,
-		opts:     opts,
-		log:      log,
+		orchard:   oc,
+		nomad:     nc,
+		dispatch:  ds,
+		artifacts: ac,
+		opts:      opts,
+		log:       log,
 	}
 	s.handler = s.routes()
 	return s
@@ -77,7 +82,9 @@ func (s *Server) routes() http.Handler {
 	api.HandleFunc("POST /jobs", s.handleSubmitJob)
 	api.HandleFunc("GET /jobs/{id}", s.handleGetJob)
 	api.HandleFunc("DELETE /jobs/{id}", s.handleCancelJob)
+	api.HandleFunc("POST /jobs/{id}/cancel", s.handleCancelJob)
 	api.HandleFunc("GET /jobs/{id}/logs", s.handleJobLogs)
+	api.HandleFunc("GET /jobs/{id}/artifacts/{path...}", s.handleGetArtifact)
 	api.HandleFunc("GET /healthz", s.handleHealthz)
 
 	root := http.NewServeMux()

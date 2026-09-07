@@ -37,6 +37,9 @@ type JobRequest struct {
 	Meta map[string]string `json:"meta,omitempty"`
 	// Requester is an opaque label for who submitted (argos, mcp:claude-code, cli).
 	Requester string `json:"requester,omitempty"`
+	// IdempotencyKey, if set, makes a repeat Submit with the same key return the existing Job
+	// instead of dispatching again. Argos convention: "argos:<taskId>:<runId>".
+	IdempotencyKey string `json:"idempotencyKey,omitempty"`
 }
 
 // Status of a Job.
@@ -68,17 +71,34 @@ type Job struct {
 
 // Artifact is a file a job produced, stored in the artifact bucket.
 type Artifact struct {
-	Path string `json:"path"`
-	URL  string `json:"url"`
-	Size int64  `json:"size"`
+	Path        string `json:"path"`
+	URL         string `json:"url"`
+	Size        int64  `json:"size"`
+	ContentType string `json:"contentType,omitempty"`
+}
+
+// LogLine is one stream-tagged line of job output.
+type LogLine struct {
+	Stream string    // "stdout" | "stderr"
+	Line   string    // one line, no trailing newline
+	Time   time.Time // when this line was read from Nomad — best-effort, not the guest's own timestamp
 }
 
 // Service is the seam used by the HTTP server, the CLI and the MCP server.
 type Service interface {
-	Submit(ctx context.Context, req JobRequest) (*Job, error)
+	// Submit dispatches req and returns the resulting Job. created is false when req.IdempotencyKey
+	// matched an existing job — in that case the existing Job is returned unchanged and nothing is
+	// (re-)dispatched.
+	Submit(ctx context.Context, req JobRequest) (job *Job, created bool, err error)
 	Get(ctx context.Context, id string) (*Job, error)
 	List(ctx context.Context) ([]Job, error)
 	// Logs streams combined stdout+stderr; follow keeps the stream open until the job ends.
 	Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error)
+	// LogLines streams stdout/stderr as discrete, stream-tagged lines (used for the NDJSON log mode;
+	// the plain/SSE modes keep using Logs). The channel is closed when both streams are drained (or,
+	// with follow, when ctx is done or the job reaches a terminal status). Line ORDER across the two
+	// streams is best-effort (same non-determinism the existing byte-level Logs merge already has —
+	// see mergedLogReader) since stdout/stderr are two independent goroutines racing to send.
+	LogLines(ctx context.Context, id string, follow bool) (<-chan LogLine, error)
 	Cancel(ctx context.Context, id string) error
 }

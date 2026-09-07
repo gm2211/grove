@@ -7,10 +7,37 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gm2211/grove/internal/artifacts"
 	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
 )
+
+// fakeArtifactsClient is a minimal in-memory artifacts.Client for server tests.
+type fakeArtifactsClient struct {
+	objects map[string]struct {
+		data []byte
+		obj  artifacts.Object
+	}
+}
+
+func (f *fakeArtifactsClient) List(ctx context.Context, prefix string) ([]artifacts.Object, error) {
+	var out []artifacts.Object
+	for key, v := range f.objects {
+		if strings.HasPrefix(key, prefix) {
+			out = append(out, v.obj)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeArtifactsClient) Get(ctx context.Context, key string) (io.ReadCloser, artifacts.Object, error) {
+	v, ok := f.objects[key]
+	if !ok {
+		return nil, artifacts.Object{}, artifacts.ErrNotFound
+	}
+	return io.NopCloser(strings.NewReader(string(v.data))), v.obj, nil
+}
 
 // fakeOrchard is a minimal in-memory orchard.Client for server tests.
 type fakeOrchard struct {
@@ -145,19 +172,30 @@ type fakeDispatch struct {
 	cancelErr   error
 
 	logsFunc func(ctx context.Context, id string, follow bool) (io.ReadCloser, error)
+
+	logLinesFunc func(ctx context.Context, id string, follow bool) (<-chan dispatch.LogLine, error)
+
+	// created controls what Submit reports for its `created` return value. nil (the zero value)
+	// means "true" — most tests expect a fresh submission to report created — set it explicitly to
+	// test the idempotent-replay (created=false) path.
+	created *bool
 }
 
-func (f *fakeDispatch) Submit(ctx context.Context, req dispatch.JobRequest) (*dispatch.Job, error) {
+func (f *fakeDispatch) Submit(ctx context.Context, req dispatch.JobRequest) (*dispatch.Job, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.submitCalls = append(f.submitCalls, req)
+	created := true
+	if f.created != nil {
+		created = *f.created
+	}
 	if f.submitErr != nil {
-		return nil, f.submitErr
+		return nil, false, f.submitErr
 	}
 	if f.submitJob != nil {
-		return f.submitJob, nil
+		return f.submitJob, created, nil
 	}
-	return &dispatch.Job{ID: "job-1", Request: req, Status: dispatch.StatusPending}, nil
+	return &dispatch.Job{ID: "job-1", Request: req, Status: dispatch.StatusPending}, created, nil
 }
 
 func (f *fakeDispatch) Get(ctx context.Context, id string) (*dispatch.Job, error) {
@@ -190,6 +228,18 @@ func (f *fakeDispatch) Logs(ctx context.Context, id string, follow bool) (io.Rea
 		return f.logsFunc(ctx, id, follow)
 	}
 	return io.NopCloser(strings.NewReader("")), nil
+}
+
+func (f *fakeDispatch) LogLines(ctx context.Context, id string, follow bool) (<-chan dispatch.LogLine, error) {
+	if _, ok := f.jobs[id]; !ok {
+		return nil, dispatch.ErrNotFound
+	}
+	if f.logLinesFunc != nil {
+		return f.logLinesFunc(ctx, id, follow)
+	}
+	ch := make(chan dispatch.LogLine)
+	close(ch)
+	return ch, nil
 }
 
 func (f *fakeDispatch) Cancel(ctx context.Context, id string) error {
