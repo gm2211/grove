@@ -211,6 +211,52 @@ func TestRunDoctor_IncludesMacOSCPUFingerprintCheck(t *testing.T) {
 	}
 }
 
+// TestRunDoctor_ReportsUntrustedRequiredTapWithRemediation covers the doctor half of the brew-trust
+// fix: a tap that's tapped on this machine but not trusted (e.g. after a Homebrew upgrade adds the
+// trust gate under an already-tapped openai/tools) must show up as a failing check with the exact
+// `brew trust <tap>` remediation command, matching the message Homebrew itself prints when refusing
+// to load a formula from an untrusted tap.
+func TestRunDoctor_ReportsUntrustedRequiredTapWithRemediation(t *testing.T) {
+	r := NewFakeRunner()
+	scriptTapInfo(r, "openai/tools", true, false)
+	scriptTapInfo(r, "cirruslabs/cli", false, false)
+	scriptTapInfo(r, "hashicorp/tap", false, false)
+	scriptTapInfo(r, "minio/stable", false, false)
+	opts := Options{Home: t.TempDir(), GOOS: "darwin", LookPath: alwaysFailLookPath, Exists: alwaysFalseExists}
+
+	results := RunDoctor(context.Background(), r, opts, nil)
+	got := findResult(t, results, "brew-trust:openai/tools")
+	if got.OK {
+		t.Error("expected the untrusted openai/tools tap to fail the check")
+	}
+	if got.Remediation != "brew trust openai/tools" {
+		t.Errorf("Remediation = %q, want the exact `brew trust openai/tools` command", got.Remediation)
+	}
+
+	for _, r := range results {
+		if r.Name == "brew-trust:cirruslabs/cli" || r.Name == "brew-trust:hashicorp/tap" || r.Name == "brew-trust:minio/stable" {
+			t.Errorf("a tap that was never tapped on this machine should not be reported, got %+v", r)
+		}
+	}
+}
+
+// TestRunDoctor_SkipsTapTrustChecksOnNonDarwin makes sure doctor doesn't try to shell out to `brew`
+// (which doesn't exist) when run on Linux.
+func TestRunDoctor_SkipsTapTrustChecksOnNonDarwin(t *testing.T) {
+	r := NewFakeRunner()
+	opts := Options{Home: t.TempDir(), GOOS: "linux", LookPath: alwaysFailLookPath, Exists: alwaysFalseExists}
+
+	results := RunDoctor(context.Background(), r, opts, nil)
+	for _, res := range results {
+		if len(res.Name) >= len("brew-trust:") && res.Name[:len("brew-trust:")] == "brew-trust:" {
+			t.Errorf("did not expect any brew-trust check on non-darwin, got %+v", res)
+		}
+	}
+	if r.CalledWith("brew tap-info --json=v1 openai/tools") {
+		t.Error("no brew command should run on non-darwin")
+	}
+}
+
 func TestCountRunningMacOSVMs(t *testing.T) {
 	n, err := countRunningMacOSVMs(`[
 		{"Source":"local","Name":"macos-worker1-0","Running":true,"State":"running"},

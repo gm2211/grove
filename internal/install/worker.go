@@ -39,6 +39,7 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 				return err
 			},
 		},
+		trustTapStep(r, tapOpenAITools, out),
 		{
 			Name:        "tart",
 			Description: "Install Tart (`brew install openai/tools/tart`, falling back to `brew install cirruslabs/cli/tart` if that tap doesn't have it).",
@@ -48,10 +49,15 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 			},
 			Apply: func(ctx context.Context) error {
 				// Cirrus Labs joined OpenAI; the canonical tap moved to openai/homebrew-tools
-				// (openai/tools/tart). Fall back to the original cirruslabs/cli/tart tap only if
-				// the new one fails, in case a host's brew hasn't picked up the move yet.
+				// (openai/tools/tart), trusted by the "brew-trust:openai/tools" step above. Fall
+				// back to the original cirruslabs/cli/tart tap only if the new one fails, in case
+				// a host's brew hasn't picked up the move yet — trusting that fallback tap only
+				// when it's actually needed, rather than unconditionally on every install.
 				if _, _, err := r.Run(ctx, "brew", "install", "openai/tools/tart"); err == nil {
 					return nil
+				}
+				if err := trustTap(ctx, r, tapCirruslabsCLI, out); err != nil {
+					return err
 				}
 				_, _, err := r.Run(ctx, "brew", "install", "cirruslabs/cli/tart")
 				return err

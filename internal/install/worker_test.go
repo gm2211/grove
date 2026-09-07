@@ -146,6 +146,122 @@ func TestWorkerPlan_TartFallsBackToCirruslabsTap(t *testing.T) {
 	if !r.CalledWith("brew install cirruslabs/cli/tart") {
 		t.Error("expected the cirruslabs/cli/tart tap to be tried as a fallback after openai/tools/tart failed")
 	}
+
+	// The cirruslabs/cli fallback tap must be trusted before falling back to installing from it —
+	// but only because the primary openai/tools install failed; trustTap for the fallback tap has
+	// no reason to run before that.
+	tapIdx, trustIdx, installIdx := -1, -1, -1
+	for i, c := range r.Calls {
+		switch c.String() {
+		case "brew tap cirruslabs/cli":
+			tapIdx = i
+		case "brew trust cirruslabs/cli":
+			trustIdx = i
+		case "brew install cirruslabs/cli/tart":
+			installIdx = i
+		}
+	}
+	if tapIdx == -1 || trustIdx == -1 {
+		t.Fatalf("expected cirruslabs/cli to be tapped and trusted, calls: %v", r.Calls)
+	}
+	if !(tapIdx < trustIdx && trustIdx < installIdx) {
+		t.Errorf("expected tap(%d) < trust(%d) < install(%d) ordering for the cirruslabs/cli fallback",
+			tapIdx, trustIdx, installIdx)
+	}
+}
+
+// TestWorkerPlan_TrustsOpenAIToolsTapBeforeInstallingTart is the primary (non-fallback) path: a
+// fresh machine where openai/tools isn't tapped or trusted yet must have both happen, in order,
+// before `brew install openai/tools/tart` runs — this is the fix for the observed defect (`brew
+// install openai/tools/tart` failing with "Refusing to load formula ... from untrusted tap
+// openai/tools" on any Homebrew that gates third-party taps behind `brew trust`).
+func TestWorkerPlan_TrustsOpenAIToolsTapBeforeInstallingTart(t *testing.T) {
+	home := t.TempDir()
+	r := NewFakeRunner()
+	scriptTailscaleUp(r)
+	scriptTapInfo(r, "openai/tools", false, false)
+	opts := testWorkerOptions(home)
+
+	steps, err := BuildPlan(r, opts, io.Discard)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+
+	tapIdx, trustIdx, installIdx := -1, -1, -1
+	for i, c := range r.Calls {
+		switch c.String() {
+		case "brew tap openai/tools":
+			tapIdx = i
+		case "brew trust openai/tools":
+			trustIdx = i
+		case "brew install openai/tools/tart":
+			installIdx = i
+		}
+	}
+	if tapIdx == -1 || trustIdx == -1 || installIdx == -1 {
+		t.Fatalf("expected openai/tools to be tapped, trusted, then installed from, calls: %v", r.Calls)
+	}
+	if !(tapIdx < trustIdx && trustIdx < installIdx) {
+		t.Errorf("expected tap(%d) < trust(%d) < install(%d) ordering for openai/tools", tapIdx, trustIdx, installIdx)
+	}
+}
+
+// TestWorkerPlan_SkipsTrustWhenTapAlreadyTrusted covers the idempotent case: once `brew tap-info`
+// reports the tap installed and trusted, the "brew-trust:openai/tools" step's Check is satisfied
+// and neither `brew tap` nor `brew trust` should run again.
+func TestWorkerPlan_SkipsTrustWhenTapAlreadyTrusted(t *testing.T) {
+	home := t.TempDir()
+	r := NewFakeRunner()
+	scriptTailscaleUp(r)
+	scriptTapInfo(r, "openai/tools", true, true)
+	opts := testWorkerOptions(home)
+
+	steps, err := BuildPlan(r, opts, io.Discard)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+
+	if r.CalledWith("brew tap openai/tools") {
+		t.Error("`brew tap` should not run when the tap is already installed and trusted")
+	}
+	if r.CalledWith("brew trust openai/tools") {
+		t.Error("`brew trust` should not run when the tap is already installed and trusted")
+	}
+	if !r.CalledWith("brew install openai/tools/tart") {
+		t.Error("expected tart to still be installed")
+	}
+}
+
+// TestWorkerPlan_ToleratesOlderHomebrewWithoutTrustCommand makes sure a Homebrew old enough that
+// `brew trust` isn't a recognized command at all doesn't fail the plan: the tap gets `brew tap`ped
+// (still useful/idempotent on old Homebrew), `brew trust` fails with "Unknown command", and that's
+// treated as satisfied rather than a plan failure.
+func TestWorkerPlan_ToleratesOlderHomebrewWithoutTrustCommand(t *testing.T) {
+	home := t.TempDir()
+	r := NewFakeRunner()
+	scriptTailscaleUp(r)
+	scriptTapInfo(r, "openai/tools", false, false)
+	r.Script("brew trust openai/tools", FakeResult{
+		Err: errors.New("brew trust openai/tools: exit status 1: Error: Invalid usage: Unknown command: brew trust openai/tools"),
+	})
+	opts := testWorkerOptions(home)
+
+	steps, err := BuildPlan(r, opts, io.Discard)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
+		t.Fatalf("RunPlan should tolerate an older Homebrew without `brew trust`, got: %v", err)
+	}
+	if !r.CalledWith("brew install openai/tools/tart") {
+		t.Error("expected tart install to still proceed after the tolerated `brew trust` failure")
+	}
 }
 
 func TestWorkerPlan_DryRunAppliesNothing(t *testing.T) {

@@ -14,7 +14,9 @@ modes that come up on real Macs.
 - Go 1.21+ only if you expect `grove install` to fall back to building the Orchard fork from
   source (it tries a prebuilt release asset first).
 
-grove itself installs everything else (Homebrew, Tart, Nomad, MinIO, Orchard).
+grove itself installs everything else (Homebrew, Tart, Nomad, MinIO, Orchard) — including trusting
+the third-party Homebrew taps those come from, which recent Homebrew otherwise refuses to load from
+(see [Failure modes](#failure-modes)).
 
 ## 1. Install the `grove` binary
 
@@ -93,7 +95,10 @@ grove doctor
 
 Prints a ✓/✗ table: Tailscale up, Orchard controller reachable, Nomad reachable, grove server
 `/api/v1/healthz`, launchd/systemd units present, Tart installed, macOS VM slot usage (max 2 per
-Apple's Virtualization.framework), and disk free under `~/.tart`. Non-zero exit if anything's red.
+Apple's Virtualization.framework), disk free under `~/.tart`, and — for any third-party Homebrew tap
+that's actually tapped on this machine (`openai/tools`, `cirruslabs/cli`, `hashicorp/tap`,
+`minio/stable`) — whether it's trusted, with the exact `brew trust <tap>` remediation if not. Non-
+zero exit if anything's red.
 
 ## Failure modes
 
@@ -122,6 +127,24 @@ Apple's Virtualization.framework), and disk free under `~/.tart`. Non-zero exit 
 - **First `grove install --role worker` run is slow**: if no `gm2211/orchard` release asset
   matches your OS/arch yet, it falls back to `git clone` + `go build ./cmd/orchard`, which needs a
   working Go toolchain and takes a minute or two the first time.
+- **`Refusing to load formula … from untrusted tap …`**: recent Homebrew (see `brew trust --help`)
+  refuses to load any formula from a non-official tap until that tap has been explicitly trusted,
+  e.g.:
+
+  ```
+  Error: Refusing to load formula openai/tools/softnet from untrusted tap openai/tools.
+  Run `brew trust --formula openai/tools/softnet` or `brew trust openai/tools` to trust it.
+  ```
+
+  `grove install` handles this itself: before installing from `openai/tools` (Tart; falls back to
+  `cirruslabs/cli` if that tap doesn't have it), `hashicorp/tap` (Nomad, control-plane role only) or
+  `minio/stable` (MinIO, control-plane role only), it runs `brew tap <tap>` (if not already tapped)
+  then `brew trust <tap>`, printing why before it does. If you still hit this error — e.g. you ran
+  `brew install` yourself outside of `grove install` — the fix is the command Homebrew already
+  printed: `brew trust openai/tools` (or `hashicorp/tap` / `minio/stable`, matching whichever tap
+  the error names). `grove doctor` also reports any required tap that's tapped but not trusted,
+  with this exact remediation command. On a Homebrew old enough to not have `brew trust` at all,
+  grove treats that as nothing to do — there's no trust gate to satisfy.
 
 ## See also
 

@@ -70,6 +70,7 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 
 	results = append(results, checkServiceUnits(opts))
 	results = append(results, checkTart(ctx, r, opts)...)
+	results = append(results, checkTrustedTaps(ctx, r, opts)...)
 
 	return results
 }

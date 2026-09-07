@@ -35,7 +35,7 @@ func buildControlPlaneSteps(r Runner, opts Options, out io.Writer) []Step {
 	isDarwin := opts.goos() == "darwin"
 
 	var steps []Step
-	steps = append(steps, controlPlaneDependencySteps(r, opts, destOrchard, isDarwin)...)
+	steps = append(steps, controlPlaneDependencySteps(r, opts, out, destOrchard, isDarwin)...)
 	steps = append(steps, controlPlaneConfigSteps(r, opts, cfgDir, destOrchard)...)
 	steps = append(steps, controlPlaneServiceSteps(r, opts, cfgDir, destOrchard, isDarwin)...)
 	steps = append(steps, Step{
@@ -76,10 +76,14 @@ func buildControlPlaneSteps(r Runner, opts Options, out io.Writer) []Step {
 	return steps
 }
 
-func controlPlaneDependencySteps(r Runner, opts Options, destOrchard string, isDarwin bool) []Step {
+func controlPlaneDependencySteps(r Runner, opts Options, out io.Writer, destOrchard string, isDarwin bool) []Step {
 	lookPath := opts.lookPath()
-	steps := []Step{
-		{
+	var steps []Step
+	if isDarwin {
+		steps = append(steps, trustTapStep(r, tapHashicorp, out))
+	}
+	steps = append(steps,
+		Step{
 			Name:        "nomad-binary",
 			Description: nomadInstallDescription(isDarwin),
 			Check: func(ctx context.Context) (bool, error) {
@@ -90,7 +94,7 @@ func controlPlaneDependencySteps(r Runner, opts Options, destOrchard string, isD
 				return installNomad(ctx, r, opts, isDarwin)
 			},
 		},
-		{
+		Step{
 			Name:        "orchard-binary",
 			Description: fmt.Sprintf("Install the Orchard fork binary to %s (release asset if available, else build from source).", destOrchard),
 			Check: func(ctx context.Context) (bool, error) {
@@ -104,18 +108,21 @@ func controlPlaneDependencySteps(r Runner, opts Options, destOrchard string, isD
 				return ensureOrchardBinary(ctx, r, opts, destOrchard, io.Discard)
 			},
 		},
-		{
-			Name:        "minio-binary",
-			Description: minioInstallDescription(isDarwin),
-			Check: func(ctx context.Context) (bool, error) {
-				_, err := lookPath("minio")
-				return err == nil, nil
-			},
-			Apply: func(ctx context.Context) error {
-				return installMinIO(ctx, r, opts, isDarwin)
-			},
-		},
+	)
+	if isDarwin {
+		steps = append(steps, trustTapStep(r, tapMinIOStable, out))
 	}
+	steps = append(steps, Step{
+		Name:        "minio-binary",
+		Description: minioInstallDescription(isDarwin),
+		Check: func(ctx context.Context) (bool, error) {
+			_, err := lookPath("minio")
+			return err == nil, nil
+		},
+		Apply: func(ctx context.Context) error {
+			return installMinIO(ctx, r, opts, isDarwin)
+		},
+	})
 	return steps
 }
 
