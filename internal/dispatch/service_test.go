@@ -8,12 +8,49 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/gm2211/grove/internal/artifacts"
 	"github.com/gm2211/grove/internal/nomad"
 )
+
+// blockingFollowReader mimics what internal/nomad/client.go's real Logs implementation does for
+// follow=true against an allocation whose task has already exited: Nomad's AllocFS Logs API keeps
+// the connection open past task completion, so the reader hands back whatever was already
+// captured and then blocks — never EOFing — until ctx is canceled, at which point Read returns
+// ctx.Err() (mirroring the real client's ctx.Done() select case). Used to reproduce/verify the fix
+// for the "curl .../logs?follow=1 hangs forever on a finished job" defect.
+type blockingFollowReader struct {
+	ctx  context.Context
+	data []byte
+
+	mu   sync.Mutex
+	sent bool
+}
+
+func (r *blockingFollowReader) Read(p []byte) (int, error) {
+	r.mu.Lock()
+	if !r.sent {
+		r.sent = true
+		n := copy(p, r.data)
+		r.mu.Unlock()
+		if n > 0 {
+			return n, nil
+		}
+	} else {
+		r.mu.Unlock()
+	}
+	<-r.ctx.Done()
+	return 0, r.ctx.Err()
+}
+
+func (r *blockingFollowReader) Close() error { return nil }
+
+func ptrInt(n int) *int { return &n }
+
+func ptrTime(t time.Time) *time.Time { return &t }
 
 func newTestService(t *testing.T, nc *fakeNomad) Service {
 	t.Helper()
@@ -701,6 +738,216 @@ func TestLogs_FollowGivesUpAtContextDeadline(t *testing.T) {
 	}
 	if elapsed > 2*time.Second {
 		t.Errorf("Logs took %s to give up, want well under its bounding context's budget", elapsed)
+	}
+}
+
+// TestLogs_FollowOnAlreadyTerminalJobDoesNotHang is the direct regression test for the live-run
+// defect: `curl .../jobs/<id>/logs?follow=1` hung forever (no response headers for 60s+) against a
+// job that was already `failed` with an allocation, because Nomad's AllocFS Logs API keeps a
+// follow=true stream open past task completion. Logs must recognize the job is already terminal
+// and fetch the captured log the same way a one-shot request would (nomad.Client.Logs called with
+// follow=false), never handing the already-terminal case to a follow=true nomad call at all.
+func TestLogs_FollowOnAlreadyTerminalJobDoesNotHang(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestServiceWithOpts(t, nc, Options{
+		LogTerminalPollInterval: 10 * time.Millisecond,
+		LogStreamGracePeriod:    10 * time.Millisecond,
+	})
+
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	dispatchedJobID := nc.dispatchCalls[0].jobName + "/dispatch-1"
+	nc.allocationsByJob = map[string][]nomad.Allocation{
+		dispatchedJobID: {{
+			ID: "alloc-1", ClientStatus: "failed", ExitCode: ptrInt(127),
+			CreatedAt: time.Now(), FinishedAt: ptrTime(time.Now()),
+		}},
+	}
+
+	var sawFollow bool
+	nc.logsFunc = func(ctx context.Context, allocID, task, stream string, follow bool) (io.ReadCloser, error) {
+		if follow {
+			sawFollow = true
+			// If Logs actually used this (instead of downgrading to a one-shot fetch), the test
+			// would hang until its own context deadline — exactly the live defect.
+			return &blockingFollowReader{ctx: ctx}, nil
+		}
+		if stream == "stdout" {
+			return io.NopCloser(strings.NewReader("boom\n")), nil
+		}
+		return io.NopCloser(strings.NewReader("")), nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	start := time.Now()
+	rc, err := svc.Logs(ctx, job.ID, true)
+	if err != nil {
+		t.Fatalf("Logs: %v", err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("Logs on an already-terminal job took %s, want near-instant (no follow wait)", elapsed)
+	}
+	if sawFollow {
+		t.Error("Logs called nomad.Logs with follow=true for an already-terminal job — want it downgraded to a one-shot fetch")
+	}
+	if !strings.Contains(string(data), "boom") {
+		t.Errorf("logs = %q, want to contain boom", string(data))
+	}
+}
+
+// TestLogs_FollowEndsPromptlyWhenJobBecomesTerminal covers the other half of the same defect: a
+// job that's still running when the follow request starts but finishes while the stream is open.
+// nomad.Logs is (correctly) called with follow=true here and returns a reader that never EOFs —
+// Logs must notice (via watchForTerminal polling job status) once the allocation flips to a
+// terminal status and sever the stream within a few seconds, not hang for the rest of the
+// request's context budget.
+func TestLogs_FollowEndsPromptlyWhenJobBecomesTerminal(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestServiceWithOpts(t, nc, Options{
+		AllocationPollInterval:  5 * time.Millisecond,
+		LogTerminalPollInterval: 10 * time.Millisecond,
+		LogStreamGracePeriod:    20 * time.Millisecond,
+	})
+
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	dispatchedJobID := nc.dispatchCalls[0].jobName + "/dispatch-1"
+	nc.allocationsByJob = map[string][]nomad.Allocation{
+		dispatchedJobID: {{ID: "alloc-1", ClientStatus: "running", CreatedAt: time.Now()}},
+	}
+
+	nc.logsFunc = func(ctx context.Context, allocID, task, stream string, follow bool) (io.ReadCloser, error) {
+		if !follow {
+			return io.NopCloser(strings.NewReader("")), nil
+		}
+		var data []byte
+		if stream == "stdout" {
+			data = []byte("out-line\n")
+		}
+		return &blockingFollowReader{ctx: ctx, data: data}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rc, err := svc.Logs(ctx, job.ID, true)
+	if err != nil {
+		t.Fatalf("Logs: %v", err)
+	}
+	defer rc.Close()
+
+	// Flip the allocation to terminal shortly after the stream opens, mimicking the job finishing
+	// mid-follow.
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		nc.mu.Lock()
+		nc.allocationsByJob[dispatchedJobID] = []nomad.Allocation{{
+			ID: "alloc-1", ClientStatus: "complete", ExitCode: ptrInt(0),
+			CreatedAt: time.Now(), FinishedAt: ptrTime(time.Now()),
+		}}
+		nc.mu.Unlock()
+	}()
+
+	start := time.Now()
+	data, err := io.ReadAll(rc)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !strings.Contains(string(data), "out-line") {
+		t.Errorf("logs = %q, want to contain out-line", string(data))
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("Logs took %s to end after its job went terminal, want well under a few seconds", elapsed)
+	}
+}
+
+// TestLogLines_FollowEndsPromptlyWhenJobBecomesTerminal is the NDJSON-mode (LogLines) counterpart
+// of TestLogs_FollowEndsPromptlyWhenJobBecomesTerminal.
+func TestLogLines_FollowEndsPromptlyWhenJobBecomesTerminal(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestServiceWithOpts(t, nc, Options{
+		AllocationPollInterval:  5 * time.Millisecond,
+		LogTerminalPollInterval: 10 * time.Millisecond,
+		LogStreamGracePeriod:    20 * time.Millisecond,
+	})
+
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	dispatchedJobID := nc.dispatchCalls[0].jobName + "/dispatch-1"
+	nc.allocationsByJob = map[string][]nomad.Allocation{
+		dispatchedJobID: {{ID: "alloc-1", ClientStatus: "running", CreatedAt: time.Now()}},
+	}
+
+	nc.logsFunc = func(ctx context.Context, allocID, task, stream string, follow bool) (io.ReadCloser, error) {
+		if !follow {
+			return io.NopCloser(strings.NewReader("")), nil
+		}
+		var data []byte
+		if stream == "stdout" {
+			data = []byte("out-line\n")
+		}
+		return &blockingFollowReader{ctx: ctx, data: data}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	lines, err := svc.LogLines(ctx, job.ID, true)
+	if err != nil {
+		t.Fatalf("LogLines: %v", err)
+	}
+
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		nc.mu.Lock()
+		nc.allocationsByJob[dispatchedJobID] = []nomad.Allocation{{
+			ID: "alloc-1", ClientStatus: "complete", ExitCode: ptrInt(0),
+			CreatedAt: time.Now(), FinishedAt: ptrTime(time.Now()),
+		}}
+		nc.mu.Unlock()
+	}()
+
+	start := time.Now()
+	var got []LogLine
+	done := make(chan struct{})
+	go func() {
+		for ln := range lines {
+			got = append(got, ln)
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("LogLines channel did not close within 3s of its job going terminal")
+	}
+	elapsed := time.Since(start)
+	if elapsed > 3*time.Second {
+		t.Errorf("LogLines took %s to end after its job went terminal, want well under a few seconds", elapsed)
+	}
+	found := false
+	for _, ln := range got {
+		if ln.Stream == "stdout" && ln.Line == "out-line" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("lines = %+v, want a stdout \"out-line\" entry", got)
 	}
 }
 

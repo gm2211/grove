@@ -21,7 +21,13 @@ Start with:  grove install --role worker        (on each Mac)
              grove fleet apply                  (create the worker VMs)
              grove dispatch --pool linux -- make test`,
 	SilenceUsage: true,
-	Version:      Version,
+	// SilenceErrors: main.go is the sole place errors get printed (it special-cases *ExitError —
+	// see internal/cli/logs.go — to skip printing anything at all, since that error type means a
+	// command already printed its own summary, e.g. "job <id> failed (exit N) on <node>").
+	// Without this, cobra's own default error reporting would print a redundant "Error: <msg>"
+	// line first (a blank one for *ExitError, since its Error() is intentionally empty).
+	SilenceErrors: true,
+	Version:       Version,
 }
 
 // Execute runs the CLI.

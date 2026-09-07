@@ -126,6 +126,14 @@ func (s *Server) handleJobLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rc.Close()
 
+	// Best-effort: report the job's current status via the same header the pending-branch above
+	// uses, so a client (or a curious operator) can see e.g. "running"/"failed" without a second
+	// request. A failure to fetch it just means the header is omitted — never worth failing the
+	// whole logs request over.
+	if job, jerr := s.dispatch.Get(r.Context(), id); jerr == nil && job.Status != "" {
+		w.Header().Set("X-Grove-Job-Status", string(job.Status))
+	}
+
 	var streamErr error
 	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
 		streamErr = streamSSE(w, rc)
@@ -169,9 +177,17 @@ func (s *Server) handleJobLogsNDJSON(w http.ResponseWriter, r *http.Request, id 
 		return
 	}
 
+	if job, jerr := s.dispatch.Get(r.Context(), id); jerr == nil && job.Status != "" {
+		w.Header().Set("X-Grove-Job-Status", string(job.Status))
+	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
 	fl, canFlush := w.(http.Flusher)
+	// See streamChunked's identical comment — flush the headers immediately rather than letting
+	// them sit buffered until the first log line (which, for follow=1, may be a long time coming).
+	if canFlush {
+		fl.Flush()
+	}
 
 	enc := json.NewEncoder(w)
 	var offset int64
