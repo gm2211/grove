@@ -2,6 +2,29 @@
 
 All notable changes to grove are documented here.
 
+## v0.1.1
+
+Fixes found by running the whole stack live (single-host smoke stack: `orchard dev --synthetic`,
+`nomad agent -dev`, `grove serve`) after v0.1.0:
+
+- `grove serve` now runs the fleet reconciler loop, so VMs deleted by Orchard on TTL expiry are
+  recreated (`--fleet-reconcile-interval`, `--no-fleet-reconcile`; `GET /api/v1/fleet/reconcile`).
+- `JobRequest.timeout` accepts a duration string (`"30m"`) or a number of seconds — never
+  nanoseconds. Sub-second timeouts are rejected.
+- Log streaming: fixed a race in the Nomad client that dropped buffered log frames; `--follow`
+  waits for the allocation, streams, and exits with the job's exit code; follow on a finished job
+  returns immediately instead of hanging.
+- Jobs whose Nomad job vanished, or that never got an allocation within 30m, are marked `lost`
+  with a reason; pending jobs surface Nomad's blocked-evaluation reason.
+- Orchard VM labels are scheduler selectors: pool/host are derived from the VM name and worker;
+  drift is detected field-by-field. Without this every VM stayed `pending`.
+- `run.sh` uses a portable timeout (macOS has no GNU `timeout`); macOS Nomad clients get
+  `cpu_total_compute` set (Apple Silicon fingerprints ~24 MHz otherwise).
+- Job resources come from `fleet.yaml` pool defaults (`jobCPU`/`jobMemory`); docker-socket
+  mounting is opt-in per pool (`allowDockerSocket`).
+- UI streams logs via fetch + NDJSON with the bearer header (EventSource sent the token in the URL).
+- Install: `--roles` passed per value, Tart from `openai/tools`; grove is its own Homebrew tap.
+
 ## v0.1.0
 
 First usable cut of grove: turn Macs (and a Linux box) you already own into a private CI/agent
