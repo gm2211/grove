@@ -84,9 +84,9 @@ internal/mcp/              MCP server (stdio) exposing dispatch/status/logs/flee
 internal/install/          role bootstrap: brew deps, launchd plists, configs, tailscale checks
 ui/                        Vite + React + TS SPA; built output embedded by internal/server/ui.go
 images/                    Packer templates: linux-worker, macos-worker (nomad + tailscale + tools)
-nomad/jobs/                build-and-deploy.nomad.hcl, agent-session.nomad.hcl (parameterized)
+nomad/jobs/                build.nomad.hcl, agent.nomad.hcl, shell.nomad.hcl (parameterized)
 scripts/install.sh         curl | sh → brew tap + `grove install`
-docs/                      INSTALL.md (written for Claude to follow), OPERATIONS.md, API.md, ARGOS.md
+docs/                      INSTALL.md (written for Claude to follow), OPERATIONS.md, JOBS.md, IMAGES.md, MCP.md, ARGOS.md
 ```
 
 **Contract packages** (`config`, `orchard`, `nomad`, `dispatch`, `fleet` *types*) define the Go
