@@ -83,6 +83,17 @@ func runServe(ctx context.Context, listen string) error {
 		}
 	}
 
+	// Periodically reconcile every non-terminal job's status against Nomad, so an orphaned job
+	// (its dispatched Nomad job 404s — e.g. a dev Nomad agent restarted with its data dir wiped) or
+	// one stuck pending past dispatch.Options.PendingTimeout gets marked lost even if nothing polls
+	// it via Get/List in the meantime. Runs for the life of the process; a failed tick is logged by
+	// RunReconciler itself and doesn't stop the sweep.
+	go func() {
+		if err := ds.RunReconciler(ctx, dispatch.DefaultReconcileInterval); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("serve: job reconciler sweep stopped", "err", err)
+		}
+	}()
+
 	srv := server.New(oc, nc, ds, ac, server.Options{Token: cfg.Server.Token, Version: Version})
 	slog.Info("grove serve: listening", "addr", addr)
 	return http.ListenAndServe(addr, srv)

@@ -2,8 +2,10 @@ package nomad
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sort"
 	"time"
 
@@ -45,6 +47,21 @@ func (c *client) Ping(ctx context.Context) error {
 	return nil
 }
 
+// wrapNotFound wraps err with ErrNotFound when it represents a Nomad 404 response (the job,
+// allocation or node the caller asked about no longer exists), so callers can test for it with
+// errors.Is(err, ErrNotFound) regardless of the underlying nomad/api error type. Any other error
+// (including nil) is returned unchanged.
+func wrapNotFound(err error) error {
+	if err == nil {
+		return nil
+	}
+	var uerr nomadapi.UnexpectedResponseError
+	if errors.As(err, &uerr) && uerr.StatusCode() == http.StatusNotFound {
+		return fmt.Errorf("%w: %s", ErrNotFound, err)
+	}
+	return err
+}
+
 func qOpts(ctx context.Context) *nomadapi.QueryOptions {
 	return (&nomadapi.QueryOptions{}).WithContext(ctx)
 }
@@ -81,7 +98,7 @@ func (c *client) ListNodes(ctx context.Context) ([]Node, error) {
 func (c *client) GetNode(ctx context.Context, id string) (*Node, error) {
 	n, _, err := c.raw.Nodes().Info(id, qOpts(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("get node %s: %w", id, err)
+		return nil, fmt.Errorf("get node %s: %w", id, wrapNotFound(err))
 	}
 	// runningAllocs isn't needed for placement lookups (the only current caller) — 0 avoids an
 	// extra API call; ListNodes still computes it properly for the /fleet view.
@@ -157,7 +174,7 @@ func (c *client) Dispatch(
 func (c *client) ListAllocations(ctx context.Context, jobID string) ([]Allocation, error) {
 	stubs, _, err := c.raw.Jobs().Allocations(jobID, false, qOpts(ctx))
 	if err != nil {
-		return nil, err
+		return nil, wrapNotFound(err)
 	}
 
 	out := make([]Allocation, 0, len(stubs))
@@ -171,12 +188,49 @@ func (c *client) ListAllocations(ctx context.Context, jobID string) ([]Allocatio
 func (c *client) GetAllocation(ctx context.Context, allocID string) (*Allocation, error) {
 	a, _, err := c.raw.Allocations().Info(allocID, qOpts(ctx))
 	if err != nil {
-		return nil, err
+		return nil, wrapNotFound(err)
 	}
 
 	out := allocFromFull(a)
 
 	return &out, nil
+}
+
+// JobEvaluations returns jobID's recorded evaluations, translated to grove's Evaluation type so
+// callers (internal/dispatch) don't need to depend on nomad/api directly.
+func (c *client) JobEvaluations(ctx context.Context, jobID string) ([]Evaluation, error) {
+	evals, _, err := c.raw.Jobs().Evaluations(jobID, qOpts(ctx))
+	if err != nil {
+		return nil, wrapNotFound(err)
+	}
+
+	out := make([]Evaluation, 0, len(evals))
+	for _, e := range evals {
+		out = append(out, evaluationFromAPI(e))
+	}
+
+	return out, nil
+}
+
+func evaluationFromAPI(e *nomadapi.Evaluation) Evaluation {
+	out := Evaluation{Status: e.Status, StatusDescription: e.StatusDescription}
+	if len(e.FailedTGAllocs) == 0 {
+		return out
+	}
+	out.FailedTGAllocs = make(map[string]AllocationMetric, len(e.FailedTGAllocs))
+	for tg, m := range e.FailedTGAllocs {
+		if m == nil {
+			continue
+		}
+		out.FailedTGAllocs[tg] = AllocationMetric{
+			ConstraintFiltered: m.ConstraintFiltered,
+			DimensionExhausted: m.DimensionExhausted,
+			ClassFiltered:      m.ClassFiltered,
+			NodesEvaluated:     m.NodesEvaluated,
+			NodesAvailable:     m.NodesAvailable,
+		}
+	}
+	return out
 }
 
 // pickTask returns the (deterministic, lowest-sorting) task name and state out of an

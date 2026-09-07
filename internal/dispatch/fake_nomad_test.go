@@ -40,6 +40,9 @@ type fakeNomad struct {
 
 	nodesByID  map[string]nomad.Node
 	getNodeErr error
+
+	evaluationsByJob map[string][]nomad.Evaluation
+	evaluationsErr   error
 }
 
 type dispatchCall struct {
@@ -139,6 +142,15 @@ func (f *fakeNomad) RegisterJobFile(ctx context.Context, hcl string) error {
 	defer f.mu.Unlock()
 	f.registerCalls = append(f.registerCalls, hcl)
 	return f.registerErr
+}
+
+func (f *fakeNomad) JobEvaluations(ctx context.Context, jobID string) ([]nomad.Evaluation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.evaluationsErr != nil {
+		return nil, f.evaluationsErr
+	}
+	return f.evaluationsByJob[jobID], nil
 }
 
 func (f *fakeNomad) Ping(ctx context.Context) error { return f.pingErr }

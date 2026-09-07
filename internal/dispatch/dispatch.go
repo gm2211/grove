@@ -93,6 +93,11 @@ type Job struct {
 	// rather than a genuine script failure.
 	FailureReason *string    `json:"failureReason,omitempty"`
 	Placement     *Placement `json:"placement,omitempty"`
+	// PendingReason explains why a StatusPending job hasn't been placed yet, derived from Nomad's
+	// blocked-evaluation metrics (constraint filtered / dimension exhausted / class filtered / no
+	// nodes available — see nomad.Client.JobEvaluations). Empty when the job isn't pending, or
+	// Nomad hasn't recorded a placement failure (yet).
+	PendingReason string `json:"pendingReason,omitempty"`
 }
 
 // Placement is where a job's allocation landed, resolved via the Nomad node's meta (see
@@ -145,4 +150,11 @@ type Service interface {
 	// Logs for the no-allocation-yet / ErrNoAllocationYet semantics, which apply identically here.
 	LogLines(ctx context.Context, id string, follow bool) (<-chan LogLine, error)
 	Cancel(ctx context.Context, id string) error
+	// RunReconciler reconciles every non-terminal job's status against Nomad on each tick of
+	// interval (and once immediately), until ctx is done. It exists so a job's status — in
+	// particular lost-detection for an orphaned or stuck-pending job — advances even when nothing
+	// is actively calling Get/List for it (see Options.PendingTimeout). `grove serve` runs this in
+	// the background; a failed reconcile for one job is logged and doesn't stop the sweep. Returns
+	// ctx.Err() once ctx is done.
+	RunReconciler(ctx context.Context, interval time.Duration) error
 }
