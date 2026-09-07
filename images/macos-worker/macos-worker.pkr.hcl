@@ -84,6 +84,11 @@ build {
   provisioner "shell" {
     inline = [
       "set -eu",
+      # Packer's SSH session is a non-login shell: Homebrew's /opt/homebrew/bin is NOT on PATH
+      # there (only in login shells via /etc/paths.d). Put it first explicitly, and install
+      # Homebrew if the base image somehow lacks it.
+      "export PATH=/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+      "if ! command -v brew >/dev/null 2>&1; then echo '==> Homebrew missing, installing'; NONINTERACTIVE=1 /bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"; fi",
       "export HOMEBREW_NO_AUTO_UPDATE=1",
       "export HOMEBREW_NO_INSTALL_CLEANUP=1",
       "echo '==> installing nomad, git, gh, jq, node, python'",
@@ -98,7 +103,7 @@ build {
       # 'Three ways to run Tailscale on macOS' docs and formulae.brew.sh/formula/tailscale.
       "echo '==> installing tailscale (brew formula, not cask)'",
       "brew install tailscale",
-      "sudo brew services start tailscale || true", # tailscaled itself; `tailscale up` (join) is done by the fleet startup script with an ephemeral auth key.
+      "sudo /opt/homebrew/bin/brew services start tailscale || true", # tailscaled itself; `tailscale up` (join) is done by the fleet startup script with an ephemeral auth key.
     ]
   }
 
@@ -176,6 +181,7 @@ build {
   provisioner "shell" {
     inline = [
       "set -eu",
+      "export PATH=/opt/homebrew/bin:/opt/homebrew/sbin:$PATH",
       "brew cleanup -s || true",
       "rm -rf $(brew --cache) || true",
       "sudo rm -rf /private/var/log/*.log || true",
