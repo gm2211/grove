@@ -99,6 +99,17 @@ func (c *Client) Fleet(ctx context.Context) (*server.FleetResponse, error) {
 	return &out, nil
 }
 
+// FleetReconcile returns the state of the server's background fleet reconciler loop (see
+// internal/cli/serve.go's runFleetReconciler): when it last ran, what it planned, and its last
+// error, if any. Used by `grove fleet status` to show "last reconcile: …".
+func (c *Client) FleetReconcile(ctx context.Context) (*server.FleetReconcileResponse, error) {
+	var out server.FleetReconcileResponse
+	if err := c.doJSON(ctx, http.MethodGet, "/fleet/reconcile", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // RecycleVM starts a drain-then-delete cycle for the named VM. The server does the actual delete
 // asynchronously once the underlying Nomad node is drained (or the deadline passes); this just
 // reports whether the drain was accepted.

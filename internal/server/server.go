@@ -41,6 +41,18 @@ type Server struct {
 	// recycleDone, if non-nil, receives the vm name every time a background recycle finishes
 	// deleting a VM. Only set by tests, to synchronize on the async recycle flow.
 	recycleDone chan string
+
+	// fleetReconcile is the published state of `grove serve`'s background fleet reconciler loop
+	// (see internal/cli/serve.go). Always non-nil — a server with no fleet configured just never
+	// gets SetEnabled/Report called on it, so GET /fleet/reconcile reports {enabled: false}.
+	fleetReconcile *FleetReconcileStatus
+}
+
+// FleetReconcile returns the Server's fleet-reconciler status sink. `grove serve` calls
+// SetEnabled/Report on it from its background reconcile loop; GET /fleet/reconcile and the
+// "reconcile" field of GET /fleet read it back.
+func (s *Server) FleetReconcile() *FleetReconcileStatus {
+	return s.fleetReconcile
 }
 
 // New builds a Server wired to the given Orchard/Nomad clients, dispatch service and artifact
@@ -58,12 +70,13 @@ func New(oc orchard.Client, nc nomad.Client, ds dispatch.Service, ac artifacts.C
 		opts.RecyclePollInterval = 5 * time.Second
 	}
 	s := &Server{
-		orchard:   oc,
-		nomad:     nc,
-		dispatch:  ds,
-		artifacts: ac,
-		opts:      opts,
-		log:       log,
+		orchard:        oc,
+		nomad:          nc,
+		dispatch:       ds,
+		artifacts:      ac,
+		opts:           opts,
+		log:            log,
+		fleetReconcile: &FleetReconcileStatus{},
 	}
 	s.handler = s.routes()
 	return s
@@ -77,6 +90,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) routes() http.Handler {
 	api := http.NewServeMux()
 	api.HandleFunc("GET /fleet", s.handleFleet)
+	api.HandleFunc("GET /fleet/reconcile", s.handleFleetReconcile)
 	api.HandleFunc("POST /vms/{name}/recycle", s.handleRecycleVM)
 	api.HandleFunc("POST /workers/{name}/pause", s.handleWorkerPause)
 	api.HandleFunc("POST /workers/{name}/resume", s.handleWorkerResume)

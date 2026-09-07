@@ -39,11 +39,12 @@ type FleetEntry struct {
 
 // FleetResponse is the body of GET /fleet.
 type FleetResponse struct {
-	Workers   []FleetEntry `json:"workers"`
-	VMs       []FleetEntry `json:"vms"`
-	Nodes     []FleetEntry `json:"nodes"`
-	FetchedAt time.Time    `json:"fetchedAt"`
-	Totals    FleetTotals  `json:"totals"`
+	Workers   []FleetEntry          `json:"workers"`
+	VMs       []FleetEntry          `json:"vms"`
+	Nodes     []FleetEntry          `json:"nodes"`
+	FetchedAt time.Time             `json:"fetchedAt"`
+	Totals    FleetTotals           `json:"totals"`
+	Reconcile FleetReconcileSummary `json:"reconcile"`
 }
 
 // FleetTotals is a set of at-a-glance counts derived from the same fleet snapshot as
@@ -148,6 +149,8 @@ func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
 			resp.Totals.JobsPending++
 		}
 	}
+
+	resp.Reconcile = s.fleetReconcile.summary()
 
 	s.writeJSON(w, http.StatusOK, resp)
 }

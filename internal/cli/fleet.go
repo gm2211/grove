@@ -7,6 +7,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/gm2211/grove/internal/apiclient"
 	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/fleet"
 	"github.com/spf13/cobra"
@@ -150,8 +151,50 @@ var fleetStatusCmd = &cobra.Command{
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", pool, worker, vm.Name, vm.Status, age, ttl)
 		}
 
-		return w.Flush()
+		if err := w.Flush(); err != nil {
+			return err
+		}
+
+		printReconcileStatus(cmd, cfg)
+
+		return nil
 	},
+}
+
+// printReconcileStatus prints one best-effort "last reconcile: …" line summarizing the running
+// `grove serve`'s background fleet reconciler loop (see internal/cli/serve.go), fetched over the
+// API. `fleet status` itself talks to Orchard directly and doesn't need a server to work at all,
+// so a server that isn't configured or isn't reachable just means this line is skipped — never a
+// hard failure of the command.
+func printReconcileStatus(cmd *cobra.Command, cfg *config.Config) {
+	if cfg.Server.URL == "" {
+		return
+	}
+
+	client := apiclient.New(cfg.Server.URL, cfg.Server.Token)
+	status, err := client.FleetReconcile(cmd.Context())
+	if err != nil {
+		fmt.Fprintf(cmd.OutOrStdout(), "last reconcile: unavailable (%v)\n", err)
+		return
+	}
+
+	if !status.Enabled {
+		fmt.Fprintln(cmd.OutOrStdout(), "last reconcile: fleet reconciler disabled on the server")
+		return
+	}
+
+	if status.LastRunAt.IsZero() {
+		fmt.Fprintln(cmd.OutOrStdout(), "last reconcile: not yet run")
+		return
+	}
+
+	line := fmt.Sprintf("last reconcile: %s ago (every %s)", time.Since(status.LastRunAt).Round(time.Second), status.Interval)
+	if status.LastError != "" {
+		line += fmt.Sprintf(", last error: %s", status.LastError)
+	} else if len(status.LastPlan.Creates) > 0 || len(status.LastPlan.Deletes) > 0 {
+		line += fmt.Sprintf(", last plan: +%d/-%d", len(status.LastPlan.Creates), len(status.LastPlan.Deletes))
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), line)
 }
 
 func newReconciler(cfg *config.Config) (*fleet.Reconciler, error) {
