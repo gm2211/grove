@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"text/template"
+
+	"github.com/hashicorp/nomad/jobspec2"
 )
 
 // renderData mirrors the fields the grove server is expected to supply when rendering a job
@@ -179,4 +181,79 @@ func TestRenderDockerSocketOptIn(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRenderedHCLParsesWithJobspec2 is the real regression test for the bash-vs-HCL interpolation
+// bug: `grove serve` calls EnsureJobs (internal/dispatch/nomadjobs.go), which renders each
+// nomad/jobs/*.nomad.hcl template and registers it with Nomad. Every bash expansion inside the
+// embedded run.sh `template { data = <<-EOF ... EOF }` heredoc (e.g. `${NOMAD_META_x:-default}`)
+// is, syntactically, also valid Nomad HCL2 template interpolation — so an un-escaped `${` there
+// breaks parsing at registration time (see docs/JOBS.md "HCL escaping"). This parses every
+// rendered template with Nomad's own jobspec2 library (the same parser `nomad job validate`/
+// `nomad job run` use) offline, so a future edit that reintroduces an unescaped `${` fails `go
+// test` instead of only failing at `grove serve` runtime against a live Nomad cluster.
+func TestRenderedHCLParsesWithJobspec2(t *testing.T) {
+	files := map[string]string{
+		"build": "build.nomad.hcl",
+		"agent": "agent.nomad.hcl",
+		"shell": "shell.nomad.hcl",
+	}
+	pools := []string{"linux", "macos"}
+	sockets := []bool{false, true}
+
+	for kind, file := range files {
+		for _, pool := range pools {
+			for _, allowDockerSocket := range sockets {
+				name := kind + "/" + pool + "/socket=" + boolToStr(allowDockerSocket)
+				t.Run(name, func(t *testing.T) {
+					hcl := render(t, file, renderData{
+						Kind:              kind,
+						Pool:              pool,
+						AllowDockerSocket: allowDockerSocket,
+					})
+
+					job, err := jobspec2.ParseWithConfig(&jobspec2.ParseConfig{
+						Path:    "job.hcl",
+						Body:    []byte(hcl),
+						AllowFS: false,
+					})
+					if err != nil {
+						t.Fatalf("jobspec2 failed to parse rendered %s (pool=%s, AllowDockerSocket=%v): %v\n---\n%s", file, pool, allowDockerSocket, err, hcl)
+					}
+
+					wantID := "grove-" + kind + "-" + pool
+					if job.ID == nil || *job.ID != wantID {
+						gotID := "<nil>"
+						if job.ID != nil {
+							gotID = *job.ID
+						}
+						t.Errorf("job.ID = %q, want %q", gotID, wantID)
+					}
+
+					if len(job.TaskGroups) != 1 || len(job.TaskGroups[0].Tasks) != 1 {
+						t.Fatalf("expected exactly one group with one task, got %d groups", len(job.TaskGroups))
+					}
+					task := job.TaskGroups[0].Tasks[0]
+					if task.Name != "main" {
+						t.Errorf("task.Name = %q, want %q", task.Name, "main")
+					}
+
+					wantDriver := "docker"
+					if pool == "macos" {
+						wantDriver = "raw_exec"
+					}
+					if task.Driver != wantDriver {
+						t.Errorf("task.Driver = %q, want %q", task.Driver, wantDriver)
+					}
+				})
+			}
+		}
+	}
+}
+
+func boolToStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }
