@@ -66,6 +66,46 @@ func TestVMToV1_NoStartupScript(t *testing.T) {
 	}
 }
 
+func TestVMToV1_ShutdownScript(t *testing.T) {
+	vm := vmToV1(VMSpec{
+		Name:            "vm1",
+		ShutdownScript:  "echo bye",
+		ShutdownTimeout: 30 * time.Second,
+	})
+
+	if vm.ShutdownScript == nil || vm.ShutdownScript.ScriptContent != "echo bye" {
+		t.Errorf("want shutdown script %q, got %+v", "echo bye", vm.ShutdownScript)
+	}
+
+	if vm.ShutdownScriptTimeoutSeconds != 30 {
+		t.Errorf("want shutdown script timeout 30s, got %d", vm.ShutdownScriptTimeoutSeconds)
+	}
+}
+
+func TestVMToV1_NoShutdownScript(t *testing.T) {
+	vm := vmToV1(VMSpec{Name: "vm1"})
+
+	if vm.ShutdownScript != nil {
+		t.Errorf("want nil shutdown script, got %+v", vm.ShutdownScript)
+	}
+
+	if vm.ShutdownScriptTimeoutSeconds != 0 {
+		t.Errorf("want zero shutdown script timeout, got %d", vm.ShutdownScriptTimeoutSeconds)
+	}
+}
+
+func TestVMToV1_TTLNotYetWired(t *testing.T) {
+	// gm2211/orchard's v1.VM has no TTL-shaped field yet (no ttl_seconds PR exists upstream,
+	// open or merged), so a non-zero TTL on the spec has nothing to land on. This test just
+	// documents that vmToV1 accepts such a spec without error and doesn't panic or otherwise
+	// misbehave; there is no field to assert against.
+	vm := vmToV1(VMSpec{Name: "vm1", TTL: time.Hour})
+
+	if vm == nil || vm.Name != "vm1" {
+		t.Fatalf("want vm1 produced despite TTL set, got %+v", vm)
+	}
+}
+
 func TestVMFromV1_MapsAssignedResources(t *testing.T) {
 	created := time.Now().Add(-time.Hour).Truncate(time.Second)
 

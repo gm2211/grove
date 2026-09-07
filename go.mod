@@ -43,4 +43,4 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-replace github.com/cirruslabs/orchard => github.com/gm2211/orchard v0.0.0-20260903175953-95b12694501c
+replace github.com/cirruslabs/orchard => github.com/gm2211/orchard v0.0.0-20260907013401-2ef7955fadf4
