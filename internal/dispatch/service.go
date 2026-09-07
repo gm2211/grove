@@ -109,29 +109,44 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, error) {
 		return nil, err
 	}
 
-	envJSON, err := json.Marshal(req.Env)
-	if err != nil {
-		return nil, fmt.Errorf("dispatch: marshal env: %w", err)
-	}
-	metaJSON, err := json.Marshal(req.Meta)
-	if err != nil {
-		return nil, fmt.Errorf("dispatch: marshal meta: %w", err)
-	}
-
 	id, err := randomID()
 	if err != nil {
 		return nil, err
 	}
 
+	// Meta mapping follows docs/JOBS.md exactly (the images/jobs agent's authoritative dispatch
+	// contract, shared with nomad/jobs/*.nomad.hcl): only "requester" is meta_required, and
+	// run.sh treats an absent/empty optional key as "use the default" (e.g.
+	// `timeout ${NOMAD_META_timeout_seconds:-3600}` — sending a literal "0" would instead run
+	// `timeout 0`, killing the job immediately), so zero-valued fields must be omitted rather
+	// than serialized as "0"/"null".
 	meta := map[string]string{
-		"repo":            req.Repo,
-		"ref":             req.Ref,
-		"env_json":        string(envJSON),
-		"timeout_seconds": strconv.FormatFloat(req.Timeout.Seconds(), 'f', 0, 64),
-		"requester":       req.Requester,
-		"grove_meta_json": string(metaJSON),
-		"artifact_prefix": artifactPrefix(id),
+		"requester": req.Requester,
 	}
+	if req.Repo != "" {
+		meta["repo"] = req.Repo
+	}
+	if req.Ref != "" {
+		meta["ref"] = req.Ref
+	}
+	if req.Timeout > 0 {
+		meta["timeout_seconds"] = strconv.FormatFloat(req.Timeout.Seconds(), 'f', 0, 64)
+	}
+	if len(req.Env) > 0 {
+		envJSON, err := json.Marshal(req.Env)
+		if err != nil {
+			return nil, fmt.Errorf("dispatch: marshal env: %w", err)
+		}
+		meta["env_json"] = string(envJSON)
+	}
+	if len(req.Meta) > 0 {
+		metaJSON, err := json.Marshal(req.Meta)
+		if err != nil {
+			return nil, fmt.Errorf("dispatch: marshal meta: %w", err)
+		}
+		meta["grove_meta_json"] = string(metaJSON)
+	}
+	meta["artifact_prefix"] = artifactPrefix(id)
 	if img, ok := req.Meta["image"]; ok && img != "" {
 		meta["image"] = img
 	}
