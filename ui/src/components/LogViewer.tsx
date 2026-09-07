@@ -1,14 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import { streamJobLogs } from "../api/client";
+import { streamJobLogs, type LogLine } from "../api/client";
 import { Button } from "./Button";
 
-export function LogViewer({ jobId, follow }: { jobId: string; follow: boolean }) {
-  const [lines, setLines] = useState<string[]>([]);
+const TERMINAL_STATUSES = ["success", "failed", "canceled", "lost"];
+
+export function LogViewer({ jobId, follow, jobStatus }: { jobId: string; follow: boolean; jobStatus: string }) {
+  const [lines, setLines] = useState<LogLine[]>([]);
   const [paused, setPaused] = useState(false);
   const [connected, setConnected] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
+  const statusRef = useRef(jobStatus);
+  statusRef.current = jobStatus;
 
   useEffect(() => {
     setLines([]);
@@ -17,7 +21,8 @@ export function LogViewer({ jobId, follow }: { jobId: string; follow: boolean })
     const stop = streamJobLogs(jobId, {
       onOpen: () => setConnected(true),
       onError: () => setConnected(false),
-      onLine: (line) => setLines((prev) => [...prev, line]),
+      onLine: (entry) => setLines((prev) => [...prev, entry]),
+      isTerminal: () => TERMINAL_STATUSES.includes(statusRef.current),
     });
     return stop;
   }, [jobId, follow]);
@@ -27,6 +32,14 @@ export function LogViewer({ jobId, follow }: { jobId: string; follow: boolean })
     const el = containerRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [lines, paused]);
+
+  const statusLabel = follow
+    ? connected
+      ? "streaming"
+      : jobStatus === "pending"
+        ? "waiting for allocation…"
+        : "connecting…"
+    : "not following";
 
   return (
     <div
@@ -38,7 +51,7 @@ export function LogViewer({ jobId, follow }: { jobId: string; follow: boolean })
         style={{ borderColor: "var(--border)", color: "var(--fg-muted)" }}
       >
         <span>
-          {follow ? (connected ? "streaming" : "connecting…") : "not following"} · {lines.length} lines
+          {statusLabel} · {lines.length} lines
         </span>
         <Button onClick={() => setPaused((p) => !p)}>{paused ? "Resume autoscroll" : "Pause autoscroll"}</Button>
       </div>
@@ -48,9 +61,14 @@ export function LogViewer({ jobId, follow }: { jobId: string; follow: boolean })
             no output yet
           </div>
         )}
-        {lines.map((line, i) => (
-          <div key={i} className="whitespace-pre-wrap">
-            {line}
+        {lines.map((entry, i) => (
+          <div
+            key={i}
+            className="whitespace-pre-wrap"
+            style={entry.stream === "stderr" ? { color: "var(--status-lost)" } : undefined}
+          >
+            {entry.stream === "stderr" && <span style={{ opacity: 0.7 }}>[stderr] </span>}
+            {entry.line}
           </div>
         ))}
       </div>
