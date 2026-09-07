@@ -2,6 +2,16 @@
 
 All notable changes to grove are documented here.
 
+## v0.1.2
+
+- README overhaul: screenshots, real command examples, Mermaid flow diagrams (`docs/FLOW.md`).
+- `grove install` trusts third-party Homebrew taps (`brew trust`) before installing; `grove doctor`
+  reports untrusted taps.
+- Tart images built and published for the first time: `ghcr.io/gm2211/grove-linux-worker`
+  (Ubuntu arm64, Nomad 2.0.5, Docker 29.8, Tailscale) and `ghcr.io/gm2211/grove-macos-worker`
+  (macOS Sequoia + Xcode 16.4, Nomad, Tailscale). Template fixes: macOS disk ≥ 140 GB base,
+  Homebrew on PATH in Packer's non-login SSH shell.
+
 ## v0.1.1
 
 Fixes found by running the whole stack live (single-host smoke stack: `orchard dev --synthetic`,
