@@ -1,32 +1,33 @@
-# grove — the Argos contract
+# grove — the orchestrator contract
 
-This is the contract Argos's `grove` executor (a job-executor backend registered with Argos)
-uses to drive grove: which endpoints it calls and why, how a WorkUnit maps onto a `JobRequest`,
-how grove's `Job.status` maps back onto Argos's status vocabulary, the idempotency-key
-convention that makes Argos's retries safe, and how to resume a dropped NDJSON log stream.
-Read this if you're implementing or debugging Argos's `groveClient`. For the underlying
-job-template/dispatch mechanics (how `kind`+`pool` map onto Nomad jobs, what runs inside the
-allocation), see `docs/JOBS.md` — this doc only covers the Argos-facing surface.
+This is the contract an external agent orchestrator's `grove` executor (a job-executor backend
+that hands work to grove) uses to drive grove: which endpoints it calls and why, how a work unit
+maps onto a `JobRequest`, how grove's `Job.status` maps back onto a typical orchestrator status
+vocabulary, the idempotency-key convention that makes orchestrator retries safe, and how to
+resume a dropped NDJSON log stream. Read this if you're implementing or debugging a `grove`
+executor. For the underlying job-template/dispatch mechanics (how `kind`+`pool` map onto Nomad
+jobs, what runs inside the allocation), see `docs/JOBS.md` — this doc only covers the
+orchestrator-facing surface.
 
 ## Endpoints the executor calls
 
-Full endpoint list and response shapes: ARCHITECTURE.md → "grove HTTP API (v1)". From Argos's
-side, the `grove` executor only ever touches five of them:
+Full endpoint list and response shapes: ARCHITECTURE.md → "grove HTTP API (v1)". From the
+orchestrator's side, a `grove` executor only ever touches five of them:
 
-| Argos executor action | Endpoint |
+| Executor action | Endpoint |
 |---|---|
-| Submit a WorkUnit | `POST /jobs` |
+| Submit a work unit | `POST /jobs` |
 | Poll status (no active log stream, or after a disconnect) | `GET /jobs/{id}` |
 | Stream / resume logs | `GET /jobs/{id}/logs?follow=1&sinceOffset=N` (NDJSON) |
-| Fetch a completed build's output | `GET /jobs/{id}/artifacts/{path}` (URL comes from `Job.artifacts[]`, not constructed by Argos) |
-| Cancel a running WorkUnit | `DELETE /jobs/{id}` (or `POST /jobs/{id}/cancel` — same operation) |
+| Fetch a completed build's output | `GET /jobs/{id}/artifacts/{path}` (URL comes from `Job.artifacts[]`, not constructed by the caller) |
+| Cancel a running work unit | `DELETE /jobs/{id}` (or `POST /jobs/{id}/cancel` — same operation) |
 
 `GET /fleet`, `/vms/{name}/recycle`, `/workers/{name}/pause`/`resume` and `GET /healthz` are
-operator/UI surface, not part of the Argos contract — the executor never calls them.
+operator/UI surface, not part of the orchestrator contract — the executor never calls them.
 
-## WorkUnit → JobRequest
+## Work unit → JobRequest
 
-| Argos WorkUnit field | grove JobRequest field | Notes |
+| Orchestrator work-unit field | grove JobRequest field | Notes |
 |---|---|---|
 | `kind: repo-verify \| repo-lint \| repo-deploy` | `kind: "build"` | deploy is a build with a deploy script — no separate grove kind |
 | `kind: agent-session` | `kind: "agent"` | |
@@ -34,12 +35,12 @@ operator/UI surface, not part of the Argos contract — the executor never calls
 | `source.commit` | `ref` | |
 | `script.command` + `script.args` | `script` | shell-quoted and joined into one string (grove's `script` is a single bash command run via `bash -eo pipefail`) |
 | `secretRefs` | `secrets` | names only — grove resolves these server-side from its secret store into env, never sent as values |
-| `constraints` | `pool` | Argos's `groveClient` picks the first matching pool label — grove itself doesn't interpret `constraints` |
-| `taskId` + `runId` | `idempotencyKey` | convention: `argos:<taskId>:<runId>` — see below |
-| `beadId`, `repo`, `taskId` (whatever Argos wants round-tripped) | `meta` | opaque, round-tripped verbatim onto `Job.meta` — not consumed by grove's job templates, just carried |
-| WorkUnit's own deadline/timeout, if any | `timeout` | **send a duration string** ("30m", "2h", "90s") — a JSON number is also accepted but means SECONDS, never nanoseconds/milliseconds; omit entirely for no timeout. Sending anything that looks like a millisecond count as a bare number (e.g. `120000` meaning 2 minutes) is the one mistake this field cannot detect for you: `120000` is parsed as 120000 *seconds* (~33h), not 2 minutes — always prefer the string form. Sub-second timeouts (`0 < timeout < 1s`) are rejected with 400. |
+| `constraints` | `pool` | the executor picks the first matching pool label — grove itself doesn't interpret orchestrator-side constraints |
+| `taskId` + `runId` | `idempotencyKey` | convention: `<orchestrator>:<taskId>:<runId>` — see below |
+| whatever the orchestrator wants round-tripped (issue id, repo, task id) | `meta` | opaque, round-tripped verbatim onto `Job.meta` — not consumed by grove's job templates, just carried |
+| the work unit's own deadline/timeout, if any | `timeout` | **send a duration string** ("30m", "2h", "90s") — a JSON number is also accepted but means SECONDS, never nanoseconds/milliseconds; omit entirely for no timeout. Sending anything that looks like a millisecond count as a bare number (e.g. `120000` meaning 2 minutes) is the one mistake this field cannot detect for you: `120000` is parsed as 120000 *seconds* (~33h), not 2 minutes — always prefer the string form. Sub-second timeouts (`0 < timeout < 1s`) are rejected with 400. |
 
-Example submitted `JobRequest` for a `repo-verify` WorkUnit:
+Example submitted `JobRequest` for a `repo-verify` work unit:
 
 ```json
 {
@@ -50,13 +51,13 @@ Example submitted `JobRequest` for a `repo-verify` WorkUnit:
   "script": "make verify",
   "secrets": ["GH_TOKEN"],
   "timeout": "30m",
-  "idempotencyKey": "argos:task-1234:run-2",
+  "idempotencyKey": "orch:task-1234:run-2",
   "meta": {
-    "argosTaskId": "task-1234",
-    "argosBeadId": "bd-9981",
-    "argosRepo": "gm2211/grove"
+    "taskId": "task-1234",
+    "issueId": "bd-9981",
+    "repo": "gm2211/grove"
   },
-  "requester": "argos"
+  "requester": "orchestrator"
 }
 ```
 
@@ -65,7 +66,7 @@ when `idempotencyKey` matched an existing job (nothing was re-dispatched).
 
 ## Status mapping
 
-| grove `Job.status` | Argos status |
+| grove `Job.status` | Typical orchestrator status |
 |---|---|
 | `pending` | `pending` |
 | `running` | `running` |
@@ -77,11 +78,11 @@ when `idempotencyKey` matched an existing job (nothing was re-dispatched).
 `lost` deliberately does **not** collapse into `failed`: it means the allocation itself
 disappeared (a node died, a driver/setup error, Nomad lost track of it) rather than the script
 running and exiting non-zero. When `status` is `lost`, `Job.failureReason` is set specifically so
-Argos's executor can classify the WorkUnit as transient/retryable instead of a genuine script
+the executor can classify the work unit as transient/retryable instead of a genuine script
 failure. Related `Job` fields useful to the executor:
 
 - `timedOut` — the script hit its own `timeout` wrapper inside the allocation (run.sh, not an
-  Argos-side timeout); a `timedOut: true` job is `status: "failed"`, not `lost`.
+  orchestrator-side timeout); a `timedOut: true` job is `status: "failed"`, not `lost`.
 - `signal` — the Unix signal (by name, e.g. `"SIGTERM"`) that ended the task, when known. Set on
   a `canceled` job (grove cancels via `nomad job stop`, which signals the task) and occasionally
   on `lost`/`failed` ones.
@@ -91,11 +92,12 @@ failure. Related `Job` fields useful to the executor:
 
 ## Idempotency key convention
 
-Use `argos:<taskId>:<runId>` as `JobRequest.idempotencyKey` for every submit. Argos's own retry
-logic may re-submit a WorkUnit after a network blip without knowing whether the first `POST
-/jobs` actually landed on the server. Submitting the same key again doesn't dispatch a second
-Nomad job — grove returns the already-dispatched `Job` (`200 OK` instead of `201 Created`), so a
-retried submit is safe by construction; the executor never needs its own dedupe table.
+Use `<orchestrator>:<taskId>:<runId>` as `JobRequest.idempotencyKey` for every submit. An
+orchestrator's own retry logic may re-submit a work unit after a network blip without knowing
+whether the first `POST /jobs` actually landed on the server. Submitting the same key again
+doesn't dispatch a second Nomad job — grove returns the already-dispatched `Job` (`200 OK`
+instead of `201 Created`), so a retried submit is safe by construction; the executor never needs
+its own dedupe table.
 
 ## NDJSON log resumption
 
@@ -115,7 +117,7 @@ is "reconnect with `sinceOffset` set to the last offset you successfully process
 client-side deduping of a continuous stream — the server does the skipping, the client just
 remembers where it got to.
 
-Argos-side reconnect loop, in prose:
+The executor's reconnect loop, in prose:
 
 1. Open `GET /jobs/{id}/logs?follow=1&sinceOffset=0`.
 2. Read NDJSON objects one line at a time; for each, append `line` to the task's log and record
@@ -135,10 +137,10 @@ Once a `build` job reaches a terminal status, `Job.artifacts[]` is populated:
 {"path": "coverage.xml", "url": "/api/v1/jobs/j-8f2/artifacts/coverage.xml", "size": 4021, "contentType": "application/xml"}
 ```
 
-`url` is already a full API path (`/api/v1/jobs/{id}/artifacts/{urlencoded path}`) — Argos `GET`s
-it directly with the same bearer token used for everything else. grove proxies the download from
-its own MinIO/artifact-store credentials, so the executor never needs separate bucket
-credentials or a second auth scheme.
+`url` is already a full API path (`/api/v1/jobs/{id}/artifacts/{urlencoded path}`) — the executor
+`GET`s it directly with the same bearer token used for everything else. grove proxies the
+download from its own MinIO/artifact-store credentials, so the executor never needs separate
+bucket credentials or a second auth scheme.
 
 ## Curl walkthrough
 
@@ -152,9 +154,9 @@ $ curl -sS -X POST https://grove.tailnet.ts.net:6120/api/v1/jobs \
       "repo": "https://github.com/gm2211/grove",
       "ref": "a1b2c3d",
       "script": "make verify",
-      "idempotencyKey": "argos:task-1234:run-2",
-      "meta": {"argosTaskId": "task-1234", "argosBeadId": "bd-9981"},
-      "requester": "argos"
+      "idempotencyKey": "orch:task-1234:run-2",
+      "meta": {"taskId": "task-1234", "issueId": "bd-9981"},
+      "requester": "orchestrator"
     }'
 # -> {"id":"j-8f2"}
 ```

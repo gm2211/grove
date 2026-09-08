@@ -206,7 +206,7 @@ func TestSubmit_IdempotencyKey_ReturnsExistingWithoutRedispatch(t *testing.T) {
 	svc := newTestService(t, nc)
 
 	first, created1, err := svc.Submit(context.Background(), JobRequest{
-		Kind: KindShell, Pool: "linux", Script: "true", IdempotencyKey: "argos:t1:r1",
+		Kind: KindShell, Pool: "linux", Script: "true", IdempotencyKey: "orch:t1:r1",
 	})
 	if err != nil {
 		t.Fatalf("Submit (first): %v", err)
@@ -216,7 +216,7 @@ func TestSubmit_IdempotencyKey_ReturnsExistingWithoutRedispatch(t *testing.T) {
 	}
 
 	second, created2, err := svc.Submit(context.Background(), JobRequest{
-		Kind: KindShell, Pool: "linux", Script: "false", IdempotencyKey: "argos:t1:r1",
+		Kind: KindShell, Pool: "linux", Script: "false", IdempotencyKey: "orch:t1:r1",
 	})
 	if err != nil {
 		t.Fatalf("Submit (second): %v", err)

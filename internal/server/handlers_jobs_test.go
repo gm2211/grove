@@ -57,7 +57,7 @@ func TestPostJobs_IdempotentReplayReturns200(t *testing.T) {
 	}
 	srv := newTestServer(nil, nil, ds, Options{})
 
-	body := `{"kind":"shell","pool":"linux","script":"echo hi","idempotencyKey":"argos:t1:r1"}`
+	body := `{"kind":"shell","pool":"linux","script":"echo hi","idempotencyKey":"orch:t1:r1"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)

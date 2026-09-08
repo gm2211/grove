@@ -8,7 +8,7 @@ only over your Tailscale tailnet.
 
 ```
                  ┌──────────────────────────────────────────────┐
-  intent         │  Argos / Claude Code / Codex / `grove dispatch`│
+  intent         │  agent orchestrator / Claude Code / Codex / CLI │
                  └──────────────┬───────────────────────────────┘
                                 │ HTTP (grove API)  /  MCP (stdio)
                  ┌──────────────▼───────────────────────────────┐
@@ -86,7 +86,7 @@ ui/                        Vite + React + TS SPA; built output embedded by inter
 images/                    Packer templates: linux-worker, macos-worker (nomad + tailscale + tools)
 nomad/jobs/                build.nomad.hcl, agent.nomad.hcl, shell.nomad.hcl (parameterized)
 scripts/install.sh         curl | sh → brew tap + `grove install`
-docs/                      INSTALL.md (written for Claude to follow), OPERATIONS.md, JOBS.md, IMAGES.md, MCP.md, ARGOS.md
+docs/                      INSTALL.md (written for Claude to follow), OPERATIONS.md, JOBS.md, IMAGES.md, MCP.md, ORCHESTRATOR.md
 ```
 
 **Contract packages** (`config`, `orchard`, `nomad`, `dispatch`, `fleet` *types*) define the Go
@@ -168,7 +168,7 @@ All under `/api/v1`, `Authorization: Bearer <token>`, bind to the tailnet addres
 | GET | `/healthz` | `{ok, version, orchard, nomad, serverTime}`; orchard/nomad are "up" or "down" |
 
 The same operations are exposed as MCP tools (`grove mcp`) so Claude Code / Codex can use the fleet
-directly, and consumed by Argos's `grove` executor.
+directly, and consumed by an agent orchestrator's `grove` executor.
 
 ## Fork of Orchard
 

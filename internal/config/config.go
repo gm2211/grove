@@ -17,7 +17,7 @@ type Config struct {
 	Orchard Endpoint `yaml:"orchard"`
 	// Nomad server.
 	Nomad Endpoint `yaml:"nomad"`
-	// grove server (API + UI). Token is what clients (Argos, MCP, UI) present.
+	// grove server (API + UI). Token is what clients (orchestrators, MCP, UI) present.
 	Server ServerConfig `yaml:"server"`
 	// Artifact store (S3-compatible, e.g. MinIO on the control plane).
 	Artifacts ArtifactsConfig `yaml:"artifacts"`

@@ -2,7 +2,8 @@
 
 This is the contract between a `JobRequest` (`internal/dispatch/dispatch.go`) and the parameterized
 Nomad jobs it gets mapped onto (`nomad/jobs/*.nomad.hcl`). Read this if you're implementing
-`internal/dispatch`'s `Service.Submit`, building Argos's `grove` executor, or writing a script
+`internal/dispatch`'s `Service.Submit`, building a `grove` executor for an agent orchestrator, or
+writing a script
 meant to run as a grove job (CI builds, agent sessions, `grove exec`).
 
 ## The three kinds
@@ -54,7 +55,7 @@ if len(req.Env) > 0 {
 }
 if len(req.Meta) > 0 {
     b, _ := json.Marshal(req.Meta)
-    meta["grove_meta_json"] = string(b) // round-tripped, not consumed by run.sh — Argos bead ids etc.
+    meta["grove_meta_json"] = string(b) // round-tripped, not consumed by run.sh — caller's task ids etc.
 }
 // artifact_prefix: server-assigned, e.g. the Job.ID, so build artifacts land at a predictable
 // path grove can later present as Artifact.URL.

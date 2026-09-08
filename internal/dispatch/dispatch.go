@@ -35,12 +35,12 @@ type JobRequest struct {
 	// Timeout is a duration string ("30m", "2h", "90s") or a JSON number of SECONDS on the wire —
 	// never raw nanoseconds. See Duration's doc comment.
 	Timeout Duration `json:"timeout,omitempty"`
-	// Meta is free-form and round-tripped (Argos puts bead ids here).
+	// Meta is free-form and round-tripped (an orchestrator can put its own task ids here).
 	Meta map[string]string `json:"meta,omitempty"`
-	// Requester is an opaque label for who submitted (argos, mcp:claude-code, cli).
+	// Requester is an opaque label for who submitted (orchestrator, mcp:claude-code, cli).
 	Requester string `json:"requester,omitempty"`
 	// IdempotencyKey, if set, makes a repeat Submit with the same key return the existing Job
-	// instead of dispatching again. Argos convention: "argos:<taskId>:<runId>".
+	// instead of dispatching again. Orchestrator convention: "<orchestrator>:<taskId>:<runId>".
 	IdempotencyKey string `json:"idempotencyKey,omitempty"`
 	// Resources optionally hints at this job's desired sizing. Nomad cannot resize a parameterized
 	// job's `resources` block per dispatch (there is no dispatch-time equivalent of job update), so

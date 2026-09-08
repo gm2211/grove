@@ -109,10 +109,9 @@ export const state: { fleet: FleetResponse } = {
 const repos = [
   "github.com/gm2211/grove",
   "github.com/gm2211/orchard",
-  "github.com/gm2211/argos",
 ];
 const kinds: JobKind[] = ["build", "agent", "shell"];
-const requesters = ["argos", "mcp:claude-code", "cli"];
+const requesters = ["orchestrator", "mcp:claude-code", "cli"];
 
 function randomStatus(ageMs: number): JobStatus {
   if (ageMs < 5_000) return "pending";

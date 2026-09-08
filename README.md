@@ -70,19 +70,20 @@ dispatch and follow its own jobs without shelling out to the CLI. Example prompt
 
 See [docs/MCP.md](docs/MCP.md) for Codex / Claude Desktop registration and the full tool list.
 
-## Use from Argos
+## Use from an agent orchestrator
 
-Argos's `grove` executor drives grove over the same HTTP API as everything else: `POST /jobs` to
-submit a WorkUnit, `GET /jobs/{id}` to poll, NDJSON log streaming with offset-based resume, and an
-`idempotencyKey` convention (`argos:<taskId>:<runId>`) that makes retries safe. See
-[docs/ARGOS.md](docs/ARGOS.md) for the full WorkUnit → JobRequest mapping and status vocabulary.
+An orchestrator's `grove` executor drives grove over the same HTTP API as everything else: `POST
+/jobs` to submit a work unit, `GET /jobs/{id}` to poll, NDJSON log streaming with offset-based
+resume, and an `idempotencyKey` convention (`<orchestrator>:<taskId>:<runId>`) that makes retries
+safe. See [docs/ORCHESTRATOR.md](docs/ORCHESTRATOR.md) for the full work unit → JobRequest mapping
+and status vocabulary.
 
 ## How it works
 
 ```mermaid
 flowchart TB
     subgraph intent["intent"]
-        argos["Argos"]
+        orch["agent orchestrator"]
         mcp["Claude Code / Codex\n(MCP over stdio)"]
         cli["grove CLI"]
     end
@@ -95,7 +96,7 @@ flowchart TB
         tart["Tart VMs\n(Nomad client inside each)"]
     end
 
-    argos & mcp & cli --> api
+    orch & mcp & cli --> api
     api -- Orchard REST --> orchard
     api -- Nomad HTTP --> nomad
     orchard -. workers dial out .-> mac
@@ -128,10 +129,11 @@ Full design, fleet spec, job model, and HTTP API reference: [ARCHITECTURE.md](AR
   with resumable NDJSON log streaming and stuck/orphaned-job detection (`lost` status)
 - HTTP API (`/api/v1/...`) + embedded control-plane UI (fleet view, job list, job detail with
   live logs, dispatch form, settings)
-- MCP server for orchestrators (Claude Code, Codex, Argos) to dispatch and follow jobs over stdio
+- MCP server for orchestrators (Claude Code, Codex, your own agent runner) to dispatch and follow
+  jobs over stdio
 - `grove install` role bootstrap (`worker` / `control-plane` / `client`) and `grove doctor`
   health checks
-- Argos integration — see [docs/ARGOS.md](docs/ARGOS.md)
+- agent-orchestrator executor contract — see [docs/ORCHESTRATOR.md](docs/ORCHESTRATOR.md)
 
 ## Not yet
 
@@ -166,7 +168,7 @@ grove installs everything else itself (Tart, Nomad, MinIO, Orchard).
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Day-2 ops: recycling, image rollouts, pausing a Mac, logs, upgrading |
 | [docs/JOBS.md](docs/JOBS.md) | The `JobRequest` ↔ Nomad job contract |
 | [docs/MCP.md](docs/MCP.md) | The MCP server: tools, resources, client registration |
-| [docs/ARGOS.md](docs/ARGOS.md) | The Argos executor contract |
+| [docs/ORCHESTRATOR.md](docs/ORCHESTRATOR.md) | The agent-orchestrator executor contract |
 | [docs/IMAGES.md](docs/IMAGES.md) | Building and pushing the Tart/container images |
 | [CHANGELOG.md](CHANGELOG.md) | Release notes |
 
