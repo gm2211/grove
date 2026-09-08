@@ -21,7 +21,7 @@ export function Layout() {
   return (
     <div className="flex h-full min-h-screen flex-col">
       <header
-        className="flex items-center gap-6 border-b px-4 py-2"
+        className="flex flex-wrap items-center gap-x-6 gap-y-1 border-b px-4 py-2"
         style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
       >
         <div className="flex items-center gap-2 font-semibold tracking-tight">
@@ -45,9 +45,17 @@ export function Layout() {
             </NavLink>
           ))}
         </nav>
-        <div className="ml-auto flex items-center gap-2 text-xs" style={{ color: "var(--fg-muted)" }}>
+        <div
+          className="ml-auto flex min-w-0 items-center gap-2 whitespace-nowrap text-xs"
+          style={{ color: "var(--fg-muted)" }}
+        >
           <Dot ok={!!health.data?.ok} />
-          {health.isLoading ? "checking…" : health.data?.ok ? "control plane reachable" : "unreachable"}
+          <span className="hidden sm:inline">
+            {health.isLoading ? "checking…" : health.data?.ok ? "control plane reachable" : "unreachable"}
+          </span>
+          <span className="sm:hidden">
+            {health.isLoading ? "checking…" : health.data?.ok ? "reachable" : "unreachable"}
+          </span>
           {import.meta.env.VITE_MOCK === "1" && (
             <span
               className="rounded border px-1 py-0.5 text-[10px] font-medium"
