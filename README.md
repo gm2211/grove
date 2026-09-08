@@ -6,12 +6,15 @@ scheduler, and reachable only over your Tailscale tailnet.
 
 ## Why
 
-| | |
-|---|---|
-| **GitHub Actions macOS minutes cost ~10x Linux minutes** | grove runs on hardware you already own — no per-minute bill. |
-| **There's no macOS container runtime** | every "Mac as a k8s node" story is a third-party virtual-kubelet; grove uses **Tart** VMs instead, with **Nomad** packing jobs inside them. |
-| **One VM per job caps macOS at 2 concurrent jobs/Mac** | Apple's Virtualization.framework limit. grove's VMs run a **Nomad client**, so many jobs get packed into each VM — the VM is the isolation boundary, Nomad is the scheduler inside it. |
-| **Agents and CI need real isolation, not just a sandboxed process** | every job runs inside a VM, not next to your other jobs on the bare host. |
+Mac CI is expensive and awkward. GitHub Actions bills macOS minutes at roughly 10x the Linux
+rate, there is no macOS container runtime (every "Mac as a k8s node" story is a third-party
+virtual-kubelet), and Apple's Virtualization.framework allows only two VMs per Mac — so the
+usual one-VM-per-job setup caps each machine at two concurrent jobs.
+
+grove runs jobs on Macs you already own, with no per-minute bill. Each Mac runs **Tart** VMs,
+and each VM runs a **Nomad** client that packs many jobs inside it: the VM is the isolation
+boundary, Nomad is the scheduler within it. Every job — CI or agent — runs inside a VM, not
+next to your other work on the bare host.
 
 ## Fleet at a glance
 
