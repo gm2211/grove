@@ -6,7 +6,7 @@ scheduler, and reachable only over your Tailscale tailnet.
 
 ## Why
 
-Mac CI is expensive and awkward. GitHub Actions bills macOS minutes at roughly 10x the Linux
+Mac CI is expensive, and the tooling around it is thin. GitHub Actions bills macOS minutes at roughly 10x the Linux
 rate, there is no macOS container runtime (every "Mac as a k8s node" story is a third-party
 virtual-kubelet), and Apple's Virtualization.framework allows only two VMs per Mac — so the
 usual one-VM-per-job setup caps each machine at two concurrent jobs.
