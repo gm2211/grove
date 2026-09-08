@@ -50,8 +50,8 @@ export function Layout() {
           {health.isLoading ? "checking…" : health.data?.ok ? "control plane reachable" : "unreachable"}
           {import.meta.env.VITE_MOCK === "1" && (
             <span
-              className="rounded border px-1.5 py-0.5 font-medium"
-              style={{ borderColor: "var(--status-lost)", color: "var(--status-lost)" }}
+              className="rounded border px-1 py-0.5 text-[10px] font-medium"
+              style={{ borderColor: "var(--border)", color: "var(--fg-faint)" }}
             >
               MOCK
             </span>
