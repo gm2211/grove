@@ -60,7 +60,7 @@ cloud, reachable only over Tailscale.
 - MCP server (stdio) so coding agents can dispatch and follow grove jobs directly.
 - `grove install` role bootstrap planner (`worker` / `control-plane` / `client`) and `grove doctor`
   health checks.
-- Argos integration — see [docs/ARGOS.md](docs/ARGOS.md).
+- Agent-orchestrator executor contract — see [docs/ORCHESTRATOR.md](docs/ORCHESTRATOR.md).
 
 **Not yet**
 

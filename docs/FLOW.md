@@ -12,7 +12,7 @@ scheduling), which meet only inside each Mac.
 ```mermaid
 flowchart TB
     subgraph intent["intent"]
-        argos["Argos"]
+        orch["agent orchestrator"]
         mcp["Claude Code / Codex\n(MCP over stdio)"]
         cli["grove CLI\n(grove dispatch, grove fleet, ...)"]
     end
@@ -34,7 +34,7 @@ flowchart TB
         end
     end
 
-    argos -- HTTP --> api
+    orch -- HTTP --> api
     mcp -- MCP/stdio --> api
     cli -- HTTP --> api
 
@@ -60,7 +60,8 @@ owns job scheduling inside VMs, **grove** is the only layer that sees both.
 
 ## 2. One job, start to finish
 
-`grove dispatch` (or the MCP `grove_run` tool, or Argos's executor) to a finished job with logs
+`grove dispatch` (or the MCP `grove_run` tool, or an orchestrator's executor) to a finished job
+with logs
 and an exit code:
 
 ```mermaid
