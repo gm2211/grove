@@ -80,32 +80,13 @@ and status vocabulary.
 
 ## How it works
 
-```mermaid
-flowchart TB
-    subgraph intent["intent"]
-        orch["agent orchestrator"]
-        mcp["Claude Code / Codex\n(MCP over stdio)"]
-        cli["grove CLI"]
-    end
-    subgraph cp["control plane — grove server"]
-        api["HTTP API + embedded UI"]
-    end
-    orchard["Orchard controller\n(VM lifecycle)"]
-    nomad["Nomad server\n(job scheduling)"]
-    subgraph mac["each Mac"]
-        tart["Tart VMs\n(Nomad client inside each)"]
-    end
+![Grove architecture: intent reaches the grove server, which coordinates Nomad job scheduling and Orchard VM lifecycle. Nomad clients inside Tart VMs and Orchard workers on each Mac initiate outbound connections.](docs/diagrams/architecture.png)
 
-    orch & mcp & cli --> api
-    api -- Orchard REST --> orchard
-    api -- Nomad HTTP --> nomad
-    orchard -. workers dial out .-> mac
-    nomad -. clients dial out .-> tart
+[Editable Excalidraw source](docs/diagrams/architecture.excalidraw) ·
+[SVG](docs/diagrams/architecture.svg)
 
-    style intent fill:transparent,stroke:#8a9182
-    style cp fill:transparent,stroke:#2f6f4f
-    style mac fill:transparent,stroke:#8a9182
-```
+Dashed arrows show connection initiation: Nomad clients and Orchard workers dial out
+from each Mac to their respective servers.
 
 See [docs/FLOW.md](docs/FLOW.md) for the full layering diagram plus a sequence diagram for one
 job end to end and the VM recycling loop.
