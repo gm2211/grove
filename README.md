@@ -80,13 +80,20 @@ and status vocabulary.
 
 ## How it works
 
-![Grove architecture: intent reaches the grove server, which coordinates Nomad job scheduling and Orchard VM lifecycle. Nomad clients inside Tart VMs and Orchard workers on each Mac initiate outbound connections.](docs/diagrams/architecture.png)
+![Grove deployment: client processes, one control-plane host, and worker Macs with isolated VM guests communicate over a private Tailscale network.](docs/diagrams/architecture.png)
 
 [Editable Excalidraw source](docs/diagrams/architecture.excalidraw) ·
 [SVG](docs/diagrams/architecture.svg)
 
-Dashed arrows show connection initiation: Nomad clients and Orchard workers dial out
-from each Mac to their respective servers.
+Solid outlines identify physical host roles; the nested dashed VM outline marks guest OS
+isolation. The outer green outline is the private Tailscale network. A control-plane role
+can run on Linux or a Mac; the diagram separates roles for clarity.
+
+Solid arrows are same-host calls. Dashed arrows show network connection initiation:
+clients reach Grove's API, Orchard workers reach the controller, and Nomad clients inside
+VMs reach the Nomad server. `grove mcp` speaks stdio locally to its agent and HTTP to the
+remote Grove API. Ports show installer defaults, not a live deployment audit. MinIO is
+co-located on the control-plane host; artifact transfer paths are omitted.
 
 See [docs/FLOW.md](docs/FLOW.md) for the full layering diagram plus a sequence diagram for one
 job end to end and the VM recycling loop.
