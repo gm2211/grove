@@ -1,8 +1,8 @@
 # grove
 
-grove turns the Apple Silicon Macs (and a Linux box) you already own into a private cloud for CI
+grove turns your Apple Silicon Macs into a private cloud for CI
 builds, deploys, and coding-agent sessions — VM-isolated, packed tightly with a real job
-scheduler, and reachable only over your Tailscale tailnet.
+scheduler, and reachable only over your Tailscale tailnet. The control-plane runs on Linux or macOS.
 
 ## Why
 
