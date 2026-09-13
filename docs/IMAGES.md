@@ -80,7 +80,8 @@ doctor` runs on.
 ## Runners without artifact storage
 
 For a pool with no artifact store configured, the optional MinIO client can be omitted when
-building a local runner. This is useful when the upstream MinIO binary download is unavailable:
+building a local runner. The default build retains the client using a pinned, checksum-verified
+GitHub release rather than the retired moving download URL:
 
 ```bash
 docker build --build-arg INSTALL_MINIO_CLIENT=false -t grove-runner:studio-v1 images/runner
