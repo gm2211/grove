@@ -73,7 +73,8 @@ RUN set -eu; \
     cd /tmp/grove-mc; \
     curl -fsSL "${base}/${file}" -o "$file"; \
     curl -fsSL "${base}/${file}.sha256sum" -o checksum; \
-    sha256sum -c checksum; \
+    expected="$(awk '{print $1}' checksum)"; \
+    printf '%s  %s\n' "$expected" "$file" | sha256sum -c -; \
     install -m 755 "$file" /usr/local/bin/mc; \
     cd /; \
     rm -rf /tmp/grove-mc
