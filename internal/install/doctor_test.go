@@ -2,6 +2,7 @@ package install
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -77,6 +78,57 @@ func TestRunDoctor_HTTPChecksAgainstHTTPTestServers(t *testing.T) {
 	}
 	if r := findResult(t, results, "grove-server"); r.OK {
 		t.Errorf("expected grove-server check to fail against an unreachable address, got %+v", r)
+	}
+}
+
+func TestRunDoctor_UsesAuthenticatedServiceClients(t *testing.T) {
+	const orchardToken = "orchard-secret"
+	const nomadToken = "nomad-secret"
+	var orchardAuth, nomadAuth string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/":
+			orchardAuth = r.Header.Get("Authorization")
+			if orchardAuth != "Basic "+base64.StdEncoding.EncodeToString([]byte("svc:"+orchardToken)) {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		case "/v1/status/leader":
+			nomadAuth = r.Header.Get("X-Nomad-Token")
+			if nomadAuth != nomadToken {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			_, _ = w.Write([]byte(`"127.0.0.1:4647"`))
+		case "/v1/nodes":
+			_, _ = w.Write([]byte("[]"))
+		case "/api/v1/healthz":
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		Orchard: config.Endpoint{URL: srv.URL, Token: "svc:" + orchardToken},
+		Nomad:   config.Endpoint{URL: srv.URL, Token: nomadToken},
+		Server:  config.ServerConfig{URL: srv.URL},
+	}
+	opts := Options{Home: t.TempDir(), GOOS: "darwin", LookPath: alwaysFailLookPath, Exists: alwaysFalseExists}
+	results := RunDoctor(context.Background(), NewFakeRunner(), opts, cfg)
+
+	for _, name := range []string{"orchard-controller", "nomad"} {
+		if r := findResult(t, results, name); !r.OK {
+			t.Fatalf("expected authenticated %s check to pass, got %+v", name, r)
+		} else if strings.Contains(r.Detail, orchardToken) || strings.Contains(r.Detail, nomadToken) {
+			t.Errorf("%s detail leaked a token: %q", name, r.Detail)
+		}
+	}
+	if orchardAuth == "" || nomadAuth == "" {
+		t.Fatalf("expected both authenticated probes; orchard=%q nomad=%q", orchardAuth, nomadAuth)
 	}
 }
 
