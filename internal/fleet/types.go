@@ -45,6 +45,9 @@ type Pool struct {
 	// gives any job on the VM root-equivalent host control and breaks job-to-job isolation within
 	// the pool, so this is a deliberate per-pool trade-off, not something grove enables silently.
 	AllowDockerSocket bool `yaml:"allowDockerSocket,omitempty" json:"allowDockerSocket,omitempty"`
+	// RunnerImage selects the fixed outer container used by every Linux Nomad job in this pool.
+	// It is independent of the VM image above and opt-in per-dispatch nested Docker overrides.
+	RunnerImage string `yaml:"runnerImage,omitempty" json:"runnerImage,omitempty"`
 	// JobCPU/JobMemory are this pool's per-JOB Nomad resource defaults (MHz / MiB) — they size the
 	// `resources` block of every build/agent/shell job dispatched against this pool (see
 	// dispatch.PoolConfig, threaded through by internal/cli/serve.go's poolConfigs). These are

@@ -16,6 +16,7 @@ type Data struct {
     Pool   string // "linux" | "macos" (or any future pool name)
     CPU    int    // MHz; 0 uses the template default (2000)
     Memory int    // MiB; 0 uses the template default (4096)
+    RunnerImage string // validated fixed Linux outer image for this pool
 }
 ```
 
@@ -69,14 +70,15 @@ Every rendered job:
   5. Exits with `script.sh`'s exit code — the task's (and therefore the Nomad allocation's, and
      therefore the `Job.ExitCode` grove reports) exit status.
 - Driver: `raw_exec` for the `macos` pool (no container runtime on macOS guests), `docker` for
-  every other pool, defaulting the image to `ghcr.io/gm2211/grove-runner:latest`.
+  every other pool. `fleet.yaml`'s optional `pools[].runnerImage` selects that pool's fixed outer
+  image; it defaults to `ghcr.io/gm2211/grove-runner:latest`.
 
 ### Why the image isn't just `image = "${NOMAD_META_image}"`
 
 Nomad's docker driver does not support interpolating its `image` config field from dispatch-time
 meta ([hashicorp/nomad#6247](https://github.com/hashicorp/nomad/issues/6247) — confirmed still
 open); `${NOMAD_META_x}` only resolves reliably in fields like `args`/`env`, not `image`. So the
-outer container is always `grove-runner`, mounted with the host's docker socket
+outer container is always the pool's registered `runnerImage`, optionally mounted with the host's docker socket
 (`/var/run/docker.sock`, requires `docker.volumes.enabled = true` on the client — set in
 `images/linux-worker/files/client.hcl`), and `run.sh` nests a `docker run "$NOMAD_META_image" ...`
 only when a dispatch actually requested a different image than the default. `images/runner`

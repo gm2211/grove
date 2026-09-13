@@ -216,8 +216,13 @@ documents as "interpretable" for that driver, such as `args` and `env`
 constraints only see node attributes/meta, since runtime env vars don't exist until after
 placement, which is a separate but related interpolation limitation).
 
-grove's chosen fix: the docker task's own `image` is *always* the fixed `grove-runner` image, with
-the host's docker socket bind-mounted in (`volumes = ["/var/run/docker.sock:/var/run/docker.sock"]`,
+The outer task image is fixed when Grove registers each pool's parameterized jobs. Set
+`pools[].runnerImage` in `fleet.yaml` to use a prebuilt runner for every Linux job in that pool;
+when omitted it remains `ghcr.io/gm2211/grove-runner:latest`. Grove validates this value before
+rendering HCL. Changing it requires `grove serve` to register the jobs again.
+
+Per-dispatch overrides remain separate. The host's docker socket can be bind-mounted in
+(`volumes = ["/var/run/docker.sock:/var/run/docker.sock"]`,
 which needs `docker.volumes.enabled = true` in the client's plugin config — see
 `images/linux-worker/files/client.hcl`). `images/runner/Dockerfile` installs the Docker **CLI**
 (not a daemon) for exactly this reason: when `NOMAD_META_image` is set and differs from the
@@ -245,7 +250,7 @@ template's `{{.AllowDockerSocket}}`.
   never mounts `/var/run/docker.sock`, and `run.sh` never attempts a nested `docker run`.
   `NOMAD_META_image` is still accepted (it stays in every template's `meta_optional` list for
   dispatch-contract symmetry across pools) but it is silently ignored — every job on the pool runs
-  in the fixed `grove-runner` image.
+  in the pool's fixed `runnerImage` (or the default Grove runner image when unset).
 - When `allowDockerSocket` is `true`: behavior is exactly as described above — the socket is
   mounted and `run.sh` nests a `docker run` whenever `NOMAD_META_image` differs from the default.
 

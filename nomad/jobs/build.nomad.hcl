@@ -48,7 +48,7 @@ job "grove-{{.Kind}}-{{.Pool}}" {
       driver = "docker"
 
       config {
-        image   = "ghcr.io/gm2211/grove-runner:latest"
+        image   = "{{.RunnerImage}}"
         command = "/bin/bash"
         args    = ["${NOMAD_TASK_DIR}/run.sh"]
         # Nomad's docker driver cannot interpolate `image` from dispatch-time meta
@@ -80,7 +80,7 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         #!/bin/bash
         set -euo pipefail
 
-        DEFAULT_IMAGE="ghcr.io/gm2211/grove-runner:latest"
+        DEFAULT_IMAGE="{{.RunnerImage}}"
         script_src="$NOMAD_TASK_DIR/script.sh"
         T="$${NOMAD_META_timeout_seconds:-3600}"
 

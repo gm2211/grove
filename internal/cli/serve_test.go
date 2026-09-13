@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/gm2211/grove/internal/config"
+	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/orchard"
 	"github.com/gm2211/grove/internal/server"
 )
@@ -27,6 +28,7 @@ pools:
     perWorker: 1
     jobCPU: 1500
     jobMemory: 3072
+    runnerImage: registry.example.test/grove/studio-runner:v1
   - name: macos
     image: ghcr.io/example/macos:latest
     perWorker: 1
@@ -53,6 +55,9 @@ pools:
 	if linux.CPU != 1500 || linux.Memory != 3072 {
 		t.Errorf("linux pool = %+v, want CPU=1500 Memory=3072 (explicit fleet.yaml values)", linux)
 	}
+	if linux.RunnerImage != "registry.example.test/grove/studio-runner:v1" {
+		t.Errorf("linux runner image = %q", linux.RunnerImage)
+	}
 
 	// macos didn't set jobCPU/jobMemory — poolConfigs must still populate the built-in defaults
 	// (not leave them at 0, which would fall through to the *template's* different 2000/4096
@@ -60,6 +65,9 @@ pools:
 	macos := pools[byName["macos"]]
 	if macos.CPU != 500 || macos.Memory != 1024 {
 		t.Errorf("macos pool = %+v, want the built-in defaults CPU=500 Memory=1024", macos)
+	}
+	if macos.RunnerImage != dispatch.DefaultRunnerImage {
+		t.Errorf("macos runner image = %q, want default %q", macos.RunnerImage, dispatch.DefaultRunnerImage)
 	}
 }
 
