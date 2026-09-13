@@ -1,6 +1,9 @@
 package fleet
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +24,7 @@ func TestBuildStartupScript_Basic(t *testing.T) {
 		`vm = "$grove_vm"`,
 		"systemctl restart nomad",
 		"launchctl kickstart -k system/com.grove.nomad",
+		"sudo -n",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("startup script missing %q:\n%s", want, script)
@@ -29,6 +33,56 @@ func TestBuildStartupScript_Basic(t *testing.T) {
 
 	if strings.Contains(script, "tailscale up") {
 		t.Errorf("startup script should not join tailscale without an auth key:\n%s", script)
+	}
+}
+
+func TestBuildStartupScript_UnprivilegedGuestUsesNonInteractiveSudo(t *testing.T) {
+	fakeBin := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "sudo.log")
+	writeExecutable := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(fakeBin, name), []byte(body), 0o755); err != nil {
+			t.Fatalf("write fake %s: %v", name, err)
+		}
+	}
+	writeExecutable("id", "#!/bin/sh\necho 502\n")
+	writeExecutable("uname", "#!/bin/sh\necho Linux\n")
+	writeExecutable("sudo", `#!/bin/sh
+set -eu
+[ "${1:-}" = "-n" ] && shift
+case "${1:-}" in
+  mkdir) exit 0 ;;
+  tee)
+    tee_args="$*"
+    [ "${2:-}" = "-a" ] && shift
+    cat >/dev/null
+    printf '%s\n' "$tee_args" >> "$GROVE_TEST_SUDO_LOG"
+    ;;
+  systemctl)
+    printf '%s\n' "$*" >> "$GROVE_TEST_SUDO_LOG"
+    ;;
+  *) exit 64 ;;
+esac
+`)
+
+	cmd := exec.Command("/bin/sh", "-c", BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", ""))
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_SUDO_LOG="+logPath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("startup script failed through fake sudo: %v\n%s", err, output)
+	}
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read sudo log: %v", err)
+	}
+	got := string(log)
+	for _, want := range []string{
+		"tee /etc/nomad.d/grove-meta.hcl",
+		"tee -a /etc/nomad.d/grove-meta.hcl",
+		"systemctl restart nomad",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("sudo log missing %q: %s", want, got)
+		}
 	}
 }
 

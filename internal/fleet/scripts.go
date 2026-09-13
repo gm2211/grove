@@ -84,7 +84,9 @@ func shQuote(s string) string {
 // nomadMetaScript writes the Nomad client meta file naming this VM's pool/host/vm, at the path
 // appropriate for the guest OS. On macOS it also overrides cpu_total_compute — see docs/IMAGES.md
 // "The two-file config contract" and docs/OPERATIONS.md "jobs pending with DimensionExhausted cpu
-// on macOS" for why this is necessary and computed here rather than baked into the image.
+// on macOS" for why this is necessary and computed here rather than baked into the image. Orchard
+// executes StartupScript as the configured guest user, so writes under /etc and /usr/local use the
+// noninteractive privilege helper below rather than assuming the guest process is root.
 const nomadMetaScript = `if [ "$(uname -s)" = "Darwin" ]; then
   grove_meta_file="/usr/local/etc/nomad.d/grove-meta.hcl"
   # Apple Silicon's stock Nomad fingerprinter reports cpu.totalcompute in the single digits of MHz
@@ -100,8 +102,23 @@ else
   grove_cpu_total_compute=""
 fi
 
-mkdir -p "$(dirname "$grove_meta_file")"
-cat > "$grove_meta_file" <<GROVE_META
+grove_priv() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+  else
+    sudo -n "$@"
+  fi
+}
+
+grove_priv mkdir -p "$(dirname "$grove_meta_file")"
+grove_meta_header() {
+  grove_priv tee "$grove_meta_file" >/dev/null
+}
+grove_meta_append() {
+  grove_priv tee -a "$grove_meta_file" >/dev/null
+}
+
+grove_meta_header <<GROVE_META
 client {
   meta {
     pool = "$grove_pool"
@@ -110,20 +127,20 @@ client {
   }
 GROVE_META
 if [ -n "$grove_cpu_total_compute" ]; then
-  cat >> "$grove_meta_file" <<GROVE_META_CPU
+  grove_meta_append <<GROVE_META_CPU
   cpu_total_compute = $grove_cpu_total_compute
 GROVE_META_CPU
 fi
-cat >> "$grove_meta_file" <<GROVE_META_END
+grove_meta_append <<GROVE_META_END
 }
 GROVE_META_END
 `
 
 // nomadRestartScript restarts the Nomad client so a freshly written meta file takes effect.
 const nomadRestartScript = `if [ "$(uname -s)" = "Darwin" ]; then
-  sudo launchctl kickstart -k system/com.grove.nomad
+  grove_priv launchctl kickstart -k system/com.grove.nomad
 else
-  systemctl restart nomad
+  grove_priv systemctl restart nomad
 fi
 `
 
