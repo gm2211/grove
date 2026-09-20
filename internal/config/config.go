@@ -35,8 +35,9 @@ type Config struct {
 }
 
 type EnrollmentConfig struct {
-	// IssuerToken belongs to a control-plane-only Orchard account with admin:write. Grove uses it
-	// only after operator approval to mint one worker-scoped credential per enrolled Mac.
+	// IssuerToken belongs to a control-plane-only Orchard account with the narrow
+	// service-account:issue-worker role. Grove uses it only after operator approval to mint one
+	// worker-scoped credential per enrolled Mac.
 	IssuerToken string `yaml:"issuerToken,omitempty"`
 }
 

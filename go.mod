@@ -73,4 +73,4 @@ require (
 	gopkg.in/ini.v1 v1.67.3 // indirect
 )
 
-replace github.com/cirruslabs/orchard => github.com/gm2211/orchard v0.0.0-20260907015629-7608bb2e3707
+replace github.com/cirruslabs/orchard => github.com/gm2211/orchard v0.0.0-20260920211145-fe0eb8fd982c

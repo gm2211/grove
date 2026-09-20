@@ -144,7 +144,7 @@ func TestControlPlanePlan_DarwinRendersConfigAndLaunchAgents(t *testing.T) {
 			}
 		}
 	}
-	workerCreate := destOrchard + " create service-account grove-enroller --roles admin:write"
+	workerCreate := destOrchard + " create service-account grove-enroller --roles service-account:issue-worker"
 	if !r.CalledWith(workerCreate) {
 		t.Errorf("expected scoped worker account creation, calls were: %v", r.Calls)
 	}

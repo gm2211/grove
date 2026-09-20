@@ -18,7 +18,8 @@ import (
 )
 
 // IssueWorkerBootstrap creates a unique worker-only account. Caller must use an Orchard account
-// with admin:write; issued account can register/connect compute but cannot read or manage VMs.
+// with service-account:issue-worker; issued account can register/connect compute but cannot read
+// or manage VMs. Orchard enforces issued name prefix and exact roles server-side.
 func (c *client) IssueWorkerBootstrap(ctx context.Context, workerName string) (string, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {

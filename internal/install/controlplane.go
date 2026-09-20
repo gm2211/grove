@@ -74,7 +74,7 @@ func buildControlPlaneSteps(r Runner, opts Options, out io.Writer) []Step {
 	})
 	steps = append(steps, Step{
 		Name:        "orchard-enrollment-service-account",
-		Description: "Create control-plane-only enrollment issuer (admin:write) used to mint one scoped Orchard credential per approved worker.",
+		Description: "Create control-plane-only enrollment issuer that can mint only grove-worker-* credentials with compute:write and compute:connect.",
 		Check: func(ctx context.Context) (bool, error) {
 			cfg, err := loadOrInitConfig(cfgDir)
 			if err != nil {
@@ -85,7 +85,7 @@ func buildControlPlaneSteps(r Runner, opts Options, out io.Writer) []Step {
 		Apply: func(ctx context.Context) error {
 			const name = "grove-enroller"
 			_, _, createErr := r.Run(ctx, destOrchard, "create", "service-account", name,
-				"--roles", "admin:write")
+				"--roles", "service-account:issue-worker")
 			stdout, _, getErr := r.Run(ctx, destOrchard, "get", "service-account", name+"/token")
 			if getErr != nil {
 				if createErr != nil {
@@ -184,13 +184,17 @@ func controlPlaneDependencySteps(r Runner, opts Options, out io.Writer, destOrch
 		},
 		Step{
 			Name:        "orchard-binary",
-			Description: fmt.Sprintf("Install the Orchard fork binary to %s (release asset if available, else build from source).", destOrchard),
+			Description: fmt.Sprintf("Install the Orchard fork binary with narrow worker-credential issuance to %s (release asset if available, else build from source).", destOrchard),
 			Check: func(ctx context.Context) (bool, error) {
-				if _, err := lookPath("orchard"); err == nil {
-					return true, nil
+				candidate := destOrchard
+				if found, err := lookPath("orchard"); err == nil {
+					candidate = found
 				}
-				_, err := os.Stat(destOrchard)
-				return err == nil, nil
+				if _, err := os.Stat(candidate); err != nil {
+					return false, nil
+				}
+				stdout, stderr, err := r.Run(ctx, candidate, "create", "service-account", "--help")
+				return err == nil && strings.Contains(stdout+stderr, "service-account:issue-worker"), nil
 			},
 			Apply: func(ctx context.Context) error {
 				return ensureOrchardBinary(ctx, r, opts, destOrchard, io.Discard)
