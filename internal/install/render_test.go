@@ -4,15 +4,16 @@ import "testing"
 
 func TestRenderLaunchAgent(t *testing.T) {
 	got, err := RenderLaunchAgent(LaunchAgentSpec{
-		Label:      "com.grove.orchard-worker",
-		Program:    "/Users/alice/.local/bin/orchard",
-		Args:       []string{"worker", "run", "--name", "alices-mac", "https://grove-cp.tailnet.ts.net:6120"},
-		WorkingDir: "/Users/alice",
-		Env:        map[string]string{"B_VAR": "2", "A_VAR": "1"},
-		StdoutPath: "/Users/alice/Library/Logs/grove/orchard-worker.log",
-		StderrPath: "/Users/alice/Library/Logs/grove/orchard-worker.err.log",
-		KeepAlive:  true,
-		RunAtLoad:  true,
+		Label:                       "com.grove.orchard-worker",
+		Program:                     "/Users/alice/.local/bin/orchard",
+		Args:                        []string{"worker", "run", "--name", "alices-mac", "https://grove-cp.tailnet.ts.net:6120"},
+		WorkingDir:                  "/Users/alice",
+		Env:                         map[string]string{"B_VAR": "2", "A_VAR": "1"},
+		AssociatedBundleIdentifiers: []string{"com.grove.orchard-worker"},
+		StdoutPath:                  "/Users/alice/Library/Logs/grove/orchard-worker.log",
+		StderrPath:                  "/Users/alice/Library/Logs/grove/orchard-worker.err.log",
+		KeepAlive:                   true,
+		RunAtLoad:                   true,
 	})
 	if err != nil {
 		t.Fatalf("RenderLaunchAgent: %v", err)
@@ -41,6 +42,10 @@ func TestRenderLaunchAgent(t *testing.T) {
 		<key>B_VAR</key>
 		<string>2</string>
 	</dict>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>com.grove.orchard-worker</string>
+	</array>
 	<key>KeepAlive</key>
 	<true/>
 	<key>RunAtLoad</key>
@@ -59,15 +64,16 @@ func TestRenderLaunchAgent(t *testing.T) {
 	// Deterministic: map iteration order in text/template is sorted by key, so re-rendering with
 	// the same input must byte-for-byte match (this is what makes Check's fileHasContent safe).
 	got2, err := RenderLaunchAgent(LaunchAgentSpec{
-		Label:      "com.grove.orchard-worker",
-		Program:    "/Users/alice/.local/bin/orchard",
-		Args:       []string{"worker", "run", "--name", "alices-mac", "https://grove-cp.tailnet.ts.net:6120"},
-		WorkingDir: "/Users/alice",
-		Env:        map[string]string{"B_VAR": "2", "A_VAR": "1"},
-		StdoutPath: "/Users/alice/Library/Logs/grove/orchard-worker.log",
-		StderrPath: "/Users/alice/Library/Logs/grove/orchard-worker.err.log",
-		KeepAlive:  true,
-		RunAtLoad:  true,
+		Label:                       "com.grove.orchard-worker",
+		Program:                     "/Users/alice/.local/bin/orchard",
+		Args:                        []string{"worker", "run", "--name", "alices-mac", "https://grove-cp.tailnet.ts.net:6120"},
+		WorkingDir:                  "/Users/alice",
+		Env:                         map[string]string{"B_VAR": "2", "A_VAR": "1"},
+		AssociatedBundleIdentifiers: []string{"com.grove.orchard-worker"},
+		StdoutPath:                  "/Users/alice/Library/Logs/grove/orchard-worker.log",
+		StderrPath:                  "/Users/alice/Library/Logs/grove/orchard-worker.err.log",
+		KeepAlive:                   true,
+		RunAtLoad:                   true,
 	})
 	if err != nil {
 		t.Fatalf("RenderLaunchAgent (2nd): %v", err)

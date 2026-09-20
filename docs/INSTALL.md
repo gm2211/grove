@@ -44,12 +44,16 @@ grove install --role worker --controller https://<control-plane-host>:6120 --tok
   `~/.config/grove/config.yaml`'s `orchard.url`) — it's `http://<tailnet-ip-or-MagicDNS-name>:6120`
   by default. MagicDNS names look like `grove-cp.tailnetname.ts.net`.
 - **The bootstrap token** is whatever the control-plane operator hands out; it becomes the
-  `--token` baked into the worker's LaunchAgent.
+  worker's Orchard bootstrap credential.
 - Re-run the same command any time — steps that are already satisfied are skipped.
-- At the end, `grove install` prints a **privileged checklist**: `sudo pmset`, two
-  `sudo defaults write com.apple.network.local-network …` commands (macOS 15+ Local Network
-  permission), and a `launchctl bootstrap` to load the worker's LaunchAgent. Run those yourself
-  (or ask Claude Code to run them), then reboot if the local-network commands changed anything.
+- Grove installs Orchard as `~/Applications/Grove Orchard Worker.app`, gives it a stable bundle
+  identity and Local Network usage description, and associates the per-user LaunchAgent with that
+  identity. The LaunchAgent is loaded automatically. When the worker first connects to a Tart VM
+  on macOS 15+, approve the one-time **Local Network** alert for **Grove Orchard Worker**. That
+  approval belongs to this user and worker app, and covers later worker restarts and VMs.
+- The remaining **privileged checklist** contains only `sudo pmset` to prevent worker sleep. Grove
+  does not add system-wide private-network allowlists and does not run Orchard or a companion as
+  root.
 
 #### Registry access for private worker images
 
@@ -144,11 +148,15 @@ ghcr.io` (see "Registry access for private worker images" above), doctor also wa
 
 ## Failure modes
 
-- **"Local Network" permission popup blocks the worker (macOS 15+)**: `grove install --role
-  worker` prints two `sudo defaults write com.apple.network.local-network …` commands as part of
-  its privileged checklist. Run them, then **reboot** — they don't take effect until then.
-  Alternative: run the Orchard worker as root with `--user <you>` (see Orchard's README);
-  `grove install` doesn't automate that path.
+- **"Local Network" permission blocks the worker (macOS 15+)**: start one fleet VM while logged in
+  to the worker Mac, then approve the visible alert for **Grove Orchard Worker**. macOS may reject
+  the first connection while the alert is open; Orchard retries it. If access was previously
+  denied, macOS will not show another alert: open **System Settings → Privacy & Security → Local
+  Network** and enable **Grove Orchard Worker**, then retry the VM. Grove deliberately does not
+  write `AllowedEthernetLocalNetworkAddresses` / `AllowedWiFiLocalNetworkAddresses`, because those
+  settings exempt matching networks for every process on the Mac. It also does not require the
+  privileged Orchard helper. macOS records this choice per user and app identity, so restarts and
+  later VMs do not prompt again.
 - **FileVault blocks auto-login**: a worker Mac that reboots (power blip, macOS update) needs to
   log in before launchd can start user LaunchAgents. If FileVault is on, either disable it on
   worker Macs or enable automatic login for the worker's user account — otherwise the worker

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -97,15 +98,17 @@ func TestWorkerPlan_AppliesCommandsAndGatesPrivilegedSteps(t *testing.T) {
 		t.Error("expected the orchard clone+build fallback to run since neither a release asset nor `orchard` on PATH")
 	}
 
-	// The privileged checklist (sudo / launchctl bootstrap) must never actually execute without
-	// --yes as root — that's the whole point of gating them.
+	// The sudo-only checklist must never actually execute without --yes as root. Loading this
+	// user's own LaunchAgent is intentionally non-privileged and happens during normal install.
 	for _, forbidden := range []string{
 		"sudo pmset -a disablesleep 1",
-		"launchctl bootstrap gui/" + strconv.Itoa(os.Getuid()) + " " + filepath.Join(home, "Library", "LaunchAgents", "com.grove.orchard-worker.plist"),
 	} {
 		if r.CalledWith(forbidden) {
 			t.Errorf("privileged command ran without --yes as root: %q", forbidden)
 		}
+	}
+	if !r.CalledWith("launchctl bootstrap gui/" + strconv.Itoa(os.Getuid()) + " " + filepath.Join(home, "Library", "LaunchAgents", "com.grove.orchard-worker.plist")) {
+		t.Error("expected normal install to load the current user's Orchard LaunchAgent")
 	}
 	for _, c := range r.Calls {
 		if c.Name == "sudo" {
@@ -118,12 +121,129 @@ func TestWorkerPlan_AppliesCommandsAndGatesPrivilegedSteps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading rendered plist: %v", err)
 	}
-	want, err := workerLaunchAgentPlist(opts, filepath.Join(home, ".local", "bin", "orchard"))
+	want, err := workerLaunchAgentPlist(opts, workerOrchardExecutable(opts))
 	if err != nil {
 		t.Fatalf("workerLaunchAgentPlist: %v", err)
 	}
 	if string(got) != want {
 		t.Errorf("rendered plist mismatch:\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+	if !strings.Contains(string(got), "<key>AssociatedBundleIdentifiers</key>") ||
+		!strings.Contains(string(got), orchardWorkerBundleID) {
+		t.Error("worker LaunchAgent must identify the Orchard app as responsible code for Local Network consent")
+	}
+	infoPlist, err := os.ReadFile(workerOrchardInfoPlistPath(opts))
+	if err != nil {
+		t.Fatalf("reading worker app Info.plist: %v", err)
+	}
+	if !strings.Contains(string(infoPlist), "NSLocalNetworkUsageDescription") ||
+		!strings.Contains(string(infoPlist), "Grove Orchard Worker") {
+		t.Errorf("worker app Info.plist lacks visible Local Network consent identity: %s", infoPlist)
+	}
+	cliPath := filepath.Join(home, ".local", "bin", "orchard")
+	if target, err := os.Readlink(cliPath); err != nil || target != workerOrchardExecutable(opts) {
+		t.Errorf("Orchard CLI link = %q, %v; want %q", target, err, workerOrchardExecutable(opts))
+	}
+	if !r.CalledWith("/usr/bin/codesign --force --deep --sign - --identifier " + orchardWorkerBundleID +
+		" --timestamp=none " + workerOrchardAppDir(opts)) {
+		t.Error("expected worker app bundle to receive a stable local code signature")
+	}
+	for _, c := range r.Calls {
+		if c.Name == "defaults" && strings.Contains(c.String(), "com.apple.network.local-network") {
+			t.Errorf("worker install must not change system-wide Local Network allowlists: %s", c.String())
+		}
+	}
+}
+
+func TestEnsureWorkerOrchardApp_MigratesExistingBinary(t *testing.T) {
+	home := t.TempDir()
+	opts := testWorkerOptions(home)
+	cliPath := filepath.Join(home, ".local", "bin", "orchard")
+	if err := os.MkdirAll(filepath.Dir(cliPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const existing = "existing fork binary"
+	if err := os.WriteFile(cliPath, []byte(existing), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := NewFakeRunner()
+
+	if err := ensureWorkerOrchardApp(context.Background(), r, opts, cliPath, io.Discard); err != nil {
+		t.Fatalf("ensureWorkerOrchardApp: %v", err)
+	}
+	got, err := os.ReadFile(workerOrchardExecutable(opts))
+	if err != nil {
+		t.Fatalf("reading migrated binary: %v", err)
+	}
+	if string(got) != existing {
+		t.Fatalf("migrated binary = %q, want %q", got, existing)
+	}
+	if target, err := os.Readlink(cliPath); err != nil || target != workerOrchardExecutable(opts) {
+		t.Fatalf("CLI link = %q, %v; want %q", target, err, workerOrchardExecutable(opts))
+	}
+	for _, c := range r.Calls {
+		if c.Name == "/bin/sh" && len(c.Args) > 0 && c.Args[0] == "-c" {
+			t.Fatalf("existing binary migration should not clone/build Orchard: %s", c.String())
+		}
+	}
+}
+
+func TestEnsureWorkerOrchardApp_PreservesCLIPathWhenSigningFails(t *testing.T) {
+	home := t.TempDir()
+	opts := testWorkerOptions(home)
+	cliPath := filepath.Join(home, ".local", "bin", "orchard")
+	if err := os.MkdirAll(filepath.Dir(cliPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cliPath, []byte("existing fork binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := NewFakeRunner()
+	r.Script("/usr/bin/codesign --force --deep --sign - --identifier "+orchardWorkerBundleID+
+		" --timestamp=none "+workerOrchardAppDir(opts), FakeResult{Err: errors.New("sign failed")})
+
+	if err := ensureWorkerOrchardApp(context.Background(), r, opts, cliPath, io.Discard); err == nil {
+		t.Fatal("expected signing failure")
+	}
+	target, err := os.Readlink(cliPath)
+	if err != nil {
+		t.Fatalf("CLI path disappeared after signing failure: %v", err)
+	}
+	if target != workerOrchardExecutable(opts) {
+		t.Fatalf("CLI link = %q, want %q", target, workerOrchardExecutable(opts))
+	}
+	if _, err := os.Stat(cliPath); err != nil {
+		t.Fatalf("CLI link does not resolve after signing failure: %v", err)
+	}
+}
+
+func TestEnsureWorkerOrchardApp_RealCodeSign(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS codesign verification")
+	}
+	home := t.TempDir()
+	opts := testWorkerOptions(home)
+	cliPath := filepath.Join(home, ".local", "bin", "orchard")
+	if err := os.MkdirAll(filepath.Dir(cliPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	binary, err := os.ReadFile("/usr/bin/true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cliPath, binary, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ensureWorkerOrchardApp(context.Background(), ExecRunner{}, opts, cliPath, io.Discard); err != nil {
+		t.Fatalf("ensureWorkerOrchardApp with real codesign: %v", err)
+	}
+	ok, err := workerOrchardAppInstalled(context.Background(), ExecRunner{}, opts, cliPath)
+	if err != nil {
+		t.Fatalf("workerOrchardAppInstalled: %v", err)
+	}
+	if !ok {
+		t.Fatal("signed worker app did not pass its installation check")
 	}
 }
 

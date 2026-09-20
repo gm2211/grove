@@ -8,15 +8,16 @@ import (
 
 // LaunchAgentSpec renders a macOS launchd agent plist.
 type LaunchAgentSpec struct {
-	Label      string
-	Program    string
-	Args       []string
-	WorkingDir string
-	Env        map[string]string
-	StdoutPath string
-	StderrPath string
-	KeepAlive  bool
-	RunAtLoad  bool
+	Label                       string
+	Program                     string
+	Args                        []string
+	WorkingDir                  string
+	Env                         map[string]string
+	AssociatedBundleIdentifiers []string
+	StdoutPath                  string
+	StderrPath                  string
+	KeepAlive                   bool
+	RunAtLoad                   bool
 }
 
 var launchAgentTemplate = template.Must(template.New("launchagent").Parse(`<?xml version="1.0" encoding="UTF-8"?>
@@ -44,6 +45,14 @@ var launchAgentTemplate = template.Must(template.New("launchagent").Parse(`<?xml
 		<string>{{$v}}</string>
 {{- end}}
 	</dict>
+{{- end}}
+{{- if .AssociatedBundleIdentifiers}}
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+{{- range .AssociatedBundleIdentifiers}}
+		<string>{{.}}</string>
+{{- end}}
+	</array>
 {{- end}}
 	<key>KeepAlive</key>
 	<{{if .KeepAlive}}true{{else}}false{{end}}/>
