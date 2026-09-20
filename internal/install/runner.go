@@ -40,6 +40,10 @@ func (ExecRunner) RunWithStdin(ctx context.Context, stdin string, name string, a
 func execRun(ctx context.Context, stdin string, name string, args ...string) (string, string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	if stdin != "" {
+		// Some macOS tools (notably `security ... -w`) prefer the controlling terminal over
+		// cmd.Stdin. Detach secret-consuming children from that terminal so they must consume the
+		// provided pipe. This also prevents interactive prompts from hanging unattended setup.
+		configureSecretProcess(cmd)
 		cmd.Stdin = strings.NewReader(stdin)
 	}
 	var stdout, stderr bytes.Buffer
