@@ -146,7 +146,14 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 				if opts.Token == "" {
 					return fmt.Errorf("worker bootstrap credential missing; run `grove setup`")
 				}
-				return StoreKeychainSecret(ctx, r, host, orchardWorkerKeychainService, opts.Token)
+				if err := StoreKeychainSecret(ctx, r, host, orchardWorkerKeychainService, opts.Token); err != nil {
+					return err
+				}
+				// A running worker already consumed its previous credential from stdin. Restart it
+				// so enrollment uses the replacement immediately; first installs are handled later.
+				label := fmt.Sprintf("gui/%d/com.grove.orchard-worker", os.Getuid())
+				_, _, _ = r.Run(ctx, "launchctl", "kickstart", "-k", label)
+				return nil
 			},
 		},
 		Step{
@@ -157,7 +164,14 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 				if err := writeFile(wrapper, workerWrapper(opts, workerOrchard)); err != nil {
 					return err
 				}
-				return os.Chmod(wrapper, 0o700)
+				if err := os.Chmod(wrapper, 0o700); err != nil {
+					return err
+				}
+				// Existing workers keep the old wrapper environment until restarted. Best-effort:
+				// initial installs have no loaded job yet and the later launchagent-load step handles it.
+				label := fmt.Sprintf("gui/%d/com.grove.orchard-worker", os.Getuid())
+				_, _, _ = r.Run(ctx, "launchctl", "kickstart", "-k", label)
+				return nil
 			},
 		},
 		Step{
@@ -280,6 +294,7 @@ func workerLaunchAgentPlist(opts Options, wrapper string) (string, error) {
 func workerWrapper(opts Options, orchardBin string) string {
 	return fmt.Sprintf(`#!/bin/zsh
 set -eu
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 exec %q worker run --name %q --labels %q --bootstrap-token-stdin %q < <(/usr/bin/security find-generic-password -a %q -s %q -w)
 `, orchardBin, opts.hostname(), fmt.Sprintf("host=%s,arch=arm64", opts.hostname()), opts.Controller, opts.hostname(), orchardWorkerKeychainService)
 }
