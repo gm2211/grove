@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gm2211/grove/internal/config"
@@ -22,9 +23,16 @@ func testControlPlaneOptions(home string, goos string) Options {
 	}
 }
 
+func scriptWorkerEnrollmentToken(r *FakeRunner, home string) {
+	orchard := filepath.Join(home, ".local", "bin", "orchard")
+	r.Script(orchard+" get service-account grove/token", FakeResult{Stdout: "grove-account-secret\n"})
+	r.Script(orchard+" get service-account grove-enroller/token", FakeResult{Stdout: "enroller-account-secret\n"})
+}
+
 func TestControlPlanePlan_DarwinRendersConfigAndLaunchAgents(t *testing.T) {
 	home := t.TempDir()
 	r := NewFakeRunner()
+	scriptWorkerEnrollmentToken(r, home)
 	scriptTailscaleUp(r)
 	opts := testControlPlaneOptions(home, "darwin")
 
@@ -76,19 +84,21 @@ func TestControlPlanePlan_DarwinRendersConfigAndLaunchAgents(t *testing.T) {
 	if cfg.Orchard.Token == "" {
 		t.Error("expected a grove-generated orchard service-account token")
 	}
+	if cfg.Enrollment.IssuerToken != "grove-enroller:enroller-account-secret" {
+		t.Error("expected control-plane enrollment issuer credential")
+	}
 	if cfg.Fleet != filepath.Join(cfgDir, "fleet.yaml") {
 		t.Errorf("cfg.Fleet = %q, want %q", cfg.Fleet, filepath.Join(cfgDir, "fleet.yaml"))
 	}
 
 	// `orchard create service-account` must be called with --roles repeated once per role
 	// (the fork's --roles is a StringArrayVar and does not split on commas) and with an
-	// explicit --token, since the command prints nothing on success for grove to scrape.
+	// Credentials are retrieved after creation so no secret appears in argv.
 	destOrchard := filepath.Join(home, ".local", "bin", "orchard")
 	wantCreate := Call{
 		Name: destOrchard,
 		Args: []string{
 			"create", "service-account", "grove",
-			"--token", cfg.Orchard.Token,
 			"--roles", "compute:read",
 			"--roles", "compute:write",
 			"--roles", "compute:connect",
@@ -104,6 +114,20 @@ func TestControlPlanePlan_DarwinRendersConfigAndLaunchAgents(t *testing.T) {
 	if !found {
 		t.Errorf("expected call %q, calls were: %v", wantCreate.String(), r.Calls)
 	}
+	for _, call := range r.Calls {
+		for _, arg := range call.Args {
+			if strings.Contains(arg, "account-secret") {
+				t.Fatalf("service-account secret leaked into argv: %s", call.String())
+			}
+		}
+	}
+	workerCreate := destOrchard + " create service-account grove-enroller --roles admin:write"
+	if !r.CalledWith(workerCreate) {
+		t.Errorf("expected scoped worker account creation, calls were: %v", r.Calls)
+	}
+	if strings.Contains(workerCreate, "worker-account-secret") {
+		t.Fatal("worker account secret leaked into argv")
+	}
 
 	// No sudo anywhere in the control-plane plan; it has no privileged steps.
 	if r.CalledWith("sudo") {
@@ -118,6 +142,7 @@ func TestControlPlanePlan_DarwinRendersConfigAndLaunchAgents(t *testing.T) {
 func TestControlPlanePlan_TrustsHashicorpAndMinIOTapsBeforeInstalling(t *testing.T) {
 	home := t.TempDir()
 	r := NewFakeRunner()
+	scriptWorkerEnrollmentToken(r, home)
 	scriptTailscaleUp(r)
 	scriptTapInfo(r, "hashicorp/tap", false, false)
 	scriptTapInfo(r, "minio/stable", false, false)
@@ -161,6 +186,7 @@ func TestControlPlanePlan_TrustsHashicorpAndMinIOTapsBeforeInstalling(t *testing
 func TestControlPlanePlan_SkipsTrustWhenTapsAlreadyTrusted(t *testing.T) {
 	home := t.TempDir()
 	r := NewFakeRunner()
+	scriptWorkerEnrollmentToken(r, home)
 	scriptTailscaleUp(r)
 	scriptTapInfo(r, "hashicorp/tap", true, true)
 	scriptTapInfo(r, "minio/stable", true, true)
@@ -192,6 +218,7 @@ func TestControlPlanePlan_SkipsTrustWhenTapsAlreadyTrusted(t *testing.T) {
 func TestControlPlanePlan_LinuxDoesNotTrustTaps(t *testing.T) {
 	home := t.TempDir()
 	r := NewFakeRunner()
+	scriptWorkerEnrollmentToken(r, home)
 	scriptTailscaleUp(r)
 	opts := testControlPlaneOptions(home, "linux")
 
@@ -215,6 +242,7 @@ func TestControlPlanePlan_LinuxDoesNotTrustTaps(t *testing.T) {
 func TestControlPlanePlan_LinuxRendersSystemdUnits(t *testing.T) {
 	home := t.TempDir()
 	r := NewFakeRunner()
+	scriptWorkerEnrollmentToken(r, home)
 	scriptTailscaleUp(r)
 	opts := testControlPlaneOptions(home, "linux")
 

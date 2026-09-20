@@ -13,10 +13,15 @@ import (
 // stable, named responsible-code identity. The ~/.local/bin entry remains a symlink for operators
 // and scripts that invoke Orchard directly.
 const (
-	orchardBinName        = "orchard"
-	orchardWorkerAppName  = "Grove Orchard Worker.app"
-	orchardWorkerBundleID = "com.gm2211.grove.orchard-worker"
+	orchardBinName               = "orchard"
+	orchardWorkerAppName         = "Grove Orchard Worker.app"
+	orchardWorkerBundleID        = "com.gm2211.grove.orchard-worker"
+	orchardWorkerKeychainService = "com.gm2211.grove.orchard-worker.bootstrap"
 )
+
+func workerWrapperPath(opts Options) string {
+	return filepath.Join(opts.ConfigDir(), "run-orchard-worker.zsh")
+}
 
 func orchardBinDir(opts Options) string { return filepath.Join(opts.homeDir(), ".local", "bin") }
 
@@ -70,6 +75,7 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 	plistPath := filepath.Join(agentsDir, "com.grove.orchard-worker.plist")
 	cliOrchard := filepath.Join(orchardBinDir(opts), orchardBinName)
 	workerOrchard := workerOrchardExecutable(opts)
+	wrapper := workerWrapperPath(opts)
 
 	steps := []Step{
 		{
@@ -130,13 +136,42 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 			},
 		},
 		Step{
+			Name:        "worker-bootstrap-keychain",
+			Description: "Store worker-only Orchard credential in macOS Keychain; credential never appears in process arguments or LaunchAgent files.",
+			Check: func(ctx context.Context) (bool, error) {
+				stdout, _, err := r.Run(ctx, "/usr/bin/security", "find-generic-password", "-a", host, "-s", orchardWorkerKeychainService, "-w")
+				return err == nil && strings.TrimSpace(stdout) == opts.Token, nil
+			},
+			Apply: func(ctx context.Context) error {
+				if opts.Token == "" {
+					return fmt.Errorf("worker bootstrap credential missing; run `grove setup`")
+				}
+				// `security -w` with no argument reads and confirms password on stdin. -T limits
+				// future reads to Apple's signed security tool used by the worker wrapper.
+				input := opts.Token + "\n" + opts.Token + "\n"
+				_, _, err := r.RunWithStdin(ctx, input, "/usr/bin/security", "add-generic-password", "-U", "-a", host, "-s", orchardWorkerKeychainService, "-T", "/usr/bin/security", "-w")
+				return err
+			},
+		},
+		Step{
+			Name:        "orchard-worker-wrapper",
+			Description: fmt.Sprintf("Render %s; reads bootstrap credential from Keychain and feeds Orchard over stdin.", wrapper),
+			Check:       fileHasContent(wrapper, func() (string, error) { return workerWrapper(opts, workerOrchard), nil }),
+			Apply: func(ctx context.Context) error {
+				if err := writeFile(wrapper, workerWrapper(opts, workerOrchard)); err != nil {
+					return err
+				}
+				return os.Chmod(wrapper, 0o700)
+			},
+		},
+		Step{
 			Name: "launchagent:orchard-worker",
 			Description: fmt.Sprintf(
 				"Render %s (KeepAlive+RunAtLoad, logs under %s) running `orchard worker run --name %s --labels host=%s,arch=arm64 %s`.",
 				plistPath, logDir, host, host, opts.Controller,
 			),
 			Check: func(ctx context.Context) (bool, error) {
-				want, err := workerLaunchAgentPlist(opts, workerOrchard)
+				want, err := workerLaunchAgentPlist(opts, wrapper)
 				if err != nil {
 					return false, err
 				}
@@ -150,7 +185,7 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 				return string(got) == want, nil
 			},
 			Apply: func(ctx context.Context) error {
-				content, err := workerLaunchAgentPlist(opts, workerOrchard)
+				content, err := workerLaunchAgentPlist(opts, wrapper)
 				if err != nil {
 					return err
 				}
@@ -165,7 +200,7 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 		},
 	)
 
-	steps = append(steps, workerFinalizationSteps(r, opts, plistPath, workerOrchard)...)
+	steps = append(steps, workerFinalizationSteps(r, opts, plistPath, wrapper)...)
 	return steps
 }
 
@@ -233,21 +268,10 @@ func registryLoginStep(r Runner, opts Options, out io.Writer) *Step {
 }
 
 // workerLaunchAgentPlist renders the LaunchAgent that supervises `orchard worker run`.
-func workerLaunchAgentPlist(opts Options, orchardBin string) (string, error) {
-	host := opts.hostname()
-	args := []string{
-		"worker", "run",
-		"--name", host,
-		"--labels", fmt.Sprintf("host=%s,arch=arm64", host),
-	}
-	if opts.Token != "" {
-		args = append(args, "--token", opts.Token)
-	}
-	args = append(args, opts.Controller)
+func workerLaunchAgentPlist(opts Options, wrapper string) (string, error) {
 	return RenderLaunchAgent(LaunchAgentSpec{
 		Label:                       "com.grove.orchard-worker",
-		Program:                     orchardBin,
-		Args:                        args,
+		Program:                     wrapper,
 		WorkingDir:                  opts.homeDir(),
 		AssociatedBundleIdentifiers: []string{orchardWorkerBundleID},
 		KeepAlive:                   true,
@@ -255,6 +279,13 @@ func workerLaunchAgentPlist(opts Options, orchardBin string) (string, error) {
 		StdoutPath:                  filepath.Join(opts.LogDir(), "orchard-worker.log"),
 		StderrPath:                  filepath.Join(opts.LogDir(), "orchard-worker.err.log"),
 	})
+}
+
+func workerWrapper(opts Options, orchardBin string) string {
+	return fmt.Sprintf(`#!/bin/zsh
+set -eu
+exec %q worker run --name %q --labels %q --bootstrap-token-stdin %q < <(/usr/bin/security find-generic-password -a %q -s %q -w)
+`, orchardBin, opts.hostname(), fmt.Sprintf("host=%s,arch=arm64", opts.hostname()), opts.Controller, opts.hostname(), orchardWorkerKeychainService)
 }
 
 func workerOrchardAppInstalled(ctx context.Context, r Runner, opts Options, cliPath string) (bool, error) {

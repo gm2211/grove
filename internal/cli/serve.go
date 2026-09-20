@@ -107,7 +107,24 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 		}
 	}()
 
-	srv := server.New(oc, nc, ds, ac, server.Options{Token: cfg.Server.Token, Version: Version})
+	serverOpts := server.Options{
+		Token: cfg.Server.Token, Version: Version,
+		ControllerURL: cfg.Orchard.URL, ServerURL: cfg.Server.URL,
+	}
+	if cfg.Enrollment.IssuerToken != "" {
+		issuer, issuerErr := orchard.New(cfg.Orchard.URL, cfg.Enrollment.IssuerToken)
+		if issuerErr != nil {
+			return fmt.Errorf("enrollment issuer: %w", issuerErr)
+		}
+		if typed, ok := issuer.(interface {
+			IssueWorkerBootstrap(context.Context, string) (string, error)
+		}); ok {
+			serverOpts.IssueWorkerBootstrap = typed.IssueWorkerBootstrap
+		} else {
+			return errors.New("enrollment issuer does not support worker credential creation")
+		}
+	}
+	srv := server.New(oc, nc, ds, ac, serverOpts)
 
 	// Recreate TTL-recycled VMs: ARCHITECTURE.md's "Recycling / hygiene" step 3 says grove's fleet
 	// reconciler notices a deleted VM and recreates it, but until now `grove serve` never actually

@@ -77,6 +77,10 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		RegistryToken: registryToken,
 	}
 
+	return applyInstall(cmd, opts, installFlags.dryRun, installFlags.yes)
+}
+
+func applyInstall(cmd *cobra.Command, opts install.Options, dryRun, yes bool) error {
 	out := cmd.OutOrStdout()
 	runner := install.ExecRunner{}
 	steps, err := install.BuildPlan(runner, opts, out)
@@ -84,16 +88,16 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Fprintf(out, "grove install --role %s (%d steps%s)\n", role, len(steps), dryRunSuffix(installFlags.dryRun))
+	fmt.Fprintf(out, "grove install --role %s (%d steps%s)\n", opts.Role, len(steps), dryRunSuffix(dryRun))
 	results, err := install.RunPlan(cmd.Context(), steps, install.PlanOptions{
-		DryRun: installFlags.dryRun,
-		Yes:    installFlags.yes,
+		DryRun: dryRun,
+		Yes:    yes,
 		IsRoot: os.Geteuid() == 0,
 		Out:    out,
 	})
 	manual := 0
 	for _, r := range results {
-		if r.Skipped && !installFlags.dryRun {
+		if r.Skipped && !dryRun {
 			manual++
 		}
 	}

@@ -2,6 +2,9 @@ package orchard
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +16,33 @@ import (
 	v1 "github.com/cirruslabs/orchard/pkg/resource/v1"
 	"github.com/coder/websocket"
 )
+
+// IssueWorkerBootstrap creates a unique worker-only account. Caller must use an Orchard account
+// with admin:write; issued account can register/connect compute but cannot read or manage VMs.
+func (c *client) IssueWorkerBootstrap(ctx context.Context, workerName string) (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate worker credential: %w", err)
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw)
+	name := "grove-worker-" + strings.ToLower(workerName)
+	name = strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' {
+			return r
+		}
+		return '-'
+	}, name)
+	if len(name) > 45 {
+		name = name[:45]
+	}
+	name += "-" + hex.EncodeToString(raw[:5])
+	sa := &v1.ServiceAccount{Meta: v1.Meta{Name: name}, Token: token, Roles: []v1.ServiceAccountRole{v1.ServiceAccountRoleComputeWrite, v1.ServiceAccountRoleComputeConnect}}
+	if err := c.raw.ServiceAccounts().Create(ctx, sa); err != nil {
+		return "", fmt.Errorf("create worker service account: %w", err)
+	}
+	enc := base64.RawURLEncoding
+	return "orchard-bootstrap-token-v0." + enc.EncodeToString([]byte(name)) + "." + enc.EncodeToString([]byte(token)), nil
+}
 
 // workerOfflineTimeout is how long since a Worker's last heartbeat before grove treats it as
 // offline. The Orchard client library doesn't expose the controller's own configured timeout

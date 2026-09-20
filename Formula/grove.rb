@@ -8,6 +8,16 @@ class Grove < Formula
   version "0.1.2"
   license "MIT"
 
+  def caveats
+    <<~EOS
+      Grove's binary is installed. Join this Mac to your Grove cluster with:
+
+        grove setup
+
+      Setup discovers Grove over Tailscale, asks for approval, installs the worker, and verifies it.
+    EOS
+  end
+
   on_macos do
     if Hardware::CPU.intel?
       url "https://github.com/gm2211/grove/releases/download/v0.1.2/grove_darwin_amd64.tar.gz"
