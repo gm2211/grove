@@ -28,6 +28,9 @@ brew tap gm2211/grove https://github.com/gm2211/grove
 brew install grove
 grove setup
 
+# opens Map through a localhost bridge; device token stays in Keychain
+grove ui
+
 # already installed? upgrade in place any time:
 brew upgrade grove
 
@@ -55,6 +58,11 @@ grove fleet status
 # is everything healthy?
 grove doctor
 ```
+
+Every enrolled Mac is both worker and dispatcher. Grove keeps shared scheduling state on one
+control-plane host, but Argos, Codex, or a human can inspect and submit work from any enrolled
+device. Each device has its own revocable `read + dispatch` credential; only control-plane
+operator credentials can approve/revoke devices or change worker/VM state.
 
 Full walkthrough (roles, flags, failure modes like the macOS 15+ Local Network permission popup):
 [docs/INSTALL.md](docs/INSTALL.md).

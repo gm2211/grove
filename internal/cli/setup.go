@@ -29,8 +29,8 @@ type joinStart struct {
 	ExpiresAt        time.Time
 }
 type joinResult struct {
-	Status, ControllerURL, BootstrapToken, ServerURL string
-	WorkerOnline                                     bool `json:"workerOnline"`
+	Status, ControllerURL, BootstrapToken, ServerURL, ClientToken, DeviceID string
+	WorkerOnline                                                            bool `json:"workerOnline"`
 }
 
 var joinHTTPClient = &http.Client{Timeout: 10 * time.Second}
@@ -93,13 +93,16 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	if err := applyInstall(cmd, opts, false, false); err != nil {
 		return err
 	}
-	if err := saveJoinedServer(result.ServerURL); err != nil {
+	if result.ClientToken == "" || result.DeviceID == "" {
+		return errors.New("control plane approved join but returned incomplete dispatcher credentials")
+	}
+	if err := saveJoinedServer(cmd.Context(), r, result.ServerURL, result.DeviceID, result.ClientToken); err != nil {
 		return err
 	}
 	if err := waitForWorker(cmd.Context(), result.ServerURL, start); err != nil {
 		return fmt.Errorf("worker installed but not yet visible: %w. If macOS shows Local Network access for Grove Orchard Worker, click Allow; setup will finish after rerun", err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "\nGrove worker %q is online and discoverable.\n", host)
+	fmt.Fprintf(cmd.OutOrStdout(), "\nGrove worker %q is online and discoverable. This device can view and dispatch jobs. Run `grove ui` to open Map.\n", host)
 	return nil
 }
 
@@ -227,7 +230,11 @@ func runJoinApprove(cmd *cobra.Command, args []string) error {
 		base = strings.TrimRight(cfg.Server.URL, "/")
 	}
 	req, _ := http.NewRequestWithContext(cmd.Context(), http.MethodPost, base+"/api/v1/join/approve/"+url.PathEscape(strings.ToUpper(args[0])), nil)
-	req.Header.Set("Authorization", "Bearer "+cfg.Server.Token)
+	token, err := config.ResolveOperatorToken(cfg)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := joinHTTPClient.Do(req)
 	if err != nil {
 		return err
@@ -241,7 +248,7 @@ func runJoinApprove(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func saveJoinedServer(serverURL string) error {
+func saveJoinedServer(ctx context.Context, r install.Runner, serverURL, deviceID, token string) error {
 	cfg, path, err := config.Load()
 	if err != nil {
 		if !errors.Is(err, config.ErrNotFound) {
@@ -254,6 +261,11 @@ func saveJoinedServer(serverURL string) error {
 		}
 	}
 	cfg.Server.URL = serverURL
+	cfg.Server.TokenKeychain = deviceID
+	input := token + "\n" + token + "\n"
+	if _, _, err := r.RunWithStdin(ctx, input, "/usr/bin/security", "add-generic-password", "-U", "-a", deviceID, "-s", config.ServerTokenKeychainService, "-T", "/usr/bin/security", "-w"); err != nil {
+		return fmt.Errorf("store dispatcher credential in Keychain: %w", err)
+	}
 	return config.Save(path, cfg)
 }
 

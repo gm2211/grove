@@ -51,6 +51,7 @@ func (s *Server) handleSubmitJob(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	req.SubmittedBy = principalFromContext(r.Context()).ID
 	job, created, err := s.dispatch.Submit(r.Context(), req)
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, err)
@@ -79,6 +80,22 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	principal := principalFromContext(r.Context())
+	if !principalHasScope(principal, ScopeOperator) {
+		job, err := s.dispatch.Get(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, dispatch.ErrNotFound) {
+				http.Error(w, "job not found", http.StatusNotFound)
+				return
+			}
+			s.writeError(w, http.StatusBadGateway, err)
+			return
+		}
+		if job.Request.SubmittedBy == "" || job.Request.SubmittedBy != principal.ID {
+			http.Error(w, "only the submitting device or an operator can cancel this job", http.StatusForbidden)
+			return
+		}
+	}
 	if err := s.dispatch.Cancel(r.Context(), id); err != nil {
 		if errors.Is(err, dispatch.ErrNotFound) {
 			http.Error(w, "job not found", http.StatusNotFound)

@@ -5,6 +5,7 @@
 package mcp
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -29,7 +30,11 @@ func NewServer(cfg *config.Config, version string) (*mcpsdk.Server, error) {
 	if baseURL == "" {
 		return nil, errors.New("grove server URL is not configured — set server.url in ~/.config/grove/config.yaml (or $GROVE_CONFIG)")
 	}
-	client := apiclient.New(baseURL, cfg.Server.Token)
+	token, err := config.ResolveServerToken(context.Background(), cfg)
+	if err != nil {
+		return nil, err
+	}
+	client := apiclient.New(baseURL, token)
 	return newServerWithClient(client, version), nil
 }
 

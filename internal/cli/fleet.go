@@ -171,7 +171,12 @@ func printReconcileStatus(cmd *cobra.Command, cfg *config.Config) {
 		return
 	}
 
-	client := apiclient.New(cfg.Server.URL, cfg.Server.Token)
+	token, err := config.ResolveServerToken(cmd.Context(), cfg)
+	if err != nil {
+		fmt.Fprintf(cmd.OutOrStdout(), "last reconcile: unavailable (%v)\n", err)
+		return
+	}
+	client := apiclient.New(cfg.Server.URL, token)
 	status, err := client.FleetReconcile(cmd.Context())
 	if err != nil {
 		fmt.Fprintf(cmd.OutOrStdout(), "last reconcile: unavailable (%v)\n", err)

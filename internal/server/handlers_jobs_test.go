@@ -165,6 +165,40 @@ func TestCancelJob(t *testing.T) {
 	}
 }
 
+func TestDispatcherCanCancelOnlyOwnJob(t *testing.T) {
+	store, err := NewAccessStore(t.TempDir() + "/devices.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerToken, owner, err := store.Issue("owner", []string{ScopeRead, ScopeDispatch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherToken, _, err := store.Issue("other", []string{ScopeRead, ScopeDispatch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{"job-1": {ID: "job-1", Request: dispatch.JobRequest{SubmittedBy: owner.ID}}}}
+	srv := newTestServer(nil, nil, ds, Options{Token: "operator", AccessStore: store})
+
+	cancel := func(token string) int {
+		req := httptest.NewRequest(http.MethodDelete, "/api/v1/jobs/job-1", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if got := cancel(otherToken); got != http.StatusForbidden {
+		t.Fatalf("other device status=%d want 403", got)
+	}
+	if got := cancel(ownerToken); got != http.StatusNoContent {
+		t.Fatalf("owner status=%d want 204", got)
+	}
+	if got := cancel("operator"); got != http.StatusNoContent {
+		t.Fatalf("operator status=%d want 204", got)
+	}
+}
+
 func TestCancelJob_PostAlias(t *testing.T) {
 	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{"job-1": {ID: "job-1"}}}
 	srv := newTestServer(nil, nil, ds, Options{})

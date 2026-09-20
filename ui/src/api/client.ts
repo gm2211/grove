@@ -1,5 +1,5 @@
 import { getServerUrl, getToken } from "../lib/settings";
-import type { FleetResponse, HealthResponse, Job, JobRequest } from "./types";
+import type { FleetResponse, HealthResponse, Job, JobRequest, Principal } from "./types";
 import * as mock from "../mock/data";
 
 const isMock = import.meta.env.VITE_MOCK === "1";
@@ -38,6 +38,10 @@ function delay<T>(value: T, ms = 250): Promise<T> {
 }
 
 export const api = {
+	async whoAmI(): Promise<Principal> {
+		if (isMock) return delay({ id: "mock-operator", name: "mock operator", scopes: ["operator"] });
+		return request<Principal>("/api/v1/whoami");
+	},
   async getFleet(): Promise<FleetResponse> {
     if (isMock) return delay(structuredClone(mock.state.fleet));
     return request<FleetResponse>("/api/v1/fleet");

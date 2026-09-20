@@ -1,12 +1,46 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 )
+
+type principalContextKey struct{}
+
+func principalFromContext(ctx context.Context) Principal {
+	p, _ := ctx.Value(principalContextKey{}).(Principal)
+	return p
+}
+
+func principalHasScope(p Principal, scope string) bool {
+	for _, candidate := range p.Scopes {
+		if candidate == ScopeOperator || candidate == scope {
+			return true
+		}
+	}
+	return false
+}
+
+func requiredScope(r *http.Request) string {
+	path := r.URL.Path
+	if path == "/whoami" {
+		return ScopeRead
+	}
+	if strings.HasPrefix(path, "/access/") || strings.HasPrefix(path, "/join/approve/") ||
+		strings.HasPrefix(path, "/vms/") || strings.HasPrefix(path, "/workers/") {
+		return ScopeOperator
+	}
+	if r.Method == http.MethodPost && path == "/jobs" ||
+		r.Method == http.MethodDelete && strings.HasPrefix(path, "/jobs/") ||
+		r.Method == http.MethodPost && strings.HasSuffix(path, "/cancel") {
+		return ScopeDispatch
+	}
+	return ScopeRead
+}
 
 // withMiddleware wraps next with (in order, outside-in) request logging, same-origin CORS, and
 // Bearer token auth.
@@ -21,8 +55,13 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		publicJoin := r.Method == http.MethodPost && r.URL.Path == "/join/requests" ||
 			r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/join/requests/")
-		if s.opts.Token == "" || r.URL.Path == "/healthz" || publicJoin {
+		if r.URL.Path == "/healthz" || publicJoin {
 			next.ServeHTTP(w, r)
+			return
+		}
+		if s.opts.Token == "" && s.opts.AccessStore == nil {
+			p := Principal{ID: "development", Name: "unauthenticated", Scopes: []string{ScopeOperator}}
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalContextKey{}, p)))
 			return
 		}
 		const prefix = "Bearer "
@@ -32,11 +71,21 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			return
 		}
 		token := strings.TrimPrefix(auth, prefix)
-		if subtle.ConstantTimeCompare([]byte(token), []byte(s.opts.Token)) != 1 {
+		var principal Principal
+		if s.opts.Token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.opts.Token)) == 1 {
+			principal = Principal{ID: "operator", Name: "control-plane operator", Scopes: []string{ScopeOperator}}
+		} else if s.opts.AccessStore != nil {
+			principal, _ = s.opts.AccessStore.Authenticate(token)
+		}
+		if principal.ID == "" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		next.ServeHTTP(w, r)
+		if !principalHasScope(principal, requiredScope(r)) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalContextKey{}, principal)))
 	})
 }
 

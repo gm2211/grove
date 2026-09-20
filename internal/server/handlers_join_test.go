@@ -14,7 +14,11 @@ import (
 
 func TestJoinRequiresOperatorApprovalAndDeliversCredentialOnce(t *testing.T) {
 	oc := &fakeOrchard{}
-	srv := newTestServer(oc, nil, nil, Options{Token: "operator-secret", ControllerURL: "http://100.64.0.1:6120", ServerURL: "http://100.64.0.1:6130", IssueWorkerBootstrap: func(context.Context, string) (string, error) { return "worker-bootstrap", nil }})
+	access, err := NewAccessStore(t.TempDir() + "/devices.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newTestServer(oc, nil, nil, Options{Token: "operator-secret", AccessStore: access, ControllerURL: "http://100.64.0.1:6120", ServerURL: "http://100.64.0.1:6130", IssueWorkerBootstrap: func(context.Context, string) (string, error) { return "worker-bootstrap", nil }})
 	create := httptest.NewRequest(http.MethodPost, "/api/v1/join/requests", bytes.NewBufferString(`{"name":"new-mac","tailnetIp":"192.0.2.1"}`))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, create)
@@ -58,6 +62,9 @@ func TestJoinRequiresOperatorApprovalAndDeliversCredentialOnce(t *testing.T) {
 	}
 	if !bytes.Contains(got.Body.Bytes(), []byte(`"bootstrapToken":"worker-bootstrap"`)) {
 		t.Fatalf("missing bootstrap token: %s", got.Body.String())
+	}
+	if !bytes.Contains(got.Body.Bytes(), []byte(`"clientToken":`)) || !bytes.Contains(got.Body.Bytes(), []byte(`"deviceId":`)) {
+		t.Fatalf("missing device credential: %s", got.Body.String())
 	}
 	if again := poll(); again.Code != http.StatusOK || !bytes.Contains(again.Body.Bytes(), []byte(`"bootstrapToken":"worker-bootstrap"`)) {
 		t.Fatalf("credential delivery was not retryable: %d %s", again.Code, again.Body.String())

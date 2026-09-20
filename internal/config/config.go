@@ -3,10 +3,15 @@
 package config
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -52,6 +57,37 @@ type ServerConfig struct {
 	// URL clients use to reach the server, e.g. "http://grove-cp.tailnet.ts.net:6120".
 	URL   string `yaml:"url"`
 	Token string `yaml:"token,omitempty"`
+	// TokenKeychain names the macOS Keychain account holding a device-scoped client token.
+	TokenKeychain string `yaml:"tokenKeychain,omitempty"`
+}
+
+const ServerTokenKeychainService = "com.gm2211.grove.server-client"
+
+// ResolveServerToken returns either the control-plane token from config or an enrolled
+// device's scoped token from macOS Keychain.
+func ResolveServerToken(ctx context.Context, cfg *Config) (string, error) {
+	if cfg.Server.TokenKeychain != "" {
+		if runtime.GOOS != "darwin" {
+			return "", errors.New("server token references macOS Keychain on a non-macOS host")
+		}
+		cmd := exec.CommandContext(ctx, "/usr/bin/security", "find-generic-password", "-a", cfg.Server.TokenKeychain, "-s", ServerTokenKeychainService, "-w")
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("read Grove device credential from Keychain: %w: %s", err, strings.TrimSpace(stderr.String()))
+		}
+		return strings.TrimSpace(stdout.String()), nil
+	}
+	return cfg.Server.Token, nil
+}
+
+// ResolveOperatorToken returns the control-plane credential used only for enrollment and access
+// administration. It never falls back to a device credential.
+func ResolveOperatorToken(cfg *Config) (string, error) {
+	if cfg.Server.Token == "" {
+		return "", errors.New("control-plane operator credential is not configured on this device")
+	}
+	return cfg.Server.Token, nil
 }
 
 type ArtifactsConfig struct {

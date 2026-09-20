@@ -42,11 +42,11 @@ grove setup
 
 - `grove setup` discovers Grove peers through Tailscale and creates a ten-minute enrollment
   request. It prints an approval code and waits.
-- On the control-plane machine, run `grove join approve <CODE>`. Grove then creates a unique
-  Orchard credential limited to worker registration/connect rights and delivers it once to the
-  requesting Mac.
-- The Mac stores that worker credential in macOS Keychain and feeds it to Orchard over stdin.
-  It never appears in shell history, process arguments, `config.yaml`, or the LaunchAgent plist.
+- On the control-plane machine, run `grove join approve <CODE>`. Grove then creates two unique,
+  revocable credentials: an Orchard credential limited to worker registration/connect rights,
+  plus a Grove `read + dispatch` credential for this device.
+- The Mac stores both credentials in macOS Keychain and feeds worker credential to Orchard over
+  stdin. Neither appears in shell history, process arguments, `config.yaml`, or LaunchAgent plist.
 - Re-run the same command any time — steps that are already satisfied are skipped.
 - Grove installs Orchard as `~/Applications/Grove Orchard Worker.app`, gives it a stable bundle
   identity and Local Network usage description, and associates the per-user LaunchAgent with that
@@ -81,7 +81,7 @@ web UI. A worker that can't authenticate to a private registry fails to pull the
    "registry-login" step (`tart login <registry> --username <user> --password-stdin`, token piped
    over stdin — never in argv, never logged) and records a marker file
    (`~/.config/grove/registry-login.<registry>`, containing only the username and registry, never
-   the token) so re-running `grove install` doesn't log in again. Omitting `--registry-token`
+  the token) so re-running `grove install` doesn't log in again. Omitting `--registry-token`
    entirely skips this step and prints a NOTE that the images must be public instead.
 
 ### Control plane (the always-on machine, Linux or a Mac)
@@ -96,11 +96,11 @@ Renders and starts Orchard controller, Nomad server, MinIO, and `grove serve`, a
 
 ### Client (your laptop, or any machine that just talks to the fleet)
 
-```bash
-grove install --role client --server https://<control-plane-host>:6130 --token <server-token>
-```
-
-Just writes `~/.config/grove/config.yaml` with the server URL/token. No local services.
+Run `grove setup` on a Mac. Enrollment gives that device its own revocable dispatcher credential,
+stored in Keychain, and also enables it as a worker. `grove ui` opens Map through a localhost
+bridge so the credential never needs to be copied into browser storage. Client-only enrollment
+for non-worker and non-macOS machines is planned; legacy `grove install --role client` remains for
+manually provisioned environments.
 
 ### Flags
 

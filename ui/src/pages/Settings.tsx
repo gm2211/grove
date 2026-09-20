@@ -5,6 +5,7 @@ import { api } from "../api/client";
 import { Button } from "../components/Button";
 
 export function SettingsPage() {
+	const localBridge = window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost";
   const [url, setUrl] = useState(getServerUrl());
   const [token, setTokenInput] = useState(getToken());
   const [saved, setSaved] = useState(false);
@@ -24,7 +25,7 @@ export function SettingsPage() {
     <div className="max-w-lg">
       <h1 className="mb-4 text-lg font-semibold">Settings</h1>
       <div className="flex flex-col gap-4">
-        <label className="flex flex-col gap-1 text-xs">
+		{!localBridge && <label className="flex flex-col gap-1 text-xs">
           <span style={{ color: "var(--fg-faint)" }}>grove server URL</span>
           <input
             className="mono rounded border px-2 py-1.5 text-sm"
@@ -33,8 +34,8 @@ export function SettingsPage() {
             onChange={(e) => setUrl(e.target.value)}
             placeholder={window.location.origin}
           />
-        </label>
-        <label className="flex flex-col gap-1 text-xs">
+		</label>}
+		{!localBridge && <label className="flex flex-col gap-1 text-xs">
           <span style={{ color: "var(--fg-faint)" }}>API token</span>
           <input
             type="password"
@@ -44,11 +45,16 @@ export function SettingsPage() {
             onChange={(e) => setTokenInput(e.target.value)}
             placeholder="paste the bearer token from `grove config`"
           />
-        </label>
+		</label>}
+		{localBridge && (
+			<div className="rounded border p-3 text-xs" style={{ borderColor: "var(--border)", color: "var(--fg-muted)" }}>
+				Connected through <code className="mono">grove ui</code>. Device credential stays in macOS Keychain.
+			</div>
+		)}
         <div className="flex items-center gap-2">
-          <Button variant="primary" onClick={save}>
+			{!localBridge && <Button variant="primary" onClick={save}>
             Save
-          </Button>
+			</Button>}
           <Button onClick={() => test.mutate()} disabled={test.isPending}>
             {test.isPending ? "Testing…" : "Test connection"}
           </Button>
@@ -64,10 +70,10 @@ export function SettingsPage() {
             {String(test.error)}
           </div>
         )}
-        <p className="text-xs" style={{ color: "var(--fg-faint)" }}>
+		{!localBridge && <p className="text-xs" style={{ color: "var(--fg-faint)" }}>
           Stored in this browser's localStorage only. Every request sends it as{" "}
           <code className="mono">Authorization: Bearer &lt;token&gt;</code>.
-        </p>
+		</p>}
       </div>
     </div>
   );

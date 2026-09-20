@@ -25,6 +25,14 @@ export interface JobRequest {
   timeout?: string;
   meta?: Record<string, string>;
   requester?: string;
+	/** Server-set enrolled device id. Client input is ignored. */
+	submittedBy?: string;
+}
+
+export interface Principal {
+	id: string;
+	name: string;
+	scopes: string[];
 }
 
 export interface Artifact {
