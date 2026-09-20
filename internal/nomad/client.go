@@ -36,14 +36,13 @@ func New(url, token string) (Client, error) {
 }
 
 func (c *client) Ping(ctx context.Context) error {
-	// Status().Leader() has no context-aware variant in the Nomad API client; it issues a single
-	// synchronous HTTP call bounded by the client's own configured timeout.
-	_ = ctx
-
-	if _, err := c.raw.Status().Leader(); err != nil {
-		return fmt.Errorf("nomad: %w", err)
+	// Status().Leader() has no context-aware variant. Raw.Query keeps the same
+	// authenticated endpoint while passing the caller's context through Nomad's
+	// configured HTTP client (doctor relies on its short deadline when a peer stalls).
+	var leader string
+	if _, err := c.raw.Raw().Query("/v1/status/leader", &leader, qOpts(ctx)); err != nil {
+		return fmt.Errorf("nomad: ping: %w", err)
 	}
-
 	return nil
 }
 

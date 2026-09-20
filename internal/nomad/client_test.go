@@ -68,6 +68,44 @@ func TestRunningAllocCount(t *testing.T) {
 	}
 }
 
+func TestPing_ContextCancelsStalledPeer(t *testing.T) {
+	pathCh := make(chan string, 1)
+	tokenCh := make(chan string, 1)
+	doneCh := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pathCh <- r.URL.Path
+		tokenCh <- r.Header.Get("X-Nomad-Token")
+		<-r.Context().Done()
+		close(doneCh)
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL, "nomad-secret")
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	if err := client.Ping(ctx); err == nil {
+		t.Fatal("Ping() error = nil, want context deadline error")
+	} else if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Ping() error = %v, want context deadline exceeded", err)
+	}
+
+	if got := <-pathCh; got != "/v1/status/leader" {
+		t.Errorf("request path = %q, want /v1/status/leader", got)
+	}
+	if got := <-tokenCh; got != "nomad-secret" {
+		t.Errorf("X-Nomad-Token = %q, want nomad-secret", got)
+	}
+	select {
+	case <-doneCh:
+	case <-time.After(time.Second):
+		t.Fatal("stalled peer handler did not observe request cancellation")
+	}
+}
+
 func TestPickTask_Deterministic(t *testing.T) {
 	states := map[string]*nomadapi.TaskState{
 		"zzz": {State: "running"},

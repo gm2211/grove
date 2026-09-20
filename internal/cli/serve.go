@@ -243,8 +243,13 @@ func poolConfigs(cfg *config.Config) ([]dispatch.PoolConfig, error) {
 	}
 	pools := make([]dispatch.PoolConfig, 0, len(spec.Pools))
 	for _, p := range spec.Pools {
+		runnerImage, err := dispatch.RunnerImageOrDefault(p.RunnerImage)
+		if err != nil {
+			return nil, fmt.Errorf("pool %q runnerImage: %w", p.Name, err)
+		}
 		pools = append(pools, dispatch.PoolConfig{
 			Name:              p.Name,
+			RunnerImage:       runnerImage,
 			CPU:               int(p.JobCPUOrDefault()),
 			Memory:            int(p.JobMemoryOrDefault()),
 			AllowDockerSocket: p.AllowDockerSocket,

@@ -23,10 +23,14 @@ type renderData struct {
 	CPU               int
 	Memory            int
 	AllowDockerSocket bool
+	RunnerImage       string
 }
 
 func render(t *testing.T, file string, data renderData) string {
 	t.Helper()
+	if data.RunnerImage == "" {
+		data.RunnerImage = "ghcr.io/gm2211/grove-runner:latest"
+	}
 	tmpl, err := template.New(file).ParseFS(FS, file)
 	if err != nil {
 		t.Fatalf("parse %s: %v", file, err)

@@ -63,8 +63,8 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 		})
 	} else {
 		results = append(results,
-			checkHTTPEndpoint(ctx, "orchard-controller", cfg.Orchard.URL, "/v1/controller/info", cfg.Orchard.Token),
-			checkHTTPEndpoint(ctx, "nomad", cfg.Nomad.URL, "/v1/agent/self", ""),
+			checkOrchard(ctx, cfg.Orchard),
+			checkNomad(ctx, cfg.Nomad),
 			checkHTTPEndpoint(ctx, "grove-server", cfg.Server.URL, "/api/v1/healthz", cfg.Server.Token),
 		)
 		results = append(results, checkMacOSCPUFingerprint(ctx, cfg))
@@ -78,6 +78,48 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 	}
 
 	return results
+}
+
+// checkOrchard and checkNomad use the same authenticated clients as the rest of grove. The
+// health probes must not fall back to raw HTTP: Orchard uses its service-account credentials and
+// Nomad uses its X-Nomad-Token ACL header, neither of which is the Bearer scheme used by Grove.
+func checkOrchard(ctx context.Context, endpoint config.Endpoint) CheckResult {
+	client, err := wire.NewOrchardClient(endpoint)
+	if err != nil {
+		return CheckResult{Name: "orchard-controller", OK: false, Detail: "build authenticated client: " + err.Error()}
+	}
+	return checkAuthenticatedService(ctx, "orchard-controller", endpoint.URL, client.Ping)
+}
+
+func checkNomad(ctx context.Context, endpoint config.Endpoint) CheckResult {
+	client, err := wire.NewNomadClient(endpoint)
+	if err != nil {
+		return CheckResult{Name: "nomad", OK: false, Detail: "build authenticated client: " + err.Error()}
+	}
+	return checkAuthenticatedService(ctx, "nomad", endpoint.URL, client.Ping)
+}
+
+func checkAuthenticatedService(ctx context.Context, name, endpoint string, ping func(context.Context) error) CheckResult {
+	if endpoint == "" {
+		return CheckResult{
+			Name:        name,
+			OK:          false,
+			Detail:      "not configured",
+			Remediation: "run `grove install` to set it, or add it to config.yaml",
+		}
+	}
+
+	checkCtx, cancel := context.WithTimeout(ctx, httpCheckTimeout)
+	defer cancel()
+	if err := ping(checkCtx); err != nil {
+		return CheckResult{
+			Name:        name,
+			OK:          false,
+			Detail:      fmt.Sprintf("authenticated health check %s: %v", endpoint, err),
+			Remediation: "check the service is running, reachable over the tailnet, and its token is valid",
+		}
+	}
+	return CheckResult{Name: name, OK: true, Detail: fmt.Sprintf("authenticated health check %s: OK", endpoint)}
 }
 
 // ghcrHost is the one registry grove itself knows to be private-by-default (see docs/IMAGES.md

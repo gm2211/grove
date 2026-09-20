@@ -52,18 +52,32 @@ ENV PATH="/usr/local/go/bin:${PATH}"
 
 # Docker CLI only (no daemon) — used for nested `docker run` against the mounted host socket.
 RUN mkdir -p -m 0755 /etc/apt/keyrings \
-    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.gpg \
-    && chmod a+r /etc/apt/keyrings/docker.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" > /etc/apt/sources.list.d/docker.list \
+    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable" > /etc/apt/sources.list.d/docker.list \
     && apt-get update -y \
     && apt-get install -y --no-install-recommends docker-ce-cli \
     && rm -rf /var/lib/apt/lists/*
 
 # MinIO client (mc), used by nomad/jobs/build.nomad.hcl's run.sh to upload ./artifacts/**
+# Set false only for pools without artifact storage; keeps runners without artifact storage buildable
+# when the optional upstream MinIO binary distribution is unavailable.
+ARG INSTALL_MINIO_CLIENT=true
+ARG MINIO_CLIENT_VERSION=RELEASE.2025-08-13T08-35-41Z
 RUN set -eu; \
+    if [ "$INSTALL_MINIO_CLIENT" = "false" ]; then exit 0; fi; \
     arch="$(dpkg --print-architecture)"; \
-    curl -fsSL "https://dl.min.io/client/mc/release/linux-${arch}/mc" -o /usr/local/bin/mc \
-    && chmod +x /usr/local/bin/mc
+    file="mc.linux-${arch}.${MINIO_CLIENT_VERSION}"; \
+    base="https://github.com/minio/mc/releases/download/${MINIO_CLIENT_VERSION}"; \
+    mkdir /tmp/grove-mc; \
+    cd /tmp/grove-mc; \
+    curl -fsSL "${base}/${file}" -o "$file"; \
+    curl -fsSL "${base}/${file}.sha256sum" -o checksum; \
+    expected="$(awk '{print $1}' checksum)"; \
+    printf '%s  %s\n' "$expected" "$file" | sha256sum -c -; \
+    install -m 755 "$file" /usr/local/bin/mc; \
+    cd /; \
+    rm -rf /tmp/grove-mc
 
 WORKDIR /workspace
 

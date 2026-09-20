@@ -77,6 +77,20 @@ doctor` runs on.
 | `linux-worker` | `ghcr.io/cirruslabs/ubuntu:latest` (arm64) | Cirrus Labs' maintained arm64 Ubuntu Tart image; matches the arm64 host architecture (Apple Silicon), so no CPU emulation for the guest OS itself — only for the *containers it runs* (see Rosetta below). |
 | `runner` | `ubuntu:24.04` | Plain container, not a Tart VM — this is what actually executes `build`/`agent`/`shell` job scripts on the linux pool (see docs/JOBS.md). Built for both `linux/amd64` and `linux/arm64` by CI. |
 
+## Runners without artifact storage
+
+For a pool with no artifact store configured, the optional MinIO client can be omitted when
+building a local runner. The default build retains the client using a pinned, checksum-verified
+GitHub release rather than the retired moving download URL:
+
+```bash
+docker build --build-arg INSTALL_MINIO_CLIENT=false -t grove-runner:studio-v1 images/runner
+```
+
+Set that pool's `runnerImage` to the same pinned tag. Do not use `latest` for an image that exists
+only inside the worker VM: Nomad always attempts to pull that tag. Omitting the client means the
+image cannot upload build artifacts; leave artifact storage unconfigured for this pool.
+
 ## Size expectations
 
 Tart images are full macOS/Linux disk images, not layered containers — expect them to be large

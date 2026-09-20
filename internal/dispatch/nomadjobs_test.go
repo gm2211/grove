@@ -77,3 +77,42 @@ func TestEnsureJobs_RendersPoolCPUAndMemory(t *testing.T) {
 		t.Errorf("grove-shell-macos resources block missing overridden cpu/memory:\n%s", macosShell)
 	}
 }
+
+func TestEnsureJobs_RendersDefaultAndCustomRunnerImages(t *testing.T) {
+	nc := &fakeNomad{}
+	custom := "registry.example.test/grove/studio-runner:v1"
+	if err := EnsureJobs(context.Background(), nc, []PoolConfig{{Name: "linux", RunnerImage: custom}}); err != nil {
+		t.Fatalf("EnsureJobs: %v", err)
+	}
+	if len(nc.registerCalls) != len(allKinds) {
+		t.Fatalf("registered %d jobs, want %d", len(nc.registerCalls), len(allKinds))
+	}
+	for _, hcl := range nc.registerCalls {
+		if !strings.Contains(hcl, `image   = "`+custom+`"`) || !strings.Contains(hcl, `DEFAULT_IMAGE="`+custom+`"`) {
+			t.Errorf("custom runner image missing from rendered job:\n%s", hcl)
+		}
+	}
+
+	nc = &fakeNomad{}
+	if err := EnsureJobs(context.Background(), nc, []PoolConfig{{Name: "linux"}}); err != nil {
+		t.Fatalf("EnsureJobs default: %v", err)
+	}
+	for _, hcl := range nc.registerCalls {
+		if !strings.Contains(hcl, `image   = "`+DefaultRunnerImage+`"`) {
+			t.Errorf("default runner image missing from rendered job")
+		}
+	}
+}
+
+func TestEnsureJobs_RejectsUnsafeRunnerImage(t *testing.T) {
+	for _, image := range []string{"bad\"\njob ", "${NOMAD_TOKEN}", "{{template}}", "-flag"} {
+		nc := &fakeNomad{}
+		pools := []PoolConfig{{Name: "valid"}, {Name: "invalid", RunnerImage: image}}
+		if err := EnsureJobs(context.Background(), nc, pools); err == nil {
+			t.Errorf("unsafe runner image %q accepted", image)
+		}
+		if len(nc.registerCalls) != 0 {
+			t.Errorf("unsafe runner image %q registered a job", image)
+		}
+	}
+}
