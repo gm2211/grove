@@ -87,13 +87,13 @@ main() {
 	linux) install_linux "$arch" ;;
 	esac
 
-	log "grove installed. Next, pick a role and run:"
+	log "grove installed. Next:"
 	printf '\n'
-	printf '    grove install --role worker --controller https://<your-control-plane>.<tailnet>.ts.net:6120\n'
+	printf '    grove setup                         # join this Mac as a worker\n'
 	printf '    grove install --role control-plane\n'
 	printf '    grove install --role client --server https://<your-control-plane>.<tailnet>.ts.net:6130 --token <token>\n'
 	printf '\n'
-	log "see docs/INSTALL.md for the full walkthrough, or hand this repo's docs/INSTALL.md to Claude Code."
+	log "grove setup discovers your control plane over Tailscale and guides approval."
 }
 
 main "$@"

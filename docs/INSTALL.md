@@ -24,27 +24,29 @@ the third-party Homebrew taps those come from, which recent Homebrew otherwise r
 curl -fsSL https://raw.githubusercontent.com/gm2211/grove/main/scripts/install.sh | sh
 ```
 
-This installs the CLI only (via Homebrew on macOS, a direct binary download on Linux) — it never
-runs `grove install` for you, since that needs a `--role` and touches system settings.
+This installs the CLI. On a worker Mac, `grove setup` handles role selection, control-plane
+discovery, enrollment, worker installation, and verification.
 
 On macOS this is equivalent to `brew tap gm2211/grove https://github.com/gm2211/grove && brew
 install gm2211/grove/grove` — the grove repo doubles as its own Homebrew tap (no separate
 `homebrew-tap` repo, no personal access token). Once installed, upgrade in place any time with
 `brew upgrade grove`.
 
-## 2. Pick a role and run `grove install`
+## 2. Set up this machine
 
 ### Worker (every Mac that runs jobs)
 
 ```bash
-grove install --role worker --controller https://<control-plane-host>:6120 --token <bootstrap-token>
+grove setup
 ```
 
-- **Finding the controller URL**: on the control-plane machine, run `grove doctor` (or read
-  `~/.config/grove/config.yaml`'s `orchard.url`) — it's `http://<tailnet-ip-or-MagicDNS-name>:6120`
-  by default. MagicDNS names look like `grove-cp.tailnetname.ts.net`.
-- **The bootstrap token** is whatever the control-plane operator hands out; it becomes the
-  worker's Orchard bootstrap credential.
+- `grove setup` discovers Grove peers through Tailscale and creates a ten-minute enrollment
+  request. It prints an approval code and waits.
+- On the control-plane machine, run `grove join approve <CODE>`. Grove then creates a unique
+  Orchard credential limited to worker registration/connect rights and delivers it once to the
+  requesting Mac.
+- The Mac stores that worker credential in macOS Keychain and feeds it to Orchard over stdin.
+  It never appears in shell history, process arguments, `config.yaml`, or the LaunchAgent plist.
 - Re-run the same command any time — steps that are already satisfied are skipped.
 - Grove installs Orchard as `~/Applications/Grove Orchard Worker.app`, gives it a stable bundle
   identity and Local Network usage description, and associates the per-user LaunchAgent with that
@@ -66,21 +68,14 @@ web UI. A worker that can't authenticate to a private registry fails to pull the
    the organization/user that owns the package, **Packages -> `grove-macos-worker`** (and
    `grove-linux-worker`) **-> Package settings -> Change visibility -> Public**. Do this once per
    package; every worker can then pull without logging in.
-2. **Log each worker in to the registry**, via `grove install`:
+2. **Log each worker in to the registry**, via `grove setup`:
 
    ```bash
-   grove install --role worker --controller https://<control-plane-host>:6120 --token <bootstrap-token> \
-     --registry-user <github-username> --registry-token <PAT>
+   GROVE_REGISTRY_TOKEN=<PAT> grove setup --registry-user <github-username>
    ```
 
    The token needs at minimum the `read:packages` scope (a fine-grained PAT scoped to just the
-   package, or a classic PAT with `read:packages`, both work). It's read from `--registry-token`,
-   or — to avoid it ever landing in shell history — the `GROVE_REGISTRY_TOKEN` environment
-   variable:
-
-   ```bash
-   GROVE_REGISTRY_TOKEN=<PAT> grove install --role worker --controller ... --registry-user <github-username>
-   ```
+   package, or a classic PAT with `read:packages`, both work).
 
    `--registry` defaults to `ghcr.io` and rarely needs overriding. This runs an idempotent
    "registry-login" step (`tart login <registry> --username <user> --password-stdin`, token piped

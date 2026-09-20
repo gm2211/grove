@@ -60,5 +60,12 @@ brews:
     license: "MIT"
     install: |
       bin.install "grove"
+    caveats: |
+      Grove's binary is installed. To join this Mac to an existing Grove cluster, run:
+
+        grove setup
+
+      Setup discovers the control plane over Tailscale, requests operator approval, installs
+      the worker service, and verifies that the worker is visible.
     test: |
       system "#{bin}/grove", "--version"

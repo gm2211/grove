@@ -16,7 +16,7 @@ var Root = &cobra.Command{
 	Long: `grove turns the Macs (and Linux boxes) you already own into a private cloud for CI builds,
 deploys and coding-agent sessions, reachable only over your Tailscale tailnet.
 
-Start with:  grove install --role worker        (on each Mac)
+Start with:  grove setup                        (on each worker Mac)
              grove install --role control-plane (on the always-on box)
              grove fleet apply                  (create the worker VMs)
              grove dispatch --pool linux -- make test`,

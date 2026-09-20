@@ -25,7 +25,14 @@ type Config struct {
 	Fleet string `yaml:"fleet"`
 	// Tailscale configures worker VMs to join the tailnet on boot (see fleet.BuildStartupScript).
 	// Additive: not required by any existing consumer of Config.
-	Tailscale TailscaleConfig `yaml:"tailscale,omitempty"`
+	Tailscale  TailscaleConfig  `yaml:"tailscale,omitempty"`
+	Enrollment EnrollmentConfig `yaml:"enrollment,omitempty"`
+}
+
+type EnrollmentConfig struct {
+	// IssuerToken belongs to a control-plane-only Orchard account with admin:write. Grove uses it
+	// only after operator approval to mint one worker-scoped credential per enrolled Mac.
+	IssuerToken string `yaml:"issuerToken,omitempty"`
 }
 
 type TailscaleConfig struct {

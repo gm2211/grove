@@ -50,7 +50,7 @@ func testWorkerOptions(home string) Options {
 	return Options{
 		Role:       RoleWorker,
 		Controller: "https://cp.tailnet.ts.net:6120",
-		Token:      "tok",
+		Token:      "worker-secret-6f32f988",
 		Hostname:   "test-worker",
 		Home:       home,
 		GOOS:       "darwin",
@@ -121,12 +121,34 @@ func TestWorkerPlan_AppliesCommandsAndGatesPrivilegedSteps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading rendered plist: %v", err)
 	}
-	want, err := workerLaunchAgentPlist(opts, workerOrchardExecutable(opts))
+	want, err := workerLaunchAgentPlist(opts, workerWrapperPath(opts))
 	if err != nil {
 		t.Fatalf("workerLaunchAgentPlist: %v", err)
 	}
 	if string(got) != want {
 		t.Errorf("rendered plist mismatch:\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+	if strings.Contains(string(got), opts.Token) {
+		t.Fatal("worker bootstrap credential leaked into LaunchAgent")
+	}
+	wrapper, err := os.ReadFile(workerWrapperPath(opts))
+	if err != nil {
+		t.Fatalf("reading worker wrapper: %v", err)
+	}
+	if strings.Contains(string(wrapper), opts.Token) || !strings.Contains(string(wrapper), "--bootstrap-token-stdin") {
+		t.Fatalf("worker wrapper must use Keychain/stdin without embedding credential: %s", wrapper)
+	}
+	keychainCmd := "/usr/bin/security add-generic-password -U -a test-worker -s " + orchardWorkerKeychainService + " -T /usr/bin/security -w"
+	stdin, ok := r.StdinFor(keychainCmd)
+	if !ok || stdin != opts.Token+"\n"+opts.Token+"\n" {
+		t.Fatal("worker credential was not stored through Keychain stdin")
+	}
+	for _, call := range r.Calls {
+		for _, arg := range call.Args {
+			if strings.Contains(arg, opts.Token) {
+				t.Fatalf("worker credential leaked into argv: %s", call.String())
+			}
+		}
 	}
 	if !strings.Contains(string(got), "<key>AssociatedBundleIdentifiers</key>") ||
 		!strings.Contains(string(got), orchardWorkerBundleID) {

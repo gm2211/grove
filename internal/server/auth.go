@@ -19,7 +19,9 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 // stays reachable to unauthenticated monitoring probes.
 func (s *Server) withAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.opts.Token == "" || r.URL.Path == "/healthz" {
+		publicJoin := r.Method == http.MethodPost && r.URL.Path == "/join/requests" ||
+			r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/join/requests/")
+		if s.opts.Token == "" || r.URL.Path == "/healthz" || publicJoin {
 			next.ServeHTTP(w, r)
 			return
 		}

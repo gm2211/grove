@@ -3,6 +3,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -25,7 +26,10 @@ type Options struct {
 	// for the drained node's allocations to reach zero. Defaults to 5s; tests shrink this.
 	RecyclePollInterval time.Duration
 	// Version is a caller-supplied build version string reported by GET /healthz. Empty is fine.
-	Version string
+	Version              string
+	ControllerURL        string
+	ServerURL            string
+	IssueWorkerBootstrap func(context.Context, string) (string, error)
 }
 
 // Server implements http.Handler for grove's HTTP API + embedded UI.
@@ -46,6 +50,7 @@ type Server struct {
 	// (see internal/cli/serve.go). Always non-nil — a server with no fleet configured just never
 	// gets SetEnabled/Report called on it, so GET /fleet/reconcile reports {enabled: false}.
 	fleetReconcile *FleetReconcileStatus
+	joins          *joinStore
 }
 
 // FleetReconcile returns the Server's fleet-reconciler status sink. `grove serve` calls
@@ -77,6 +82,7 @@ func New(oc orchard.Client, nc nomad.Client, ds dispatch.Service, ac artifacts.C
 		opts:           opts,
 		log:            log,
 		fleetReconcile: &FleetReconcileStatus{},
+		joins:          newJoinStore(),
 	}
 	s.handler = s.routes()
 	return s
@@ -102,6 +108,9 @@ func (s *Server) routes() http.Handler {
 	api.HandleFunc("GET /jobs/{id}/logs", s.handleJobLogs)
 	api.HandleFunc("GET /jobs/{id}/artifacts/{path...}", s.handleGetArtifact)
 	api.HandleFunc("GET /healthz", s.handleHealthz)
+	api.HandleFunc("POST /join/requests", s.handleCreateJoinRequest)
+	api.HandleFunc("GET /join/requests/{id}", s.handlePollJoinRequest)
+	api.HandleFunc("POST /join/approve/{code}", s.handleApproveJoinRequest)
 
 	root := http.NewServeMux()
 	root.Handle("/api/v1/", http.StripPrefix("/api/v1", s.withMiddleware(api)))

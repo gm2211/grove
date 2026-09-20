@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"runtime"
 )
 
@@ -29,6 +30,9 @@ var ErrAppStoreTailscale = errors.New(
 // pass a fake so they aren't at the mercy of what's actually installed on the machine running
 // them); a nil exists defaults to a real os.Stat-backed check.
 func FindTailscale(lookPath func(string) (string, error), exists func(string) bool) (string, error) {
+	if lookPath == nil {
+		lookPath = exec.LookPath
+	}
 	if exists == nil {
 		exists = defaultPathExists
 	}
@@ -60,7 +64,23 @@ type TailscaleStatus struct {
 		TailscaleIPs []string `json:"TailscaleIPs"`
 		Online       bool     `json:"Online"`
 	} `json:"Self"`
+	Peer map[string]struct {
+		DNSName      string   `json:"DNSName"`
+		TailscaleIPs []string `json:"TailscaleIPs"`
+		Online       bool     `json:"Online"`
+	} `json:"Peer"`
 	BackendState string `json:"BackendState"`
+}
+
+// TailnetPeers returns online peer names and IPs advertised by Tailscale.
+func (s TailscaleStatus) TailnetPeers() map[string][]string {
+	peers := make(map[string][]string)
+	for _, peer := range s.Peer {
+		if peer.Online && len(peer.TailscaleIPs) > 0 {
+			peers[peer.DNSName] = append([]string(nil), peer.TailscaleIPs...)
+		}
+	}
+	return peers
 }
 
 // TailnetIP returns the first tailnet IP, or "" if none.

@@ -23,8 +23,10 @@ next to your other work on the bare host.
 ## Quick start
 
 ```bash
-# on each Mac you want in the fleet (installs via Homebrew — this repo is its own tap)
-curl -fsSL https://raw.githubusercontent.com/gm2211/grove/main/scripts/install.sh | sh
+# on each Mac you want in the fleet
+brew tap gm2211/grove https://github.com/gm2211/grove
+brew install grove
+grove setup
 
 # already installed? upgrade in place any time:
 brew upgrade grove
@@ -32,8 +34,9 @@ brew upgrade grove
 # on the always-on box (Linux, or a dedicated Mac)
 grove install --role control-plane
 
-# on every Mac that should run jobs
-grove install --role worker --controller https://grove-cp.<tailnet>.ts.net:6120 --token <bootstrap-token>
+# grove setup discovers this control plane over Tailscale. It prints a short approval code.
+# Approve that code from the control-plane machine:
+grove join approve <CODE>
 
 # from anywhere on the tailnet: create the worker VMs from fleet.yaml
 grove fleet apply
