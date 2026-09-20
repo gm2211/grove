@@ -5,31 +5,21 @@
 class Grove < Formula
   desc "Your Macs as a private build/agent cloud: Tart VMs via Orchard, jobs via Nomad."
   homepage "https://github.com/gm2211/grove"
-  version "0.1.2"
+  version "0.1.3"
   license "MIT"
-
-  def caveats
-    <<~EOS
-      Grove's binary is installed. Join this Mac to your Grove cluster with:
-
-        grove setup
-
-      Setup discovers Grove over Tailscale, asks for approval, installs the worker, and verifies it.
-    EOS
-  end
 
   on_macos do
     if Hardware::CPU.intel?
-      url "https://github.com/gm2211/grove/releases/download/v0.1.2/grove_darwin_amd64.tar.gz"
-      sha256 "8b59c475075d1f6d49ed06cc6ecbfd8ea66bf486ca768243690cb91d72d9cfb4"
+      url "https://github.com/gm2211/grove/releases/download/v0.1.3/grove_darwin_amd64.tar.gz"
+      sha256 "9844ecba4ca221cd6a16c37c5c1a4de074b654284b00fbde58c67c6448045922"
 
       define_method(:install) do
         bin.install "grove"
       end
     end
     if Hardware::CPU.arm?
-      url "https://github.com/gm2211/grove/releases/download/v0.1.2/grove_darwin_arm64.tar.gz"
-      sha256 "e3fdb54276ece2a7b03cbede4ab38709ecfac1673d39272d531abeffe9768e00"
+      url "https://github.com/gm2211/grove/releases/download/v0.1.3/grove_darwin_arm64.tar.gz"
+      sha256 "e87ea3e70578c6c21d28864430be8af3a063559f5e7ba08b6614fb0056d094e4"
 
       define_method(:install) do
         bin.install "grove"
@@ -39,19 +29,30 @@ class Grove < Formula
 
   on_linux do
     if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?
-      url "https://github.com/gm2211/grove/releases/download/v0.1.2/grove_linux_amd64.tar.gz"
-      sha256 "32c5d0d0098a44012033413481f7ba1f759a4759640a034a3c86ea184f69d534"
+      url "https://github.com/gm2211/grove/releases/download/v0.1.3/grove_linux_amd64.tar.gz"
+      sha256 "c5ffbb6fdf6f44fa3d9dcc822c1b5a5f6581bc6c8abac6f7dce64b7b21aeccdd"
       define_method(:install) do
         bin.install "grove"
       end
     end
     if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?
-      url "https://github.com/gm2211/grove/releases/download/v0.1.2/grove_linux_arm64.tar.gz"
-      sha256 "29756336805f631e0051c79c8e50625bf36a26b971cc63adbb0c15343a57173a"
+      url "https://github.com/gm2211/grove/releases/download/v0.1.3/grove_linux_arm64.tar.gz"
+      sha256 "396f65f89d149ea7a092dcecca6706d167b692afc9ef7796a9c8b7a82844f2d7"
       define_method(:install) do
         bin.install "grove"
       end
     end
+  end
+
+  def caveats
+    <<~EOS
+      Grove's binary is installed. To join this Mac to an existing Grove cluster, run:
+
+        grove setup
+
+      Setup discovers the control plane over Tailscale, requests operator approval, installs
+      the worker service, and verifies that the worker is visible.
+    EOS
   end
 
   test do
