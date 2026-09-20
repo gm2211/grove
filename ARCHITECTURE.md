@@ -65,6 +65,10 @@ Operator credential alone can enroll/revoke devices or mutate worker/VM state. C
 control-plane host still compromises cluster administration, so that host remains part of trusted
 computing base even when most dispatch originates elsewhere.
 
+Worker enrollment does not keep Orchard `admin:write`. Grove's Orchard issuer has only
+`service-account:issue-worker`, which Orchard limits server-side to creating `grove-worker-*`
+accounts with exactly `compute:write` and `compute:connect`.
+
 ## Recycling / hygiene
 
 Nothing long-lived is cleaned, only replaced:
