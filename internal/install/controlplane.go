@@ -301,6 +301,7 @@ func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string)
 	nomadConfPath := filepath.Join(cfgDir, "nomad", "server.hcl")
 	minioEnvPath := filepath.Join(cfgDir, "minio", "env")
 	fleetPath := filepath.Join(cfgDir, "fleet.yaml")
+	orchardHome := controlPlaneOrchardHome(cfgDir)
 
 	return []Step{
 		{
@@ -308,13 +309,13 @@ func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string)
 			Description: fmt.Sprintf("Render %s (ORCHARD_HOME, ORCHARD_ADDRESS=%s).", orchardEnvPath, orchardAddr),
 			Check: fileHasContent(orchardEnvPath, func() (string, error) {
 				return RenderOrchardControllerEnv(OrchardControllerEnvSpec{
-					Home:    filepath.Join(cfgDir, "orchard-controller", "data"),
+					Home:    orchardHome,
 					Address: orchardAddr,
 				})
 			}),
 			Apply: writeRenderedFile(orchardEnvPath, func() (string, error) {
 				return RenderOrchardControllerEnv(OrchardControllerEnvSpec{
-					Home:    filepath.Join(cfgDir, "orchard-controller", "data"),
+					Home:    orchardHome,
 					Address: orchardAddr,
 				})
 			}),
@@ -426,7 +427,7 @@ func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string
 	nomadDataDir := filepath.Join(cfgDir, "nomad", "data")
 	minioEnv := filepath.Join(cfgDir, "minio", "env")
 	minioDataDir := filepath.Join(cfgDir, "minio", "data")
-	orchardHome := filepath.Join(cfgDir, "orchard-controller", "data")
+	orchardHome := controlPlaneOrchardHome(cfgDir)
 
 	units := []struct {
 		name        string
@@ -534,6 +535,21 @@ func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string
 		}
 	}
 	return steps
+}
+
+// controlPlaneOrchardHome preserves both layouts Grove has shipped. Early/manual installs put
+// Orchard state directly under orchard-controller; v0.1.2's installer used a data subdirectory.
+// Choosing an empty new directory would make an existing fleet appear lost.
+func controlPlaneOrchardHome(cfgDir string) string {
+	root := filepath.Join(cfgDir, "orchard-controller")
+	if _, err := os.Stat(filepath.Join(root, ".orchard", "orchard.yml")); err == nil {
+		return root
+	}
+	nested := filepath.Join(root, "data")
+	if _, err := os.Stat(nested); err == nil {
+		return nested
+	}
+	return root
 }
 
 // --- small shared helpers ---

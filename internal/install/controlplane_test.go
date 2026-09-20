@@ -29,6 +29,29 @@ func scriptWorkerEnrollmentToken(r *FakeRunner, home string) {
 	r.Script(orchard+" get service-account grove-enroller/token", FakeResult{Stdout: "enroller-account-secret\n"})
 }
 
+func TestControlPlaneOrchardHomePreservesExistingLayouts(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "orchard-controller")
+	if got := controlPlaneOrchardHome(base); got != root {
+		t.Fatalf("fresh home=%q want %q", got, root)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "data"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := controlPlaneOrchardHome(base); got != filepath.Join(root, "data") {
+		t.Fatalf("nested home=%q", got)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".orchard"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".orchard", "orchard.yml"), []byte("contexts: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := controlPlaneOrchardHome(base); got != root {
+		t.Fatalf("legacy home=%q want %q", got, root)
+	}
+}
+
 func TestControlPlanePlan_DarwinRendersConfigAndLaunchAgents(t *testing.T) {
 	home := t.TempDir()
 	r := NewFakeRunner()
