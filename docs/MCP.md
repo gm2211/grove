@@ -123,9 +123,9 @@ Recycle a wedged VM:
   `Authorization: Bearer <token>` on each request without placing it in config, shell history, or
   process arguments. Operator can revoke one device with `grove access revoke DEVICE_ID` without
   rotating every other device.
-- Enrolled device tokens can read fleet/jobs/logs, submit jobs, and cancel jobs submitted by that
-  same device. Worker pause/resume, VM recycle, join approval, and device revocation require the
-  control-plane operator credential.
+- Enrolled device tokens can read fleet/jobs/logs, submit build and agent jobs, and cancel jobs
+  submitted by that same device. Raw shell jobs, named secrets, worker pause/resume, VM recycle,
+  join approval, and device revocation require control-plane operator credential.
 - `grove_recycle_vm` and `grove_pause_worker` require operator scope and affect real machines
   immediately.
 - Every HTTP call the server makes is time-bounded; a wedged or unreachable grove server

@@ -51,7 +51,16 @@ func (s *Server) handleSubmitJob(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	req.SubmittedBy = principalFromContext(r.Context()).ID
+	principal := principalFromContext(r.Context())
+	if !principalCanDispatchKind(principal, req.Kind) {
+		http.Error(w, "device credential cannot dispatch this job kind", http.StatusForbidden)
+		return
+	}
+	if len(req.Secrets) > 0 && !principalHasScope(principal, ScopeOperator) {
+		http.Error(w, "named secrets require operator dispatch", http.StatusForbidden)
+		return
+	}
+	req.SubmittedBy = principal.ID
 	job, created, err := s.dispatch.Submit(r.Context(), req)
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, err)

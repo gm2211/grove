@@ -16,8 +16,8 @@ import (
 
 const serverInstructions = `grove exposes a private fleet of build/agent machines (Macs + Linux) reachable only over
 your tailnet. Use grove_fleet to see what's available (pools, online/cordoned workers, VM and
-node counts) before submitting work. Use grove_run to submit a job (shell command, build, or
-long-lived agent session) to a pool; by default it waits for completion and returns the exit
+node counts) before submitting work. Use grove_run to submit a build or agent job to a pool;
+raw shell requires control-plane operator scope. By default it waits for completion and returns exit
 code and a log tail. Use grove_job_status / grove_job_logs / grove_job_cancel to manage jobs
 submitted with wait=false or by other clients. grove_recycle_vm and grove_pause_worker are
 fleet-maintenance actions — use them deliberately, they affect real machines.`
@@ -57,7 +57,7 @@ func newServerWithClient(client *apiclient.Client, version string) *mcpsdk.Serve
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name: "grove_run",
-		Description: "Submit a job to the grove fleet: run a shell command, a build (clone repo@ref then run script), " +
+		Description: "Submit a job to the grove fleet: run a build (clone repo@ref then run script), an agent session, or an operator-only raw shell command. " +
 			"or a long-lived agent session on a given pool. By default (wait=true) this blocks until the job reaches " +
 			"a terminal state and returns its exit code, node, duration, and a log tail; pass wait=false to submit " +
 			"and return immediately with just the job id (useful for long-running agent sessions — poll with " +
