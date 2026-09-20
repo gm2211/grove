@@ -138,19 +138,26 @@ func TestWorkerPlan_AppliesCommandsAndGatesPrivilegedSteps(t *testing.T) {
 	if strings.Contains(string(wrapper), opts.Token) || !strings.Contains(string(wrapper), "--bootstrap-token-stdin") {
 		t.Fatalf("worker wrapper must use Keychain/stdin without embedding credential: %s", wrapper)
 	}
+	if !strings.Contains(string(wrapper), `export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"`) {
+		t.Fatal("worker wrapper must expose Homebrew Tart to its LaunchAgent")
+	}
+	if !r.CalledWith("launchctl kickstart -k gui/" + strconv.Itoa(os.Getuid()) + "/com.grove.orchard-worker") {
+		t.Fatal("updated worker wrapper must restart an already-loaded worker")
+	}
 	deleteKeychainCmd := "/usr/bin/security delete-generic-password -a test-worker -s " + orchardWorkerKeychainService
-	keychainCmd := "/usr/bin/security add-generic-password -a test-worker -s " + orchardWorkerKeychainService + " -T /usr/bin/security -w"
 	if !r.CalledWith(deleteKeychainCmd) {
 		t.Fatal("worker credential replacement must delete stale Keychain item before adding")
 	}
-	stdin, ok := r.StdinFor(keychainCmd)
-	if !ok || stdin != opts.Token+"\n"+opts.Token+"\n" {
+	var keychainCall *Call
+	for i := range r.Calls {
+		if r.Calls[i].Name == "/usr/bin/expect" {
+			keychainCall = &r.Calls[i]
+		}
+	}
+	if keychainCall == nil || keychainCall.Stdin != "test-worker\n"+orchardWorkerKeychainService+"\n"+opts.Token+"\n" {
 		t.Fatal("worker credential was not stored through Keychain stdin")
 	}
 	for _, call := range r.Calls {
-		if call.Name == "/usr/bin/security" && len(call.Args) > 1 && call.Args[0] == "add-generic-password" && call.Args[1] == "-U" {
-			t.Fatalf("Keychain write must not use -U because it can trigger an ACL password dialog: %s", call.String())
-		}
 		for _, arg := range call.Args {
 			if strings.Contains(arg, opts.Token) {
 				t.Fatalf("worker credential leaked into argv: %s", call.String())

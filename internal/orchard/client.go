@@ -21,9 +21,24 @@ import (
 // with service-account:issue-worker; issued account can register/connect compute but cannot read
 // or manage VMs. Orchard enforces issued name prefix and exact roles server-side.
 func (c *client) IssueWorkerBootstrap(ctx context.Context, workerName string) (string, error) {
-	raw := make([]byte, 32)
+	sa, bootstrap, err := newWorkerCredential(workerName)
+	if err != nil {
+		return "", err
+	}
+	if err := c.raw.ServiceAccounts().Create(ctx, sa); err != nil {
+		return "", fmt.Errorf("create worker service account: %w", err)
+	}
+	return bootstrap, nil
+}
+
+// newWorkerCredential keeps the complete bootstrap token below macOS security(1)'s 128-byte
+// interactive-password limit. Grove's Keychain bridge must use that interface to keep secrets
+// out of argv. A 24-byte random token retains 192 bits of entropy; capping the final account name
+// at 40 bytes keeps the encoded bootstrap token at 125 bytes or fewer.
+func newWorkerCredential(workerName string) (*v1.ServiceAccount, string, error) {
+	raw := make([]byte, 24)
 	if _, err := rand.Read(raw); err != nil {
-		return "", fmt.Errorf("generate worker credential: %w", err)
+		return nil, "", fmt.Errorf("generate worker credential: %w", err)
 	}
 	token := base64.RawURLEncoding.EncodeToString(raw)
 	name := "grove-worker-" + strings.ToLower(workerName)
@@ -33,16 +48,14 @@ func (c *client) IssueWorkerBootstrap(ctx context.Context, workerName string) (s
 		}
 		return '-'
 	}, name)
-	if len(name) > 45 {
-		name = name[:45]
+	if len(name) > 29 {
+		name = name[:29]
 	}
 	name += "-" + hex.EncodeToString(raw[:5])
 	sa := &v1.ServiceAccount{Meta: v1.Meta{Name: name}, Token: token, Roles: []v1.ServiceAccountRole{v1.ServiceAccountRoleComputeWrite, v1.ServiceAccountRoleComputeConnect}}
-	if err := c.raw.ServiceAccounts().Create(ctx, sa); err != nil {
-		return "", fmt.Errorf("create worker service account: %w", err)
-	}
 	enc := base64.RawURLEncoding
-	return "orchard-bootstrap-token-v0." + enc.EncodeToString([]byte(name)) + "." + enc.EncodeToString([]byte(token)), nil
+	bootstrap := "orchard-bootstrap-token-v0." + enc.EncodeToString([]byte(name)) + "." + enc.EncodeToString([]byte(token))
+	return sa, bootstrap, nil
 }
 
 // workerOfflineTimeout is how long since a Worker's last heartbeat before grove treats it as

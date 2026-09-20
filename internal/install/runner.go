@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -22,6 +23,10 @@ type Runner interface {
 	// --password-stdin`) so the secret never lands in argv, a process listing, or a shell history —
 	// and, by construction, never in the *args passed to a logged/rendered command line either.
 	RunWithStdin(ctx context.Context, stdin string, name string, args ...string) (stdout string, stderr string, err error)
+	// RunWithStdinAttached is reserved for a trusted terminal bridge that must remain in the
+	// caller's macOS authorization session. The bridge must prevent stdin from reaching or being
+	// echoed by the child command directly. StoreKeychainSecret supplies that bridge with expect.
+	RunWithStdinAttached(ctx context.Context, stdin string, name string, args ...string) (stdout string, stderr string, err error)
 }
 
 // ExecRunner is the real Runner, shelling out via os/exec.
@@ -30,20 +35,41 @@ type ExecRunner struct{}
 var _ Runner = ExecRunner{}
 
 func (ExecRunner) Run(ctx context.Context, name string, args ...string) (string, string, error) {
-	return execRun(ctx, "", name, args...)
+	return execRun(ctx, "", false, name, args...)
 }
 
 func (ExecRunner) RunWithStdin(ctx context.Context, stdin string, name string, args ...string) (string, string, error) {
-	return execRun(ctx, stdin, name, args...)
+	return execRun(ctx, stdin, true, name, args...)
 }
 
-func execRun(ctx context.Context, stdin string, name string, args ...string) (string, string, error) {
+func (ExecRunner) RunWithStdinAttached(ctx context.Context, stdin string, name string, args ...string) (string, string, error) {
+	// Keychain Authorization Services requires the child to remain attached to a real terminal.
+	// expect disables child output before receiving stdin, so attaching its output to /dev/tty
+	// cannot echo the supplied secret. This path is intentionally separate from captured runners.
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		return "", "", fmt.Errorf("open interactive terminal for Keychain authorization: %w", err)
+	}
+	defer tty.Close()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = strings.NewReader(stdin)
+	cmd.Stdout = tty
+	cmd.Stderr = tty
+	if err := cmd.Run(); err != nil {
+		return "", "", fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
+	}
+	return "", "", nil
+}
+
+func execRun(ctx context.Context, stdin string, detach bool, name string, args ...string) (string, string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	if stdin != "" {
 		// Some macOS tools (notably `security ... -w`) prefer the controlling terminal over
 		// cmd.Stdin. Detach secret-consuming children from that terminal so they must consume the
 		// provided pipe. This also prevents interactive prompts from hanging unattended setup.
-		configureSecretProcess(cmd)
+		if detach {
+			configureSecretProcess(cmd)
+		}
 		cmd.Stdin = strings.NewReader(stdin)
 	}
 	var stdout, stderr bytes.Buffer
@@ -109,6 +135,10 @@ func (f *FakeRunner) Run(ctx context.Context, name string, args ...string) (stri
 }
 
 func (f *FakeRunner) RunWithStdin(_ context.Context, stdin string, name string, args ...string) (string, string, error) {
+	return f.run(Call{Name: name, Args: args, Stdin: stdin})
+}
+
+func (f *FakeRunner) RunWithStdinAttached(_ context.Context, stdin string, name string, args ...string) (string, string, error) {
 	return f.run(Call{Name: name, Args: args, Stdin: stdin})
 }
 
