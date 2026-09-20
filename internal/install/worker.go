@@ -146,11 +146,7 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 				if opts.Token == "" {
 					return fmt.Errorf("worker bootstrap credential missing; run `grove setup`")
 				}
-				// `security -w` with no argument reads and confirms password on stdin. -T limits
-				// future reads to Apple's signed security tool used by the worker wrapper.
-				input := opts.Token + "\n" + opts.Token + "\n"
-				_, _, err := r.RunWithStdin(ctx, input, "/usr/bin/security", "add-generic-password", "-U", "-a", host, "-s", orchardWorkerKeychainService, "-T", "/usr/bin/security", "-w")
-				return err
+				return StoreKeychainSecret(ctx, r, host, orchardWorkerKeychainService, opts.Token)
 			},
 		},
 		Step{

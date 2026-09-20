@@ -262,8 +262,7 @@ func saveJoinedServer(ctx context.Context, r install.Runner, serverURL, deviceID
 	}
 	cfg.Server.URL = serverURL
 	cfg.Server.TokenKeychain = deviceID
-	input := token + "\n" + token + "\n"
-	if _, _, err := r.RunWithStdin(ctx, input, "/usr/bin/security", "add-generic-password", "-U", "-a", deviceID, "-s", config.ServerTokenKeychainService, "-T", "/usr/bin/security", "-w"); err != nil {
+	if err := install.StoreKeychainSecret(ctx, r, deviceID, config.ServerTokenKeychainService, token); err != nil {
 		return fmt.Errorf("store dispatcher credential in Keychain: %w", err)
 	}
 	return config.Save(path, cfg)

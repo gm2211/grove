@@ -33,7 +33,11 @@ func TestSaveJoinedServerKeepsDeviceTokenOutOfConfigAndArgv(t *testing.T) {
 			t.Fatalf("secret appeared in process arguments: %s", call.String())
 		}
 	}
-	keychainCommand := "/usr/bin/security add-generic-password -U -a device-1 -s " + config.ServerTokenKeychainService + " -T /usr/bin/security -w"
+	deleteKeychainCommand := "/usr/bin/security delete-generic-password -a device-1 -s " + config.ServerTokenKeychainService
+	if !runner.CalledWith(deleteKeychainCommand) {
+		t.Fatal("dispatcher credential replacement must delete stale Keychain item before adding")
+	}
+	keychainCommand := "/usr/bin/security add-generic-password -a device-1 -s " + config.ServerTokenKeychainService + " -T /usr/bin/security -w"
 	stdin, ok := runner.StdinFor(keychainCommand)
 	if !ok || !strings.Contains(stdin, fakeSecret) {
 		t.Fatal("fake secret was not sent to Keychain through stdin")
