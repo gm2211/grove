@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/gm2211/grove/internal/dispatch"
 )
 
 type principalContextKey struct{}
@@ -19,6 +21,26 @@ func principalFromContext(ctx context.Context) Principal {
 func principalHasScope(p Principal, scope string) bool {
 	for _, candidate := range p.Scopes {
 		if candidate == ScopeOperator || candidate == scope {
+			return true
+		}
+		if scope == ScopeDispatch && (candidate == ScopeBuild || candidate == ScopeAgent) {
+			return true
+		}
+	}
+	return false
+}
+
+func principalCanDispatchKind(p Principal, kind dispatch.Kind) bool {
+	if principalHasScope(p, ScopeOperator) || hasExactScope(p, ScopeDispatch) {
+		return true
+	}
+	return kind == dispatch.KindBuild && hasExactScope(p, ScopeBuild) ||
+		kind == dispatch.KindAgent && hasExactScope(p, ScopeAgent)
+}
+
+func hasExactScope(p Principal, scope string) bool {
+	for _, candidate := range p.Scopes {
+		if candidate == scope {
 			return true
 		}
 	}

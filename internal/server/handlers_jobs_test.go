@@ -48,6 +48,39 @@ func TestPostJobs_DispatchesAndReturnsID(t *testing.T) {
 	}
 }
 
+func TestEnrolledDeviceDispatchIsLimitedToBuildAndAgentWithoutSecrets(t *testing.T) {
+	store, err := NewAccessStore(t.TempDir() + "/devices.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := store.Issue("laptop", []string{ScopeRead, ScopeBuild, ScopeAgent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{}}
+	srv := newTestServer(nil, nil, ds, Options{Token: "operator", AccessStore: store})
+
+	submit := func(body string) int {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if got := submit(`{"kind":"shell","pool":"linux","script":"id"}`); got != http.StatusForbidden {
+		t.Fatalf("shell status=%d want 403", got)
+	}
+	if got := submit(`{"kind":"build","pool":"linux","script":"make test","secrets":["deploy-key"]}`); got != http.StatusForbidden {
+		t.Fatalf("secret build status=%d want 403", got)
+	}
+	if got := submit(`{"kind":"build","pool":"linux","script":"make test"}`); got != http.StatusCreated {
+		t.Fatalf("build status=%d want 201", got)
+	}
+	if got := submit(`{"kind":"agent","pool":"linux","script":"codex exec task"}`); got != http.StatusCreated {
+		t.Fatalf("agent status=%d want 201", got)
+	}
+}
+
 func TestPostJobs_IdempotentReplayReturns200(t *testing.T) {
 	notCreated := false
 	ds := &fakeDispatch{

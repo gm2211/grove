@@ -18,6 +18,8 @@ interface EnvRow {
 export function DispatchPage() {
   const navigate = useNavigate();
   const { data: fleet } = useQuery({ queryKey: ["fleet"], queryFn: api.getFleet, refetchInterval: 5000 });
+	const { data: principal } = useQuery({ queryKey: ["whoami"], queryFn: api.whoAmI, staleTime: 60_000 });
+	const operator = principal?.scopes.includes("operator") ?? false;
 
   const pools = useMemo(() => {
     const set = new Set<string>();
@@ -92,7 +94,7 @@ export function DispatchPage() {
             >
               <option value="build">build</option>
               <option value="agent">agent</option>
-              <option value="shell">shell</option>
+								{operator && <option value="shell">shell</option>}
             </select>
           </label>
           <label className="flex flex-col gap-1 text-xs">

@@ -20,11 +20,13 @@ import (
 const (
 	ScopeRead     = "read"
 	ScopeDispatch = "dispatch"
+	ScopeBuild    = "dispatch:build"
+	ScopeAgent    = "dispatch:agent"
 	ScopeOperator = "operator"
 )
 
 var validAccessScopes = map[string]struct{}{
-	ScopeRead: {}, ScopeDispatch: {}, ScopeOperator: {},
+	ScopeRead: {}, ScopeDispatch: {}, ScopeBuild: {}, ScopeAgent: {}, ScopeOperator: {},
 }
 
 // Principal identifies the device behind an authenticated access token.
