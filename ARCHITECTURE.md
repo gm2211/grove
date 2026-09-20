@@ -57,6 +57,13 @@ inside it packs many jobs per VM. One VM per job would cap macOS at 2 concurrent
 Everything dials **out** to the control plane over the tailnet. No inbound ports on any Mac.
 Tailscale standalone variant (not App Store — that one doesn't start before login).
 
+Control plane owns shared scheduling state; it is not a sole dispatcher. Every enrolled device
+receives an independent, revocable `read + dispatch` credential and can inspect or submit work.
+Raw device tokens live only in that device's Keychain; control plane persists SHA-256 hashes.
+Operator credential alone can enroll/revoke devices or mutate worker/VM state. Compromise of
+control-plane host still compromises cluster administration, so that host remains part of trusted
+computing base even when most dispatch originates elsewhere.
+
 ## Recycling / hygiene
 
 Nothing long-lived is cleaned, only replaced:

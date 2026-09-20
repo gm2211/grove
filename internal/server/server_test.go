@@ -53,6 +53,42 @@ func TestAuth_CorrectToken(t *testing.T) {
 	}
 }
 
+func TestAuth_DeviceScopes(t *testing.T) {
+	store, err := NewAccessStore(t.TempDir() + "/devices.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readToken, _, err := store.Issue("viewer", []string{ScopeRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchToken, _, err := store.Issue("laptop", []string{ScopeRead, ScopeDispatch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newTestServer(nil, nil, nil, Options{Token: "operator", AccessStore: store})
+
+	request := func(method, path, token string) int {
+		req := httptest.NewRequest(method, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if got := request(http.MethodGet, "/api/v1/jobs", readToken); got != http.StatusOK {
+		t.Fatalf("read token GET status=%d", got)
+	}
+	if got := request(http.MethodPost, "/api/v1/jobs", readToken); got != http.StatusForbidden {
+		t.Fatalf("read token POST status=%d want 403", got)
+	}
+	if got := request(http.MethodPost, "/api/v1/jobs", dispatchToken); got == http.StatusForbidden || got == http.StatusUnauthorized {
+		t.Fatalf("dispatch token rejected with status=%d", got)
+	}
+	if got := request(http.MethodPost, "/api/v1/workers/example/pause", dispatchToken); got != http.StatusForbidden {
+		t.Fatalf("dispatch token operator action status=%d want 403", got)
+	}
+}
+
 func TestAuth_NoTokenConfiguredAllowsAll(t *testing.T) {
 	srv := newTestServer(nil, nil, nil, Options{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs", nil)

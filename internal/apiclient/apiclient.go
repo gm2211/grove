@@ -133,6 +133,20 @@ func (c *Client) ResumeWorker(ctx context.Context, name string) error {
 	return c.doJSON(ctx, http.MethodPost, "/workers/"+url.PathEscape(name)+"/resume", nil, nil)
 }
 
+// Devices lists enrolled device credentials without exposing token hashes or raw tokens.
+func (c *Client) Devices(ctx context.Context) ([]server.DeviceCredential, error) {
+	var out []server.DeviceCredential
+	if err := c.doJSON(ctx, http.MethodGet, "/access/devices", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// RevokeDevice disables one enrolled device credential.
+func (c *Client) RevokeDevice(ctx context.Context, id string) error {
+	return c.doJSON(ctx, http.MethodDelete, "/access/devices/"+url.PathEscape(id), nil, nil)
+}
+
 // SubmitJob dispatches req and returns the new job's id.
 func (c *Client) SubmitJob(ctx context.Context, req dispatch.JobRequest) (string, error) {
 	var out struct {

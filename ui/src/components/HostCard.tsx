@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { FleetEntry } from "../api/types";
 import { api } from "../api/client";
 import { StatusPill, StateDot } from "./StatusPill";
@@ -28,6 +28,8 @@ export function HostCard({
   nodes: FleetEntry[];
 }) {
   const qc = useQueryClient();
+	const { data: principal } = useQuery({ queryKey: ["whoami"], queryFn: api.whoAmI, staleTime: 60_000 });
+	const operator = principal?.scopes.includes("operator") ?? false;
   const invalidate = () => qc.invalidateQueries({ queryKey: ["fleet"] });
 
   const pause = useMutation({
@@ -57,7 +59,7 @@ export function HostCard({
           <span className="mono truncate text-base font-semibold">{host}</span>
           {worker && <StatusPill status={worker.status} />}
         </div>
-        {worker &&
+		{operator && worker &&
           (worker.cordoned ? (
             <Button
               variant="primary"
@@ -120,7 +122,7 @@ export function HostCard({
                       <td className="py-1.5 px-2 whitespace-nowrap align-middle">
                         <StateDot status={vm.status} />
                       </td>
-                      <td className="py-1.5 pl-2 align-middle">
+										{operator && <td className="py-1.5 pl-2 align-middle">
                         <ConfirmButton
                           label={<RecycleIcon />}
                           confirmLabel="sure?"
@@ -130,7 +132,7 @@ export function HostCard({
                           onConfirm={() => recycle.mutate(vm.name)}
                           disabled={recycle.isPending}
                         />
-                      </td>
+										</td>}
                     </tr>
                   );
                 })}

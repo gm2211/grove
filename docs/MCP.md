@@ -6,9 +6,10 @@ exposing the same fleet/job operations as the grove HTTP API (see
 prompt. Point any MCP-capable client at it — Claude Code, Codex, Claude Desktop — and it can
 inspect the fleet, submit jobs, and manage VMs/workers directly.
 
-It reads `server.url` and `server.token` from the grove config (`~/.config/grove/config.yaml`,
-or `$GROVE_CONFIG`) and opens **no network listener of its own** — it only speaks stdio to its
-MCP client and HTTPS/HTTP to the grove server you've configured.
+It reads `server.url` from Grove config and resolves this device's credential from macOS Keychain
+(`server.tokenKeychain`). Control planes may instead use `server.token` from their owner-only
+config. It opens **no network listener of its own** — it only speaks stdio to its MCP client and
+HTTPS/HTTP to the configured Grove server.
 
 ## What it exposes
 
@@ -118,12 +119,15 @@ Recycle a wedged VM:
 - The server never opens a listening socket; it only makes outbound HTTP calls to
   `server.url`, which should be a tailnet-only address (e.g.
   `http://grove-cp.<tailnet>.ts.net:6120`) — nothing routable from the public internet.
-- `server.token` (in `~/.config/grove/config.yaml`, mode `0600`) is sent as
-  `Authorization: Bearer <token>` on every request. Treat that config file like a credential:
-  don't commit it, don't put it in a shared dotfiles repo without encryption.
-- `grove_recycle_vm` and `grove_pause_worker` affect real machines immediately — there's no
-  confirmation step in the protocol layer, so whatever policy you want (e.g. "ask before
-  recycling") has to live in the calling client/agent's own judgment.
+- `grove setup` stores a unique per-device token in macOS Keychain. Grove sends it as
+  `Authorization: Bearer <token>` on each request without placing it in config, shell history, or
+  process arguments. Operator can revoke one device with `grove access revoke DEVICE_ID` without
+  rotating every other device.
+- Enrolled device tokens can read fleet/jobs/logs, submit jobs, and cancel jobs submitted by that
+  same device. Worker pause/resume, VM recycle, join approval, and device revocation require the
+  control-plane operator credential.
+- `grove_recycle_vm` and `grove_pause_worker` require operator scope and affect real machines
+  immediately.
 - Every HTTP call the server makes is time-bounded; a wedged or unreachable grove server
   produces a clear tool error (e.g. "grove server unreachable at `<url>` — is `grove serve`
   running and are you on the tailnet?") rather than hanging the calling client indefinitely.

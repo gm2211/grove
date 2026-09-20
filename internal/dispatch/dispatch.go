@@ -39,6 +39,9 @@ type JobRequest struct {
 	Meta map[string]string `json:"meta,omitempty"`
 	// Requester is an opaque label for who submitted (orchestrator, mcp:claude-code, cli).
 	Requester string `json:"requester,omitempty"`
+	// SubmittedBy is set by Grove from the authenticated device identity. Client input is ignored.
+	// It lets a dispatcher cancel its own jobs without granting fleet-wide operator power.
+	SubmittedBy string `json:"submittedBy,omitempty"`
 	// IdempotencyKey, if set, makes a repeat Submit with the same key return the existing Job
 	// instead of dispatching again. Orchestrator convention: "<orchestrator>:<taskId>:<runId>".
 	IdempotencyKey string `json:"idempotencyKey,omitempty"`

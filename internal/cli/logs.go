@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -48,7 +49,11 @@ func newAPIClient() (*apiclient.Client, error) {
 	if cfg.Server.URL == "" {
 		return nil, fmt.Errorf("server.url is not set in the grove config; run `grove config init` or set GROVE_CONFIG")
 	}
-	return apiclient.New(cfg.Server.URL, cfg.Server.Token), nil
+	token, err := config.ResolveServerToken(context.Background(), cfg)
+	if err != nil {
+		return nil, err
+	}
+	return apiclient.New(cfg.Server.URL, token), nil
 }
 
 // ExitError signals that the RunE that returned it has already printed everything the user needs

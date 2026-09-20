@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -111,6 +112,11 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 		Token: cfg.Server.Token, Version: Version,
 		ControllerURL: cfg.Orchard.URL, ServerURL: cfg.Server.URL,
 	}
+	accessStore, err := server.NewAccessStore(filepath.Join(filepath.Dir(cfgPath), "devices.json"))
+	if err != nil {
+		return fmt.Errorf("device credential store: %w", err)
+	}
+	serverOpts.AccessStore = accessStore
 	if cfg.Enrollment.IssuerToken != "" {
 		issuer, issuerErr := orchard.New(cfg.Orchard.URL, cfg.Enrollment.IssuerToken)
 		if issuerErr != nil {

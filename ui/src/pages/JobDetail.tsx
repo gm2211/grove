@@ -26,6 +26,7 @@ export function JobDetailPage() {
     queryFn: () => api.getJob(id),
     refetchInterval: 3000,
   });
+	const { data: principal } = useQuery({ queryKey: ["whoami"], queryFn: api.whoAmI, staleTime: 60_000 });
 
   const cancel = useMutation({
     mutationFn: () => api.cancelJob(id),
@@ -39,6 +40,7 @@ export function JobDetailPage() {
   const terminal = ["success", "failed", "canceled", "lost"].includes(job.status);
   const isFailed = job.status === "failed" || job.status === "canceled" || job.status === "lost";
   const idx = stageIndex(job.status);
+	const canCancel = principal?.scopes.includes("operator") || job.request.submittedBy === principal?.id;
 
   return (
     <div className="flex flex-col gap-4">
@@ -52,7 +54,7 @@ export function JobDetailPage() {
         </button>
         <h1 className="mono text-lg font-semibold">{job.id}</h1>
         <StatusPill status={isFailed ? job.status : STAGES[idx] ?? job.status} />
-        {!terminal && (
+		{!terminal && canCancel && (
           <ConfirmButton label="Cancel job" onConfirm={() => cancel.mutate()} disabled={cancel.isPending} />
         )}
       </div>

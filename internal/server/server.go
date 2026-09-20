@@ -20,6 +20,9 @@ type Options struct {
 	// Token is the Bearer token clients must present under /api/v1. Empty disables auth
 	// (a loud warning is logged at startup) — useful for local dev, never for a real deployment.
 	Token string
+	// AccessStore authenticates revocable per-device credentials. Token remains the
+	// control-plane operator credential and always has full access.
+	AccessStore *AccessStore
 	// Logger receives structured request/lifecycle logs. Defaults to slog.Default().
 	Logger *slog.Logger
 	// RecyclePollInterval controls how often POST /vms/{name}/recycle polls Nomad while waiting
@@ -68,7 +71,7 @@ func New(oc orchard.Client, nc nomad.Client, ds dispatch.Service, ac artifacts.C
 	if log == nil {
 		log = slog.Default()
 	}
-	if opts.Token == "" {
+	if opts.Token == "" && opts.AccessStore == nil {
 		log.Warn("grove server: no auth token configured — /api/v1 is UNAUTHENTICATED; set server.token in config.yaml")
 	}
 	if opts.RecyclePollInterval <= 0 {
@@ -111,6 +114,9 @@ func (s *Server) routes() http.Handler {
 	api.HandleFunc("POST /join/requests", s.handleCreateJoinRequest)
 	api.HandleFunc("GET /join/requests/{id}", s.handlePollJoinRequest)
 	api.HandleFunc("POST /join/approve/{code}", s.handleApproveJoinRequest)
+	api.HandleFunc("GET /access/devices", s.handleListDevices)
+	api.HandleFunc("DELETE /access/devices/{id}", s.handleRevokeDevice)
+	api.HandleFunc("GET /whoami", s.handleWhoAmI)
 
 	root := http.NewServeMux()
 	root.Handle("/api/v1/", http.StripPrefix("/api/v1", s.withMiddleware(api)))
