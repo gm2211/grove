@@ -9,11 +9,56 @@ import (
 	"strings"
 )
 
-// orchardBinDir/orchardBinName is where grove installs the Orchard fork binary when it isn't
-// already on PATH.
-const orchardBinName = "orchard"
+// The worker runs Orchard from an app bundle so macOS can attribute Local Network consent to a
+// stable, named responsible-code identity. The ~/.local/bin entry remains a symlink for operators
+// and scripts that invoke Orchard directly.
+const (
+	orchardBinName        = "orchard"
+	orchardWorkerAppName  = "Grove Orchard Worker.app"
+	orchardWorkerBundleID = "com.gm2211.grove.orchard-worker"
+)
 
 func orchardBinDir(opts Options) string { return filepath.Join(opts.homeDir(), ".local", "bin") }
+
+func workerOrchardAppDir(opts Options) string {
+	return filepath.Join(opts.homeDir(), "Applications", orchardWorkerAppName)
+}
+
+func workerOrchardExecutable(opts Options) string {
+	return filepath.Join(workerOrchardAppDir(opts), "Contents", "MacOS", orchardBinName)
+}
+
+func workerOrchardInfoPlistPath(opts Options) string {
+	return filepath.Join(workerOrchardAppDir(opts), "Contents", "Info.plist")
+}
+
+func workerOrchardInfoPlist() string {
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Grove Orchard Worker</string>
+	<key>CFBundleExecutable</key>
+	<string>orchard</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.gm2211.grove.orchard-worker</string>
+	<key>CFBundleName</key>
+	<string>Grove Orchard Worker</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Grove uses Orchard to connect to virtual machines running on this Mac.</string>
+</dict>
+</plist>
+`
+}
 
 // buildWorkerSteps assembles the worker role plan. Worker is macOS-only (it runs Tart VMs, which
 // need Apple Silicon + Virtualization.framework).
@@ -23,7 +68,8 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 	agentsDir := opts.LaunchAgentsDir()
 	logDir := opts.LogDir()
 	plistPath := filepath.Join(agentsDir, "com.grove.orchard-worker.plist")
-	destOrchard := filepath.Join(orchardBinDir(opts), orchardBinName)
+	cliOrchard := filepath.Join(orchardBinDir(opts), orchardBinName)
+	workerOrchard := workerOrchardExecutable(opts)
 
 	steps := []Step{
 		{
@@ -71,17 +117,16 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 
 	steps = append(steps,
 		Step{
-			Name:        "orchard-binary",
-			Description: fmt.Sprintf("Install the Orchard fork binary to %s: download a github.com/gm2211/orchard release asset if one exists, else clone and `go build ./cmd/orchard` (the fork keeps the upstream module path, so `go install github.com/gm2211/orchard/...@main` can't resolve it — see docs/INSTALL.md for the manual build if this fails).", destOrchard),
+			Name: "orchard-worker-app",
+			Description: fmt.Sprintf(
+				"Install the Orchard fork in %s with a stable macOS app identity and Local Network usage description; keep %s as a symlink. Existing Grove Orchard binaries migrate in place, otherwise grove downloads a github.com/gm2211/orchard release asset or builds the fork from source.",
+				workerOrchardAppDir(opts), cliOrchard,
+			),
 			Check: func(ctx context.Context) (bool, error) {
-				if _, err := lookPath("orchard"); err == nil {
-					return true, nil
-				}
-				_, err := os.Stat(destOrchard)
-				return err == nil, nil
+				return workerOrchardAppInstalled(ctx, r, opts, cliOrchard)
 			},
 			Apply: func(ctx context.Context) error {
-				return ensureOrchardBinary(ctx, r, opts, destOrchard, out)
+				return ensureWorkerOrchardApp(ctx, r, opts, cliOrchard, out)
 			},
 		},
 		Step{
@@ -91,7 +136,7 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 				plistPath, logDir, host, host, opts.Controller,
 			),
 			Check: func(ctx context.Context) (bool, error) {
-				want, err := workerLaunchAgentPlist(opts, destOrchard)
+				want, err := workerLaunchAgentPlist(opts, workerOrchard)
 				if err != nil {
 					return false, err
 				}
@@ -105,7 +150,7 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 				return string(got) == want, nil
 			},
 			Apply: func(ctx context.Context) error {
-				content, err := workerLaunchAgentPlist(opts, destOrchard)
+				content, err := workerLaunchAgentPlist(opts, workerOrchard)
 				if err != nil {
 					return err
 				}
@@ -120,7 +165,7 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 		},
 	)
 
-	steps = append(steps, workerPrivilegedSteps(r, opts, plistPath)...)
+	steps = append(steps, workerFinalizationSteps(r, opts, plistPath, workerOrchard)...)
 	return steps
 }
 
@@ -200,15 +245,86 @@ func workerLaunchAgentPlist(opts Options, orchardBin string) (string, error) {
 	}
 	args = append(args, opts.Controller)
 	return RenderLaunchAgent(LaunchAgentSpec{
-		Label:      "com.grove.orchard-worker",
-		Program:    orchardBin,
-		Args:       args,
-		WorkingDir: opts.homeDir(),
-		KeepAlive:  true,
-		RunAtLoad:  true,
-		StdoutPath: filepath.Join(opts.LogDir(), "orchard-worker.log"),
-		StderrPath: filepath.Join(opts.LogDir(), "orchard-worker.err.log"),
+		Label:                       "com.grove.orchard-worker",
+		Program:                     orchardBin,
+		Args:                        args,
+		WorkingDir:                  opts.homeDir(),
+		AssociatedBundleIdentifiers: []string{orchardWorkerBundleID},
+		KeepAlive:                   true,
+		RunAtLoad:                   true,
+		StdoutPath:                  filepath.Join(opts.LogDir(), "orchard-worker.log"),
+		StderrPath:                  filepath.Join(opts.LogDir(), "orchard-worker.err.log"),
 	})
+}
+
+func workerOrchardAppInstalled(ctx context.Context, r Runner, opts Options, cliPath string) (bool, error) {
+	executable := workerOrchardExecutable(opts)
+	if info, err := os.Stat(executable); err != nil || !info.Mode().IsRegular() {
+		return false, nil
+	}
+	gotPlist, err := os.ReadFile(workerOrchardInfoPlistPath(opts))
+	if err != nil || string(gotPlist) != workerOrchardInfoPlist() {
+		return false, nil
+	}
+	target, err := os.Readlink(cliPath)
+	if err != nil || target != executable {
+		return false, nil
+	}
+	_, _, err = r.Run(ctx, "/usr/bin/codesign", "--verify", "--strict", workerOrchardAppDir(opts))
+	return err == nil, nil
+}
+
+func ensureWorkerOrchardApp(ctx context.Context, r Runner, opts Options, cliPath string, out io.Writer) error {
+	appDir := workerOrchardAppDir(opts)
+	executable := workerOrchardExecutable(opts)
+	if err := os.MkdirAll(filepath.Dir(executable), 0o755); err != nil {
+		return err
+	}
+
+	// Migrate an existing Grove-managed binary into the bundle. This preserves the exact fork
+	// build already running on an installed worker and avoids an unnecessary network/build step.
+	if info, err := os.Lstat(cliPath); err == nil && info.Mode().IsRegular() {
+		if err := os.Rename(cliPath, executable); err != nil {
+			return fmt.Errorf("move existing Orchard binary into app bundle: %w", err)
+		}
+		// Restore the CLI path before later fallible work. If plist writing or signing fails,
+		// operators and the old LaunchAgent can still reach the migrated binary.
+		if err := os.Symlink(executable, cliPath); err != nil {
+			return fmt.Errorf("link Orchard CLI to migrated worker app: %w", err)
+		}
+	} else if _, err := os.Stat(executable); os.IsNotExist(err) {
+		if err := ensureOrchardBinary(ctx, r, opts, executable, out); err != nil {
+			return err
+		}
+	}
+
+	if err := os.WriteFile(workerOrchardInfoPlistPath(opts), []byte(workerOrchardInfoPlist()), 0o644); err != nil {
+		return fmt.Errorf("write Orchard worker app Info.plist: %w", err)
+	}
+	if _, _, err := r.Run(ctx, "/usr/bin/codesign", "--force", "--deep", "--sign", "-",
+		"--identifier", orchardWorkerBundleID, "--timestamp=none", appDir); err != nil {
+		return fmt.Errorf("sign Orchard worker app: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(cliPath), 0o755); err != nil {
+		return err
+	}
+	if target, err := os.Readlink(cliPath); err == nil {
+		if target == executable {
+			return nil
+		}
+		if err := os.Remove(cliPath); err != nil {
+			return fmt.Errorf("replace stale Orchard symlink: %w", err)
+		}
+	} else if _, err := os.Lstat(cliPath); err == nil {
+		return fmt.Errorf("refusing to replace non-symlink Orchard path %s", cliPath)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Symlink(executable, cliPath); err != nil {
+		return fmt.Errorf("link Orchard CLI to worker app: %w", err)
+	}
+	return nil
 }
 
 // ensureOrchardBinary tries a released asset first, falling back to a from-source build in a
@@ -247,10 +363,9 @@ func ensureOrchardBinary(ctx context.Context, r Runner, opts Options, dest strin
 	return nil
 }
 
-// workerPrivilegedSteps are steps a human (or Claude running as root) must run explicitly: they
-// require sudo or touch system-wide power/network settings. Apply only executes for real when the
-// plan is run with --yes as root; otherwise RunPlan prints the exact command and moves on.
-func workerPrivilegedSteps(r Runner, opts Options, plistPath string) []Step {
+// workerFinalizationSteps prevent sleep (a privileged, opt-in host setting) and load the current
+// user's worker agent (an ordinary-user operation performed during installation).
+func workerFinalizationSteps(r Runner, opts Options, plistPath, workerOrchard string) []Step {
 	uid := fmt.Sprint(os.Getuid())
 	label := "gui/" + uid + "/com.grove.orchard-worker"
 	return []Step{
@@ -271,39 +386,16 @@ func workerPrivilegedSteps(r Runner, opts Options, plistPath string) []Step {
 			},
 		},
 		{
-			Name:       "local-network-permission",
-			Privileged: true,
-			Description: "macOS 15+ blocks the worker's local-network access until granted. Run:\n" +
-				`        sudo defaults write com.apple.network.local-network AllowedEthernetLocalNetworkAddresses -array "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16"` + "\n" +
-				`        sudo defaults write com.apple.network.local-network AllowedWiFiLocalNetworkAddresses -array "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16"` + "\n" +
-				"        then reboot. (Orchard alternative: run the worker as root with --user <you>, see its README.)",
-			Check: func(ctx context.Context) (bool, error) {
-				stdout, _, err := r.Run(ctx, "defaults", "read", "com.apple.network.local-network", "AllowedEthernetLocalNetworkAddresses")
-				if err != nil {
-					return false, nil // not set yet; not a hard failure
-				}
-				return stdout != "", nil
-			},
-			Apply: func(ctx context.Context) error {
-				for _, key := range []string{"AllowedEthernetLocalNetworkAddresses", "AllowedWiFiLocalNetworkAddresses"} {
-					_, _, err := r.Run(ctx, "sudo", "defaults", "write", "com.apple.network.local-network", key,
-						"-array", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
-					if err != nil {
-						return err
-					}
-				}
-				return nil
-			},
-		},
-		{
 			Name:        "launchagent-load",
-			Privileged:  true,
-			Description: fmt.Sprintf("launchctl bootstrap gui/%s %s   # load the worker agent for this session", uid, plistPath),
+			Description: fmt.Sprintf("Reload %s in gui/%s so macOS associates the worker with %s and can present its one-time Local Network consent alert.", plistPath, uid, orchardWorkerBundleID),
 			Check: func(ctx context.Context) (bool, error) {
-				_, _, err := r.Run(ctx, "launchctl", "print", label)
-				return err == nil, nil
+				stdout, _, err := r.Run(ctx, "launchctl", "print", label)
+				return err == nil && strings.Contains(stdout, workerOrchard), nil
 			},
 			Apply: func(ctx context.Context) error {
+				// bootout returns non-zero when the job is not loaded; bootstrap is still the right
+				// next action in that case, so this is deliberately best-effort.
+				_, _, _ = r.Run(ctx, "launchctl", "bootout", label)
 				_, _, err := r.Run(ctx, "launchctl", "bootstrap", "gui/"+uid, plistPath)
 				return err
 			},
