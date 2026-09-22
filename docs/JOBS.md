@@ -126,6 +126,60 @@ has no allocation yet` the moment the job was still `pending`, which is the comm
 first second or two after submission (and much longer on a macOS pool waiting on a Tart VM to
 boot) — every `--follow` invocation would race the scheduler and usually lose.
 
+## Private repositories
+
+A `build`/`agent` job clones `repo@ref` with whatever credentials the allocation has, which by
+default is none: **public repositories only**. Cloning a private one requires an operator to arm a
+GitHub credential on the control plane first. It is off on a fresh install, there is no
+config.yaml key or environment variable that turns it on, and nothing is armed by simply having a
+token on the machine.
+
+```
+# arm it (the token comes from $GH_TOKEN, or pipe it in with --token-stdin — never argv)
+grove github enable --repo gm2211/grove --ttl 4h
+grove github status
+grove github disable          # wipes the stored token
+```
+
+Same thing from the UI (Settings → "Private repository sourcing") or the API:
+
+```
+GET    /api/v1/github/sourcing   → {enabled, hosts, repos, tokenFingerprint, expiresAt, …}
+PUT    /api/v1/github/sourcing   ← {token, repos?, hosts?, ttl?}
+DELETE /api/v1/github/sourcing
+```
+
+All three need the **operator** credential, reads included — the status names the repositories the
+control plane is currently willing to clone privately.
+
+While it is armed, `internal/dispatch`'s `Submit` asks the store about each build/agent job's
+`repo` and, when it is in scope, adds `GH_TOKEN` to that dispatch's `env_json`, which `run.sh`
+feeds to `gh auth setup-git` before the clone. What is in scope:
+
+- **hosts** — `github.com` unless you passed `--host` (for GitHub Enterprise).
+- **repos** — any repo on those hosts unless you passed `--repo`; `owner/*` covers one owner.
+- **`https://` URLs only.** A token does nothing for `git@github.com:owner/repo.git`, so an SSH
+  remote is never given one. Use the HTTPS clone URL for private repos.
+- **the caller's own token wins.** A job that already sets `GH_TOKEN` or `GIT_TOKEN` in its `env`
+  keeps its value; the armed credential only fills a gap.
+
+Where the token does and doesn't go:
+
+- It goes into the Nomad **dispatch meta** (`env_json`) for that one job, and into the control
+  plane's own `github.json` (mode 0600, beside `devices.json`).
+- It is never written to the job history, never part of `GET /jobs/{id}` (the job carries only
+  `repoCredentialUsed: true`), and never returned by the sourcing API, which reports a SHA-256
+  `tokenFingerprint` instead.
+- **Caveat:** anyone who can read the Nomad job spec (`nomad job inspect <dispatched id>`) or the
+  allocation's environment on the worker can read the token while that job exists — the same is
+  already true of any `env` value a job is dispatched with. Scope the token narrowly (a
+  fine-grained token limited to the repos you named), give it a `--ttl`, and disable it when the
+  run is done.
+
+`--ttl` is the reason this is "on demand" rather than a switch you forget: the credential
+auto-disarms and is wiped from disk the first time anything touches the store after it lapses.
+With no TTL it stays armed until `grove github disable`.
+
 ## What runs inside the allocation
 
 1. Nomad places the allocation on a node whose `meta.pool` (set in the image's `grove-meta.hcl`,

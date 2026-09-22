@@ -97,3 +97,28 @@ export interface HealthResponse {
   version?: string;
   [key: string]: unknown;
 }
+
+/**
+ * Whether the control plane currently holds a credential for cloning PRIVATE repositories, and
+ * what it is scoped to. Off by default, armed only by an operator, and the token itself is never
+ * returned by the API — `tokenFingerprint` is a short SHA-256 prefix so you can tell which
+ * credential is loaded.
+ */
+export interface GitHubSourcingStatus {
+  enabled: boolean;
+  hosts?: string[];
+  repos?: string[];
+  tokenFingerprint?: string;
+  enabledAt?: string;
+  enabledBy?: string;
+  expiresAt?: string;
+  lastUsedAt?: string;
+}
+
+export interface EnableGitHubSourcingRequest {
+  token: string;
+  hosts?: string[];
+  repos?: string[];
+  /** Duration string ("4h", "30m"). Omitted means "armed until explicitly disabled". */
+  ttl?: string;
+}

@@ -52,8 +52,11 @@ func requiredScope(r *http.Request) string {
 	if path == "/whoami" {
 		return ScopeRead
 	}
+	// /github/ is operator-only for reads too: its status names the repositories and the window
+	// the control plane is currently willing to clone privately.
 	if strings.HasPrefix(path, "/access/") || strings.HasPrefix(path, "/join/approve/") ||
-		strings.HasPrefix(path, "/vms/") || strings.HasPrefix(path, "/workers/") {
+		strings.HasPrefix(path, "/vms/") || strings.HasPrefix(path, "/workers/") ||
+		strings.HasPrefix(path, "/github/") {
 		return ScopeOperator
 	}
 	if r.Method == http.MethodPost && path == "/jobs" ||
@@ -120,7 +123,7 @@ func (s *Server) withCORS(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

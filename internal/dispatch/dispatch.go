@@ -98,6 +98,11 @@ type Job struct {
 	// rather than a genuine script failure.
 	FailureReason *string    `json:"failureReason,omitempty"`
 	Placement     *Placement `json:"placement,omitempty"`
+	// RepoCredentialUsed records that this job's clone was given the control plane's armed
+	// private-repo credential (see internal/gitauth and Options.RepoAuth). The credential itself
+	// is never stored on the Job or returned by the API — this is only the audit bit saying one
+	// was in play.
+	RepoCredentialUsed bool `json:"repoCredentialUsed,omitempty"`
 	// PendingReason explains why a StatusPending job hasn't been placed yet, derived from Nomad's
 	// blocked-evaluation metrics (constraint filtered / dimension exhausted / class filtered / no
 	// nodes available — see nomad.Client.JobEvaluations). Empty when the job isn't pending, or
@@ -127,6 +132,16 @@ type LogLine struct {
 	Stream string    // "stdout" | "stderr"
 	Line   string    // one line, no trailing newline
 	Time   time.Time // when this line was read from Nomad — best-effort, not the guest's own timestamp
+}
+
+// RepoAuth resolves the credential a job's `git clone` should use, if the control plane has one
+// armed for that repository. It is the seam internal/gitauth's Store satisfies; a nil RepoAuth
+// (the default) means grove never supplies clone credentials and only public repositories can be
+// sourced.
+type RepoAuth interface {
+	// TokenFor returns the token to export as GH_TOKEN for repoURL, and ok=false when private-repo
+	// sourcing is off or repoURL is out of the armed credential's scope.
+	TokenFor(repoURL string) (token string, ok bool)
 }
 
 // Service is the seam used by the HTTP server, the CLI and the MCP server.

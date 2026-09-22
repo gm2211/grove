@@ -69,6 +69,35 @@ credential:
    image (see docs/IMAGES.md "Size expectations") — the first real signal is the next VM the fleet
    reconciler creates (`grove vm ls`'s STATUS column) or the worker's Orchard log.
 
+## Letting jobs clone private repos (and turning it back off)
+
+Grove has no GitHub credential until you give it one, so a job against a private repository fails
+at `git clone` with `Repository not found`. Arm one only for as long as you need it:
+
+```bash
+# on any machine with the operator credential
+export GH_TOKEN=github_pat_…                       # or: grove github enable --token-stdin < token.txt
+grove github enable --repo gm2211/grove --ttl 4h   # --repo/--ttl are optional but recommended
+grove github status
+grove github disable                               # wipes the token from the control plane
+```
+
+Notes worth knowing before you arm it:
+
+- It applies **fleet-wide and immediately** — every build/agent job submitted while it's on, by
+  any device that can dispatch, gets the credential for a repo in scope. Narrow it with `--repo
+  owner/name` (repeatable, `owner/*` allowed) rather than arming a broad token.
+- `--ttl` auto-disarms it and wipes the stored token; without one it stays armed until you run
+  `grove github disable`. Prefer a TTL — that is what makes this on-demand rather than permanent.
+- Use the **`https://`** clone URL for private repos. An SSH remote (`git@github.com:…`) never
+  receives the token and will still fail.
+- The same controls are in the web UI under **Settings -> Private repository sourcing** (operator
+  credential only), and `grove github status` shows the fingerprint, scope, expiry and last use.
+- Rotating: run `grove github enable` again with the new token; it replaces the armed one.
+
+The full contract — how the token reaches the clone, what is and isn't stored, and who can read it
+while a job runs — is in [docs/JOBS.md](JOBS.md#private-repositories).
+
 ## Log locations
 
 | Component | macOS (launchd) | Linux (systemd --user) |

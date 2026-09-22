@@ -1,8 +1,10 @@
 // Realistic in-memory fake fleet + jobs for `npm run dev:mock` (VITE_MOCK=1). Standalone UI dev
 // with no grove server running.
 import type {
+  EnableGitHubSourcingRequest,
   FleetEntry,
   FleetResponse,
+  GitHubSourcingStatus,
   Job,
   JobKind,
   JobRequest,
@@ -274,4 +276,31 @@ export function mockLogStream(
     i += 1;
   }, 700);
   return () => clearInterval(interval);
+}
+
+// Private-repo sourcing starts off, exactly as a real control plane does.
+export const githubSourcing: GitHubSourcingStatus = { enabled: false };
+
+export function enableGitHubSourcing(req: EnableGitHubSourcingRequest): GitHubSourcingStatus {
+  const now = new Date();
+  githubSourcing.enabled = true;
+  githubSourcing.hosts = req.hosts?.length ? req.hosts : ["github.com"];
+  githubSourcing.repos = req.repos ?? [];
+  githubSourcing.tokenFingerprint = "mockf1n6erpr";
+  githubSourcing.enabledAt = now.toISOString();
+  githubSourcing.enabledBy = "mock-operator";
+  githubSourcing.expiresAt = req.ttl ? new Date(now.getTime() + 4 * 3600_000).toISOString() : undefined;
+  return structuredClone(githubSourcing);
+}
+
+export function disableGitHubSourcing(): GitHubSourcingStatus {
+  githubSourcing.enabled = false;
+  githubSourcing.hosts = undefined;
+  githubSourcing.repos = undefined;
+  githubSourcing.tokenFingerprint = undefined;
+  githubSourcing.enabledAt = undefined;
+  githubSourcing.enabledBy = undefined;
+  githubSourcing.expiresAt = undefined;
+  githubSourcing.lastUsedAt = undefined;
+  return structuredClone(githubSourcing);
 }

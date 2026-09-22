@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gm2211/grove/internal/dispatch"
+	"github.com/gm2211/grove/internal/gitauth"
 	"github.com/gm2211/grove/internal/server"
 )
 
@@ -145,6 +146,35 @@ func (c *Client) Devices(ctx context.Context) ([]server.DeviceCredential, error)
 // RevokeDevice disables one enrolled device credential.
 func (c *Client) RevokeDevice(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodDelete, "/access/devices/"+url.PathEscape(id), nil, nil)
+}
+
+// GitHubSourcing reports whether the control plane currently has a credential armed for cloning
+// private repositories, and what it is scoped to. The token itself is never returned.
+func (c *Client) GitHubSourcing(ctx context.Context) (*gitauth.Status, error) {
+	var out gitauth.Status
+	if err := c.doJSON(ctx, http.MethodGet, "/github/sourcing", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// EnableGitHubSourcing arms req.Token for private-repo clones, replacing whatever was armed
+// before. Operator credential only.
+func (c *Client) EnableGitHubSourcing(ctx context.Context, req gitauth.EnableRequest) (*gitauth.Status, error) {
+	var out gitauth.Status
+	if err := c.doJSON(ctx, http.MethodPut, "/github/sourcing", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DisableGitHubSourcing disarms private-repo sourcing and wipes the stored token.
+func (c *Client) DisableGitHubSourcing(ctx context.Context) (*gitauth.Status, error) {
+	var out gitauth.Status
+	if err := c.doJSON(ctx, http.MethodDelete, "/github/sourcing", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // SubmitJob dispatches req and returns the new job's id.

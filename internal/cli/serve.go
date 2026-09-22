@@ -18,6 +18,7 @@ import (
 	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/fleet"
+	"github.com/gm2211/grove/internal/gitauth"
 	"github.com/gm2211/grove/internal/orchard"
 	"github.com/gm2211/grove/internal/server"
 	"github.com/gm2211/grove/internal/wire"
@@ -86,7 +87,16 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 		slog.Warn("serve: no pools found in fleet spec; no parameterized jobs registered", "fleet", cfg.Fleet)
 	}
 
-	ds, err := dispatch.New(nc, dispatch.Options{ArtifactsBase: cfg.Artifacts.Bucket, Artifacts: ac, Pools: pools})
+	// The private-repo credential store is shared by value-of-pointer between dispatch (which
+	// reads it on every submit) and the HTTP API (which arms and disarms it), so `grove github
+	// enable` takes effect on the very next job with no restart. It starts disarmed: a fresh
+	// control plane clones public repositories only.
+	gitAuthStore, err := gitauth.NewStore(filepath.Join(filepath.Dir(cfgPath), "github.json"))
+	if err != nil {
+		return fmt.Errorf("private-repo credential store: %w", err)
+	}
+
+	ds, err := dispatch.New(nc, dispatch.Options{ArtifactsBase: cfg.Artifacts.Bucket, Artifacts: ac, Pools: pools, RepoAuth: gitAuthStore})
 	if err != nil {
 		return fmt.Errorf("dispatch service: %w", err)
 	}
@@ -111,6 +121,7 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 	serverOpts := server.Options{
 		Token: cfg.Server.Token, Version: Version,
 		ControllerURL: cfg.Orchard.URL, ServerURL: cfg.Server.URL,
+		GitAuth: gitAuthStore,
 	}
 	accessStore, err := server.NewAccessStore(filepath.Join(filepath.Dir(cfgPath), "devices.json"))
 	if err != nil {

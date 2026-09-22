@@ -35,6 +35,7 @@ operator/UI surface, not part of the orchestrator contract — the executor neve
 | `source.commit` | `ref` | |
 | `script.command` + `script.args` | `script` | shell-quoted and joined into one string (grove's `script` is a single bash command run via `bash -eo pipefail`) |
 | `secretRefs` | `secrets` | names only — grove resolves these server-side from its secret store into env, never sent as values |
+| (nothing — a property of the control plane, not the work unit) | — | cloning a PRIVATE `repo` needs an operator to have armed a credential on the control plane (`grove github enable`); an orchestrator never sends one. See [docs/JOBS.md](JOBS.md#private-repositories) |
 | `constraints` | `pool` | the executor picks the first matching pool label — grove itself doesn't interpret orchestrator-side constraints |
 | `taskId` + `runId` | `idempotencyKey` | convention: `<orchestrator>:<taskId>:<runId>` — see below |
 | whatever the orchestrator wants round-tripped (issue id, repo, task id) | `meta` | opaque, round-tripped verbatim onto `Job.meta` — not consumed by grove's job templates, just carried |

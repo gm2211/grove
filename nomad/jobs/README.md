@@ -63,6 +63,8 @@ Every rendered job:
   1. Expands `NOMAD_META_env_json` (a JSON object) into `export`s via `jq`.
   2. (build/agent only) clones `NOMAD_META_repo` at depth 50 into `./work`, checks out
      `NOMAD_META_ref`, and runs `gh auth setup-git` first when `GH_TOKEN`/`GIT_TOKEN` is present
+     (grove itself puts `GH_TOKEN` in `env_json` only when an operator has armed private-repo
+     sourcing and the repo is in its scope — see docs/JOBS.md "Private repositories")
      (private HTTPS clones).
   3. Runs `script.sh` under `timeout ${NOMAD_META_timeout_seconds:-3600}`.
   4. (build only) uploads `./artifacts/**` to the artifact store with `mc`, prefixed by
