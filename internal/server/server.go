@@ -11,6 +11,7 @@ import (
 
 	"github.com/gm2211/grove/internal/artifacts"
 	"github.com/gm2211/grove/internal/dispatch"
+	"github.com/gm2211/grove/internal/gitauth"
 	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
 )
@@ -23,6 +24,11 @@ type Options struct {
 	// AccessStore authenticates revocable per-device credentials. Token remains the
 	// control-plane operator credential and always has full access.
 	AccessStore *AccessStore
+	// GitAuth holds the optional, operator-armed credential for cloning PRIVATE repositories.
+	// Nil (or armed-never) means jobs can only source public repos. The same store is handed to
+	// the dispatch service as its RepoAuth, so arming it here takes effect on the next dispatch
+	// with no restart — see internal/gitauth and internal/cli/serve.go.
+	GitAuth *gitauth.Store
 	// Logger receives structured request/lifecycle logs. Defaults to slog.Default().
 	Logger *slog.Logger
 	// RecyclePollInterval controls how often POST /vms/{name}/recycle polls Nomad while waiting
@@ -117,6 +123,9 @@ func (s *Server) routes() http.Handler {
 	api.HandleFunc("GET /access/devices", s.handleListDevices)
 	api.HandleFunc("DELETE /access/devices/{id}", s.handleRevokeDevice)
 	api.HandleFunc("GET /whoami", s.handleWhoAmI)
+	api.HandleFunc("GET /github/sourcing", s.handleGitHubSourcing)
+	api.HandleFunc("PUT /github/sourcing", s.handleEnableGitHubSourcing)
+	api.HandleFunc("DELETE /github/sourcing", s.handleDisableGitHubSourcing)
 
 	root := http.NewServeMux()
 	root.Handle("/api/v1/", http.StripPrefix("/api/v1", s.withMiddleware(api)))

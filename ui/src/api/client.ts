@@ -1,5 +1,13 @@
 import { getServerUrl, getToken } from "../lib/settings";
-import type { FleetResponse, HealthResponse, Job, JobRequest, Principal } from "./types";
+import type {
+  EnableGitHubSourcingRequest,
+  FleetResponse,
+  GitHubSourcingStatus,
+  HealthResponse,
+  Job,
+  JobRequest,
+  Principal,
+} from "./types";
 import * as mock from "../mock/data";
 
 const isMock = import.meta.env.VITE_MOCK === "1";
@@ -99,6 +107,24 @@ export const api = {
       return delay(undefined);
     }
     await request<void>(`/api/v1/workers/${encodeURIComponent(name)}/resume`, { method: "POST" });
+  },
+
+  async getGitHubSourcing(): Promise<GitHubSourcingStatus> {
+    if (isMock) return delay(structuredClone(mock.githubSourcing));
+    return request<GitHubSourcingStatus>("/api/v1/github/sourcing");
+  },
+
+  async enableGitHubSourcing(req: EnableGitHubSourcingRequest): Promise<GitHubSourcingStatus> {
+    if (isMock) return delay(mock.enableGitHubSourcing(req), 400);
+    return request<GitHubSourcingStatus>("/api/v1/github/sourcing", {
+      method: "PUT",
+      body: JSON.stringify(req),
+    });
+  },
+
+  async disableGitHubSourcing(): Promise<GitHubSourcingStatus> {
+    if (isMock) return delay(mock.disableGitHubSourcing());
+    return request<GitHubSourcingStatus>("/api/v1/github/sourcing", { method: "DELETE" });
   },
 
   async getHealth(): Promise<HealthResponse> {

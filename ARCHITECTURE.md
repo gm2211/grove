@@ -92,6 +92,7 @@ internal/nomad/            Nomad client interface + impl over github.com/hashico
 internal/fleet/            fleet.yaml spec → desired VMs; reconciler loop
 internal/dispatch/         JobRequest → parameterized Nomad job; status; logs
 internal/server/           HTTP API (/api/v1/…) + embedded UI; token auth
+internal/gitauth/          operator-armed credential for cloning private repos (off by default)
 internal/mcp/              MCP server (stdio) exposing dispatch/status/logs/fleet tools
 internal/install/          role bootstrap: brew deps, launchd plists, configs, tailscale checks
 ui/                        Vite + React + TS SPA; built output embedded by internal/server/ui.go
@@ -163,6 +164,11 @@ constrained to `meta.pool`. Kinds:
 
 Secrets never go into images: they arrive as Nomad `template`/env at dispatch time.
 
+Cloning a **private** repository needs a credential, and grove has none until an operator arms one
+through the control plane (`grove github enable`, `PUT /api/v1/github/sourcing`). While it is
+armed, the server injects it into the dispatch of each build/agent job whose repo URL is in scope;
+disarming it, or letting its TTL lapse, wipes it. See `docs/JOBS.md` → "Private repositories".
+
 ## grove HTTP API (v1)
 
 All under `/api/v1`, `Authorization: Bearer <token>`, bind to the tailnet address.
@@ -178,6 +184,7 @@ All under `/api/v1`, `Authorization: Bearer <token>`, bind to the tailnet addres
 | GET | `/jobs/{id}/artifacts/{path}` | streams one uploaded artifact from the bucket via the server's own credentials |
 | DELETE | `/jobs/{id}` · POST `/jobs/{id}/cancel` | cancel (same operation, two spellings) |
 | GET | `/healthz` | `{ok, version, orchard, nomad, serverTime}`; orchard/nomad are "up" or "down" |
+| GET · PUT · DELETE | `/github/sourcing` | operator-only: read / arm / disarm the credential jobs use to clone PRIVATE repositories. Off by default, never echoes the token — see `docs/JOBS.md` |
 
 The same operations are exposed as MCP tools (`grove mcp`) so Claude Code / Codex can use the fleet
 directly, and consumed by an agent orchestrator's `grove` executor.

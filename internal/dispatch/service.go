@@ -72,6 +72,15 @@ type Options struct {
 	StorePath string
 	// StatusTTL caps how often Get/List re-query Nomad for a job's allocations. Defaults to 3s.
 	StatusTTL time.Duration
+	// RepoAuth, when non-nil, is consulted at Submit time for a build/agent job's Repo: if the
+	// control plane has a credential armed for it (see internal/gitauth), the token is exported to
+	// the dispatched job as GH_TOKEN so run.sh's `gh auth setup-git` can clone a private
+	// repository. Nil — the default — means no job ever gets clone credentials from grove.
+	//
+	// The token is injected into the dispatch's env_json only. It is deliberately NOT written to
+	// the stored Job.Request.Env, so it never lands in the on-disk job history nor in any API
+	// response; Job.RepoCredentialUsed records that one was used.
+	RepoAuth RepoAuth
 	// Pools, when set, is used only to validate JobRequest.Resources hints against each pool's
 	// configured job CPU/Memory defaults (Submit rejects a hint that exceeds them with a 400). It
 	// is unrelated to EnsureJobs, which takes its own []PoolConfig directly — callers that already
@@ -249,8 +258,11 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	if t := req.Timeout.Duration(); t > 0 {
 		meta["timeout_seconds"] = strconv.FormatFloat(t.Seconds(), 'f', 0, 64)
 	}
-	if len(req.Env) > 0 {
-		envJSON, err := json.Marshal(req.Env)
+	// The armed private-repo credential (if any) is merged into a COPY of req.Env: it goes to the
+	// Nomad dispatch, never onto the record persisted below. See Options.RepoAuth.
+	env, repoCredentialUsed := s.envWithRepoCredential(req)
+	if len(env) > 0 {
+		envJSON, err := json.Marshal(env)
 		if err != nil {
 			return nil, false, fmt.Errorf("dispatch: marshal env: %w", err)
 		}
@@ -277,11 +289,12 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	now := time.Now().UTC()
 	rec := &record{
 		Job: Job{
-			ID:          id,
-			Request:     req,
-			Status:      StatusPending,
-			SubmittedAt: now,
-			Meta:        req.Meta,
+			ID:                 id,
+			Request:            req,
+			Status:             StatusPending,
+			SubmittedAt:        now,
+			Meta:               req.Meta,
+			RepoCredentialUsed: repoCredentialUsed,
 		},
 		NomadJobID: res.DispatchedJobID,
 	}
@@ -290,6 +303,35 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	}
 	job := rec.Job
 	return &job, true, nil
+}
+
+// envWithRepoCredential returns the environment to dispatch with — req.Env plus, when the control
+// plane has a credential armed for this job's repository, GH_TOKEN. The returned map is always a
+// fresh copy, so nothing here mutates the caller's (and the stored record's) req.Env.
+//
+// A caller that set GH_TOKEN or GIT_TOKEN itself keeps its own value: an explicit per-job
+// credential is more specific than the fleet-wide armed one, and silently overriding it would be
+// the surprising behavior. run.sh reads either name (see nomad/jobs/*.nomad.hcl).
+func (s *service) envWithRepoCredential(req JobRequest) (map[string]string, bool) {
+	env := make(map[string]string, len(req.Env)+1)
+	for k, v := range req.Env {
+		env[k] = v
+	}
+	if s.opts.RepoAuth == nil || req.Repo == "" {
+		return env, false
+	}
+	if req.Kind != KindBuild && req.Kind != KindAgent {
+		return env, false
+	}
+	if env["GH_TOKEN"] != "" || env["GIT_TOKEN"] != "" {
+		return env, false
+	}
+	token, ok := s.opts.RepoAuth.TokenFor(req.Repo)
+	if !ok || token == "" {
+		return env, false
+	}
+	env["GH_TOKEN"] = token
+	return env, true
 }
 
 func isTerminal(status Status) bool {

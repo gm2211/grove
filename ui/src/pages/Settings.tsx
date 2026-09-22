@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { getServerUrl, getToken, setServerUrl, setToken } from "../lib/settings";
 import { api } from "../api/client";
 import { Button } from "../components/Button";
+import { PrivateRepoSourcing } from "../components/PrivateRepoSourcing";
 
 export function SettingsPage() {
 	const localBridge = window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost";
@@ -13,6 +14,8 @@ export function SettingsPage() {
   const test = useMutation({
     mutationFn: api.getHealth,
   });
+  const { data: principal } = useQuery({ queryKey: ["whoami"], queryFn: api.whoAmI, staleTime: 60_000, retry: false });
+  const operator = principal?.scopes.includes("operator") ?? false;
 
   function save() {
     setServerUrl(url);
@@ -74,6 +77,7 @@ export function SettingsPage() {
           Stored in this browser's localStorage only. Every request sends it as{" "}
           <code className="mono">Authorization: Bearer &lt;token&gt;</code>.
 		</p>}
+        <PrivateRepoSourcing operator={operator} />
       </div>
     </div>
   );

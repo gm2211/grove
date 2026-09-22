@@ -15,6 +15,7 @@ internal/nomad/               Nomad client interface + impl (github.com/hashicor
 internal/fleet/               fleet.yaml spec → desired VMs; reconciler
 internal/dispatch/            JobRequest → parameterized Nomad job; status; logs
 internal/server/              HTTP API (/api/v1/…) + embedded UI; token auth
+internal/gitauth/             operator-armed private-repo credential (see below)
 internal/mcp/                 MCP server (stdio)
 internal/install/             role bootstrap planner + doctor checks (see below)
 ui/                            Vite + React + TS SPA
@@ -71,6 +72,24 @@ Adding a step: add it to the relevant `build<Role>Steps` function in `worker.go`
 `controlplane.go` / `client.go`, keep `Check`/`Apply` going through `Runner`, and add a
 planner test in the matching `_test.go` asserting the FakeRunner sees (or doesn't see) the
 commands you expect.
+
+## `internal/gitauth` — private-repo sourcing
+
+Grove clones public repositories with no credentials at all. Private ones need a token, and the
+only way one exists is an operator arming it at runtime through the control plane (`grove github
+enable`, `PUT /api/v1/github/sourcing`) — there is no config.yaml key and no environment variable
+for it, deliberately.
+
+- `gitauth.Store` persists the armed credential (mode 0600, atomic rename, next to `devices.json`)
+  and answers `TokenFor(repoURL)`. It is the `dispatch.Options.RepoAuth` implementation.
+- `grove serve` builds ONE store and hands the same pointer to both the dispatch service and the
+  HTTP server, so arming/disarming takes effect on the next dispatch with no restart.
+- The token goes into the Nomad dispatch's `env_json` as `GH_TOKEN` and nowhere else: never onto
+  `Job.Request.Env`, never into the on-disk job history, never back out of the API (`Status`
+  carries only a fingerprint). Keep it that way — `internal/dispatch/repoauth_test.go` and
+  `internal/server/handlers_github_test.go` assert it.
+- Only `https://` repo URLs match: a token does nothing for an SSH remote, so handing one over
+  there would be a leak with no upside.
 
 ## Building / testing
 
