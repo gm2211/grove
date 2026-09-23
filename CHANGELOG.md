@@ -7,6 +7,9 @@ All notable changes to grove are documented here.
 - Fleet page lists the Macs waiting to join, with an **Approve** button beside each, so enrolling
   a Mac no longer means reading its code off one machine's terminal and retyping it on another
   (`GET /api/v1/join/pending`, operator scope).
+- `GET /join` serves an unauthenticated page with the install commands, this control plane's
+  address, and a QR code of its own link (`GET /join/qr.svg`) — so a Mac that has never met grove
+  can be told what to run without anyone typing a tailnet address.
 
 ## v0.1.2
 

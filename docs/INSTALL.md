@@ -40,6 +40,10 @@ install gm2211/grove/grove` — the grove repo doubles as its own Homebrew tap (
 grove setup
 ```
 
+- If you are standing at the new Mac and do not remember any of this, open
+  `http://<control-plane>:6130/join` in its browser: the page carries these same commands and a
+  QR code of its own address, so you can send the link to another device by scanning it. It needs
+  no credential — a Mac that has not joined yet does not have one.
 - `grove setup` discovers Grove peers through Tailscale and creates a ten-minute enrollment
   request. It prints an approval code and waits.
 - Approve it. The Fleet page in `grove ui` lists every Mac that is waiting, with its name,

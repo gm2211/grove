@@ -24,6 +24,8 @@ next to your other work on the bare host.
 
 ```bash
 # on each Mac you want in the fleet
+# (or just open http://<control-plane>:6130/join on it — same commands, and a QR to
+#  send the link to another device)
 brew tap gm2211/grove https://github.com/gm2211/grove
 brew install grove
 grove setup
