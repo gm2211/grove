@@ -119,6 +119,7 @@ func (s *Server) routes() http.Handler {
 	api.HandleFunc("GET /healthz", s.handleHealthz)
 	api.HandleFunc("POST /join/requests", s.handleCreateJoinRequest)
 	api.HandleFunc("GET /join/requests/{id}", s.handlePollJoinRequest)
+	api.HandleFunc("GET /join/pending", s.handleListPendingJoins)
 	api.HandleFunc("POST /join/approve/{code}", s.handleApproveJoinRequest)
 	api.HandleFunc("GET /access/devices", s.handleListDevices)
 	api.HandleFunc("DELETE /access/devices/{id}", s.handleRevokeDevice)

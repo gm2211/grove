@@ -3,6 +3,7 @@ import { api } from "../api/client";
 import { HostCard } from "../components/HostCard";
 import { StatTile } from "../components/StatTile";
 import { SlotBar } from "../components/SlotBar";
+import { PendingJoins } from "../components/PendingJoins";
 
 export function FleetPage() {
   const { data, isLoading, error } = useQuery({
@@ -30,6 +31,10 @@ export function FleetPage() {
   return (
     <div className="flex flex-col gap-4">
       <h1 className="text-lg font-semibold">Fleet</h1>
+
+      {/* Above the totals, because a Mac waiting on a human is the only thing on this page that
+          stops by itself if nobody looks. It renders nothing when nobody is waiting. */}
+      <PendingJoins />
 
       {/* Summary strip: the fleet totals that used to sit in the header corner live here now,
           alongside the fleet-wide slot meter, so they're never shown in two places at once. */}

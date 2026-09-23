@@ -122,3 +122,15 @@ export interface EnableGitHubSourcingRequest {
   /** Duration string ("4h", "30m"). Omitted means "armed until explicitly disabled". */
   ttl?: string;
 }
+
+/**
+ * A Mac that has run `grove setup`, reached this control plane over the tailnet, and is waiting
+ * to be let in. Approving one is what mints its worker bootstrap and device credentials, so the
+ * list is operator-scoped: the code alone is enough to approve.
+ */
+export interface PendingJoin {
+  code: string;
+  name: string;
+  tailnetIp: string;
+  expiresAt: string;
+}

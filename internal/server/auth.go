@@ -55,6 +55,7 @@ func requiredScope(r *http.Request) string {
 	// /github/ is operator-only for reads too: its status names the repositories and the window
 	// the control plane is currently willing to clone privately.
 	if strings.HasPrefix(path, "/access/") || strings.HasPrefix(path, "/join/approve/") ||
+		path == "/join/pending" ||
 		strings.HasPrefix(path, "/vms/") || strings.HasPrefix(path, "/workers/") ||
 		strings.HasPrefix(path, "/github/") {
 		return ScopeOperator

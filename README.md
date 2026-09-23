@@ -38,7 +38,7 @@ brew upgrade grove
 grove install --role control-plane
 
 # grove setup discovers this control plane over Tailscale. It prints a short approval code.
-# Approve that code from the control-plane machine:
+# Approve it from the Fleet page in `grove ui` (it lists whoever is waiting), or here:
 grove join approve <CODE>
 
 # from anywhere on the tailnet: create the worker VMs from fleet.yaml
