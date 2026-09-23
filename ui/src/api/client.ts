@@ -6,6 +6,7 @@ import type {
   HealthResponse,
   Job,
   JobRequest,
+  PendingJoin,
   Principal,
 } from "./types";
 import * as mock from "../mock/data";
@@ -125,6 +126,19 @@ export const api = {
   async disableGitHubSourcing(): Promise<GitHubSourcingStatus> {
     if (isMock) return delay(mock.disableGitHubSourcing());
     return request<GitHubSourcingStatus>("/api/v1/github/sourcing", { method: "DELETE" });
+  },
+
+  async getPendingJoins(): Promise<PendingJoin[]> {
+    if (isMock) return delay(structuredClone(mock.pendingJoins));
+    return request<PendingJoin[]>("/api/v1/join/pending");
+  },
+
+  async approveJoin(code: string): Promise<void> {
+    if (isMock) {
+      mock.approveJoin(code);
+      return delay(undefined, 400);
+    }
+    await request<void>(`/api/v1/join/approve/${encodeURIComponent(code)}`, { method: "POST" });
   },
 
   async getHealth(): Promise<HealthResponse> {

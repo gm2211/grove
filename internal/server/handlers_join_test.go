@@ -97,3 +97,89 @@ func TestJoinApprovalRequiresOperatorToken(t *testing.T) {
 		t.Fatalf("status=%d want 401", rec.Code)
 	}
 }
+
+func TestPendingJoinsAreOperatorOnlyAndClearOnApproval(t *testing.T) {
+	access, err := NewAccessStore(t.TempDir() + "/devices.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newTestServer(&fakeOrchard{}, nil, nil, Options{Token: "operator-secret", AccessStore: access, ControllerURL: "http://100.64.0.1:6120", ServerURL: "http://100.64.0.1:6130", IssueWorkerBootstrap: func(context.Context, string) (string, error) { return "worker-bootstrap", nil }})
+
+	create := func(name, ip string) string {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/join/requests", bytes.NewBufferString(`{"name":"`+name+`","tailnetIp":"`+ip+`"}`))
+		req.RemoteAddr = ip + ":40000"
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create %s status=%d body=%s", name, rec.Code, rec.Body.String())
+		}
+		var start struct{ Code string }
+		if err := json.Unmarshal(rec.Body.Bytes(), &start); err != nil {
+			t.Fatal(err)
+		}
+		return start.Code
+	}
+	pending := func(token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/join/pending", nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		return rec
+	}
+
+	firstCode := create("mac-one", "192.0.2.1")
+	create("mac-two", "192.0.2.2")
+
+	// Unauthenticated callers must not be able to read a code: holding one is equivalent to
+	// being able to approve the Mac that owns it.
+	if got := pending(""); got.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous pending status=%d, want 401", got.Code)
+	}
+	// Nor may a worker's own device credential, which carries build/agent scope but not operator.
+	deviceToken, _, err := access.Issue("mac-one", []string{ScopeRead, ScopeBuild, ScopeAgent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pending(deviceToken); got.Code != http.StatusForbidden {
+		t.Fatalf("device pending status=%d, want 403", got.Code)
+	}
+
+	listed := func() []pendingJoin {
+		rec := pending("operator-secret")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("operator pending status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var out []pendingJoin
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	joins := listed()
+	if len(joins) != 2 {
+		t.Fatalf("pending=%d, want 2: %+v", len(joins), joins)
+	}
+	for _, jr := range joins {
+		if jr.Name == "" || jr.TailnetIP == "" || jr.Code == "" || jr.ExpiresAt.IsZero() {
+			t.Fatalf("pending entry is missing what an operator needs to recognise it: %+v", jr)
+		}
+	}
+
+	approve := httptest.NewRequest(http.MethodPost, "/api/v1/join/approve/"+firstCode, nil)
+	approve.Header.Set("Authorization", "Bearer operator-secret")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, approve)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("approve status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// An approved request is no longer pending — it is now waiting on the Mac itself to pick up
+	// its credential, which is not something an operator can act on.
+	joins = listed()
+	if len(joins) != 1 || joins[0].Name != "mac-two" {
+		t.Fatalf("after approval pending=%+v, want only mac-two", joins)
+	}
+}

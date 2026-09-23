@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -229,4 +230,44 @@ func (s *Server) handleApproveJoinRequest(w http.ResponseWriter, r *http.Request
 	jr.ExpiresAt = time.Now().Add(30 * time.Minute)
 	s.joins.mu.Unlock()
 	s.writeJSON(w, http.StatusOK, map[string]string{"status": "approved", "name": jr.Name})
+}
+
+// pendingJoin is what an operator needs to recognise a Mac that is waiting to be let in, and the
+// code that lets them do it. It deliberately never carries the request's ID or secret: those two
+// are the worker's own proof of identity when it polls, and an operator never needs them.
+type pendingJoin struct {
+	Code      string    `json:"code"`
+	Name      string    `json:"name"`
+	TailnetIP string    `json:"tailnetIp"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+// handleListPendingJoins lists the Macs currently waiting for approval, oldest first, so an
+// operator can approve one from the UI instead of reading the code off the joining Mac's terminal
+// and retyping it into `grove join approve`. Operator scope only (see requiredScope): holding a
+// code is equivalent to being able to approve it.
+func (s *Server) handleListPendingJoins(w http.ResponseWriter, _ *http.Request) {
+	now := time.Now()
+	out := []pendingJoin{}
+	s.joins.mu.Lock()
+	for id, jr := range s.joins.byID {
+		if now.After(jr.ExpiresAt) {
+			delete(s.joins.byID, id)
+			continue
+		}
+		if jr.Approved || jr.Approving {
+			continue
+		}
+		out = append(out, pendingJoin{Code: jr.Code, Name: jr.Name, TailnetIP: jr.TailnetIP, ExpiresAt: jr.ExpiresAt.UTC()})
+	}
+	s.joins.mu.Unlock()
+	// Map iteration is random, so sort: every pending request has the same TTL, which makes
+	// expiry order arrival order, and a list that reorders itself under a 5s poll is unusable.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ExpiresAt.Equal(out[j].ExpiresAt) {
+			return out[i].Code < out[j].Code
+		}
+		return out[i].ExpiresAt.Before(out[j].ExpiresAt)
+	})
+	s.writeJSON(w, http.StatusOK, out)
 }

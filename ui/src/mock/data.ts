@@ -9,6 +9,7 @@ import type {
   JobKind,
   JobRequest,
   JobStatus,
+  PendingJoin,
 } from "../api/types";
 
 let idCounter = 1000;
@@ -303,4 +304,26 @@ export function disableGitHubSourcing(): GitHubSourcingStatus {
   githubSourcing.expiresAt = undefined;
   githubSourcing.lastUsedAt = undefined;
   return structuredClone(githubSourcing);
+}
+
+// Two Macs waiting to be let in, so `npm run dev:mock` shows the approval panel with something
+// in it. Approving one drops it from the list, the same way the real control plane does.
+export const pendingJoins: PendingJoin[] = [
+  {
+    code: "K7QP2M4A",
+    name: "mac-mini-3",
+    tailnetIp: "100.64.0.31",
+    expiresAt: new Date(Date.now() + 9 * 60_000).toISOString(),
+  },
+  {
+    code: "B3XR9T1C",
+    name: "gio-macbook",
+    tailnetIp: "100.64.0.42",
+    expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+  },
+];
+
+export function approveJoin(code: string): void {
+  const at = pendingJoins.findIndex((join) => join.code === code);
+  if (at >= 0) pendingJoins.splice(at, 1);
 }

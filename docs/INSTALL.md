@@ -42,7 +42,10 @@ grove setup
 
 - `grove setup` discovers Grove peers through Tailscale and creates a ten-minute enrollment
   request. It prints an approval code and waits.
-- On the control-plane machine, run `grove join approve <CODE>`. Grove then creates two unique,
+- Approve it. The Fleet page in `grove ui` lists every Mac that is waiting, with its name,
+  tailnet address and code, and an **Approve** button beside each one — so you can do this from
+  whatever device already has the UI open. On a terminal instead, run `grove join approve <CODE>`
+  on the control-plane machine. Either way, Grove then creates two unique,
   revocable credentials: an Orchard credential limited to worker registration/connect rights,
   plus a Grove `read + build + agent` credential for this device. Raw shell jobs and named
   secrets remain operator-only.

@@ -2,6 +2,12 @@
 
 All notable changes to grove are documented here.
 
+## Unreleased
+
+- Fleet page lists the Macs waiting to join, with an **Approve** button beside each, so enrolling
+  a Mac no longer means reading its code off one machine's terminal and retyping it on another
+  (`GET /api/v1/join/pending`, operator scope).
+
 ## v0.1.2
 
 - README overhaul: screenshots, real command examples, Mermaid flow diagrams (`docs/FLOW.md`).
