@@ -130,6 +130,10 @@ func (s *Server) routes() http.Handler {
 
 	root := http.NewServeMux()
 	root.Handle("/api/v1/", http.StripPrefix("/api/v1", s.withMiddleware(api)))
+	// Before the SPA catch-all: these two are the one part of grove a machine with no
+	// credential and no prior knowledge has to be able to read.
+	root.HandleFunc("GET "+joinPagePath, s.handleJoinPage)
+	root.HandleFunc("GET "+joinPagePath+"/qr.svg", s.handleJoinQR)
 	root.Handle("/", UIHandler())
 	return root
 }
