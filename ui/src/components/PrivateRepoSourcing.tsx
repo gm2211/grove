@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../api/client";
 import { Button } from "./Button";
 import { ConfirmButton } from "./ConfirmButton";
+import { Card } from "./Page";
+import { LockIcon } from "./Icons";
 
 /**
  * Operator control for cloning PRIVATE repositories.
@@ -65,31 +67,38 @@ export function PrivateRepoSourcing({ operator }: { operator: boolean }) {
     <Section>
       <div className="flex items-center gap-2 text-xs">
         <span
-          className="rounded px-1.5 py-0.5 font-medium"
+          className="rounded-full px-2 py-0.5 text-[11px] font-semibold"
           style={{
-            background: on ? "var(--status-success)" : "var(--bg-inset)",
-            color: on ? "#fff" : "var(--fg-muted)",
+            background: on ? "color-mix(in srgb, var(--status-success) 14%, transparent)" : "var(--bg-inset)",
+            color: on ? "var(--status-success)" : "var(--fg-muted)",
           }}
         >
           {on ? "ON" : "OFF"}
         </span>
         <span style={{ color: "var(--fg-muted)" }}>
-          {on
-            ? "jobs may clone the private repos below"
-            : "jobs can clone public repositories only"}
+          {on ? "jobs may clone the private repos below" : "jobs can clone public repositories only"}
         </span>
       </div>
 
       {on && status.data && (
-        <dl className="grid grid-cols-[6rem_1fr] gap-x-3 gap-y-1 text-xs" style={{ color: "var(--fg-muted)" }}>
+        <dl
+          className="m-0 grid grid-cols-[6rem_1fr] gap-x-3 gap-y-1.5 rounded-lg px-3 py-2.5 text-xs"
+          style={{ color: "var(--fg-muted)", background: "var(--bg-inset)" }}
+        >
           <dt>hosts</dt>
-          <dd className="mono">{(status.data.hosts ?? []).join(", ")}</dd>
+          <dd className="mono m-0" style={{ color: "var(--fg)" }}>
+            {(status.data.hosts ?? []).join(", ")}
+          </dd>
           <dt>repos</dt>
-          <dd className="mono">{status.data.repos?.length ? status.data.repos.join(", ") : "any repo"}</dd>
+          <dd className="mono m-0" style={{ color: "var(--fg)" }}>
+            {status.data.repos?.length ? status.data.repos.join(", ") : "any repo"}
+          </dd>
           <dt>token</dt>
-          <dd className="mono">sha256:{status.data.tokenFingerprint}</dd>
+          <dd className="mono m-0" style={{ color: "var(--fg)" }}>
+            sha256:{status.data.tokenFingerprint}
+          </dd>
           <dt>expires</dt>
-          <dd className="mono">
+          <dd className="mono m-0" style={{ color: "var(--fg)" }}>
             {status.data.expiresAt
               ? new Date(status.data.expiresAt).toLocaleString()
               : "never — turn it off when you're done"}
@@ -97,54 +106,44 @@ export function PrivateRepoSourcing({ operator }: { operator: boolean }) {
           {status.data.lastUsedAt && (
             <>
               <dt>last used</dt>
-              <dd className="mono">{new Date(status.data.lastUsedAt).toLocaleString()}</dd>
+              <dd className="mono m-0" style={{ color: "var(--fg)" }}>
+                {new Date(status.data.lastUsedAt).toLocaleString()}
+              </dd>
             </>
           )}
         </dl>
       )}
 
-      <label className="flex flex-col gap-1 text-xs">
-        <span style={{ color: "var(--fg-faint)" }}>GitHub token (write-only — never shown again)</span>
+      <label className="flex flex-col gap-1.5">
+        <span className="field-label">GitHub token (write-only — never shown again)</span>
         <input
           type="password"
           autoComplete="off"
-          className="mono rounded border px-2 py-1.5 text-sm"
-          style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
+          className="control mono"
           value={token}
           onChange={(e) => setToken(e.target.value)}
           placeholder={on ? "paste a token to replace the armed one" : "ghp_… / github_pat_…"}
         />
       </label>
 
-      <div className="flex gap-2">
-        <label className="flex flex-1 flex-col gap-1 text-xs">
-          <span style={{ color: "var(--fg-faint)" }}>repos (comma-separated, blank = any)</span>
+      <div className="flex flex-wrap gap-3">
+        <label className="flex flex-1 flex-col gap-1.5">
+          <span className="field-label">Repos (comma-separated, blank = any)</span>
           <input
-            className="mono rounded border px-2 py-1.5 text-sm"
-            style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
+            className="control mono"
             value={repos}
             onChange={(e) => setRepos(e.target.value)}
             placeholder="gm2211/grove, acme/*"
           />
         </label>
-        <label className="flex w-28 flex-col gap-1 text-xs">
-          <span style={{ color: "var(--fg-faint)" }}>auto-off after</span>
-          <input
-            className="mono rounded border px-2 py-1.5 text-sm"
-            style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
-            value={ttl}
-            onChange={(e) => setTtl(e.target.value)}
-            placeholder="4h"
-          />
+        <label className="flex w-32 flex-col gap-1.5">
+          <span className="field-label">Auto-off after</span>
+          <input className="control mono" value={ttl} onChange={(e) => setTtl(e.target.value)} placeholder="4h" />
         </label>
       </div>
 
       <div className="flex items-center gap-2">
-        <Button
-          variant="primary"
-          disabled={!token.trim() || enable.isPending}
-          onClick={() => enable.mutate()}
-        >
+        <Button variant="primary" disabled={!token.trim() || enable.isPending} onClick={() => enable.mutate()}>
           {enable.isPending ? "Enabling…" : on ? "Replace credential" : "Enable"}
         </Button>
         {on && (
@@ -163,8 +162,8 @@ export function PrivateRepoSourcing({ operator }: { operator: boolean }) {
       )}
       <p className="text-xs" style={{ color: "var(--fg-faint)" }}>
         While this is on, every build/agent job whose repo URL matches gets the credential for its{" "}
-        <code className="mono">git clone</code>. Use an <code className="mono">https://</code> repo
-        URL — an SSH remote is never given the token.
+        <code className="mono">git clone</code>. Use an <code className="mono">https://</code> repo URL — an SSH remote
+        is never given the token.
       </p>
     </Section>
   );
@@ -172,12 +171,17 @@ export function PrivateRepoSourcing({ operator }: { operator: boolean }) {
 
 function Section({ children }: { children: ReactNode }) {
   return (
-    <div
-      className="flex flex-col gap-3 rounded border p-3"
-      style={{ borderColor: "var(--border)" }}
+    <Card
+      title={
+        <span className="flex items-center gap-2">
+          <LockIcon size={14} />
+          Private repository sourcing
+        </span>
+      }
+      description="Lend jobs a GitHub token for a limited time so they can clone private repos."
+      bodyClassName="flex flex-col gap-4 p-4"
     >
-      <h2 className="text-sm font-semibold">Private repository sourcing</h2>
       {children}
-    </div>
+    </Card>
   );
 }

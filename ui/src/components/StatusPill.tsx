@@ -1,7 +1,7 @@
 import type { JobStatus } from "../api/types";
 
-// Reused everywhere a status needs a color: the host-level StatusPill (the only pill on the
-// Fleet page) and the plain colored-dot + lowercase-text rows for VMs/nodes (see StateDot below).
+// Reused everywhere a status needs a color: pills for job and host status, and the plain
+// colored-dot + lowercase-text rows for VMs/nodes (see StateDot below).
 export const STATUS_COLORS: Record<string, string> = {
   pending: "var(--status-pending)",
   running: "var(--status-running)",
@@ -16,18 +16,21 @@ export const STATUS_COLORS: Record<string, string> = {
   down: "var(--status-failed)",
 };
 
+const LIVE_STATUSES = new Set(["running", "initializing"]);
+
 export function statusColor(status: string): string {
   return STATUS_COLORS[status] ?? "var(--fg-faint)";
 }
 
+/** Soft, tinted pill: the status color at low opacity behind full-strength text. */
 export function StatusPill({ status }: { status: JobStatus | string }) {
   const color = statusColor(status);
   return (
     <span
-      className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide"
-      style={{ borderColor: color, color }}
+      className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-[11.5px] font-medium capitalize"
+      style={{ color, background: `color-mix(in srgb, ${color} 12%, transparent)` }}
     >
-      <span className="h-1.5 w-1.5 rounded-full" style={{ background: color }} />
+      <PulseDot color={color} live={LIVE_STATUSES.has(status)} />
       {status}
     </span>
   );
@@ -42,13 +45,27 @@ export function Dot({ ok }: { ok: boolean }) {
   );
 }
 
-/** Row-level state: a colored dot + lowercase text. Pills are reserved for host status. */
+/** Row-level state: a colored dot + lowercase text. Pills are reserved for host and job status. */
 export function StateDot({ status }: { status: JobStatus | string }) {
   const color = statusColor(status);
   return (
     <span className="inline-flex items-center gap-1.5 whitespace-nowrap lowercase" style={{ color }}>
-      <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: color }} />
+      <PulseDot color={color} live={LIVE_STATUSES.has(status)} />
       {status}
+    </span>
+  );
+}
+
+function PulseDot({ color, live }: { color: string; live: boolean }) {
+  return (
+    <span className="relative inline-flex h-1.5 w-1.5 shrink-0">
+      {live && (
+        <span
+          className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60"
+          style={{ background: color }}
+        />
+      )}
+      <span className="relative inline-flex h-1.5 w-1.5 rounded-full" style={{ background: color }} />
     </span>
   );
 }

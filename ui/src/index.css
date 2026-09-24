@@ -1,44 +1,74 @@
 @import "tailwindcss";
 
+/*
+ * Design tokens. Every component reads colors from these variables (never raw hex), so light and
+ * dark only ever differ here. Surfaces step up in three levels: --bg (page) < --bg-elevated
+ * (cards, sidebar) < --bg-inset (wells, table headers, inputs' hover).
+ */
 :root {
-  --bg: #f5f6f4;
-  --bg-elevated: #ffffff;
-  --bg-inset: #eceee9;
-  --border: #d8dcd3;
-  --fg: #1b1f18;
-  --fg-muted: #5b6357;
-  --fg-faint: #8a9182;
-  --accent: #2f6f4f;
-  --accent-fg: #ffffff;
+  color-scheme: light;
 
-  --status-pending: #8a8f98;
+  --bg: #f6f7f5;
+  --bg-elevated: #ffffff;
+  --bg-inset: #f0f2ee;
+  --bg-hover: #eef1ec;
+  --border: #e2e5df;
+  --border-strong: #cfd4ca;
+  --fg: #171a15;
+  --fg-muted: #555d51;
+  --fg-faint: #858c7e;
+  --accent: #2f7a53;
+  --accent-hover: #28694a;
+  --accent-fg: #ffffff;
+  --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
+
+  --log-bg: #11140f;
+  --log-fg: #d9ded3;
+  --log-faint: #5f6759;
+
+  --status-pending: #7c828c;
   --status-running: #2563eb;
   --status-success: #1f8a4c;
   --status-failed: #d92d20;
-  --status-lost: #d97706;
+  --status-lost: #c96a04;
+
+  --shadow-sm: 0 1px 2px rgb(16 24 16 / 0.04), 0 1px 1px rgb(16 24 16 / 0.03);
+  --shadow-md: 0 4px 16px -4px rgb(16 24 16 / 0.08), 0 1px 2px rgb(16 24 16 / 0.04);
 
   --font-mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
   --font-sans:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+    Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #141712;
-    --bg-elevated: #1b1f18;
-    --bg-inset: #10130f;
-    --border: #2c322a;
-    --fg: #e8ebe3;
-    --fg-muted: #a3aa9b;
-    --fg-faint: #6b7264;
-    --accent: #4fae7f;
-    --accent-fg: #06120b;
+    color-scheme: dark;
+
+    --bg: #0f110e;
+    --bg-elevated: #161915;
+    --bg-inset: #1c201a;
+    --bg-hover: #1f241d;
+    --border: #262b24;
+    --border-strong: #353b32;
+    --fg: #e9ece5;
+    --fg-muted: #a4ab9c;
+    --fg-faint: #6d7466;
+    --accent: #4fb584;
+    --accent-hover: #62c495;
+    --accent-fg: #07130c;
+
+    --log-bg: #0a0c09;
+    --log-fg: #d9ded3;
+    --log-faint: #4d5448;
 
     --status-pending: #9aa0a8;
-    --status-running: #5b9dff;
-    --status-success: #3fbf76;
-    --status-failed: #ff6b60;
+    --status-running: #6aa6ff;
+    --status-success: #45c47c;
+    --status-failed: #ff6f64;
     --status-lost: #f0a94e;
+
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3);
+    --shadow-md: 0 6px 20px -6px rgb(0 0 0 / 0.5);
   }
 }
 
@@ -57,22 +87,34 @@ body {
   background: var(--bg);
   color: var(--fg);
   font-family: var(--font-sans);
-  font-size: 13px;
-  line-height: 1.4;
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "cv11", "ss01";
 }
 
 code,
 pre,
 .mono {
   font-family: var(--font-mono);
+  font-feature-settings: normal;
 }
 
 a {
   color: inherit;
 }
 
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
 ::selection {
-  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 ::-webkit-scrollbar {
@@ -81,10 +123,71 @@ a {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: var(--border-strong);
   border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* Form controls share one look so every page's inputs line up. */
+@layer components {
+  .control {
+    width: 100%;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-elevated);
+    color: var(--fg);
+    border-radius: 0.5rem;
+    padding: 0.45rem 0.7rem;
+    font-size: 13px;
+    line-height: 1.35;
+    transition:
+      border-color 120ms,
+      box-shadow 120ms;
+  }
+
+  .control::placeholder {
+    color: var(--fg-faint);
+  }
+
+  .control:hover {
+    border-color: color-mix(in srgb, var(--fg-faint) 60%, var(--border-strong));
+  }
+
+  .control:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+
+  select.control {
+    appearance: none;
+    padding-right: 2rem;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23858c7e' stroke-width='1.6'%3E%3Cpath d='M4.5 6.5 8 10l3.5-3.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.55rem center;
+    background-size: 14px;
+  }
+
+  .field-label {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--fg-muted);
+  }
+
+  .field-hint {
+    font-size: 12px;
+    color: var(--fg-faint);
+  }
+
+  .eyebrow {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+  }
 }

@@ -5,16 +5,9 @@ import { StatusPill, StateDot } from "./StatusPill";
 import { Button } from "./Button";
 import { ConfirmButton } from "./ConfirmButton";
 import { SlotBar } from "./SlotBar";
+import { Tag } from "./Page";
+import { NodeIcon, ServerIcon, TrashIcon } from "./Icons";
 import { formatMinutes } from "../lib/format";
-
-function RecycleIcon() {
-  return (
-    <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.4">
-      <path d="M2.5 5h11M6 5V3.5h4V5M3.5 5l.6 8.2a1 1 0 0 0 1 .8h5.8a1 1 0 0 0 1-.8L12.5 5" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M6.5 7.5v4M9.5 7.5v4" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 export function HostCard({
   host,
@@ -28,8 +21,8 @@ export function HostCard({
   nodes: FleetEntry[];
 }) {
   const qc = useQueryClient();
-	const { data: principal } = useQuery({ queryKey: ["whoami"], queryFn: api.whoAmI, staleTime: 60_000 });
-	const operator = principal?.scopes.includes("operator") ?? false;
+  const { data: principal } = useQuery({ queryKey: ["whoami"], queryFn: api.whoAmI, staleTime: 60_000 });
+  const operator = principal?.scopes.includes("operator") ?? false;
   const invalidate = () => qc.invalidateQueries({ queryKey: ["fleet"] });
 
   const pause = useMutation({
@@ -47,120 +40,155 @@ export function HostCard({
 
   const slots = worker?.capacity?.vmSlots ?? 0;
   const used = worker?.running ?? vms.length;
+  const offline = worker?.status === "offline";
 
   return (
     <div
-      className="mb-3 flex flex-col gap-3 rounded-lg border p-3 break-inside-avoid xl:mb-4"
-      style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
+      className="mb-4 flex break-inside-avoid flex-col overflow-hidden rounded-xl border"
+      style={{ borderColor: "var(--border)", background: "var(--bg-elevated)", boxShadow: "var(--shadow-sm)" }}
     >
-      {/* Line 1: host name + the one status pill on this page + the demoted pause/resume action. */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="mono truncate text-base font-semibold">{host}</span>
-          {worker && <StatusPill status={worker.status} />}
+      {/* Header: host identity + the one status pill on this card + the demoted pause/resume action. */}
+      <div className="flex items-start justify-between gap-3 px-4 pt-4">
+        <div className="flex min-w-0 items-center gap-3">
+          <span
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
+            style={{
+              background: offline ? "var(--bg-inset)" : "var(--accent-soft)",
+              color: offline ? "var(--fg-faint)" : "var(--accent)",
+            }}
+          >
+            <ServerIcon size={18} />
+          </span>
+          <div className="flex min-w-0 flex-col gap-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="mono truncate text-[14px] font-semibold">{host}</span>
+              {worker && <StatusPill status={worker.status} />}
+            </div>
+            <div className="flex items-center gap-1.5 text-xs" style={{ color: "var(--fg-faint)" }}>
+              {worker?.arch && <span className="mono">{worker.arch}</span>}
+              {worker?.arch && <span>·</span>}
+              <span>
+                {vms.length} {vms.length === 1 ? "VM" : "VMs"}
+              </span>
+              <span>·</span>
+              <span>
+                {nodes.length} {nodes.length === 1 ? "node" : "nodes"}
+              </span>
+            </div>
+          </div>
         </div>
-		{operator && worker &&
+        {operator &&
+          worker &&
           (worker.cordoned ? (
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={resume.isPending}
-              onClick={() => resume.mutate()}
-            >
-              {resume.isPending ? "resuming…" : "Resume worker"}
+            <Button variant="primary" size="sm" disabled={resume.isPending} onClick={() => resume.mutate()}>
+              {resume.isPending ? "Resuming…" : "Resume"}
             </Button>
           ) : (
             <Button size="sm" disabled={pause.isPending} onClick={() => pause.mutate()}>
-              {pause.isPending ? "pausing…" : "Pause worker"}
+              {pause.isPending ? "Pausing…" : "Pause"}
             </Button>
           ))}
       </div>
 
-      {/* Line 2: arch + segmented slot utilization bar. */}
-      <div className="flex items-center gap-2 text-xs" style={{ color: "var(--fg-muted)" }}>
-        {worker?.arch && <span className="shrink-0">{worker.arch}</span>}
+      {/* Segmented slot utilization. */}
+      <div className="flex items-center gap-3 px-4 pt-3 pb-4 text-xs" style={{ color: "var(--fg-muted)" }}>
         <SlotBar used={used} total={slots} />
-        <span className="shrink-0 whitespace-nowrap">
-          {used}/{slots} slots
+        <span className="tabular shrink-0 whitespace-nowrap">
+          <span className="font-semibold" style={{ color: "var(--fg)" }}>
+            {used}
+          </span>
+          /{slots} slots
         </span>
       </div>
 
-      <div className="flex flex-col gap-1.5">
-        <div className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--fg-faint)" }}>
-          VMs
-        </div>
-        {vms.length === 0 && (
-          <div className="text-xs" style={{ color: "var(--fg-faint)" }}>
-            no VMs
+      <div className="border-t" style={{ borderColor: "var(--border)" }}>
+        {vms.length === 0 ? (
+          <div className="px-4 py-3 text-xs" style={{ color: "var(--fg-faint)" }}>
+            No VMs running on this host.
           </div>
-        )}
-        {vms.length > 0 && (
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-xs">
-              <tbody>
-                {vms.map((vm) => {
-                  const ttl = (vm.raw?.ttlRemainingMinutes as number | undefined) ?? undefined;
-                  return (
-                    <tr key={vm.name} className="group border-t first:border-t-0" style={{ borderColor: "var(--border)" }}>
-                      <td className="w-full py-1.5 pr-2 align-middle">
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span
-                            className="shrink-0 rounded px-1.5 py-0.5 font-medium"
-                            style={{ background: "var(--bg-inset)", border: "1px solid var(--border)" }}
-                          >
-                            {vm.pool ?? "?"}
-                          </span>
-                          <span className="mono">{vm.name}</span>
-                        </div>
-                      </td>
-                      <td className="py-1.5 px-2 whitespace-nowrap align-middle" style={{ color: "var(--fg-muted)" }}>
-                        TTL {formatMinutes(ttl)}
-                      </td>
-                      <td className="py-1.5 px-2 whitespace-nowrap align-middle" style={{ color: "var(--fg-muted)" }}>
-                        {vm.running} running
-                      </td>
-                      <td className="py-1.5 px-2 whitespace-nowrap align-middle">
-                        <StateDot status={vm.status} />
-                      </td>
-										{operator && <td className="py-1.5 pl-2 align-middle">
+        ) : (
+          <table className="w-full border-collapse text-xs">
+            <thead>
+              <tr style={{ background: "var(--bg-inset)" }}>
+                <th className="eyebrow px-4 py-1.5 text-left font-semibold">VM</th>
+                <th className="eyebrow hidden px-2 py-1.5 text-left font-semibold sm:table-cell">TTL</th>
+                <th className="eyebrow hidden px-2 py-1.5 text-left font-semibold sm:table-cell">Jobs</th>
+                <th className="eyebrow px-2 py-1.5 text-left font-semibold">State</th>
+                {operator && <th className="w-10" />}
+              </tr>
+            </thead>
+            <tbody>
+              {vms.map((vm) => {
+                const ttl = (vm.raw?.ttlRemainingMinutes as number | undefined) ?? undefined;
+                return (
+                  <tr
+                    key={vm.name}
+                    className="group border-t transition-colors hover:bg-[var(--bg-hover)]"
+                    style={{ borderColor: "var(--border)" }}
+                  >
+                    <td className="w-full py-2 pr-2 pl-4 align-middle">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <Tag>{vm.pool ?? "?"}</Tag>
+                        <span className="mono truncate">{vm.name}</span>
+                      </div>
+                    </td>
+                    <td
+                      className="tabular hidden px-2 py-2 whitespace-nowrap align-middle sm:table-cell"
+                      style={{ color: "var(--fg-muted)" }}
+                    >
+                      {formatMinutes(ttl)}
+                    </td>
+                    <td
+                      className="tabular hidden px-2 py-2 whitespace-nowrap align-middle sm:table-cell"
+                      style={{ color: "var(--fg-muted)" }}
+                    >
+                      {vm.running}
+                    </td>
+                    <td className="px-2 py-2 whitespace-nowrap align-middle">
+                      <StateDot status={vm.status} />
+                    </td>
+                    {operator && (
+                      <td className="py-1 pr-3 pl-1 text-right align-middle">
                         <ConfirmButton
-                          label={<RecycleIcon />}
-                          confirmLabel="sure?"
+                          label={<TrashIcon size={14} />}
+                          confirmLabel="Recycle?"
                           size="icon"
+                          variant="ghost"
                           title="Recycle VM"
                           className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
                           onConfirm={() => recycle.mutate(vm.name)}
                           disabled={recycle.isPending}
                         />
-										</td>}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         )}
       </div>
 
       {nodes.length > 0 && (
-        <div className="flex flex-col gap-1.5">
-          <div className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--fg-faint)" }}>
-            Nomad nodes
-          </div>
-          <table className="w-full border-collapse text-xs">
-            <tbody>
-              {nodes.map((n) => (
-                <tr key={n.name} className="border-t first:border-t-0" style={{ borderColor: "var(--border)" }}>
-                  <td className="w-full py-1.5 pr-2 align-middle">
-                    <span className="mono">{n.name}</span>
-                  </td>
-                  <td className="py-1.5 pl-2 whitespace-nowrap align-middle">
-                    <StateDot status={n.status} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div
+          className="flex flex-wrap items-center gap-1.5 border-t px-4 py-3"
+          style={{ borderColor: "var(--border)", background: "var(--bg)" }}
+        >
+          <span className="mr-1 flex items-center gap-1.5 text-xs" style={{ color: "var(--fg-faint)" }}>
+            <NodeIcon size={13} />
+            Nomad
+          </span>
+          {nodes.map((n) => (
+            <span
+              key={n.name}
+              className="inline-flex max-w-full items-center gap-2 rounded-md border px-2 py-0.5 text-[11.5px]"
+              style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
+              title={`${n.name}: ${n.status}`}
+            >
+              <span className="mono truncate">{n.name}</span>
+              <StateDot status={n.status} />
+            </span>
+          ))}
         </div>
       )}
     </div>

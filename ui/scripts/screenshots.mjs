@@ -86,8 +86,8 @@ async function main() {
     // 3. Dispatch form (filled in, before submitting)
     await page.goto(`${baseURL}/dispatch`, { waitUntil: "networkidle" });
     await page.waitForTimeout(300);
-    await page.selectOption("select >> nth=0", "build"); // kind
-    const poolSelect = page.locator("select >> nth=1");
+    await page.click('[data-kind="build"]'); // kind
+    const poolSelect = page.locator("select >> nth=0");
     const poolOptions = await poolSelect.locator("option").allTextContents();
     if (poolOptions.length > 0 && poolOptions[0] !== "no pools observed") {
       await poolSelect.selectOption(poolOptions[0]);
