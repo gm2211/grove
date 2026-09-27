@@ -14,14 +14,14 @@ packer {
 
 variable "base_image" {
   type        = string
-  default     = "ghcr.io/cirruslabs/macos-sequoia-xcode:latest"
-  description = "OCI reference of the Tart base image to clone from. Must already have Xcode installed (see cirruslabs/macos-image-templates)."
+  default     = "ghcr.io/cirruslabs/macos-sequoia-base:latest"
+  description = "OCI reference of the Tart base image to clone from. Use xcode.pkrvars.hcl for the larger Xcode image."
 }
 
 variable "vm_name" {
   type        = string
   default     = "grove-macos-worker"
-  description = "Local Tart VM name produced by this build. Pushed to ghcr.io/gm2211/grove-macos-worker:<tag> as a separate `tart push` step — see docs/IMAGES.md."
+  description = "Local Tart VM name produced by this build. The explicit Xcode profile uses a separate name."
 }
 
 variable "cpu_count" {
@@ -35,8 +35,16 @@ variable "memory_gb" {
 }
 
 variable "disk_size_gb" {
-  type    = number
-  default = 150
+  type = number
+  # CirrusLabs' official macos-sequoia-base template uses 50 GiB. Keep 10 GiB of
+  # headroom for Grove's Nomad/Tailscale and general worker tools.
+  default = 60
+}
+
+variable "xcode_profile" {
+  type        = bool
+  default     = false
+  description = "Enable Xcode license and first-launch setup. Set only through xcode.pkrvars.hcl."
 }
 
 variable "ssh_username" {
@@ -80,6 +88,11 @@ build {
     ]
   }
 
+  provisioner "shell" {
+    environment_vars = ["GROVE_XCODE_PROFILE=${var.xcode_profile}"]
+    script           = "scripts/verify-xcode-profile.sh"
+  }
+
   # --- Homebrew toolchain ---------------------------------------------------------------------
   provisioner "shell" {
     inline = [
@@ -88,6 +101,7 @@ build {
       # there (only in login shells via /etc/paths.d). Put it first explicitly, and install
       # Homebrew if the base image somehow lacks it.
       "export PATH=/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+      "xcrun --find clang >/dev/null 2>&1 || { echo 'FATAL: Apple Command Line Tools are missing. Homebrew needs them if any formula must build from source; install with xcode-select --install, then retry.'; exit 1; }",
       "if ! command -v brew >/dev/null 2>&1; then echo '==> Homebrew missing, installing'; NONINTERACTIVE=1 /bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"; fi",
       "export HOMEBREW_NO_AUTO_UPDATE=1",
       "export HOMEBREW_NO_INSTALL_CLEANUP=1",
@@ -168,13 +182,18 @@ build {
   }
 
   # --- pre-warm Xcode so the first job doesn't pay the license/first-launch tax ----------------
-  provisioner "shell" {
-    inline = [
-      "set -eu",
-      "echo '==> accepting Xcode license and running first-launch package installs'",
-      "sudo xcodebuild -license accept",
-      "sudo xcodebuild -runFirstLaunch",
-    ]
+  dynamic "provisioner" {
+    for_each = var.xcode_profile ? [true] : []
+    labels   = ["shell"]
+    content {
+      inline = [
+        "set -eu",
+        "command -v xcodebuild >/dev/null 2>&1 || { echo 'FATAL: Xcode profile selected but xcodebuild is unavailable in the configured base image.'; exit 1; }",
+        "echo '==> accepting Xcode license and running first-launch package installs'",
+        "sudo xcodebuild -license accept",
+        "sudo xcodebuild -runFirstLaunch",
+      ]
+    }
   }
 
   # --- cleanup ---------------------------------------------------------------------------------

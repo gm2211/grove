@@ -1,14 +1,18 @@
 # grove — VM images
 
-grove's fleet is built from two Tart VM images (`images/macos-worker`, `images/linux-worker`) plus
+grove's fleet is built from two Tart VM templates (`images/macos-worker`, `images/linux-worker`) plus
 one plain container image (`images/runner`, the default image for linux jobs). This doc covers
 building and pushing them, why they're shaped the way they are, and the contract between an image
 and the fleet reconciler / startup-shutdown scripts (`internal/fleet`).
 
-> **Disk size:** the Xcode base image (`ghcr.io/cirruslabs/macos-sequoia-xcode`) is already 140 GB, and Tart
-> can only grow a disk, never shrink it — so `disk_size_gb` must be ≥ the base image's size (default 150).
-> A build that fails with `new disk size of N GB should be larger than the current disk size of 140 GB`
-> means the variable is too small.
+> **macOS profiles:** the default worker uses macOS with Command Line Tools and no full Xcode.
+> Apple app builds must explicitly select `xcode.pkrvars.hcl`. The profiles use separate local VM
+> names so building one does not replace the other.
+>
+> **Disk capacity is not disk usage.** The lean profile allows 60 GiB; Xcode allows 150 GiB.
+> Upstream base images currently declare 50 GiB and 140 GiB respectively. Tart cannot shrink a
+> base disk: custom bases may require a larger `disk_size_gb`. Lowering this number does not
+> remove installed files or shrink an existing VM.
 
 ## Prerequisites (build machine — must be a Mac)
 
@@ -25,8 +29,18 @@ $ cd images/macos-worker && packer init . && packer validate . && packer build .
 $ cd images/linux-worker && packer init . && packer validate . && packer build .
 ```
 
-`make images` (repo root) runs both builds in sequence and prints the resulting local Tart VM
-names.
+`make images` builds lean macOS and Linux workers. `make images-macos` builds only lean macOS.
+`make images-validate` checks both macOS profiles without pulling or starting a VM.
+
+For iOS/macOS app builds that need full Xcode and Apple SDKs:
+
+```console
+$ make images-macos-xcode
+# Equivalent, from images/macos-worker:
+$ packer build -var-file=xcode.pkrvars.hcl .
+```
+
+This creates `grove-macos-xcode-worker`; the default creates `grove-macos-worker`.
 
 ## Pushing to GHCR
 
@@ -35,13 +49,18 @@ separate, manual `tart` command — the plugin has no push post-processor:
 
 ```console
 $ tart login ghcr.io -u <github-username>          # prompts for a PAT with write:packages scope
-$ tart push grove-macos-worker ghcr.io/gm2211/grove-macos-worker:latest
+$ tart push grove-macos-worker ghcr.io/gm2211/grove-macos-worker:base-<git-sha>
+$ tart push grove-macos-xcode-worker ghcr.io/gm2211/grove-macos-worker:xcode-<git-sha>
 $ tart push grove-linux-worker ghcr.io/gm2211/grove-linux-worker:latest
 ```
 
-Tag with a date or git SHA too (`:2026-09-06`) before overwriting `:latest` if you want the fleet
-reconciler's old VMs to keep running their current image until you deliberately bump
-`fleet.yaml`'s `pools[].image`.
+Replace `<git-sha>` with the source revision. Push only the profiles you built and validated.
+Use immutable profile tags in `fleet.yaml`'s `pools[].image`, then deliberately recycle workers.
+Existing macOS fleets using `:latest` may depend on Xcode: do not overwrite that tag with a lean
+image as part of this migration. Select an `xcode-<git-sha>` tag for those fleets; use a
+`base-<git-sha>` tag only where jobs do not require full Xcode. Both profiles retain the `macos`
+pool and Nomad `raw_exec` contract; this change does not add automatic toolchain routing or a
+new pool name. Prefer the existing Linux pool for jobs that do not require macOS.
 
 ### Packages are private by default — workers need access too
 
@@ -73,7 +92,8 @@ doctor` runs on.
 
 | Image | Base | Why |
 |---|---|---|
-| `macos-worker` | `ghcr.io/cirruslabs/macos-sequoia-xcode:latest` | Only Cirrus Labs base with Xcode pre-installed and licensed; building Xcode from scratch on every image build would dwarf everything else in build time. Ships auto-login for `admin` and passwordless sudo already — the packer template only *verifies* both survived, it doesn't set them up (see `macos-worker.pkr.hcl`'s first provisioner). |
+| `macos-worker` (default) | `ghcr.io/cirruslabs/macos-sequoia-base:latest` | macOS, Command Line Tools and Homebrew for general agent/build jobs, without full Xcode. Inherited auto-login and passwordless sudo are verified during provisioning. |
+| `macos-xcode-worker` (explicit profile) | `ghcr.io/cirruslabs/macos-sequoia-xcode:latest` | Full Xcode for Apple app builds. The profile verifies Xcode and runs license/first-launch setup. |
 | `linux-worker` | `ghcr.io/cirruslabs/ubuntu:latest` (arm64) | Cirrus Labs' maintained arm64 Ubuntu Tart image; matches the arm64 host architecture (Apple Silicon), so no CPU emulation for the guest OS itself — only for the *containers it runs* (see Rosetta below). |
 | `runner` | `ubuntu:24.04` | Plain container, not a Tart VM — this is what actually executes `build`/`agent`/`shell` job scripts on the linux pool (see docs/JOBS.md). Built for both `linux/amd64` and `linux/arm64` by CI. |
 
@@ -96,11 +116,18 @@ image cannot upload build artifacts; leave artifact storage unconfigured for thi
 Tart images are full macOS/Linux disk images, not layered containers — expect them to be large
 and slow to transfer:
 
-- `grove-macos-worker`: ~90-110 GiB (Xcode alone is ~40 GiB; `disk_size_gb = 100` in the template
-  leaves headroom for derived data / SPM caches a build job creates). First `tart pull` on a new
-  Mac takes a while even on a fast link; budget for it when adding a worker.
+- `grove-macos-worker`: 60 GiB virtual capacity. Actual host usage depends on the base revision
+  and job data; measure the finished image rather than treating capacity as allocated space.
+- `grove-macos-xcode-worker`: 150 GiB virtual capacity. Full macOS/Xcode images can occupy tens
+  of GiB before any Grove job runs. Keep this profile only on hosts that need Apple builds.
 - `grove-linux-worker`: ~8-15 GiB (Ubuntu + Docker + build-essential + Nomad).
 - `grove-runner` (container, not a Tart VM): a few hundred MiB, layered/cached normally via GHCR.
+
+Use `tart list` and `du -sh ~/.tart/vms/<vm_name>` to inspect local usage. Cached bases and APFS
+clones can share blocks, so directory sizes do not necessarily sum to unique physical usage.
+After builds, `tart prune --entries caches --older-than 7` removes old downloadable cache entries
+without deleting local workers. Live workers still need the fleet's normal drain/recycle flow;
+never delete their disk files directly. Template changes affect newly built images only.
 
 ## The two-file Nomad client config contract
 
@@ -185,7 +212,7 @@ defaults off and what happens on each side of the flag.
 
 ## Rebuilding after a base image update
 
-Cirrus Labs updates `macos-sequoia-xcode` and `ubuntu` periodically (new Xcode point releases,
-security patches). Bump `var.base_image`'s default in the relevant `.pkr.hcl`, rebuild, retag, and
+Cirrus Labs updates `macos-sequoia-base`, `macos-sequoia-xcode`, and `ubuntu` periodically.
+Update the base reference in the relevant template or Xcode variable file, rebuild, retag, and
 push — the fleet reconciler picks up the new image the next time it recreates a VM (on its next
 TTL expiry, or immediately for VMs you recycle with `POST /vms/{name}/recycle`).
