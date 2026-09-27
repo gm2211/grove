@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -126,6 +127,240 @@ func TestBuildStartupScript_MacOSCPUTotalCompute(t *testing.T) {
 	}
 	if !(clientOpen < metaIdx && metaIdx < cpuIdx && cpuIdx < closeIdx) {
 		t.Errorf("cpu_total_compute is not nested inside the client{} block as expected:\n%s", script)
+	}
+}
+
+func TestBuildStartupScript_HostXcodeSetupIsFailClosedAndVerified(t *testing.T) {
+	const expectedBuild = "27A266a"
+	pool := Pool{
+		Name: "macos",
+		HostXcode: &HostXcodeConfig{
+			Path:         "/Applications/Xcode_27.app",
+			BuildVersion: expectedBuild,
+		},
+	}
+	script := BuildStartupScript(pool, "mac1", "macos-mac1-0", "")
+	for _, want := range []string{
+		"launchctl bootout system/com.grove.nomad",
+		"/Volumes/My Shared Files/grove-xcode.app",
+		"ProductBuildVersion",
+		"LSMinimumSystemVersion",
+		"xcode-select --switch",
+		"xcodebuild -license accept",
+		"xcodebuild -runFirstLaunch",
+		"xcodebuild -version",
+		"xcrun --sdk macosx --show-sdk-path",
+		"launchctl bootstrap system /Library/LaunchDaemons/com.grove.nomad.plist",
+		"launchctl kickstart -k system/com.grove.nomad",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("host Xcode startup script missing %q", want)
+		}
+	}
+	if strings.Contains(script, pool.HostXcode.Path) {
+		t.Errorf("host-only Xcode path leaked into the guest startup script")
+	}
+	ordered := []string{
+		"launchctl bootout system/com.grove.nomad",
+		"ProductBuildVersion",
+		"xcode-select --switch",
+		"xcodebuild -license accept",
+		"xcodebuild -runFirstLaunch",
+		"xcodebuild -version",
+		"xcrun --sdk macosx --show-sdk-path",
+		"launchctl bootstrap system /Library/LaunchDaemons/com.grove.nomad.plist",
+		"launchctl kickstart -k system/com.grove.nomad",
+	}
+	previous := -1
+	for _, item := range ordered {
+		at := strings.Index(script, item)
+		if at <= previous {
+			t.Errorf("%q is missing or out of order in host Xcode startup script", item)
+		}
+		previous = at
+	}
+
+	for _, tt := range []struct {
+		name                 string
+		build                string
+		guestOS              string
+		minOS                string
+		sdkExists            bool
+		launchctlPrintStatus string
+		sudoFails            bool
+		expectXcodeCommands  bool
+		wantOK               bool
+	}{
+		{name: "matching image", build: expectedBuild, guestOS: "26.6.2", minOS: "26.6", sdkExists: true, launchctlPrintStatus: "0", wantOK: true},
+		{name: "host updated", build: "27A266b", guestOS: "26.6.2", minOS: "26.6", sdkExists: true, launchctlPrintStatus: "0"},
+		{name: "guest too old", build: expectedBuild, guestOS: "26.5", minOS: "26.6", sdkExists: true, launchctlPrintStatus: "0"},
+		{name: "SDK missing", build: expectedBuild, guestOS: "26.6.2", minOS: "26.6", launchctlPrintStatus: "0", expectXcodeCommands: true},
+		{name: "Nomad inspection failed", build: expectedBuild, guestOS: "26.6.2", minOS: "26.6", launchctlPrintStatus: "5"},
+		{name: "sudo unavailable", build: expectedBuild, guestOS: "26.6.2", minOS: "26.6", launchctlPrintStatus: "0", sudoFails: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeBin := t.TempDir()
+			logPath := filepath.Join(t.TempDir(), "commands.log")
+			shareRoot := filepath.Join(t.TempDir(), "Shared Files")
+			appPath := filepath.Join(shareRoot, "grove-xcode.app")
+			for _, dir := range []string{
+				filepath.Join(appPath, "Contents"),
+				filepath.Join(appPath, "Contents", "Developer", "Platforms", "MacOSX.platform"),
+			} {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, name := range []string{"version.plist", "Info.plist"} {
+				if err := os.WriteFile(filepath.Join(appPath, "Contents", name), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sdkPath := filepath.Join(t.TempDir(), "MacOSX.sdk")
+			if tt.sdkExists {
+				if err := os.Mkdir(sdkPath, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			writeExecutable := func(name, body string) string {
+				t.Helper()
+				path := filepath.Join(fakeBin, name)
+				if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+					t.Fatalf("write fake %s: %v", name, err)
+				}
+				return path
+			}
+			writeExecutable("uname", "#!/bin/sh\nprintf 'Darwin\\n'\n")
+			writeExecutable("id", "#!/bin/sh\nprintf '501\\n'\n")
+			writeExecutable("sudo", `#!/bin/sh
+set -eu
+[ "${1:-}" = "-n" ] && shift
+printf 'sudo %s\n' "$*" >> "$GROVE_TEST_COMMAND_LOG"
+if [ "${GROVE_TEST_SUDO_FAIL:-false}" = true ]; then
+  echo 'fake sudo denied' >&2
+  exit 1
+fi
+exec "$@"
+`)
+			writeExecutable("launchctl", `#!/bin/sh
+set -eu
+printf 'launchctl %s\n' "$*" >> "$GROVE_TEST_COMMAND_LOG"
+case "${1:-}" in
+  print)
+    if [ -f "$GROVE_TEST_NOMAD_BOOTED_OUT" ]; then
+      echo 'Could not find service' >&2
+      exit 113
+    fi
+    status=${GROVE_TEST_LAUNCHCTL_PRINT_STATUS:-0}
+    if [ "$status" -ne 0 ]; then echo 'mock launchctl detail'; fi
+    exit "$status"
+    ;;
+  bootout) touch "$GROVE_TEST_NOMAD_BOOTED_OUT" ;;
+esac
+`)
+			plistBuddy := writeExecutable("PlistBuddy", `#!/bin/sh
+set -eu
+printf 'PlistBuddy %s\n' "$*" >> "$GROVE_TEST_COMMAND_LOG"
+case "$2" in
+  *ProductBuildVersion*) printf '%s\n' "$GROVE_TEST_XCODE_BUILD" ;;
+  *LSMinimumSystemVersion*) printf '%s\n' "$GROVE_TEST_MIN_OS" ;;
+  *) exit 64 ;;
+esac
+`)
+			writeExecutable("sw_vers", "#!/bin/sh\nprintf '%s\\n' \"$GROVE_TEST_GUEST_OS\"\n")
+			writeExecutable("xcode-select", `#!/bin/sh
+set -eu
+printf 'xcode-select %s\n' "$*" >> "$GROVE_TEST_COMMAND_LOG"
+`)
+			writeExecutable("xcodebuild", `#!/bin/sh
+set -eu
+printf 'xcodebuild %s\n' "$*" >> "$GROVE_TEST_COMMAND_LOG"
+if [ "${1:-}" = "-version" ]; then
+  printf 'Xcode 27.0\nBuild version %s\n' "$GROVE_TEST_XCODE_BUILD"
+fi
+`)
+			writeExecutable("xcrun", `#!/bin/sh
+set -eu
+printf 'xcrun %s\n' "$*" >> "$GROVE_TEST_COMMAND_LOG"
+printf '%s\n' "$GROVE_TEST_SDK_PATH"
+`)
+			writeExecutable("sysctl", "#!/bin/sh\nprintf '12\\n'\n")
+			writeExecutable("mkdir", `#!/bin/sh
+set -eu
+printf 'mkdir %s\n' "$*" >> "$GROVE_TEST_COMMAND_LOG"
+`)
+			writeExecutable("tee", `#!/bin/sh
+set -eu
+cat >/dev/null
+printf 'tee %s\n' "$*" >> "$GROVE_TEST_COMMAND_LOG"
+`)
+
+			guestScript := strings.ReplaceAll(script, shQuote(guestHostXcodeMountPath), shQuote(appPath))
+			guestScript = strings.ReplaceAll(guestScript, "/usr/libexec/PlistBuddy", plistBuddy)
+			cmd := exec.Command("/bin/sh", "-c", guestScript)
+			cmd.Env = append(os.Environ(),
+				"PATH="+fakeBin+":"+os.Getenv("PATH"),
+				"GROVE_TEST_COMMAND_LOG="+logPath,
+				"GROVE_TEST_NOMAD_BOOTED_OUT="+filepath.Join(t.TempDir(), "nomad-booted-out"),
+				"GROVE_TEST_LAUNCHCTL_PRINT_STATUS="+tt.launchctlPrintStatus,
+				"GROVE_TEST_SUDO_FAIL="+fmt.Sprint(tt.sudoFails),
+				"GROVE_TEST_XCODE_BUILD="+tt.build,
+				"GROVE_TEST_GUEST_OS="+tt.guestOS,
+				"GROVE_TEST_MIN_OS="+tt.minOS,
+				"GROVE_TEST_SDK_PATH="+sdkPath,
+			)
+			output, runErr := cmd.CombinedOutput()
+			logBytes, readErr := os.ReadFile(logPath)
+			if readErr != nil {
+				t.Fatalf("read fake command log: %v", readErr)
+			}
+			log := string(logBytes)
+			if tt.wantOK {
+				if runErr != nil {
+					t.Fatalf("startup script failed: %v\n%s\n%s", runErr, output, log)
+				}
+				for _, want := range []string{
+					"launchctl bootout system/com.grove.nomad",
+					"xcode-select --switch",
+					"xcodebuild -license accept",
+					"xcodebuild -runFirstLaunch",
+					"xcodebuild -version",
+					"xcrun --sdk macosx --show-sdk-path",
+					"launchctl bootstrap system /Library/LaunchDaemons/com.grove.nomad.plist",
+					"launchctl kickstart -k system/com.grove.nomad",
+				} {
+					if !strings.Contains(log, want) {
+						t.Errorf("successful startup did not run %q; log:\n%s", want, log)
+					}
+				}
+				if strings.Index(log, "xcrun --sdk macosx --show-sdk-path") > strings.Index(log, "launchctl bootstrap") {
+					t.Errorf("Nomad restarted before the SDK check completed:\n%s", log)
+				}
+				return
+			}
+			if runErr == nil {
+				t.Fatalf("startup script succeeded, want failure\n%s\n%s", output, log)
+			}
+			if tt.sudoFails || tt.launchctlPrintStatus != "0" {
+				if strings.Contains(log, "launchctl bootout") || strings.Contains(log, "xcode-select") || strings.Contains(log, "launchctl bootstrap") {
+					t.Fatalf("failed privilege/launchctl inspection advanced into setup:\n%s", log)
+				}
+				return
+			}
+			if !strings.Contains(log, "launchctl bootout system/com.grove.nomad") {
+				t.Fatalf("Nomad was not stopped before the failed Xcode setup:\n%s", log)
+			}
+			if !tt.expectXcodeCommands && (strings.Contains(log, "xcode-select") || strings.Contains(log, "xcodebuild")) {
+				t.Fatalf("failed Xcode setup advanced to Xcode selection or Nomad restart:\n%s", log)
+			}
+			if strings.Contains(log, "launchctl bootstrap") || strings.Contains(log, "launchctl kickstart") {
+				t.Fatalf("failed Xcode setup advanced to Nomad restart:\n%s", log)
+			}
+			if strings.TrimSpace(string(output)) == "" {
+				t.Fatal("failed Xcode setup did not report a reason")
+			}
+		})
 	}
 }
 

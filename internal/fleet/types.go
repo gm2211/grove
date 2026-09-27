@@ -48,6 +48,9 @@ type Pool struct {
 	// RunnerImage selects the fixed outer container used by every Linux Nomad job in this pool.
 	// It is independent of the VM image above and opt-in per-dispatch nested Docker overrides.
 	RunnerImage string `yaml:"runnerImage,omitempty" json:"runnerImage,omitempty"`
+	// HostXcode shares one host-installed Xcode application read-only with guests in this pool.
+	// It is intentionally limited to the macos pool and pinned to the host app's build version.
+	HostXcode *HostXcodeConfig `yaml:"hostXcode,omitempty" json:"hostXcode,omitempty"`
 	// JobCPU/JobMemory are this pool's per-JOB Nomad resource defaults (MHz / MiB) — they size the
 	// `resources` block of every build/agent/shell job dispatched against this pool (see
 	// dispatch.PoolConfig, threaded through by internal/cli/serve.go's poolConfigs). These are
@@ -57,6 +60,13 @@ type Pool struct {
 	// JobCPUOrDefault/JobMemoryOrDefault.
 	JobCPU    uint64 `yaml:"jobCPU,omitempty" json:"jobCPU,omitempty"`
 	JobMemory uint64 `yaml:"jobMemory,omitempty" json:"jobMemory,omitempty"`
+}
+
+// HostXcodeConfig describes an Xcode application that Orchard mounts from the host into a
+// macOS guest at /Volumes/My Shared Files/grove-xcode.app.
+type HostXcodeConfig struct {
+	Path         string `yaml:"path" json:"path"`
+	BuildVersion string `yaml:"buildVersion" json:"buildVersion"`
 }
 
 // Built-in per-job Nomad resource defaults (MHz / MiB) used when a pool doesn't set

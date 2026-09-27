@@ -2,7 +2,7 @@ GO ?= go
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/gm2211/grove/internal/cli.Version=$(VERSION)
 
-.PHONY: build test lint ui clean images images-macos images-macos-xcode images-validate
+.PHONY: build test lint ui clean images images-macos images-macos-xcode images-macos-host-xcode images-validate
 
 build:
 	$(GO) build -ldflags "$(LDFLAGS)" -o bin/grove ./cmd/grove
@@ -26,10 +26,14 @@ images-macos:
 images-macos-xcode:
 	cd images/macos-worker && packer init . && packer validate -var-file=xcode.pkrvars.hcl . && packer build -var-file=xcode.pkrvars.hcl .
 
-# Validate both macOS profiles without downloading or starting a VM.
+# Lean Tahoe guest for sharing a compatible host Xcode application at runtime.
+images-macos-host-xcode:
+	cd images/macos-worker && packer init . && packer validate -var-file=host-xcode.pkrvars.hcl . && packer build -var-file=host-xcode.pkrvars.hcl .
+
+# Validate all macOS profiles without downloading or starting a VM.
 images-validate:
 	packer fmt -check -recursive images/macos-worker
-	cd images/macos-worker && packer init . && packer validate . && packer validate -var-file=xcode.pkrvars.hcl .
+	cd images/macos-worker && packer init . && packer validate . && packer validate -var-file=xcode.pkrvars.hcl . && packer validate -var-file=host-xcode.pkrvars.hcl .
 
 clean:
 	rm -rf bin dist ui/dist internal/server/dist

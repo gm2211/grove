@@ -15,13 +15,13 @@ packer {
 variable "base_image" {
   type        = string
   default     = "ghcr.io/cirruslabs/macos-sequoia-base:latest"
-  description = "OCI reference of the Tart base image to clone from. Use xcode.pkrvars.hcl for the larger Xcode image."
+  description = "OCI reference of the Tart base image to clone from. Use xcode.pkrvars.hcl for bundled Xcode, or host-xcode.pkrvars.hcl for a lean Tahoe guest."
 }
 
 variable "vm_name" {
   type        = string
   default     = "grove-macos-worker"
-  description = "Local Tart VM name produced by this build. The explicit Xcode profile uses a separate name."
+  description = "Local Tart VM name produced by this build. Each explicit profile uses a separate name."
 }
 
 variable "cpu_count" {
@@ -81,9 +81,9 @@ build {
   provisioner "shell" {
     inline = [
       "set -eu",
-      "echo '==> verifying passwordless sudo for admin (inherited from macos-sequoia-base)'",
+      "echo '==> verifying passwordless sudo for admin (inherited from the selected CirrusLabs base)'",
       "sudo -n true || (echo 'FATAL: admin cannot sudo without a password; base image changed?' && exit 1)",
-      "echo '==> verifying auto-login is configured (inherited from macos-sequoia-base)'",
+      "echo '==> verifying auto-login is configured (inherited from the selected CirrusLabs base)'",
       "defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser || (echo 'FATAL: autoLoginUser not set; base image changed?' && exit 1)",
     ]
   }

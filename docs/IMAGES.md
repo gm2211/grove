@@ -6,7 +6,7 @@ building and pushing them, why they're shaped the way they are, and the contract
 and the fleet reconciler / startup-shutdown scripts (`internal/fleet`).
 
 > **macOS profiles:** the default worker uses macOS with Command Line Tools and no full Xcode.
-> Apple app builds must explicitly select `xcode.pkrvars.hcl`. The profiles use separate local VM
+> Apple app builds must explicitly select `xcode.pkrvars.hcl` or configure host Xcode sharing below. The profiles use separate local VM
 > names so building one does not replace the other.
 >
 > **Disk capacity is not disk usage.** The lean profile allows 60 GiB; Xcode allows 150 GiB.
@@ -30,7 +30,7 @@ $ cd images/linux-worker && packer init . && packer validate . && packer build .
 ```
 
 `make images` builds lean macOS and Linux workers. `make images-macos` builds only lean macOS.
-`make images-validate` checks both macOS profiles without pulling or starting a VM.
+`make images-validate` checks all macOS profiles without pulling or starting a VM.
 
 For iOS/macOS app builds that need full Xcode and Apple SDKs:
 
@@ -41,6 +41,70 @@ $ packer build -var-file=xcode.pkrvars.hcl .
 ```
 
 This creates `grove-macos-xcode-worker`; the default creates `grove-macos-worker`.
+
+## Optional host Xcode sharing
+
+A `macos` pool can share one host-installed Xcode app read-only instead of storing a separate
+copy inside each guest. This is opt-in; omit `hostXcode` to retain the existing behavior.
+Build a lean guest with a compatible macOS version:
+
+```console
+$ make images-macos-host-xcode
+# Produces grove-macos-host-xcode-worker from the Tahoe base, without full Xcode.
+$ tart push grove-macos-host-xcode-worker ghcr.io/gm2211/grove-macos-worker:host-xcode-<git-sha>
+```
+
+Add this to the existing `macos` pool, retaining its other settings:
+
+```yaml
+name: macos
+image: ghcr.io/gm2211/grove-macos-worker:host-xcode-<git-sha>
+workerSelector:
+  host: your-xcode-host
+hostXcode:
+  path: /Applications/Xcode.app
+  buildVersion: 27A266a # Example: use the installed app's ProductBuildVersion.
+```
+
+Find the build pin and required guest OS on the host:
+
+```console
+$ plutil -extract ProductBuildVersion raw /Applications/Xcode.app/Contents/version.plist
+$ plutil -extract LSMinimumSystemVersion raw /Applications/Xcode.app/Contents/Info.plist
+```
+
+Use actual Orchard worker labels for `workerSelector`. Every matching host must provide the same
+path and pinned Xcode build. Keep the pool name `macos`: this option does not add job routing or
+an additional macOS pool class. A build pin change triggers the normal drain/recycle flow.
+
+Orchard disables host sharing by default. An administrator must explicitly add
+`--insecure-allow-host-dirs` to the controller's `controller run` service arguments and restart
+that controller. Grove's installer does not enable this flag. Configure a narrow read-only
+allowlist through the existing authenticated Orchard CLI:
+
+```console
+$ orchard get cluster-settings
+$ orchard set cluster-settings --host-dir-policies=/Applications/Xcode.app:ro
+```
+
+The `set` command appends a policy. Policies are alternatives: a broader writable policy such as
+`/Applications` still permits writable requests even after adding this narrower read-only policy.
+Ensure no existing writable policy covers the app before enabling host sharing.
+Grove always requests only this app as read-only, under the fixed share name `grove-xcode.app`.
+No worker-side flag is required. The host Xcode app must remain installed and unchanged while
+workers use it; drain those workers before replacing or updating the host app.
+
+The guest selects `/Volumes/My Shared Files/grove-xcode.app/Contents/Developer`. Startup checks
+the pinned build and Xcode's minimum macOS version, then performs guest first-launch setup
+before starting Nomad. Missing shares, changed builds, incompatible guest OS versions, or failed
+Xcode setup stop startup. For example, an Xcode build requiring macOS 26.6 cannot run in the
+Sequoia guest. Override the base image if the Tahoe profile does not meet your selected Xcode's
+minimum version.
+
+Only the Xcode app is shared. DerivedData, package caches, simulator runtimes, signing identities,
+and job outputs remain guest-local and can still consume disk. Host Keychain and developer home
+are not shared. This saves the app's duplicated storage; it does not remove the guest OS or its
+build data. Use the full-Xcode image when workers need an independent toolchain lifecycle.
 
 ## Pushing to GHCR
 
@@ -94,6 +158,7 @@ doctor` runs on.
 |---|---|---|
 | `macos-worker` (default) | `ghcr.io/cirruslabs/macos-sequoia-base:latest` | macOS, Command Line Tools and Homebrew for general agent/build jobs, without full Xcode. Inherited auto-login and passwordless sudo are verified during provisioning. |
 | `macos-xcode-worker` (explicit profile) | `ghcr.io/cirruslabs/macos-sequoia-xcode:latest` | Full Xcode for Apple app builds. The profile verifies Xcode and runs license/first-launch setup. |
+| `macos-host-xcode-worker` (explicit profile) | `ghcr.io/cirruslabs/macos-tahoe-base:latest` | Lean guest; compatible host Xcode is mounted read-only at startup through `hostXcode`. |
 | `linux-worker` | `ghcr.io/cirruslabs/ubuntu:latest` (arm64) | Cirrus Labs' maintained arm64 Ubuntu Tart image; matches the arm64 host architecture (Apple Silicon), so no CPU emulation for the guest OS itself — only for the *containers it runs* (see Rosetta below). |
 | `runner` | `ubuntu:24.04` | Plain container, not a Tart VM — this is what actually executes `build`/`agent`/`shell` job scripts on the linux pool (see docs/JOBS.md). Built for both `linux/amd64` and `linux/arm64` by CI. |
 

@@ -24,6 +24,10 @@ func BuildStartupScript(pool Pool, worker, vmName, tailscaleAuthKey string) stri
 	fmt.Fprintf(&b, "grove_pool=%s\n", shQuote(pool.Name))
 	fmt.Fprintf(&b, "grove_host=%s\n", shQuote(worker))
 	fmt.Fprintf(&b, "grove_vm=%s\n\n", shQuote(vmName))
+	if pool.HostXcode != nil {
+		b.WriteString(buildHostXcodeStartupScript(*pool.HostXcode))
+		b.WriteString("\n")
+	}
 
 	b.WriteString(nomadMetaScript)
 	b.WriteString("\n")
@@ -33,12 +37,139 @@ func BuildStartupScript(pool Pool, worker, vmName, tailscaleAuthKey string) stri
 			shQuote(tailscaleAuthKey))
 	}
 
-	b.WriteString(nomadRestartScript)
+	if pool.HostXcode != nil {
+		b.WriteString(nomadRestartWithHostXcodeScript)
+	} else {
+		b.WriteString(nomadRestartScript)
+	}
 
 	appendUserScript(&b, "pool.startupScript", pool.StartupScript)
 
 	return b.String()
 }
+
+const guestHostXcodeMountPath = "/Volumes/My Shared Files/grove-xcode.app"
+
+func buildHostXcodeStartupScript(config HostXcodeConfig) string {
+	return strings.NewReplacer(
+		"@GUEST_XCODE_MOUNT@", shQuote(guestHostXcodeMountPath),
+		"@XCODE_BUILD_VERSION@", shQuote(config.BuildVersion),
+	).Replace(hostXcodeStartupScript)
+}
+
+const hostXcodeStartupScript = `# Shared host Xcode must be ready before this guest can accept Nomad jobs.
+if [ "$(uname -s)" != "Darwin" ]; then
+  echo "grove: hostXcode is configured, but this guest is not macOS" >&2
+  exit 1
+fi
+
+grove_priv() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+  else
+    sudo -n "$@"
+  fi
+}
+
+# Keep this client out of service while the shared app and guest compatibility are checked.
+if ! grove_priv true; then
+  echo "grove: passwordless privilege is required for shared Xcode setup" >&2
+  exit 1
+fi
+grove_nomad_status=0
+grove_priv launchctl print system/com.grove.nomad >/dev/null 2>&1 || grove_nomad_status=$?
+if [ "$grove_nomad_status" -eq 0 ]; then
+  if ! grove_priv launchctl bootout system/com.grove.nomad; then
+    echo "grove: could not stop the Nomad client before shared Xcode setup" >&2
+    exit 1
+  fi
+elif [ "$grove_nomad_status" -ne 113 ]; then
+  echo "grove: could not inspect the Nomad launch service (launchctl status $grove_nomad_status)" >&2
+  exit 1
+fi
+grove_nomad_status=0
+grove_priv launchctl print system/com.grove.nomad >/dev/null 2>&1 || grove_nomad_status=$?
+if [ "$grove_nomad_status" -ne 113 ]; then
+  echo "grove: Nomad launch service remained available during shared Xcode setup (launchctl status $grove_nomad_status)" >&2
+  exit 1
+fi
+
+grove_xcode_app=@GUEST_XCODE_MOUNT@
+grove_xcode_expected_build=@XCODE_BUILD_VERSION@
+grove_xcode_waited=0
+while [ ! -d "$grove_xcode_app" ]; do
+  if [ "$grove_xcode_waited" -ge 120 ]; then
+    echo "grove: timed out waiting for shared Xcode at $grove_xcode_app" >&2
+    exit 1
+  fi
+  sleep 2
+  grove_xcode_waited=$((grove_xcode_waited + 2))
+done
+
+grove_xcode_version_plist="$grove_xcode_app/Contents/version.plist"
+grove_xcode_info_plist="$grove_xcode_app/Contents/Info.plist"
+if [ ! -r "$grove_xcode_version_plist" ] || [ ! -r "$grove_xcode_info_plist" ]; then
+  echo "grove: shared Xcode is missing Contents/version.plist or Contents/Info.plist" >&2
+  exit 1
+fi
+if ! grove_xcode_build=$(/usr/libexec/PlistBuddy -c 'Print :ProductBuildVersion' "$grove_xcode_version_plist" 2>/dev/null); then
+  echo "grove: could not read ProductBuildVersion from shared Xcode" >&2
+  exit 1
+fi
+if [ "$grove_xcode_build" != "$grove_xcode_expected_build" ]; then
+  echo "grove: shared Xcode build mismatch: expected $grove_xcode_expected_build, found $grove_xcode_build" >&2
+  exit 1
+fi
+if ! grove_xcode_min_os=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$grove_xcode_info_plist" 2>/dev/null); then
+  echo "grove: could not read LSMinimumSystemVersion from shared Xcode" >&2
+  exit 1
+fi
+grove_guest_os=$(sw_vers -productVersion)
+grove_valid_version() {
+  case "$1" in
+    ''|*[!0-9.]*|.*|*..*|*.) return 1 ;;
+    *.*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+case "$grove_guest_os" in
+  *.*.*.*) echo "grove: invalid guest macOS version component count" >&2; exit 1 ;;
+esac
+case "$grove_xcode_min_os" in
+  *.*.*.*) echo "grove: invalid Xcode minimum macOS version component count" >&2; exit 1 ;;
+esac
+if ! grove_valid_version "$grove_guest_os" || ! grove_valid_version "$grove_xcode_min_os"; then
+  echo "grove: invalid macOS version: guest=$grove_guest_os Xcode minimum=$grove_xcode_min_os" >&2
+  exit 1
+fi
+if ! awk -v guest="$grove_guest_os" -v minimum="$grove_xcode_min_os" 'BEGIN {
+  ng = split(guest, g, /[.]/); nm = split(minimum, m, /[.]/);
+  for (i = 1; i <= 3; i++) {
+    have = (i <= ng ? g[i] + 0 : 0);
+    need = (i <= nm ? m[i] + 0 : 0);
+    if (have > need) exit 0;
+    if (have < need) exit 1;
+  }
+  exit 0;
+}'; then
+  echo "grove: guest macOS $grove_guest_os is older than shared Xcode minimum $grove_xcode_min_os" >&2
+  exit 1
+fi
+
+grove_priv xcode-select --switch "$grove_xcode_app/Contents/Developer"
+grove_priv xcodebuild -license accept
+grove_priv xcodebuild -runFirstLaunch
+grove_xcode_version_output=$(grove_priv xcodebuild -version)
+case "$grove_xcode_version_output" in
+  *"Build version $grove_xcode_expected_build"*) ;;
+  *) echo "grove: selected Xcode reported an unexpected build version" >&2; exit 1 ;;
+esac
+grove_macos_sdk=$(grove_priv xcrun --sdk macosx --show-sdk-path)
+if [ ! -d "$grove_macos_sdk" ]; then
+  echo "grove: shared Xcode did not provide a usable macOS SDK" >&2
+  exit 1
+fi
+`
 
 // BuildShutdownScript renders the default guest ShutdownScript: drain the local Nomad client,
 // then wait (bounded by the returned timeout, defaulting to defaultShutdownTimeout) for zero
@@ -138,6 +269,16 @@ GROVE_META_END
 
 // nomadRestartScript restarts the Nomad client so a freshly written meta file takes effect.
 const nomadRestartScript = `if [ "$(uname -s)" = "Darwin" ]; then
+  grove_priv launchctl kickstart -k system/com.grove.nomad
+else
+  grove_priv systemctl restart nomad
+fi
+`
+
+// A host-shared Xcode setup deliberately bootouts Nomad first; reload its launch daemon only after
+// mount, version, guest-OS, license, and first-launch checks all succeeded.
+const nomadRestartWithHostXcodeScript = `if [ "$(uname -s)" = "Darwin" ]; then
+  grove_priv launchctl bootstrap system /Library/LaunchDaemons/com.grove.nomad.plist
   grove_priv launchctl kickstart -k system/com.grove.nomad
 else
   grove_priv systemctl restart nomad

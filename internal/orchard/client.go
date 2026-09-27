@@ -217,7 +217,20 @@ func vmFromV1(vm v1.VM) VM {
 		StartupScript:   scriptContent(vm.StartupScript),
 		ShutdownScript:  scriptContent(vm.ShutdownScript),
 		ShutdownTimeout: time.Duration(vm.ShutdownScriptTimeoutSeconds) * time.Second,
+		HostDirs:        hostDirsFromV1(vm.HostDirs),
 	}
+}
+
+func hostDirsFromV1(hostDirs []v1.HostDir) []HostDir {
+	if len(hostDirs) == 0 {
+		return nil
+	}
+
+	out := make([]HostDir, len(hostDirs))
+	for i, hostDir := range hostDirs {
+		out[i] = HostDir{Name: hostDir.Name, Path: hostDir.Path, ReadOnly: hostDir.ReadOnly}
+	}
+	return out
 }
 
 // scriptContent unwraps a v1.VMScript pointer (nil when Orchard has no startup/shutdown script
@@ -259,6 +272,7 @@ func vmToV1(spec VMSpec) *v1.VM {
 		RestartPolicy: v1.RestartPolicy(spec.RestartPolicy),
 		Labels:        labels,
 		Resources:     v1.Resources(spec.Resources),
+		HostDirs:      hostDirsToV1(spec.HostDirs),
 	}
 
 	if spec.StartupScript != "" {
@@ -277,6 +291,18 @@ func vmToV1(spec VMSpec) *v1.VM {
 	}
 
 	return vm
+}
+
+func hostDirsToV1(hostDirs []HostDir) []v1.HostDir {
+	if len(hostDirs) == 0 {
+		return nil
+	}
+
+	out := make([]v1.HostDir, len(hostDirs))
+	for i, hostDir := range hostDirs {
+		out[i] = v1.HostDir{Name: hostDir.Name, Path: hostDir.Path, ReadOnly: hostDir.ReadOnly}
+	}
+	return out
 }
 
 // Exec.
