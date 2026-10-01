@@ -36,6 +36,8 @@ func BuildStartupScript(pool Pool, worker, vmName, tailscaleAuthKey string) stri
 		fmt.Fprintf(&b, "tailscale up --authkey=%s --hostname=\"$grove_vm\" --ssh --accept-routes\n\n",
 			shQuote(tailscaleAuthKey))
 	}
+	b.WriteString(nomadClientReadinessScript)
+	b.WriteString("\n")
 
 	if pool.HostXcode != nil {
 		b.WriteString(nomadRestartWithHostXcodeScript)
@@ -269,10 +271,43 @@ GROVE_META_END
 
 // nomadRestartScript restarts the Nomad client so a freshly written meta file takes effect.
 const nomadRestartScript = `if [ "$(uname -s)" = "Darwin" ]; then
+  grove_nomad_status=0
+  grove_priv launchctl print system/com.grove.nomad >/dev/null 2>&1 || grove_nomad_status=$?
+  if [ "$grove_nomad_status" -eq 113 ]; then
+    grove_priv launchctl bootstrap system /Library/LaunchDaemons/com.grove.nomad.plist
+  elif [ "$grove_nomad_status" -ne 0 ]; then
+    echo "grove: could not inspect the Nomad launch service (launchctl status $grove_nomad_status)" >&2
+    exit 1
+  fi
   grove_priv launchctl kickstart -k system/com.grove.nomad
+  groveWaitForNomadClient
 else
   grove_priv systemctl restart nomad
 fi
+`
+
+// nomadClientReadinessScript waits for the local Nomad client to report healthy after a macOS
+// launchd restart. The agent health endpoint has no ACL requirement. Inspecting client.ok in the
+// response deliberately ignores the server field: an isolated client can be locally ready even
+// while it cannot reach the Nomad servers. A fixed retry count and per-request timeout bound this
+// wait and prevent a successful launchctl command from being mistaken for a ready worker.
+const nomadClientReadinessScript = `groveWaitForNomadClient() {
+  if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+    echo "grove: curl and jq are required to verify local Nomad client readiness" >&2
+    return 1
+  fi
+  grove_nomad_attempt=0
+  while [ "$grove_nomad_attempt" -lt 40 ]; do
+    grove_nomad_health=$(curl --silent --max-time 2 http://127.0.0.1:4646/v1/agent/health 2>/dev/null || true)
+    if printf '%s' "$grove_nomad_health" | jq -e '.client.ok == true' >/dev/null 2>&1; then
+      return 0
+    fi
+    grove_nomad_attempt=$((grove_nomad_attempt + 1))
+    sleep 1
+  done
+  echo "grove: Nomad client did not become healthy within 120 seconds" >&2
+  return 1
+}
 `
 
 // A host-shared Xcode setup deliberately bootouts Nomad first; reload its launch daemon only after
@@ -280,6 +315,7 @@ fi
 const nomadRestartWithHostXcodeScript = `if [ "$(uname -s)" = "Darwin" ]; then
   grove_priv launchctl bootstrap system /Library/LaunchDaemons/com.grove.nomad.plist
   grove_priv launchctl kickstart -k system/com.grove.nomad
+  groveWaitForNomadClient
 else
   grove_priv systemctl restart nomad
 fi

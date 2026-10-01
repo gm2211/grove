@@ -5,12 +5,12 @@ one plain container image (`images/runner`, the default image for linux jobs). T
 building and pushing them, why they're shaped the way they are, and the contract between an image
 and the fleet reconciler / startup-shutdown scripts (`internal/fleet`).
 
-> **macOS profiles:** the default worker uses macOS with Command Line Tools and no full Xcode.
+> **macOS profiles:** the default worker uses minimal vanilla-derived Tahoe with Command Line Tools and no full Xcode.
 > Apple app builds must explicitly select `xcode.pkrvars.hcl` or configure host Xcode sharing below. The profiles use separate local VM
 > names so building one does not replace the other.
 >
-> **Disk capacity is not disk usage.** The lean profile allows 60 GiB; Xcode allows 150 GiB.
-> Upstream base images currently declare 50 GiB and 140 GiB respectively. Tart cannot shrink a
+> **Disk capacity is not disk usage.** The lean profile allows 60 GB; Xcode allows 150 GB.
+> Upstream base images currently declare 50 GB and 140 GB respectively. Tart cannot shrink a
 > base disk: custom bases may require a larger `disk_size_gb`. Lowering this number does not
 > remove installed files or shrink an existing VM.
 
@@ -19,18 +19,19 @@ and the fleet reconciler / startup-shutdown scripts (`internal/fleet`).
 Tart only runs on Apple Silicon Macs (it's built on `Virtualization.framework`), so both worker
 images can only be built locally on a Mac, never in GitHub-hosted CI. See `.github/workflows/images.yml`
 for what *is* automated (the `images/runner` container) and the `make images` target below for the
-manual path.
+manual path. The native Nomad build currently requires Go 1.27.1 and an Xcode-selected build
+host; the tested host used Xcode 27.0. These build tools are not copied into the worker.
 
 ```console
 $ brew install openai/tools/tart
 $ brew tap hashicorp/tap && brew install hashicorp/tap/packer   # or `brew install packer` if your
                                                                   # Homebrew allows the hashicorp tap
-$ cd images/macos-worker && packer init . && packer validate . && packer build .
+$ make images-macos
 $ cd images/linux-worker && packer init . && packer validate . && packer build .
 ```
 
 `make images` builds lean macOS and Linux workers. `make images-macos` builds only lean macOS.
-`make images-validate` checks all macOS profiles without pulling or starting a VM.
+`make images-validate` checks all macOS profiles without pulling or starting a VM. It first builds (or verifies a cached copy of) the pinned native Nomad artifact on the build host.
 
 For iOS/macOS app builds that need full Xcode and Apple SDKs:
 
@@ -46,19 +47,19 @@ This creates `grove-macos-xcode-worker`; the default creates `grove-macos-worker
 
 A `macos` pool can share one host-installed Xcode app read-only instead of storing a separate
 copy inside each guest. This is opt-in; omit `hostXcode` to retain the existing behavior.
-Build a lean guest with a compatible macOS version:
+The default and host-sharing profiles use the same minimal Tahoe base and provisioning; only the local output name differs. Publish one `lean-<git-sha>` image and reuse it for both ordinary CLT workers and host-sharing workers; there is no need to build or download two image variants. Sharing needs **both** an Xcode-free image and `hostXcode` in the pool. Enabling `hostXcode` does not strip Xcode from an already bundled image or change the pool image automatically. Build a lean guest with a compatible macOS version:
 
 ```console
 $ make images-macos-host-xcode
-# Produces grove-macos-host-xcode-worker from the Tahoe base, without full Xcode.
-$ tart push grove-macos-host-xcode-worker ghcr.io/gm2211/grove-macos-worker:host-xcode-<git-sha>
+# Produces grove-macos-host-xcode-worker from vanilla Tahoe, without full Xcode.
+$ tart push grove-macos-host-xcode-worker ghcr.io/gm2211/grove-macos-worker:lean-<git-sha>
 ```
 
 Add this to the existing `macos` pool, retaining its other settings:
 
 ```yaml
 name: macos
-image: ghcr.io/gm2211/grove-macos-worker:host-xcode-<git-sha>
+image: ghcr.io/gm2211/grove-macos-worker:lean-<git-sha>
 workerSelector:
   host: your-xcode-host
 hostXcode:
@@ -156,9 +157,9 @@ doctor` runs on.
 
 | Image | Base | Why |
 |---|---|---|
-| `macos-worker` (default) | `ghcr.io/cirruslabs/macos-sequoia-base:latest` | macOS, Command Line Tools and Homebrew for general agent/build jobs, without full Xcode. Inherited auto-login and passwordless sudo are verified during provisioning. |
+| `macos-worker` (default) | `ghcr.io/cirruslabs/macos-tahoe-vanilla` (pinned digest in the template) | Minimal macOS, with only CLT, Homebrew, Tart guest transport and Grove job prerequisites added. No inherited CI runners, Ruby installations, GCC or AWS CLI. Inherited auto-login and passwordless sudo are verified during provisioning. |
 | `macos-xcode-worker` (explicit profile) | `ghcr.io/cirruslabs/macos-sequoia-xcode:latest` | Full Xcode for Apple app builds. The profile verifies Xcode and runs license/first-launch setup. |
-| `macos-host-xcode-worker` (explicit profile) | `ghcr.io/cirruslabs/macos-tahoe-base:latest` | Lean guest; compatible host Xcode is mounted read-only at startup through `hostXcode`. |
+| `macos-host-xcode-worker` (explicit profile) | `ghcr.io/cirruslabs/macos-tahoe-vanilla` (same pinned digest) | Same lean guest; compatible host Xcode is mounted read-only at startup through `hostXcode`. |
 | `linux-worker` | `ghcr.io/cirruslabs/ubuntu:latest` (arm64) | Cirrus Labs' maintained arm64 Ubuntu Tart image; matches the arm64 host architecture (Apple Silicon), so no CPU emulation for the guest OS itself — only for the *containers it runs* (see Rosetta below). |
 | `runner` | `ubuntu:24.04` | Plain container, not a Tart VM — this is what actually executes `build`/`agent`/`shell` job scripts on the linux pool (see docs/JOBS.md). Built for both `linux/amd64` and `linux/arm64` by CI. |
 
@@ -176,14 +177,35 @@ Set that pool's `runnerImage` to the same pinned tag. Do not use `latest` for an
 only inside the worker VM: Nomad always attempts to pull that tag. Omitting the client means the
 image cannot upload build artifacts; leave artifact storage unconfigured for this pool.
 
+## Native Nomad dependency and release acceptance
+
+The official Nomad 2.0.7 ARM64 binary panics in Tart guests exposing only one CPU performance
+level: the missing efficiency-core count becomes -1. Grove carries a narrow Darwin topology
+patch against the exact upstream source revision. `make images-nomad` builds
+`2.0.7+grove.1` on the host with pinned source/toolchain inputs and runs the scanner regression
+checks. The worker contains only the binary and `/usr/local/share/grove/nomad-build.json`, not
+the Go compiler, source or build caches. Do not replace it with an unverified Homebrew upgrade.
+Remove the patch once an official ARM64 release passes the same guest tests.
+
+Every Packer profile now boots an isolated local Nomad server/client and requires a completed
+`raw_exec` allocation before the image build succeeds. Temporary server state is removed.
+Fleet startup also checks local Nomad API readiness, so a crash-looping launchd service is not
+reported as a successfully started worker. These checks complement the Grove dispatch matrix;
+they do not establish simulator or signing support.
+
+Build and publish a new immutable image tag, canary it, then drain/recycle affected workers.
+The image build remains a local Apple Silicon workflow; CI does not automatically publish Tart
+VMs. Review OS/tool updates and re-run acceptance before rebuilding. A pinned source checksum
+and build manifest are provenance controls, not a vulnerability scan or signed release.
+
 ## Size expectations
 
 Tart images are full macOS/Linux disk images, not layered containers — expect them to be large
 and slow to transfer:
 
-- `grove-macos-worker`: 60 GiB virtual capacity. Actual host usage depends on the base revision
+- `grove-macos-worker`: 60 GB virtual capacity. Actual host usage depends on the base revision
   and job data; measure the finished image rather than treating capacity as allocated space.
-- `grove-macos-xcode-worker`: 150 GiB virtual capacity. Full macOS/Xcode images can occupy tens
+- `grove-macos-xcode-worker`: 150 GB virtual capacity. Full macOS/Xcode images can occupy tens
   of GiB before any Grove job runs. Keep this profile only on hosts that need Apple builds.
 - `grove-linux-worker`: ~8-15 GiB (Ubuntu + Docker + build-essential + Nomad).
 - `grove-runner` (container, not a Tart VM): a few hundred MiB, layered/cached normally via GHCR.

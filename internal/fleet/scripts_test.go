@@ -295,6 +295,19 @@ set -eu
 cat >/dev/null
 printf 'tee %s\n' "$*" >> "$GROVE_TEST_COMMAND_LOG"
 `)
+			writeExecutable("curl", `#!/bin/sh
+set -eu
+printf 'curl %s\n' "$*" >> "$GROVE_TEST_COMMAND_LOG"
+printf '%s\n' '{"client":{"ok":true},"server":{"ok":false}}'
+`)
+			writeExecutable("jq", `#!/bin/sh
+set -eu
+body=$(cat)
+case "$body" in
+  *'"client":{"ok":true}'*) exit 0 ;;
+  *) exit 1 ;;
+esac
+`)
 
 			guestScript := strings.ReplaceAll(script, shQuote(guestHostXcodeMountPath), shQuote(appPath))
 			guestScript = strings.ReplaceAll(guestScript, "/usr/libexec/PlistBuddy", plistBuddy)
@@ -359,6 +372,113 @@ printf 'tee %s\n' "$*" >> "$GROVE_TEST_COMMAND_LOG"
 			}
 			if strings.TrimSpace(string(output)) == "" {
 				t.Fatal("failed Xcode setup did not report a reason")
+			}
+		})
+	}
+}
+
+func TestBuildStartupScript_MacOSNomadServiceAndReadiness(t *testing.T) {
+	for _, tt := range []struct {
+		name                 string
+		launchctlPrintStatus string
+		clientHealthy        bool
+		wantOK               bool
+		wantBootstrap        bool
+	}{
+		{name: "bootstraps fresh image and ignores unhealthy server field", launchctlPrintStatus: "113", clientHealthy: true, wantOK: true, wantBootstrap: true},
+		{name: "kickstarts loaded service without bootstrapping", launchctlPrintStatus: "0", clientHealthy: true, wantOK: true},
+		{name: "fails closed when service inspection fails", launchctlPrintStatus: "5"},
+		{name: "fails when client never becomes healthy", launchctlPrintStatus: "113", wantBootstrap: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeBin := t.TempDir()
+			logPath := filepath.Join(t.TempDir(), "commands.log")
+			writeExecutable := func(name, body string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(fakeBin, name), []byte(body), 0o755); err != nil {
+					t.Fatalf("write fake %s: %v", name, err)
+				}
+			}
+			writeExecutable("uname", "#!/bin/sh\nprintf 'Darwin\\n'\n")
+			writeExecutable("id", "#!/bin/sh\nprintf '501\\n'\n")
+			writeExecutable("sudo", `#!/bin/sh
+set -eu
+[ "${1:-}" = "-n" ] && shift
+printf 'sudo %s\\n' "$*" >> "$GROVE_TEST_COMMAND_LOG"
+exec "$@"
+`)
+			writeExecutable("launchctl", `#!/bin/sh
+set -eu
+printf 'launchctl %s\\n' "$*" >> "$GROVE_TEST_COMMAND_LOG"
+case "${1:-}" in
+  print) exit "$GROVE_TEST_LAUNCHCTL_PRINT_STATUS" ;;
+  bootstrap) exit 0 ;;
+esac
+`)
+			writeExecutable("sysctl", "#!/bin/sh\nprintf '12\\n'\n")
+			writeExecutable("mkdir", "#!/bin/sh\nexit 0\n")
+			writeExecutable("tee", "#!/bin/sh\ncat >/dev/null\n")
+			writeExecutable("curl", `#!/bin/sh
+set -eu
+printf 'curl %s\\n' "$*" >> "$GROVE_TEST_COMMAND_LOG"
+if [ "$GROVE_TEST_CLIENT_HEALTHY" = true ]; then
+  printf '%s\\n' '{"client":{"ok":true},"server":{"ok":false}}'
+else
+  printf '%s\\n' '{"client":{"ok":false},"server":{"ok":false}}'
+fi
+`)
+			writeExecutable("jq", `#!/bin/sh
+set -eu
+body=$(cat)
+case "$body" in
+  *'"client":{"ok":true}'*) exit 0 ;;
+  *) exit 1 ;;
+esac
+`)
+			writeExecutable("sleep", "#!/bin/sh\nexit 0\n")
+
+			cmd := exec.Command("/bin/sh", "-c", BuildStartupScript(Pool{Name: "macos"}, "mac1", "macos-mac1-0", ""))
+			cmd.Env = append(os.Environ(),
+				"PATH="+fakeBin+":"+os.Getenv("PATH"),
+				"GROVE_TEST_COMMAND_LOG="+logPath,
+				"GROVE_TEST_LAUNCHCTL_PRINT_STATUS="+tt.launchctlPrintStatus,
+				"GROVE_TEST_CLIENT_HEALTHY="+fmt.Sprint(tt.clientHealthy),
+			)
+			output, runErr := cmd.CombinedOutput()
+			logBytes, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatalf("read command log: %v", err)
+			}
+			log := string(logBytes)
+			if tt.wantOK && runErr != nil {
+				t.Fatalf("startup script failed: %v\\n%s\\n%s", runErr, output, log)
+			}
+			if !tt.wantOK && runErr == nil {
+				t.Fatalf("startup script succeeded, want failure\\n%s\\n%s", output, log)
+			}
+			if tt.launchctlPrintStatus == "5" {
+				if strings.Contains(log, "launchctl kickstart") || strings.Contains(log, "curl ") {
+					t.Fatalf("service inspection failure advanced into restart/readiness:\\n%s", log)
+				}
+				return
+			}
+			if tt.wantBootstrap != strings.Contains(log, "launchctl bootstrap system /Library/LaunchDaemons/com.grove.nomad.plist") {
+				t.Errorf("bootstrap presence mismatch (want %v):\\n%s", tt.wantBootstrap, log)
+			}
+			if !strings.Contains(log, "launchctl kickstart -k system/com.grove.nomad") {
+				t.Errorf("Nomad was not kickstarted:\\n%s", log)
+			}
+			if tt.clientHealthy {
+				if !strings.Contains(log, "curl --silent --max-time 2 http://127.0.0.1:4646/v1/agent/health") {
+					t.Errorf("local agent health was not checked:\\n%s", log)
+				}
+			} else {
+				if strings.Count(log, "curl --silent") != 40 {
+					t.Errorf("unhealthy client did not exhaust bounded readiness attempts: got %d\\n%s", strings.Count(log, "curl --silent"), log)
+				}
+				if !strings.Contains(string(output), "Nomad client did not become healthy") {
+					t.Errorf("readiness timeout did not explain failure: %s", output)
+				}
 			}
 		})
 	}

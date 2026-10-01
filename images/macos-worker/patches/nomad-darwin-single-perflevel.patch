@@ -1,0 +1,117 @@
+diff --git a/client/lib/numalib/detect_darwin.go b/client/lib/numalib/detect_darwin.go
+index 167a2db..5e37018 100644
+--- a/client/lib/numalib/detect_darwin.go
++++ b/client/lib/numalib/detect_darwin.go
+@@ -48,6 +48,16 @@ func (m *MacOS) scanAppleSilicon(top *Topology) {
+ 
+ 	eCoreCount := m1cpu.ECoreCount()
+ 	eCoreSpeed := hw.KHz(m1cpu.ECoreHz() / 1000)
++	if pCoreCount <= 0 || eCoreCount < 0 {
++		// Some virtual Apple Silicon guests expose only one performance level.
++		// go-m1cpu represents the missing level-1 sysctl as -1; treat that as
++		// no efficiency cores. If the P-core count is unavailable, use the
++		// guest's total logical CPU count, subtracting any known E cores.
++		fallbackCPUCount, _ := unix.SysctlUint32("hw.ncpu")
++		pCoreCount, eCoreCount = normalizeAppleSiliconCoreCounts(
++			pCoreCount, eCoreCount, fallbackCPUCount,
++		)
++	}
+ 
+ 	top.Cores = make([]Core, pCoreCount+eCoreCount)
+ 	nthCore := hw.CoreID(0)
+@@ -63,6 +73,19 @@ func (m *MacOS) scanAppleSilicon(top *Topology) {
+ 	}
+ }
+ 
++func normalizeAppleSiliconCoreCounts(pCoreCount, eCoreCount int, fallbackCPUCount uint32) (int, int) {
++	if eCoreCount < 0 {
++		eCoreCount = 0
++	}
++	if pCoreCount <= 0 {
++		pCoreCount = int(fallbackCPUCount) - eCoreCount
++		if pCoreCount < 0 {
++			pCoreCount = 0
++		}
++	}
++	return pCoreCount, eCoreCount
++}
++
+ func (m *MacOS) scanLegacyX86(top *Topology) {
+ 	coreCount, _ := unix.SysctlUint32("hw.ncpu")
+ 	hz, _ := unix.SysctlUint64("hw.cpufrequency")
+diff --git a/client/lib/numalib/detect_darwin_test.go b/client/lib/numalib/detect_darwin_test.go
+new file mode 100644
+index 0000000..18b3bda
+--- /dev/null
++++ b/client/lib/numalib/detect_darwin_test.go
+@@ -0,0 +1,70 @@
++// Copyright IBM Corp. 2015, 2026
++// SPDX-License-Identifier: BUSL-1.1
++
++//go:build darwin
++
++package numalib
++
++import "testing"
++
++func TestNormalizeAppleSiliconCoreCounts(t *testing.T) {
++	tests := []struct {
++		name       string
++		pCores     int
++		eCores     int
++		fallback   uint32
++		wantPCores int
++		wantECores int
++	}{
++		{
++			name:       "single performance level in virtual guest",
++			pCores:     4,
++			eCores:     -1,
++			fallback:   4,
++			wantPCores: 4,
++			wantECores: 0,
++		},
++		{
++			name:       "missing P core count falls back to guest CPU total",
++			pCores:     -1,
++			eCores:     -1,
++			fallback:   4,
++			wantPCores: 4,
++			wantECores: 0,
++		},
++		{
++			name:       "missing P core count preserves known E cores",
++			pCores:     -1,
++			eCores:     4,
++			fallback:   8,
++			wantPCores: 4,
++			wantECores: 4,
++		},
++		{
++			name:       "valid hybrid topology is unchanged",
++			pCores:     8,
++			eCores:     4,
++			fallback:   12,
++			wantPCores: 8,
++			wantECores: 4,
++		},
++		{
++			name:       "unavailable fallback cannot create negative count",
++			pCores:     -1,
++			eCores:     -1,
++			fallback:   0,
++			wantPCores: 0,
++			wantECores: 0,
++		},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			pCores, eCores := normalizeAppleSiliconCoreCounts(tt.pCores, tt.eCores, tt.fallback)
++			if pCores != tt.wantPCores || eCores != tt.wantECores {
++				t.Fatalf("normalized core counts = (%d, %d), want (%d, %d)",
++					pCores, eCores, tt.wantPCores, tt.wantECores)
++			}
++		})
++	}
++}
