@@ -219,13 +219,17 @@ func (l *fleetReconcileLoop) tick(ctx context.Context) {
 		return
 	}
 	l.warnedInvalid = false
+	options, err := fleetOptions(l.cfg)
+	if err != nil {
+		slog.Warn("serve: fleet reconciler: invalid Nomad endpoint; skipping", "err", err)
+		l.status.Report(fleet.Plan{}, err, time.Now())
+		return
+	}
 
 	r := &fleet.Reconciler{
-		Client: l.client,
-		Spec:   spec,
-		Options: fleet.Options{
-			TailscaleAuthKey: l.cfg.Tailscale.AuthKey,
-		},
+		Client:  l.client,
+		Spec:    spec,
+		Options: options,
 	}
 
 	plan, err := r.Plan(ctx)
