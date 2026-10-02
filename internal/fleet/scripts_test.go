@@ -37,6 +37,65 @@ func TestBuildStartupScript_Basic(t *testing.T) {
 	}
 }
 
+func TestBuildStartupScript_MacOSNomadRPCServer(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		address string
+		want    string
+	}{
+		{name: "IPv4", address: "100.101.229.60:4647", want: `servers = ["100.101.229.60:4647"]`},
+		{name: "IPv6", address: "[2001:db8::60]:4647", want: `servers = ["[2001:db8::60]:4647"]`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			script := buildStartupScript(Pool{Name: "macos"}, "mac1", "macos-mac1-0", "", tt.address)
+			configAt := strings.Index(script, tt.want)
+			restartAt := strings.Index(script, "launchctl kickstart -k system/com.grove.nomad")
+			if configAt < 0 || restartAt < 0 || configAt > restartAt {
+				t.Fatalf("Nomad RPC server config missing or written after restart (%q):\n%s", tt.want, script)
+			}
+			if strings.Contains(script, "grove_priv tee /etc/nomad.d/grove-rpc.hcl") {
+				t.Fatal("macOS startup should not write RPC config under /etc/nomad.d")
+			}
+		})
+	}
+}
+
+func TestBuildStartupScript_LinuxMatchesV010(t *testing.T) {
+	want, err := os.ReadFile("testdata/startup-linux-v0.1.10.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", "")
+	if got != string(want) {
+		t.Fatalf("Linux startup script drifted from v0.1.10; this would recreate healthy Linux workers\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
+func TestNomadRPCAddressFromHTTPURL(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		url     string
+		want    string
+		wantErr bool
+	}{
+		{name: "hostname", url: "http://nomad.studio.example:4646", want: "nomad.studio.example:4647"},
+		{name: "IPv4", url: "http://100.101.229.60:4646", want: "100.101.229.60:4647"},
+		{name: "IPv6", url: "http://[2001:db8::60]:4646", want: "[2001:db8::60]:4647"},
+		{name: "unset", want: ""},
+		{name: "missing host", url: "http:///nomad", wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := NomadRPCAddressFromHTTPURL(tt.url)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("NomadRPCAddressFromHTTPURL(%q) error = %v, wantErr %v", tt.url, err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("NomadRPCAddressFromHTTPURL(%q) = %q, want %q", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildStartupScript_UnprivilegedGuestUsesNonInteractiveSudo(t *testing.T) {
 	fakeBin := t.TempDir()
 	logPath := filepath.Join(t.TempDir(), "sudo.log")

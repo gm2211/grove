@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -18,6 +19,10 @@ const nomadDrainDeadline = "2h"
 // tailnet, and restarts the Nomad client so the new meta takes effect. pool.StartupScript, if
 // set, is appended verbatim after the generated part (see ARCHITECTURE.md → "Recycling").
 func BuildStartupScript(pool Pool, worker, vmName, tailscaleAuthKey string) string {
+	return buildStartupScript(pool, worker, vmName, tailscaleAuthKey, "")
+}
+
+func buildStartupScript(pool Pool, worker, vmName, tailscaleAuthKey, nomadRPCAddress string) string {
 	var b strings.Builder
 
 	b.WriteString("#!/bin/sh\nset -eu\n\n")
@@ -36,13 +41,21 @@ func BuildStartupScript(pool Pool, worker, vmName, tailscaleAuthKey string) stri
 		fmt.Fprintf(&b, "tailscale up --authkey=%s --hostname=\"$grove_vm\" --ssh --accept-routes\n\n",
 			shQuote(tailscaleAuthKey))
 	}
-	b.WriteString(nomadClientReadinessScript)
-	b.WriteString("\n")
+
+	if pool.Name == "macos" {
+		if nomadRPCAddress != "" {
+			fmt.Fprintf(&b, "grove_priv mkdir -p /usr/local/etc/nomad.d\ngrove_priv tee /usr/local/etc/nomad.d/grove-rpc.hcl >/dev/null <<'GROVE_NOMAD_RPC'\nclient {\n  servers = [%s]\n}\nGROVE_NOMAD_RPC\n\n", strconv.Quote(nomadRPCAddress))
+		}
+		b.WriteString(nomadClientReadinessScript)
+		b.WriteString("\n")
+	}
 
 	if pool.HostXcode != nil {
 		b.WriteString(nomadRestartWithHostXcodeScript)
-	} else {
+	} else if pool.Name == "macos" {
 		b.WriteString(nomadRestartScript)
+	} else {
+		b.WriteString(nomadRestartScriptV010)
 	}
 
 	appendUserScript(&b, "pool.startupScript", pool.StartupScript)
@@ -281,6 +294,16 @@ const nomadRestartScript = `if [ "$(uname -s)" = "Darwin" ]; then
   fi
   grove_priv launchctl kickstart -k system/com.grove.nomad
   groveWaitForNomadClient
+else
+  grove_priv systemctl restart nomad
+fi
+`
+
+// nomadRestartScriptV010 preserves the exact generated Linux startup script used in v0.1.10.
+// StartupScript is part of Orchard's VM spec, so changing this text would recreate healthy Linux
+// workers during a macOS-only rollout.
+const nomadRestartScriptV010 = `if [ "$(uname -s)" = "Darwin" ]; then
+  grove_priv launchctl kickstart -k system/com.grove.nomad
 else
   grove_priv systemctl restart nomad
 fi

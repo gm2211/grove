@@ -216,13 +216,26 @@ func newReconciler(cfg *config.Config) (*fleet.Reconciler, error) {
 	if err != nil {
 		return nil, err
 	}
+	options, err := fleetOptions(cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	return &fleet.Reconciler{
-		Client: client,
-		Spec:   spec,
-		Options: fleet.Options{
-			TailscaleAuthKey: cfg.Tailscale.AuthKey,
-		},
+		Client:  client,
+		Spec:    spec,
+		Options: options,
+	}, nil
+}
+
+func fleetOptions(cfg *config.Config) (fleet.Options, error) {
+	rpcAddress, err := fleet.NomadRPCAddressFromHTTPURL(cfg.Nomad.URL)
+	if err != nil {
+		return fleet.Options{}, err
+	}
+	return fleet.Options{
+		TailscaleAuthKey: cfg.Tailscale.AuthKey,
+		NomadRPCAddress:  rpcAddress,
 	}, nil
 }
 

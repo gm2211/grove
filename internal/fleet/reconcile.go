@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
+	"net/url"
 	"slices"
 	"sort"
 	"time"
@@ -24,6 +26,9 @@ type Options struct {
 	// TailscaleAuthKey, when set, makes generated StartupScripts join the tailnet (see
 	// scripts.go). Typically config.Config.Tailscale.AuthKey.
 	TailscaleAuthKey string
+	// NomadRPCAddress, when set, points macOS worker clients at the Nomad RPC listener.
+	// It is derived from the configured Nomad HTTP URL by the CLI.
+	NomadRPCAddress string
 	// Now returns the current time; defaults to time.Now. Overridable for tests.
 	Now func() time.Time
 	// Logger receives Run's per-tick errors without stopping the loop. Defaults to log.Default().
@@ -217,7 +222,7 @@ func (r *Reconciler) Run(ctx context.Context, interval time.Duration) error {
 // the worker pin vmToV1 applies from Worker; pool/host bookkeeping lives in the VM's *name* and
 // in Worker, not in labels.
 func (r *Reconciler) vmSpec(pool Pool, worker, name string) orchard.VMSpec {
-	startup := BuildStartupScript(pool, worker, name, r.Options.TailscaleAuthKey)
+	startup := buildStartupScript(pool, worker, name, r.Options.TailscaleAuthKey, r.Options.NomadRPCAddress)
 	shutdown, shutdownTimeout := BuildShutdownScript(pool)
 
 	return orchard.VMSpec{
@@ -238,6 +243,24 @@ func (r *Reconciler) vmSpec(pool Pool, worker, name string) orchard.VMSpec {
 		TTL:             pool.TTL.Std(),
 		HostDirs:        hostDirsForPool(pool),
 	}
+}
+
+// NomadRPCAddressFromHTTPURL derives the default Nomad RPC endpoint from the configured HTTP
+// API URL. This assumes a direct Nomad listener on the same host; Nomad's HTTP API and RPC
+// listener use ports 4646 and 4647 respectively. A proxy or custom RPC port needs its own
+// explicit configuration field.
+func NomadRPCAddressFromHTTPURL(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("parse Nomad HTTP URL: %w", err)
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return "", fmt.Errorf("Nomad HTTP URL must include an http or https host")
+	}
+	return net.JoinHostPort(u.Hostname(), "4647"), nil
 }
 
 func hostDirsForPool(pool Pool) []orchard.HostDir {

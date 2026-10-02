@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -13,6 +14,22 @@ import (
 	"github.com/gm2211/grove/internal/orchard"
 	"github.com/gm2211/grove/internal/server"
 )
+
+func TestFleetOptionsCarryConfiguredNomadRPCAddress(t *testing.T) {
+	options, err := fleetOptions(&config.Config{
+		Nomad:     config.Endpoint{URL: "https://nomad.studio.example:4646"},
+		Tailscale: config.TailscaleConfig{AuthKey: "tskey-test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.NomadRPCAddress != "nomad.studio.example:4647" {
+		t.Errorf("NomadRPCAddress = %q, want nomad.studio.example:4647", options.NomadRPCAddress)
+	}
+	if options.TailscaleAuthKey != "tskey-test" {
+		t.Errorf("TailscaleAuthKey = %q, want to preserve configured auth key", options.TailscaleAuthKey)
+	}
+}
 
 // TestPoolConfigs_ThreadsJobCPUAndMemoryFromFleetSpec is the regression test for the
 // hardcoded-job-resources defect: EnsureJobs used to always render every job at the templates'
@@ -178,7 +195,7 @@ func TestFleetReconcileLoop_CreatesOnceThenNoOp(t *testing.T) {
 	fleetPath := filepath.Join(t.TempDir(), "fleet.yaml")
 	spec := `
 pools:
-  - name: synth
+  - name: macos
     image: ghcr.io/example/synth:latest
     perWorker: 1
     cpu: 4
@@ -189,7 +206,7 @@ pools:
 	}
 
 	oc := &fakeReconcileOrchard{workers: []orchard.Worker{{Name: "mac1"}}}
-	cfg := &config.Config{Fleet: fleetPath}
+	cfg := &config.Config{Fleet: fleetPath, Nomad: config.Endpoint{URL: "http://100.101.229.60:4646"}}
 	status := &server.FleetReconcileStatus{}
 
 	loop := newFleetReconcileLoop(cfg, oc, status)
@@ -200,6 +217,9 @@ pools:
 	}
 	if oc.deleteCalls != 0 {
 		t.Fatalf("after first tick: deleteCalls = %d, want 0", oc.deleteCalls)
+	}
+	if !strings.Contains(oc.vms[0].StartupScript, `servers = ["100.101.229.60:4647"]`) {
+		t.Fatalf("serve reconciler did not write the configured Nomad RPC endpoint to the macOS client:\n%s", oc.vms[0].StartupScript)
 	}
 
 	loop.tick(context.Background())
