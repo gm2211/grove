@@ -6,7 +6,7 @@
 packer {
   required_plugins {
     tart = {
-      version = ">= 1.13.0"
+      version = "= 1.21.0"
       source  = "github.com/cirruslabs/tart"
     }
   }
@@ -14,14 +14,14 @@ packer {
 
 variable "base_image" {
   type        = string
-  default     = "ghcr.io/cirruslabs/macos-sequoia-xcode:latest"
-  description = "OCI reference of the Tart base image to clone from. Must already have Xcode installed (see cirruslabs/macos-image-templates)."
+  default     = "ghcr.io/cirruslabs/macos-tahoe-vanilla@sha256:eeec54bfe1f076e27786c5d92b89187a05b1d109b5071eb2dcdf02d596e34640"
+  description = "OCI reference of the Tart base image to clone from. The default and host-Xcode profiles share a minimal Tahoe image. Use xcode.pkrvars.hcl for bundled Xcode."
 }
 
 variable "vm_name" {
   type        = string
   default     = "grove-macos-worker"
-  description = "Local Tart VM name produced by this build. Pushed to ghcr.io/gm2211/grove-macos-worker:<tag> as a separate `tart push` step — see docs/IMAGES.md."
+  description = "Local Tart VM name produced by this build. Each explicit profile uses a separate name."
 }
 
 variable "cpu_count" {
@@ -35,8 +35,16 @@ variable "memory_gb" {
 }
 
 variable "disk_size_gb" {
-  type    = number
-  default = 150
+  type = number
+  # The upstream vanilla template uses 50 GB. Keep 10 GB of
+  # headroom for Grove's Nomad/Tailscale and general worker tools.
+  default = 60
+}
+
+variable "xcode_profile" {
+  type        = bool
+  default     = false
+  description = "Enable Xcode license and first-launch setup. Set only through xcode.pkrvars.hcl."
 }
 
 variable "ssh_username" {
@@ -51,33 +59,61 @@ variable "ssh_password" {
 }
 
 source "tart-cli" "macos" {
-  vm_base_name = var.base_image
-  vm_name      = var.vm_name
-  cpu_count    = var.cpu_count
-  memory_gb    = var.memory_gb
-  disk_size_gb = var.disk_size_gb
-  headless     = true
-  ssh_username = var.ssh_username
-  ssh_password = var.ssh_password
-  ssh_timeout  = "120s"
+  vm_base_name     = var.base_image
+  vm_name          = var.vm_name
+  cpu_count        = var.cpu_count
+  memory_gb        = var.memory_gb
+  disk_size_gb     = var.disk_size_gb
+  headless         = true
+  ssh_username     = var.ssh_username
+  ssh_password     = var.ssh_password
+  ssh_timeout      = "120s"
+  pull_concurrency = 8
 }
 
 build {
   sources = ["source.tart-cli.macos"]
 
   # --- verify inherited image properties -----------------------------------------------------
-  # cirruslabs/macos-image-templates' xcode variant is built FROM macos-sequoia-base, which already
-  # ships auto-login for `admin` and passwordless sudo for the `admin` group. We only assert both
+  # The upstream vanilla and Xcode variants ship auto-login for `admin` and passwordless
+  # sudo for the `admin` group. We only assert both
   # hold rather than reconfigure them, so a base-image change that drops either fails the build
   # loudly instead of silently shipping an image that needs a password at the console.
   provisioner "shell" {
     inline = [
       "set -eu",
-      "echo '==> verifying passwordless sudo for admin (inherited from macos-sequoia-base)'",
+      "echo '==> verifying passwordless sudo for admin (inherited from the selected CirrusLabs base)'",
       "sudo -n true || (echo 'FATAL: admin cannot sudo without a password; base image changed?' && exit 1)",
-      "echo '==> verifying auto-login is configured (inherited from macos-sequoia-base)'",
+      "echo '==> verifying auto-login is configured (inherited from the selected CirrusLabs base)'",
       "defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser || (echo 'FATAL: autoLoginUser not set; base image changed?' && exit 1)",
     ]
+  }
+
+  # Vanilla has no CI toolchain. Install CLT/Homebrew and only the guest transport first.
+  # The script also works with a pre-provisioned full-Xcode base.
+  provisioner "shell" {
+    script = "scripts/bootstrap-vanilla.sh"
+  }
+
+  provisioner "file" {
+    source      = "files/tart-guest-daemon.plist"
+    destination = "/tmp/tart-guest-daemon.plist"
+  }
+  provisioner "file" {
+    source      = "files/tart-guest-agent.plist"
+    destination = "/tmp/tart-guest-agent.plist"
+  }
+  provisioner "shell" {
+    inline = [
+      "sudo install -o root -g wheel -m 0644 /tmp/tart-guest-daemon.plist /Library/LaunchDaemons/org.cirruslabs.tart-guest-daemon.plist",
+      "sudo install -o root -g wheel -m 0644 /tmp/tart-guest-agent.plist /Library/LaunchAgents/org.cirruslabs.tart-guest-agent.plist",
+      "rm /tmp/tart-guest-daemon.plist /tmp/tart-guest-agent.plist",
+    ]
+  }
+
+  provisioner "shell" {
+    environment_vars = ["GROVE_XCODE_PROFILE=${var.xcode_profile}"]
+    script           = "scripts/verify-xcode-profile.sh"
   }
 
   # --- Homebrew toolchain ---------------------------------------------------------------------
@@ -85,15 +121,15 @@ build {
     inline = [
       "set -eu",
       # Packer's SSH session is a non-login shell: Homebrew's /opt/homebrew/bin is NOT on PATH
-      # there (only in login shells via /etc/paths.d). Put it first explicitly, and install
-      # Homebrew if the base image somehow lacks it.
+      # there (only in login shells via /etc/paths.d). Put it first explicitly. Bootstrap above
+      # owns CLT and Homebrew installation; do not introduce a second moving installer URL.
       "export PATH=/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-      "if ! command -v brew >/dev/null 2>&1; then echo '==> Homebrew missing, installing'; NONINTERACTIVE=1 /bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"; fi",
+      "xcrun --find clang >/dev/null 2>&1 || { echo 'FATAL: Apple Command Line Tools are missing. Homebrew needs them if any formula must build from source; install with xcode-select --install, then retry.'; exit 1; }",
+      "command -v brew >/dev/null 2>&1 || { echo 'FATAL: vanilla bootstrap did not install Homebrew'; exit 1; }",
       "export HOMEBREW_NO_AUTO_UPDATE=1",
       "export HOMEBREW_NO_INSTALL_CLEANUP=1",
-      "echo '==> installing nomad, git, gh, jq, node, python'",
-      "brew tap hashicorp/tap",
-      "brew install hashicorp/tap/nomad git gh jq node python@3.12",
+      "echo '==> installing git, gh, jq, node, python'",
+      "brew install git gh jq node python@3.12",
       # Tailscale: install the standalone (non-App-Store) build via the `tailscale` brew FORMULA,
       # not the `tailscale-app` CASK. The cask is the sandboxed Mac-App-Store-equivalent GUI build
       # that only starts once a user is logged into the GUI session; the formula ships a plain
@@ -104,6 +140,34 @@ build {
       "echo '==> installing tailscale (brew formula, not cask)'",
       "brew install tailscale",
       "sudo /opt/homebrew/bin/brew services start tailscale || true", # tailscaled itself; `tailscale up` (join) is done by the fleet startup script with an ephemeral auth key.
+    ]
+  }
+
+  # Native ARM64 Nomad with the pinned VM topology fix. Built once on the image builder;
+  # compiler/source/module caches never enter the worker image.
+  provisioner "file" {
+    source      = "artifacts/nomad"
+    destination = "/tmp/grove-nomad"
+  }
+  provisioner "file" {
+    source      = "artifacts/metadata.json"
+    destination = "/tmp/grove-nomad-metadata.json"
+  }
+  provisioner "file" {
+    source      = "artifacts/NOMAD-LICENSE.txt"
+    destination = "/tmp/grove-nomad-LICENSE.txt"
+  }
+  provisioner "shell" {
+    inline = [
+      "set -eu",
+      "export PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+      "test \"$(shasum -a 256 /tmp/grove-nomad | awk '{print $1}')\" = \"$(jq -r .binary_sha256 /tmp/grove-nomad-metadata.json)\"",
+      "sudo mkdir -p /usr/local/bin /usr/local/share/grove",
+      "sudo install -o root -g wheel -m 0755 /tmp/grove-nomad /usr/local/bin/nomad",
+      "sudo install -o root -g wheel -m 0644 /tmp/grove-nomad-metadata.json /usr/local/share/grove/nomad-build.json",
+      "sudo install -o root -g wheel -m 0644 /tmp/grove-nomad-LICENSE.txt /usr/local/share/grove/NOMAD-LICENSE.txt",
+      "rm /tmp/grove-nomad /tmp/grove-nomad-metadata.json /tmp/grove-nomad-LICENSE.txt",
+      "/usr/local/bin/nomad version",
     ]
   }
 
@@ -168,13 +232,23 @@ build {
   }
 
   # --- pre-warm Xcode so the first job doesn't pay the license/first-launch tax ----------------
+  dynamic "provisioner" {
+    for_each = var.xcode_profile ? [true] : []
+    labels   = ["shell"]
+    content {
+      inline = [
+        "set -eu",
+        "command -v xcodebuild >/dev/null 2>&1 || { echo 'FATAL: Xcode profile selected but xcodebuild is unavailable in the configured base image.'; exit 1; }",
+        "echo '==> accepting Xcode license and running first-launch package installs'",
+        "sudo xcodebuild -license accept",
+        "sudo xcodebuild -runFirstLaunch",
+      ]
+    }
+  }
+
+  # Never publish an image whose Nomad agent only appears loaded but cannot schedule work.
   provisioner "shell" {
-    inline = [
-      "set -eu",
-      "echo '==> accepting Xcode license and running first-launch package installs'",
-      "sudo xcodebuild -license accept",
-      "sudo xcodebuild -runFirstLaunch",
-    ]
+    script = "scripts/verify-nomad.sh"
   }
 
   # --- cleanup ---------------------------------------------------------------------------------

@@ -49,6 +49,15 @@ type VM struct {
 	StartupScript   string        `json:"startupScript,omitempty"`
 	ShutdownScript  string        `json:"shutdownScript,omitempty"`
 	ShutdownTimeout time.Duration `json:"shutdownTimeout,omitempty"`
+	HostDirs        []HostDir     `json:"hostDirs,omitempty"`
+}
+
+// HostDir is a host directory mounted into the guest through Orchard/Tart. It should only be
+// populated for a deliberately trusted worker and an explicit read-only mount.
+type HostDir struct {
+	Name     string
+	Path     string
+	ReadOnly bool
 }
 
 // VMSpec is what grove asks Orchard to create.
@@ -74,6 +83,7 @@ type VMSpec struct {
 	ShutdownScript  string
 	ShutdownTimeout time.Duration
 	TTL             time.Duration
+	HostDirs        []HostDir
 }
 
 // ExecOptions controls a remote command.

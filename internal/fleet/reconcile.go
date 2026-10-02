@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"sort"
 	"time"
 
@@ -235,7 +236,16 @@ func (r *Reconciler) vmSpec(pool Pool, worker, name string) orchard.VMSpec {
 		ShutdownScript:  shutdown,
 		ShutdownTimeout: shutdownTimeout,
 		TTL:             pool.TTL.Std(),
+		HostDirs:        hostDirsForPool(pool),
 	}
+}
+
+func hostDirsForPool(pool Pool) []orchard.HostDir {
+	if pool.HostXcode == nil {
+		return nil
+	}
+
+	return []orchard.HostDir{{Name: "grove-xcode.app", Path: pool.HostXcode.Path, ReadOnly: true}}
 }
 
 func findVM(vms []orchard.VM, name string) (orchard.VM, bool) {
@@ -270,7 +280,8 @@ func specDrifted(desired orchard.VMSpec, existing orchard.VM) bool {
 		desired.StartupScript != existing.StartupScript ||
 		desired.ShutdownScript != existing.ShutdownScript ||
 		desired.ShutdownTimeout != existing.ShutdownTimeout ||
-		desired.TTL != existing.TTL {
+		desired.TTL != existing.TTL ||
+		!slices.Equal(desired.HostDirs, existing.HostDirs) {
 		return true
 	}
 

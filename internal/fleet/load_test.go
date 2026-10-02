@@ -3,6 +3,7 @@ package fleet
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -82,6 +83,78 @@ pools:
 	}
 	if got := spec.Pools[1].JobMemoryOrDefault(); got != DefaultJobMemory {
 		t.Errorf("JobMemoryOrDefault() = %d, want the default %d", got, DefaultJobMemory)
+	}
+}
+
+func TestLoad_HostXcode(t *testing.T) {
+	path := writeTempSpec(t, `
+pools:
+  - name: macos
+    image: ghcr.io/example/macos:latest
+    perWorker: 1
+    hostXcode:
+      path: /Applications/Xcode_27.0.app
+      buildVersion: 17A123
+`)
+
+	spec, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := spec.Pools[0].HostXcode
+	if got == nil || got.Path != "/Applications/Xcode_27.0.app" || got.BuildVersion != "17A123" {
+		t.Fatalf("unexpected hostXcode config: %+v", got)
+	}
+}
+
+func TestSpecValidate_HostXcodeOnlyOnMacOSPool(t *testing.T) {
+	spec := Spec{Pools: []Pool{{
+		Name: "linux", Image: "image", PerWorker: 1,
+		HostXcode: &HostXcodeConfig{Path: "/Applications/Xcode.app", BuildVersion: "17A123"},
+	}}}
+	if err := spec.Validate(); err == nil || !strings.Contains(err.Error(), "only supported for the macos pool") {
+		t.Fatalf("Validate() error = %v, want macos-pool restriction", err)
+	}
+}
+
+func TestSpecValidate_HostXcodePath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "relative", path: "Applications/Xcode.app"},
+		{name: "not app", path: "/Applications/Xcode"},
+		{name: "traversal", path: "/Applications/../Xcode.app"},
+		{name: "unclean", path: "/Applications//Xcode.app"},
+		{name: "colon", path: "/Applications/Xcode:27.app"},
+		{name: "comma", path: "/Applications/Xcode,27.app"},
+		{name: "control", path: "/Applications/Xcode\x7f.app"},
+		{name: "newline", path: "/Applications/Xcode\n.app"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := Spec{Pools: []Pool{{
+				Name: "macos", Image: "image", PerWorker: 1,
+				HostXcode: &HostXcodeConfig{Path: tt.path, BuildVersion: "17A123"},
+			}}}
+			if err := spec.Validate(); err == nil {
+				t.Fatalf("Validate() accepted hostXcode path %q", tt.path)
+			}
+		})
+	}
+}
+
+func TestSpecValidate_HostXcodeBuildVersion(t *testing.T) {
+	for _, buildVersion := range []string{"", "17A.123", "17A:123", "17A123\n"} {
+		t.Run(buildVersion, func(t *testing.T) {
+			spec := Spec{Pools: []Pool{{
+				Name: "macos", Image: "image", PerWorker: 1,
+				HostXcode: &HostXcodeConfig{Path: "/Applications/Xcode.app", BuildVersion: buildVersion},
+			}}}
+			if err := spec.Validate(); err == nil {
+				t.Fatalf("Validate() accepted build version %q", buildVersion)
+			}
+		})
 	}
 }
 

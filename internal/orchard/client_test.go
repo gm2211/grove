@@ -131,6 +131,37 @@ func TestVMToV1_NoTTL(t *testing.T) {
 	}
 }
 
+func TestVMToV1_HostDirsWireFormat(t *testing.T) {
+	vm := vmToV1(VMSpec{
+		Name: "macos-mac1-0",
+		HostDirs: []HostDir{{
+			Name:     "grove-xcode.app",
+			Path:     "/Applications/Xcode.app",
+			ReadOnly: true,
+		}},
+	})
+
+	encoded, err := json.Marshal(vm)
+	if err != nil {
+		t.Fatalf("marshal Orchard VM: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"hostDirs":[{"name":"grove-xcode.app","path":"/Applications/Xcode.app","ro":true}]`) {
+		t.Fatalf("want Orchard hostDirs/ro wire fields, got %s", encoded)
+	}
+}
+
+func TestVMFromV1_HostDirs(t *testing.T) {
+	out := vmFromV1(v1.VM{
+		Meta:     v1.Meta{Name: "macos-mac1-0"},
+		HostDirs: []v1.HostDir{{Name: "grove-xcode.app", Path: "/Applications/Xcode.app", ReadOnly: true}},
+	})
+
+	want := []HostDir{{Name: "grove-xcode.app", Path: "/Applications/Xcode.app", ReadOnly: true}}
+	if len(out.HostDirs) != 1 || out.HostDirs[0] != want[0] {
+		t.Fatalf("want host directory %+v, got %+v", want, out.HostDirs)
+	}
+}
+
 func TestVMFromV1_TTL(t *testing.T) {
 	v := v1.VM{Meta: v1.Meta{Name: "vm1"}, TTLSeconds: 3600}
 
@@ -367,6 +398,11 @@ func TestClient_EndToEnd(t *testing.T) {
 		Name:   "linux-mac1-0",
 		Worker: "mac1",
 		Image:  "ghcr.io/example/linux:latest",
+		HostDirs: []HostDir{{
+			Name:     "grove-xcode.app",
+			Path:     "/Applications/Xcode.app",
+			ReadOnly: true,
+		}},
 	})
 	if err != nil {
 		t.Fatalf("CreateVM: %v", err)
@@ -374,6 +410,10 @@ func TestClient_EndToEnd(t *testing.T) {
 
 	if created.Name != "linux-mac1-0" || created.Status != string(v1.VMStatusRunning) {
 		t.Fatalf("unexpected created VM: %+v", created)
+	}
+	if len(created.HostDirs) != 1 || created.HostDirs[0].Name != "grove-xcode.app" ||
+		created.HostDirs[0].Path != "/Applications/Xcode.app" || !created.HostDirs[0].ReadOnly {
+		t.Fatalf("CreateVM lost the read-only Orchard host directory: %+v", created.HostDirs)
 	}
 
 	got, err := c.GetVM(ctx, "linux-mac1-0")

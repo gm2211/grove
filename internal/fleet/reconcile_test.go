@@ -489,6 +489,10 @@ func TestSpecDrifted_FieldByField(t *testing.T) {
 		{"shutdownScript changed", "running", func(vm orchard.VM) orchard.VM { vm.ShutdownScript += "\n# extra"; return vm }, true},
 		{"shutdownTimeout changed", "running", func(vm orchard.VM) orchard.VM { vm.ShutdownTimeout += time.Minute; return vm }, true},
 		{"ttl changed", "running", func(vm orchard.VM) orchard.VM { vm.TTL += time.Hour; return vm }, true},
+		{"host directory mount changed", "running", func(vm orchard.VM) orchard.VM {
+			vm.HostDirs = []orchard.HostDir{{Name: "grove-xcode.app", Path: "/Applications/Other.app", ReadOnly: true}}
+			return vm
+		}, true},
 		{
 			// The bug this guards against: a freshly created VM is "pending" until Orchard
 			// actually schedules it, and its AssignedCPU/AssignedMemory (what CPU/Memory map
@@ -528,6 +532,19 @@ func TestSpecDrifted_FieldByField(t *testing.T) {
 				t.Errorf("specDrifted() = %v, want %v", got, c.drifted)
 			}
 		})
+	}
+}
+
+func TestVMspec_HostXcodeAddsFixedReadOnlyMount(t *testing.T) {
+	pool := basePool()
+	pool.HostXcode = &HostXcodeConfig{Path: "/Applications/Xcode.app", BuildVersion: "17A123"}
+	spec := (&Reconciler{}).vmSpec(pool, "mac1", VMName(pool.Name, "mac1", 0))
+	want := []orchard.HostDir{{Name: "grove-xcode.app", Path: "/Applications/Xcode.app", ReadOnly: true}}
+	if len(spec.HostDirs) != 1 || spec.HostDirs[0] != want[0] {
+		t.Fatalf("want fixed read-only Xcode mount %+v, got %+v", want, spec.HostDirs)
+	}
+	if plain := (&Reconciler{}).vmSpec(basePool(), "mac1", VMName(pool.Name, "mac1", 0)); len(plain.HostDirs) != 0 {
+		t.Fatalf("expected no host directory mount for an unconfigured pool, got %+v", plain.HostDirs)
 	}
 }
 

@@ -3,7 +3,9 @@ package fleet
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -12,6 +14,8 @@ import (
 // ParseVMName can unambiguously split a VM name "<pool>-<worker>-<n>" on the first "-" even
 // though worker names (real hostnames) commonly contain both.
 var poolNameRE = regexp.MustCompile(`^[a-z][a-z0-9]*$`)
+
+var hostXcodeBuildVersionRE = regexp.MustCompile(`^[A-Za-z0-9]+$`)
 
 // Load reads and validates a fleet.yaml spec from path.
 func Load(path string) (*Spec, error) {
@@ -61,7 +65,37 @@ func (s *Spec) Validate() error {
 		if p.PerWorker < 1 {
 			return fmt.Errorf("pool %q: perWorker must be >= 1, got %d", p.Name, p.PerWorker)
 		}
+
+		if p.HostXcode != nil {
+			if p.Name != "macos" {
+				return fmt.Errorf("pool %q: hostXcode is only supported for the macos pool", p.Name)
+			}
+			if err := validateHostXcode(*p.HostXcode); err != nil {
+				return fmt.Errorf("pool %q: %w", p.Name, err)
+			}
+		}
 	}
 
+	return nil
+}
+
+func validateHostXcode(config HostXcodeConfig) error {
+	if config.Path == "" {
+		return fmt.Errorf("hostXcode.path is required")
+	}
+	if !filepath.IsAbs(config.Path) || filepath.Clean(config.Path) != config.Path {
+		return fmt.Errorf("hostXcode.path must be a clean absolute .app path")
+	}
+	if filepath.Ext(config.Path) != ".app" {
+		return fmt.Errorf("hostXcode.path must end in .app")
+	}
+	for _, r := range config.Path {
+		if r == ':' || r == ',' || unicode.IsControl(r) {
+			return fmt.Errorf("hostXcode.path must not contain colons, commas, or control characters")
+		}
+	}
+	if config.BuildVersion == "" || !hostXcodeBuildVersionRE.MatchString(config.BuildVersion) {
+		return fmt.Errorf("hostXcode.buildVersion is required and must contain only ASCII letters and digits")
+	}
 	return nil
 }
