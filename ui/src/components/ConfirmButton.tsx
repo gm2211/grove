@@ -15,7 +15,7 @@ export function ConfirmButton({
   label: ReactNode;
   confirmLabel?: ReactNode;
   onConfirm: () => void;
-  variant?: "danger" | "default" | "primary";
+  variant?: "danger" | "default" | "primary" | "ghost";
   size?: "md" | "sm" | "icon";
   disabled?: boolean;
   className?: string;

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../api/client";
 import { Button } from "./Button";
+import { ServerIcon } from "./Icons";
 import { formatDurationMs } from "../lib/format";
 
 /**
@@ -37,11 +38,15 @@ export function PendingJoins() {
 
   return (
     <section
-      className="rounded border p-3"
-      style={{ borderColor: "var(--status-lost)", background: "var(--bg-elevated)" }}
+      className="overflow-hidden rounded-xl border"
+      style={{
+        borderColor: "color-mix(in srgb, var(--status-lost) 45%, var(--border))",
+        background: "color-mix(in srgb, var(--status-lost) 6%, var(--bg-elevated))",
+      }}
     >
-      <div className="flex items-baseline justify-between gap-3">
-        <h2 className="text-sm font-semibold">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-4 pt-3 pb-2">
+        <h2 className="flex items-center gap-2 text-sm font-semibold">
+          <span className="h-2 w-2 rounded-full" style={{ background: "var(--status-lost)" }} />
           {data.length === 1 ? "A Mac is waiting to join" : `${data.length} Macs are waiting to join`}
         </h2>
         <span className="text-xs" style={{ color: "var(--fg-muted)" }}>
@@ -49,16 +54,28 @@ export function PendingJoins() {
         </span>
       </div>
 
-      <ul className="mt-2 flex flex-col gap-1.5">
+      <ul className="flex flex-col px-2 pb-2">
         {data.map((join) => {
           const expiresInMs = new Date(join.expiresAt).getTime() - Date.now();
           return (
-            <li key={join.code} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-              <span className="font-medium">{join.name}</span>
+            <li
+              key={join.code}
+              className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg px-2 py-2"
+              style={{ background: "var(--bg-elevated)" }}
+            >
+              <span className="flex items-center gap-2 font-medium">
+                <ServerIcon size={15} />
+                {join.name}
+              </span>
               <span className="mono text-xs" style={{ color: "var(--fg-muted)" }}>
                 {join.tailnetIp}
               </span>
-              <span className="mono text-xs tracking-wider">{join.code}</span>
+              <span
+                className="mono rounded-md px-1.5 py-px text-xs font-semibold tracking-widest"
+                style={{ background: "var(--bg-inset)" }}
+              >
+                {join.code}
+              </span>
               <span className="text-xs" style={{ color: "var(--fg-faint)" }}>
                 expires in {formatDurationMs(expiresInMs)}
               </span>
@@ -77,7 +94,7 @@ export function PendingJoins() {
       </ul>
 
       {approve.error ? (
-        <p className="mt-2 text-xs" style={{ color: "var(--status-failed)" }}>
+        <p className="px-4 pb-3 text-xs" style={{ color: "var(--status-failed)" }}>
           Could not approve: {String(approve.error)}
         </p>
       ) : null}

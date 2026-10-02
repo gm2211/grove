@@ -28,34 +28,24 @@ export function SlotBar({
     const pct = total > 0 ? (clampedUsed / total) * 100 : 0;
     return (
       <div
-        className="h-1.5 w-full overflow-hidden rounded-full"
+        className="h-2 w-full overflow-hidden rounded-full"
         style={{ background: "var(--bg-inset)" }}
         role="img"
         aria-label={`${used} of ${total} slots used`}
       >
-        <div
-          className="h-full rounded-full transition-[width]"
-          style={{ width: `${pct}%`, background: color }}
-        />
+        <div className="h-full rounded-full transition-[width]" style={{ width: `${pct}%`, background: color }} />
       </div>
     );
   }
 
   const segments = Math.max(total, 1);
   return (
-    <div
-      className="flex flex-1 items-center gap-0.5"
-      role="img"
-      aria-label={`${used} of ${total} slots used`}
-    >
+    <div className="flex flex-1 items-center gap-0.5" role="img" aria-label={`${used} of ${total} slots used`}>
       {Array.from({ length: segments }).map((_, i) => (
         <span
           key={i}
-          className="h-1.5 flex-1 rounded-sm"
-          style={{
-            background: i < clampedUsed ? color : "var(--bg-inset)",
-            border: "1px solid var(--border)",
-          }}
+          className="h-2 flex-1 rounded-full"
+          style={{ background: i < clampedUsed ? color : "var(--bg-inset)" }}
         />
       ))}
     </div>
