@@ -58,6 +58,7 @@ func TestControlPlanePlan_DarwinRendersConfigAndLaunchAgents(t *testing.T) {
 	scriptWorkerEnrollmentToken(r, home)
 	scriptTailscaleUp(r)
 	opts := testControlPlaneOptions(home, "darwin")
+	scriptPinnedDownloads(r, opts)
 
 	steps, err := BuildPlan(r, opts, io.Discard)
 	if err != nil {
@@ -170,6 +171,7 @@ func TestControlPlanePlan_TrustsHashicorpAndMinIOTapsBeforeInstalling(t *testing
 	scriptTapInfo(r, "hashicorp/tap", false, false)
 	scriptTapInfo(r, "minio/stable", false, false)
 	opts := testControlPlaneOptions(home, "darwin")
+	scriptPinnedDownloads(r, opts)
 
 	steps, err := BuildPlan(r, opts, io.Discard)
 	if err != nil {
@@ -214,6 +216,7 @@ func TestControlPlanePlan_SkipsTrustWhenTapsAlreadyTrusted(t *testing.T) {
 	scriptTapInfo(r, "hashicorp/tap", true, true)
 	scriptTapInfo(r, "minio/stable", true, true)
 	opts := testControlPlaneOptions(home, "darwin")
+	scriptPinnedDownloads(r, opts)
 
 	steps, err := BuildPlan(r, opts, io.Discard)
 	if err != nil {
@@ -244,6 +247,7 @@ func TestControlPlanePlan_LinuxDoesNotTrustTaps(t *testing.T) {
 	scriptWorkerEnrollmentToken(r, home)
 	scriptTailscaleUp(r)
 	opts := testControlPlaneOptions(home, "linux")
+	scriptPinnedDownloads(r, opts)
 
 	steps, err := BuildPlan(r, opts, io.Discard)
 	if err != nil {
@@ -268,6 +272,7 @@ func TestControlPlanePlan_LinuxRendersSystemdUnits(t *testing.T) {
 	scriptWorkerEnrollmentToken(r, home)
 	scriptTailscaleUp(r)
 	opts := testControlPlaneOptions(home, "linux")
+	scriptPinnedDownloads(r, opts)
 
 	steps, err := BuildPlan(r, opts, io.Discard)
 	if err != nil {
@@ -295,6 +300,7 @@ func TestControlPlanePlan_DryRunAppliesNothing(t *testing.T) {
 	r := NewFakeRunner()
 	scriptTailscaleUp(r)
 	opts := testControlPlaneOptions(home, "darwin")
+	scriptPinnedDownloads(r, opts)
 
 	steps, err := BuildPlan(r, opts, io.Discard)
 	if err != nil {

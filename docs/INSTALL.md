@@ -32,6 +32,30 @@ install gm2211/grove/grove` — the grove repo doubles as its own Homebrew tap (
 `homebrew-tap` repo, no personal access token). Once installed, upgrade in place any time with
 `brew upgrade grove`.
 
+On Linux the script resolves the latest release to a tag (or uses `GROVE_VERSION=vX.Y.Z` if set),
+downloads that release's tarball **and** its `checksums.txt`, and refuses to install unless the
+tarball's SHA-256 matches. When it has to install Homebrew first, it fetches Homebrew's installer
+at a pinned commit and checks it against a pinned SHA-256 before running it.
+
+### Verified downloads
+
+Nothing `grove install` downloads with `curl` is installed unverified. Each artifact is fetched at
+an explicit version into `~/.cache/grove/downloads/`, hashed, compared against the SHA-256 grove
+embeds for that version and platform (`internal/install/download.go`), and installed only on a
+match; a mismatch deletes the download and fails the step.
+
+| What | Pinned version | Where |
+|---|---|---|
+| Nomad (Linux control plane) | 2.0.7 | `releases.hashicorp.com` zip |
+| MinIO server (Linux control plane) | `RELEASE.2025-09-06T17-38-46Z` | `dl.min.io` archive |
+| MinIO client `mc` → `~/.local/bin/grove-mc` (control plane) | `RELEASE.2025-08-13T08-35-41Z` | `dl.min.io` archive |
+| Homebrew installer (worker, when `brew` is missing) | `Homebrew/install@35da6871c4be` | `raw.githubusercontent.com` |
+
+On macOS, Nomad and MinIO still come from their Homebrew taps (`hashicorp/tap`, `minio/stable`);
+Homebrew verifies each formula's own pinned sha256. The Homebrew installer, once verified, clones
+Homebrew itself from git as it always does. Bumping a pin means changing the version and every
+per-platform hash together — the file's header says where each upstream digest comes from.
+
 ## 2. Set up this machine
 
 ### Worker (every Mac that runs jobs)

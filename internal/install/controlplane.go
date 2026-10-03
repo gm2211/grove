@@ -220,9 +220,9 @@ func controlPlaneDependencySteps(r Runner, opts Options, out io.Writer, destOrch
 
 func nomadInstallDescription(isDarwin bool) string {
 	if isDarwin {
-		return "Install Nomad (`brew install hashicorp/tap/nomad`)."
+		return "Install Nomad (`brew install hashicorp/tap/nomad`; Homebrew verifies the formula's sha256)."
 	}
-	return "Install Nomad by downloading the HashiCorp release zip for this arch to ~/.local/bin."
+	return fmt.Sprintf("Install Nomad %s to ~/.local/bin from releases.hashicorp.com, verifying the zip against grove's pinned SHA-256 before unpacking.", NomadVersion)
 }
 
 func installNomad(ctx context.Context, r Runner, opts Options, isDarwin bool) error {
@@ -230,14 +230,14 @@ func installNomad(ctx context.Context, r Runner, opts Options, isDarwin bool) er
 		_, _, err := r.Run(ctx, "brew", "install", "hashicorp/tap/nomad")
 		return err
 	}
-	return downloadHashicorpBinary(ctx, r, opts, "nomad")
+	return installPinnedNomad(ctx, r, opts)
 }
 
 func minioInstallDescription(isDarwin bool) string {
 	if isDarwin {
-		return "Install MinIO (`brew install minio/stable/minio`)."
+		return "Install MinIO (`brew install minio/stable/minio`; Homebrew verifies the formula's sha256)."
 	}
-	return "Install MinIO by downloading the linux binary from https://dl.min.io to ~/.local/bin."
+	return fmt.Sprintf("Install MinIO %s to ~/.local/bin from dl.min.io, verifying it against grove's pinned SHA-256.", MinIOVersion)
 }
 
 func installMinIO(ctx context.Context, r Runner, opts Options, isDarwin bool) error {
@@ -245,50 +245,34 @@ func installMinIO(ctx context.Context, r Runner, opts Options, isDarwin bool) er
 		_, _, err := r.Run(ctx, "brew", "install", "minio/stable/minio")
 		return err
 	}
-	destDir := orchardBinDir(opts) // ~/.local/bin, shared by all downloaded binaries
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
+	d, err := minioDownload(opts)
+	if err != nil {
 		return err
 	}
-	dest := filepath.Join(destDir, "minio")
-	downloadURL := fmt.Sprintf("https://dl.min.io/server/minio/release/linux-%s/minio", opts.goarch())
-	if _, _, err := r.Run(ctx, "curl", "-fsSL", "-o", dest, downloadURL); err != nil {
-		return fmt.Errorf("download minio: %w", err)
-	}
-	// chmod goes through r too (not os.Chmod) so the whole install is inert under a FakeRunner:
-	// nothing here actually touches the filesystem outside of directories grove itself owns.
-	_, _, err := r.Run(ctx, "chmod", "+x", dest)
-	return err
+	// ~/.local/bin is shared by every binary grove downloads.
+	return installVerifiedBinary(ctx, r, opts, d, filepath.Join(orchardBinDir(opts), "minio"))
 }
 
-// downloadHashicorpBinary fetches a HashiCorp product's "latest" release zip for this GOOS/GOARCH
-// and unzips the single binary into ~/.local/bin. Used for Nomad on Linux (macOS uses brew).
-func downloadHashicorpBinary(ctx context.Context, r Runner, opts Options, product string) error {
+// installPinnedNomad fetches the pinned Nomad release zip for this GOOS/GOARCH, verifies it, and
+// unzips the single binary into ~/.local/bin. Used for Nomad on Linux (macOS uses brew).
+func installPinnedNomad(ctx context.Context, r Runner, opts Options) error {
+	d, err := nomadDownload(opts)
+	if err != nil {
+		return err
+	}
+	zipPath, err := fetchVerified(ctx, r, opts, d)
+	if err != nil {
+		return err
+	}
+	unpacked := filepath.Join(downloadDir(opts), "nomad-"+NomadVersion)
+	if _, _, err := r.Run(ctx, "unzip", "-o", zipPath, "nomad", "-d", unpacked); err != nil {
+		return fmt.Errorf("unpack %s: %w", zipPath, err)
+	}
 	destDir := orchardBinDir(opts)
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.MkdirTemp("", "grove-"+product+"-")
-	if err != nil {
-		return err
-	}
-	zipPath := filepath.Join(tmp, product+".zip")
-	// releases.hashicorp.com always redirects "latest" version lookups through their JSON index;
-	// checkpoint-style "latest" download links aren't stable, so this relies on `curl` following
-	// the versioned index page grove fetches first.
-	indexURL := fmt.Sprintf("https://api.releases.hashicorp.com/v1/releases/%s/latest", product)
-	shell := fmt.Sprintf(
-		`set -e
-version=$(curl -fsSL %q | tr ',' '\n' | grep -m1 '"version"' | cut -d'"' -f4)
-arch=%s
-os=%s
-curl -fsSL -o %q "https://releases.hashicorp.com/%s/${version}/%s_${version}_${os}_${arch}.zip"
-unzip -o %q -d %q
-`, indexURL, opts.goarch(), opts.goos(), zipPath, product, product, zipPath, tmp)
-	if _, _, err := r.Run(ctx, "/bin/sh", "-c", shell); err != nil {
-		return fmt.Errorf("download %s: %w", product, err)
-	}
-	shell2 := fmt.Sprintf("mv %q %q && chmod +x %q", filepath.Join(tmp, product), filepath.Join(destDir, product), filepath.Join(destDir, product))
-	_, _, err = r.Run(ctx, "/bin/sh", "-c", shell2)
+	_, _, err = r.Run(ctx, "install", "-m", "0755", filepath.Join(unpacked, "nomad"), filepath.Join(destDir, "nomad"))
 	return err
 }
 
