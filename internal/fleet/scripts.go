@@ -49,6 +49,8 @@ func buildStartupScript(pool Pool, worker, vmName string, opts Options) string {
 	}
 
 	if pool.Name == "macos" {
+		b.WriteString(macosJobUserScript)
+		b.WriteString("\n")
 		if opts.NomadRPCAddress != "" {
 			fmt.Fprintf(&b, "grove_priv mkdir -p /usr/local/etc/nomad.d\ngrove_priv tee /usr/local/etc/nomad.d/grove-rpc.hcl >/dev/null <<'GROVE_NOMAD_RPC'\nclient {\n  servers = [%s]\n}\nGROVE_NOMAD_RPC\n\n", strconv.Quote(opts.NomadRPCAddress))
 		}
@@ -239,6 +241,39 @@ func shQuote(s string) string {
 // on macOS" for why this is necessary and computed here rather than baked into the image. Orchard
 // executes StartupScript as the configured guest user, so writes under /etc and /usr/local use the
 // noninteractive privilege helper below rather than assuming the guest process is root.
+// MacOSJobUser is the unprivileged account macOS jobs run as (the `user` of the "main" task in
+// nomad/jobs/build.nomad.hcl and agent.nomad.hcl), and MacOSJobHome its home directory, which
+// run.sh exports as HOME.
+const (
+	MacOSJobUser = "_grovejob"
+	MacOSJobHome = "/private/var/grove-job"
+)
+
+// macosJobUserScript creates MacOSJobUser on a macOS VM before its Nomad client can take work:
+// a hidden account with no password and its own group, so a job's script cannot read root's
+// files, other jobs' prestart inputs, or the VM's Nomad and Tailscale state. Idempotent, since it
+// runs on every boot.
+const macosJobUserScript = `# Jobs run as ` + MacOSJobUser + `, never root (see nomad/jobs/*.nomad.hcl).
+if ! dscl . -read /Groups/` + MacOSJobUser + ` >/dev/null 2>&1; then
+  grove_priv dscl . -create /Groups/` + MacOSJobUser + `
+  grove_priv dscl . -create /Groups/` + MacOSJobUser + ` PrimaryGroupID 7460
+  grove_priv dscl . -create /Groups/` + MacOSJobUser + ` Password '*'
+fi
+if ! dscl . -read /Users/` + MacOSJobUser + ` >/dev/null 2>&1; then
+  grove_priv dscl . -create /Users/` + MacOSJobUser + `
+  grove_priv dscl . -create /Users/` + MacOSJobUser + ` UniqueID 7460
+  grove_priv dscl . -create /Users/` + MacOSJobUser + ` PrimaryGroupID 7460
+  grove_priv dscl . -create /Users/` + MacOSJobUser + ` UserShell /bin/bash
+  grove_priv dscl . -create /Users/` + MacOSJobUser + ` NFSHomeDirectory ` + MacOSJobHome + `
+  grove_priv dscl . -create /Users/` + MacOSJobUser + ` RealName "grove job"
+  grove_priv dscl . -create /Users/` + MacOSJobUser + ` Password '*'
+  grove_priv dscl . -create /Users/` + MacOSJobUser + ` IsHidden 1
+fi
+grove_priv mkdir -p ` + MacOSJobHome + `
+grove_priv chown ` + MacOSJobUser + `:` + MacOSJobUser + ` ` + MacOSJobHome + `
+grove_priv chmod 0700 ` + MacOSJobHome + `
+`
+
 const nomadMetaScript = `if [ "$(uname -s)" = "Darwin" ]; then
   grove_meta_file="/usr/local/etc/nomad.d/grove-meta.hcl"
   # Apple Silicon's stock Nomad fingerprinter reports cpu.totalcompute in the single digits of MHz

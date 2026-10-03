@@ -60,7 +60,9 @@ if len(req.Meta) > 0 {
 // artifact_prefix: server-assigned, e.g. the Job.ID, so build artifacts land at a predictable
 // path grove can later present as Artifact.URL.
 meta["artifact_prefix"] = jobID
-payload := []byte(req.Script)
+// build/agent: "grove-payload/1\n" + cloneToken + "\n" + req.Script (only the source task reads
+// it); shell: req.Script. See encodePayload.
+payload := encodePayload(req.Kind, cloneToken, req.Script)
 client.Dispatch(ctx, "grove-"+string(req.Kind)+"-"+req.Pool, meta, payload)
 ```
 
@@ -153,28 +155,35 @@ All three need the **operator** credential, reads included — the status names 
 control plane is currently willing to clone privately.
 
 While it is armed, `internal/dispatch`'s `Submit` asks the store about each build/agent job's
-`repo` and, when it is in scope, adds `GH_TOKEN` to that dispatch's `env_json`, which `run.sh`
-feeds to `gh auth setup-git` before the clone. What is in scope:
+`repo` and, when it is in scope, puts the token in that dispatch's payload, which only the job's
+`source` prestart task receives. What is in scope:
 
 - **hosts** — `github.com` unless you passed `--host` (for GitHub Enterprise).
-- **repos** — any repo on those hosts unless you passed `--repo`; `owner/*` covers one owner.
+- **repos** — exactly the ones you passed with `--repo` (required); `owner/*` covers one owner.
+  A credential armed by an older grove with no repos named covers nothing until re-armed.
 - **`https://` URLs only.** A token does nothing for `git@github.com:owner/repo.git`, so an SSH
   remote is never given one. Use the HTTPS clone URL for private repos.
 - **the caller's own token wins.** A job that already sets `GH_TOKEN` or `GIT_TOKEN` in its `env`
-  keeps its value; the armed credential only fills a gap.
+  keeps its value, and the source task clones with it; the armed credential only fills a gap.
 
 Where the token does and doesn't go:
 
-- It goes into the Nomad **dispatch meta** (`env_json`) for that one job, and into the control
-  plane's own `github.json` (mode 0600, beside `devices.json`).
+- It goes into that one job's Nomad **dispatch payload**, and into the control plane's own
+  `github.json` (mode 0600, beside `devices.json`). Never `env_json` or any dispatch meta: Nomad
+  exports those to every task, including the one running the caller's script.
+- Inside the allocation only the `source` prestart task gets the payload. It closes its own task
+  directory (0700), hands the token to git through its environment and an inline credential
+  helper (never argv, never a config file, never the checkout's `.git/config`), and deletes the
+  payload before `main` starts. `main` runs the caller's script with no path to it; on macOS it
+  also runs as the unprivileged `_grovejob` account, so root-owned files stay out of reach.
 - It is never written to the job history, never part of `GET /jobs/{id}` (the job carries only
   `repoCredentialUsed: true`), and never returned by the sourcing API, which reports a SHA-256
   `tokenFingerprint` instead.
-- **Caveat:** anyone who can read the Nomad job spec (`nomad job inspect <dispatched id>`) or the
-  allocation's environment on the worker can read the token while that job exists — the same is
-  already true of any `env` value a job is dispatched with. Scope the token narrowly (a
-  fine-grained token limited to the repos you named), give it a `--ttl`, and disable it when the
-  run is done.
+- **Caveat:** the dispatched job spec still holds the payload, so anything that can read Nomad's
+  job API can read the token while the job exists. Keep Nomad ACLs on (workers' client APIs bind
+  127.0.0.1, and with ACLs on an anonymous request from inside a job is refused). Scope the token
+  narrowly (a fine-grained, read-only token limited to the repos you named), give it a `--ttl`,
+  and disable it when the run is done.
 
 `--ttl` is the reason this is "on demand" rather than a switch you forget: the credential
 auto-disarms and is wiped from disk the first time anything touches the store after it lapses.
@@ -184,11 +193,16 @@ With no TTL it stays armed until `grove github disable`.
 
 1. Nomad places the allocation on a node whose `meta.pool` (set in the image's `grove-meta.hcl`,
    see docs/IMAGES.md) matches the job's constraint.
-2. The dispatch payload (`req.Script`) is written to `${NOMAD_TASK_DIR}/script.sh`.
-3. A `template`-delivered `run.sh` at `${NOMAD_TASK_DIR}/run.sh` is what the task actually execs:
-   - expands `env_json` into `export`s (`jq`),
-   - (build/agent) `git clone --depth 50 $repo work && cd work && git checkout $ref`, running
-     `gh auth setup-git` first if `GH_TOKEN`/`GIT_TOKEN` is set (so a private HTTPS clone works),
+2. shell: the dispatch payload (`req.Script`) is written to `${NOMAD_TASK_DIR}/script.sh`.
+   build/agent: a `source` prestart task receives the payload instead, writes the script to
+   `${NOMAD_ALLOC_DIR}/data/grove/script.sh`, runs `git clone --depth 50 -- $repo` into
+   `${NOMAD_ALLOC_DIR}/data/grove/work` and `git checkout $ref` there (with the clone token, if
+   any, as described under "Private repositories"), deletes the payload, and records its log and
+   exit code for `main`.
+3. A `template`-delivered `run.sh` at `${NOMAD_TASK_DIR}/run.sh` is what the `main` task execs:
+   - (build/agent) replays the source task's log and exits with its code if it failed,
+   - expands `env_json` into `export`s (`jq`; keys that aren't shell variable names are skipped),
+   - (build/agent) `cd`s into the checkout,
    - runs `script.sh` under `run_with_timeout $T` (see "Portable timeout" below), where
      `T="${timeout_seconds:-3600}"`,
    - (build) uploads `./artifacts/**` via `mc` to `$ARTIFACT_ENDPOINT/$ARTIFACT_BUCKET/<artifact_prefix>/`

@@ -176,6 +176,11 @@ func (s *Store) Enable(opts EnableOptions) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
+	// A credential for "every repository the token can see" hands every job a key to all of
+	// them; arming always names the repositories (owner/name, or owner/* for one owner).
+	if len(repos) == 0 {
+		return Status{}, errors.New("gitauth: name at least one repository (owner/name or owner/*)")
+	}
 	if opts.TTL < 0 {
 		return Status{}, errors.New("gitauth: ttl must be positive")
 	}
@@ -406,7 +411,7 @@ func normalizeRepos(repos []string) ([]string, error) {
 	return out, nil
 }
 
-// parseHTTPSRepo pulls the host and lowercased "owner/name" out of an https(s) clone URL.
+// parseHTTPSRepo pulls the host and lowercased "owner/name" out of an https:// clone URL.
 func parseHTTPSRepo(repoURL string) (host, repo string, ok bool) {
 	repoURL = strings.TrimSpace(repoURL)
 	if repoURL == "" {
@@ -416,7 +421,7 @@ func parseHTTPSRepo(repoURL string) (host, repo string, ok bool) {
 	if err != nil {
 		return "", "", false
 	}
-	if u.Scheme != "https" && u.Scheme != "http" {
+	if u.Scheme != "https" {
 		return "", "", false
 	}
 	host = strings.ToLower(u.Hostname())
@@ -442,11 +447,9 @@ func hostAllowed(host string, allowed []string) bool {
 }
 
 // repoAllowed reports whether repo ("owner/name", lowercased) is covered by the armed scope. An
-// empty scope means every repo on an allowed host.
+// empty scope covers nothing: Enable refuses one, and a credential armed by an older grove with
+// no repositories named stays inert until it is re-armed with some.
 func repoAllowed(repo string, allowed []string) bool {
-	if len(allowed) == 0 {
-		return true
-	}
 	owner, _, _ := strings.Cut(repo, "/")
 	for _, candidate := range allowed {
 		if candidate == repo || candidate == owner+"/*" {

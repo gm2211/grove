@@ -232,13 +232,16 @@ func evaluationFromAPI(e *nomadapi.Evaluation) Evaluation {
 	return out
 }
 
-// pickTask returns the (deterministic, lowest-sorting) task name and state out of an
-// allocation's TaskStates. grove's parameterized jobs (nomad/jobs/*.hcl) run a single task per
-// task group, so there's normally exactly one entry; when there's more than one this picks a
-// stable one rather than an arbitrary map-iteration order.
+// pickTask returns the task whose state stands for the whole allocation: "main" when present
+// (build and agent jobs also run a "source" prestart task, whose result "main" replays — see
+// nomad/jobs/*.hcl), otherwise the lowest-sorting name, so the choice is stable rather than an
+// arbitrary map-iteration order.
 func pickTask(states map[string]*nomadapi.TaskState) (string, *nomadapi.TaskState) {
 	if len(states) == 0 {
 		return "", nil
+	}
+	if ts, ok := states["main"]; ok {
+		return "main", ts
 	}
 
 	names := make([]string, 0, len(states))
