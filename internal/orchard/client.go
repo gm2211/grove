@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -218,6 +219,8 @@ func vmFromV1(vm v1.VM) VM {
 		ShutdownScript:  scriptContent(vm.ShutdownScript),
 		ShutdownTimeout: time.Duration(vm.ShutdownScriptTimeoutSeconds) * time.Second,
 		HostDirs:        hostDirsFromV1(vm.HostDirs),
+		Softnet:         vm.SoftnetEnabled(),
+		SoftnetBlock:    slices.Clone(vm.NetSoftnetBlock),
 	}
 }
 
@@ -274,6 +277,8 @@ func vmToV1(spec VMSpec) *v1.VM {
 		Resources:     v1.Resources(spec.Resources),
 		HostDirs:      hostDirsToV1(spec.HostDirs),
 	}
+	vm.NetSoftnet = spec.Softnet
+	vm.NetSoftnetBlock = slices.Clone(spec.SoftnetBlock)
 
 	if spec.StartupScript != "" {
 		vm.StartupScript = &v1.VMScript{ScriptContent: spec.StartupScript}

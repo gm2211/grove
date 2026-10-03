@@ -18,6 +18,7 @@ var installFlags struct {
 	registry      string
 	registryUser  string
 	registryToken string
+	softnet       bool
 	yes           bool
 	dryRun        bool
 }
@@ -44,6 +45,7 @@ func init() {
 	installCmd.Flags().StringVar(&installFlags.registry, "registry", "ghcr.io", "container registry a worker authenticates to for private image pulls (worker role; see docs/INSTALL.md)")
 	installCmd.Flags().StringVar(&installFlags.registryUser, "registry-user", "", "registry username for `tart login` (worker role)")
 	installCmd.Flags().StringVar(&installFlags.registryToken, "registry-token", "", "registry password/PAT for `tart login` (worker role); also read from $GROVE_REGISTRY_TOKEN so it needn't be in shell history")
+	installCmd.Flags().BoolVar(&installFlags.softnet, "softnet", false, "also install Softnet and print its one-time root step (worker role; needed on Macs that run fleet.yaml pools with network: isolated)")
 	installCmd.Flags().BoolVar(&installFlags.yes, "yes", false, "apply privileged steps too, when running as root")
 	installCmd.Flags().BoolVar(&installFlags.dryRun, "dry-run", false, "print the plan; change nothing")
 	_ = installCmd.MarkFlagRequired("role")
@@ -75,6 +77,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		Registry:      installFlags.registry,
 		RegistryUser:  installFlags.registryUser,
 		RegistryToken: registryToken,
+		Softnet:       installFlags.softnet,
 	}
 
 	return applyInstall(cmd, opts, installFlags.dryRun, installFlags.yes)

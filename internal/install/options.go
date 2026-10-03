@@ -35,6 +35,11 @@ type Options struct {
 	RegistryUser  string
 	RegistryToken string
 
+	// Softnet adds Softnet to a worker's plan: the VM network filter fleet.yaml pools with
+	// network: isolated run on, plus the one-time step that lets it become root. Off by default,
+	// so a Mac that never runs an isolated pool doesn't get a root-capable binary.
+	Softnet bool
+
 	Hostname string // test override; defaults to os.Hostname()
 	Home     string // test override; defaults to os.UserHomeDir()
 	GOOS     string // test override; defaults to runtime.GOOS

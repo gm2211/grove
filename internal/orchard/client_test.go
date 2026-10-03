@@ -150,6 +150,49 @@ func TestVMToV1_HostDirsWireFormat(t *testing.T) {
 	}
 }
 
+func TestVMToV1_SoftnetWireFormat(t *testing.T) {
+	vm := vmToV1(VMSpec{Name: "linux-mac1-0", Softnet: true, SoftnetBlock: []string{"out @host"}})
+
+	encoded, err := json.Marshal(vm)
+	if err != nil {
+		t.Fatalf("marshal Orchard VM: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"netSoftnet":true,"netSoftnetBlock":["out @host"]`) {
+		t.Fatalf("want Orchard netSoftnet/netSoftnetBlock wire fields, got %s", encoded)
+	}
+
+	plain, err := json.Marshal(vmToV1(VMSpec{Name: "linux-mac1-0"}))
+	if err != nil {
+		t.Fatalf("marshal Orchard VM: %v", err)
+	}
+	if strings.Contains(string(plain), "Softnet") {
+		t.Fatalf("a shared-network VM must not mention Softnet on the wire, got %s", plain)
+	}
+}
+
+func TestVMFromV1_Softnet(t *testing.T) {
+	var v v1.VM
+	v.Name = "linux-mac1-0"
+	v.NetSoftnet = true
+	v.NetSoftnetBlock = []string{"out @host"}
+
+	out := vmFromV1(v)
+	if !out.Softnet || len(out.SoftnetBlock) != 1 || out.SoftnetBlock[0] != "out @host" {
+		t.Fatalf("want Softnet with the host blocked, got Softnet=%v SoftnetBlock=%q", out.Softnet, out.SoftnetBlock)
+	}
+
+	// Orchard sets the legacy net-softnet flag alongside netSoftnet; either one means Softnet.
+	var legacy v1.VM
+	legacy.NetSoftnetDeprecated = true
+	if !vmFromV1(legacy).Softnet {
+		t.Fatal("want the legacy net-softnet flag read as Softnet")
+	}
+
+	if shared := vmFromV1(v1.VM{Meta: v1.Meta{Name: "linux-mac1-0"}}); shared.Softnet || shared.SoftnetBlock != nil {
+		t.Fatalf("want no Softnet on a shared-network VM, got %+v", shared)
+	}
+}
+
 func TestVMFromV1_HostDirs(t *testing.T) {
 	out := vmFromV1(v1.VM{
 		Meta:     v1.Meta{Name: "macos-mac1-0"},

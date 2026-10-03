@@ -98,6 +98,88 @@ Notes worth knowing before you arm it:
 The full contract — how the token reaches the clone, what is and isn't stored, and who can read it
 while a job runs — is in [docs/JOBS.md](JOBS.md#private-repositories).
 
+## Isolating a pool's network
+
+By default a worker VM shares its host Mac's network through Tart's NAT, so a job can reach
+whatever that Mac reaches: your LAN, services the Mac itself runs, and every device on your
+tailnet, through the Mac's own Tailscale login. `network: isolated` closes that for a pool:
+
+```yaml
+pools:
+  - name: linux
+    network: isolated
+```
+
+What changes for that pool's VMs:
+
+- **Softnet, host blocked.** Each VM runs on Softnet instead of Tart's NAT, with
+  `--net-softnet-block "out @host"`. The guest reaches public internet addresses only: not your
+  LAN, not tailnet (100.64.0.0/10) addresses, and not its own host Mac. The host can still open
+  connections into the guest, which is how Orchard runs the startup script.
+- **Public DNS.** The guest's `/etc/resolv.conf` points at 1.1.1.1 and 8.8.8.8, because the
+  resolver DHCP hands out is the blocked host.
+- **Its own tailnet login.** The guest joins the tailnet with `tailscale.authKey` as an ephemeral
+  device tagged with `tailscale.tags` (default `tag:grove-vm`), with no Tailscale SSH, no subnet
+  routes, no tailnet DNS and no inbound connections. Its Nomad client dials the servers' tailnet
+  IP, taken from `nomad.url`. Your tailnet policy decides what the tag can reach: give it the
+  Nomad RPC port and nothing else (step 2 below).
+- **A fence for job containers.** `/usr/local/sbin/grove-egress-fence`, run before every Docker
+  start and once by the startup script, keeps job containers off private, tailnet and link-local
+  addresses, off the guest's tailnet link, and off the guest itself. A job can't borrow the guest's
+  tailnet login; only the guest's own Nomad client uses it.
+
+Before you switch a pool over:
+
+1. **Softnet on every worker Mac that runs the pool**, able to become root by itself, because
+   Orchard starts it with no terminal to ask for a password. `grove install --role worker
+   --softnet` installs it and prints the one-time `softnet-root` command for an admin to run;
+   `grove doctor` shows a `softnet` row. Redo that command after any `brew upgrade softnet`,
+   which drops the SUID bit (isolated VMs on that Mac fail to start until you do).
+2. **A tailnet policy for the tag.** In the Tailscale admin console's access controls, make the tag
+   one you own and let it reach only the Nomad server's RPC port. A rule whose source is `"*"`
+   covers tagged devices too, so narrow those to `autogroup:member` (plus any other tags you use)
+   at the same time. For example, with your control plane's tailnet IP:
+
+   ```jsonc
+   "tagOwners": { "tag:grove-vm": ["autogroup:admin"] },
+   "acls": [
+     { "action": "accept", "src": ["autogroup:member"], "dst": ["*:*"] },
+     { "action": "accept", "src": ["tag:grove-vm"], "dst": ["100.x.y.z:4647"] }
+   ]
+   ```
+
+3. **A key for the tag.** Either an OAuth client secret (`auth_keys` scope, tagged
+   `tag:grove-vm`), which doesn't expire and to which grove adds
+   `?ephemeral=true&preauthorized=true` itself, or a reusable, ephemeral auth key tagged
+   `tag:grove-vm`, which expires within 90 days. Store it from stdin so it stays out of your shell
+   history and the process list:
+
+   ```bash
+   grove config set tailscale.authKey - < key.txt
+   grove config set tailscale.tags tag:grove-vm      # only needed for a different tag
+   ```
+
+4. **`nomad.url` on the control plane's tailnet IP**, not a hostname: isolated guests don't use
+   MagicDNS.
+
+Then set `network: isolated` and let the reconciler recreate the pool's VMs (`grove fleet plan`
+shows the change first). If step 3 or 4 is missing, `grove fleet plan` prints
+`! blocked pool=… : <reason>` and the reconciler refuses to build that pool's VMs: it deletes the
+pool's unisolated VMs, keeps any already-isolated ones, and shows the reason as the last reconcile
+error in `grove fleet status` until it's fixed.
+
+Limits:
+
+- Linux pools only for now. macOS jobs run as root in the guest with no container boundary, so
+  they could use the guest's tailnet login; isolating them needs jobs to run as a normal user first.
+- `allowDockerSocket` can't be combined with it, because the socket gives every job root on the
+  guest.
+- A job still reaches anything on the public internet, your home's public IP included.
+- Job images must already be in the VM image or come from a public registry (the default runner
+  image is on ghcr.io): the guest can't pull from a registry on your LAN or tailnet.
+- Jobs can't reach anything on your tailnet, so `ARTIFACT_*` uploads to a tailnet-only artifact
+  store fail from an isolated pool.
+
 ## Log locations
 
 | Component | macOS (launchd) | Linux (systemd --user) |

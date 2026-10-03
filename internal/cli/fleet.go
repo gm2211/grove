@@ -78,11 +78,13 @@ var fleetApplyCmd = &cobra.Command{
 
 		printPlan(cmd.OutOrStdout(), plan)
 
-		if plan.Empty() {
-			return nil
+		if !plan.Empty() {
+			if err := r.Apply(ctx, plan); err != nil {
+				return err
+			}
 		}
 
-		return r.Apply(ctx, plan)
+		return plan.BlockedError()
 	},
 }
 
@@ -235,13 +237,20 @@ func fleetOptions(cfg *config.Config) (fleet.Options, error) {
 	}
 	return fleet.Options{
 		TailscaleAuthKey: cfg.Tailscale.AuthKey,
+		TailscaleTags:    cfg.Tailscale.Tags,
 		NomadRPCAddress:  rpcAddress,
 	}, nil
 }
 
 func printPlan(w io.Writer, plan fleet.Plan) {
+	for _, b := range plan.Blocked {
+		fmt.Fprintf(w, "! blocked pool=%s: %s\n", b.Pool, b.Reason)
+	}
+
 	if plan.Empty() {
-		fmt.Fprintln(w, "up to date")
+		if len(plan.Blocked) == 0 {
+			fmt.Fprintln(w, "up to date")
+		}
 		return
 	}
 

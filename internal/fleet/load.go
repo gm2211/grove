@@ -74,6 +74,24 @@ func (s *Spec) Validate() error {
 				return fmt.Errorf("pool %q: %w", p.Name, err)
 			}
 		}
+
+		switch p.Network {
+		case "", NetworkShared:
+		case NetworkIsolated:
+			// macOS jobs run as root in the guest with no container boundary, so they could use
+			// the guest's own tailnet login; isolating them needs jobs to run as a normal user
+			// first.
+			if p.Name == "macos" {
+				return fmt.Errorf("pool %q: network %q is only supported for Linux pools", p.Name, NetworkIsolated)
+			}
+			// The docker socket gives every job root on the guest, past the in-guest fence that
+			// keeps jobs off the guest's tailnet login.
+			if p.AllowDockerSocket {
+				return fmt.Errorf("pool %q: allowDockerSocket can't be combined with network %q", p.Name, NetworkIsolated)
+			}
+		default:
+			return fmt.Errorf("pool %q: network must be %q or %q, got %q", p.Name, NetworkShared, NetworkIsolated, p.Network)
+		}
 	}
 
 	return nil

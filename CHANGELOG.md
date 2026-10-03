@@ -4,6 +4,14 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- `fleet.yaml` pools take `network: isolated`: VMs run on Softnet with their host Mac blocked,
+  use public DNS, fence job containers off private and tailnet addresses, and join the tailnet
+  under their own tag (`tailscale.tags`, default `tag:grove-vm`) only to reach Nomad. A pool whose
+  isolation can't be set up is blocked and reported instead of booting unusable VMs. Linux pools
+  only. See docs/OPERATIONS.md "Isolating a pool's network".
+- `grove install --role worker --softnet` installs Softnet and prints the one-time command that
+  lets it become root; `grove doctor` reports whether it can.
+- `grove config set <key> -` reads the value from stdin, so secrets stay out of shell history.
 - Fleet page lists the Macs waiting to join, with an **Approve** button beside each, so enrolling
   a Mac no longer means reading its code off one machine's terminal and retyping it on another
   (`GET /api/v1/join/pending`, operator scope).

@@ -47,7 +47,7 @@ func TestBuildStartupScript_MacOSNomadRPCServer(t *testing.T) {
 		{name: "IPv6", address: "[2001:db8::60]:4647", want: `servers = ["[2001:db8::60]:4647"]`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			script := buildStartupScript(Pool{Name: "macos"}, "mac1", "macos-mac1-0", "", tt.address)
+			script := buildStartupScript(Pool{Name: "macos"}, "mac1", "macos-mac1-0", Options{NomadRPCAddress: tt.address})
 			configAt := strings.Index(script, tt.want)
 			restartAt := strings.Index(script, "launchctl kickstart -k system/com.grove.nomad")
 			if configAt < 0 || restartAt < 0 || configAt > restartAt {

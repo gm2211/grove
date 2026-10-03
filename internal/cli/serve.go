@@ -180,6 +180,8 @@ type fleetReconcileLoop struct {
 	// logged, so a fleet.yaml that's missing/invalid for an extended period logs once (not once per
 	// tick) until it's fixed or starts failing for a new reason.
 	warnedInvalid bool
+	// warnedBlocked is the blocked-pool message last logged, for the same once-per-streak logging.
+	warnedBlocked string
 }
 
 func newFleetReconcileLoop(cfg *config.Config, client orchard.Client, status *server.FleetReconcileStatus) *fleetReconcileLoop {
@@ -248,7 +250,18 @@ func (l *fleetReconcileLoop) tick(ctx context.Context) {
 		}
 	}
 
-	l.status.Report(plan, nil, time.Now())
+	// A blocked pool is a configuration problem, not a failed tick: the rest of the plan still
+	// applied, but the operator has to see why that pool has no VMs.
+	blockedErr := plan.BlockedError()
+	blocked := ""
+	if blockedErr != nil {
+		blocked = blockedErr.Error()
+		if blocked != l.warnedBlocked {
+			slog.Warn("serve: fleet reconciler: pool blocked", "err", blockedErr)
+		}
+	}
+	l.warnedBlocked = blocked
+	l.status.Report(plan, blockedErr, time.Now())
 }
 
 // planSummary renders a Plan as e.g. "+create linux-mac1-0 / -delete linux-mac2-0" for the
