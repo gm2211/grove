@@ -139,6 +139,9 @@ func controlPlaneFinalizationSteps(r Runner, opts Options, isDarwin bool) []Step
 	for _, service := range services {
 		steps = append(steps, controlPlaneStartStep(r, opts, service, isDarwin))
 	}
+	// Nomad is running by now; bootstrap its ACLs before grove serve reloads so the server comes
+	// back up holding the management token.
+	steps = append(steps, nomadACLBootstrapStep(r, opts, isDarwin))
 	// After MinIO is running and before grove serve reloads, so the server comes back up holding
 	// the bucket-scoped credential rather than MinIO's root one.
 	steps = append(steps, minioArtifactUserStep(r, opts))
@@ -314,7 +317,7 @@ func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string)
 		},
 		{
 			Name:        "config:nomad-server",
-			Description: fmt.Sprintf("Render %s (single-node server, bootstrap_expect=1, ACL off, bind %s).", nomadConfPath, nomadAddr),
+			Description: fmt.Sprintf("Render %s (single-node server, bootstrap_expect=1, ACLs on, bind %s).", nomadConfPath, nomadAddr),
 			Check: fileHasContent(nomadConfPath, func() (string, error) {
 				return RenderNomadServerConfig(NomadServerConfigSpec{
 					DataDir:  filepath.Join(cfgDir, "nomad", "data"),

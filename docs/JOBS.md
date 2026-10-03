@@ -182,8 +182,8 @@ Where the token does and doesn't go:
   `repoCredentialUsed: true`), and never returned by the sourcing API, which reports a SHA-256
   `tokenFingerprint` instead.
 - **Caveat:** the dispatched job spec still holds the payload, so anything that can read Nomad's
-  job API can read the token while the job exists. Keep Nomad ACLs on (workers' client APIs bind
-  127.0.0.1, and with ACLs on an anonymous request from inside a job is refused). Scope the token
+  job API can read the token while the job exists. Keep Nomad ACLs on (the installer's default; workers' client APIs
+  bind 127.0.0.1 and enforce ACLs, so an anonymous request from inside a job is refused). Scope the token
   narrowly (a fine-grained, read-only token limited to the repos you named), give it a `--ttl`,
   and disable it when the run is done.
 

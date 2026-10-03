@@ -39,6 +39,10 @@ func buildStartupScript(pool Pool, worker, vmName string, opts Options) string {
 
 	b.WriteString(nomadMetaScript)
 	b.WriteString("\n")
+	if opts.NodeTokens != nil {
+		b.WriteString(nomadClientACLScript)
+		b.WriteString("\n")
+	}
 
 	if pool.Isolated() {
 		b.WriteString(isolatedNetworkScript(opts.TailscaleAuthKey, opts.tailscaleTags(), opts.NomadRPCAddress))
@@ -199,6 +203,14 @@ fi
 // non-terminal allocations before Orchard deletes the VM. pool.ShutdownScript, if set, is
 // appended verbatim after the generated part.
 func BuildShutdownScript(pool Pool) (script string, timeout time.Duration) {
+	return buildShutdownScript(pool, false)
+}
+
+// buildShutdownScript is BuildShutdownScript, optionally with the node-token block whose
+// placeholders Reconciler.Apply fills in with a freshly minted per-VM Nomad token. With Nomad ACLs
+// on, `nomad node drain -self` needs node:write; without a token it fails and the VM is deleted
+// under its running jobs.
+func buildShutdownScript(pool Pool, nodeToken bool) (script string, timeout time.Duration) {
 	timeout = pool.ShutdownTimeout.Std()
 	if timeout <= 0 {
 		timeout = defaultShutdownTimeout
@@ -207,6 +219,10 @@ func BuildShutdownScript(pool Pool) (script string, timeout time.Duration) {
 	var b strings.Builder
 
 	b.WriteString("#!/bin/sh\nset -eu\n\n")
+	if nodeToken {
+		b.WriteString(nodeTokenBlock)
+		b.WriteString("\n")
+	}
 	fmt.Fprintf(&b, "nomad node drain -self -enable -deadline %s -m %s\n\n",
 		nomadDrainDeadline, shQuote("grove recycle"))
 	fmt.Fprintf(&b, "grove_deadline=$(( $(date +%%s) + %d ))\n", int(timeout.Seconds()))
@@ -234,6 +250,37 @@ func appendUserScript(b *strings.Builder, label, script string) {
 func shQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
+
+// Placeholders in nodeTokenBlock. Plan leaves them in place, so a planned spec never holds a
+// secret; Apply replaces them right before CreateVM.
+const (
+	nodeTokenSecretPlaceholder   = "@GROVE_NODE_TOKEN@"
+	nodeTokenAccessorPlaceholder = "@GROVE_NODE_TOKEN_ACCESSOR@"
+)
+
+// nodeTokenBlock puts the VM's own node-scoped Nomad token (see nomad.NodeTokenPolicy) in the
+// shutdown script's environment, and nowhere on the VM's disk, so jobs inside the VM never see it.
+// The begin/end markers let specDrifted ignore the block: every VM gets a different token, and a VM
+// made before node tokens existed isn't recreated just to get one.
+const nodeTokenBlock = `# grove:node-token begin
+# grove node token accessor ` + nodeTokenAccessorPlaceholder + ` (node-scoped; revoked once this VM is gone)
+NOMAD_TOKEN=` + nodeTokenSecretPlaceholder + `
+export NOMAD_TOKEN
+# grove:node-token end
+`
+
+// nomadClientACLScript turns on ACL enforcement in the VM's own Nomad client (appended to the
+// grove-meta.hcl nomadMetaScript just wrote). Without it, anything running in the VM could read
+// other allocations' files and logs through the local client API on 127.0.0.1:4646. Only written
+// when the control plane runs Nomad with ACLs (Options.NodeTokens set).
+const nomadClientACLScript = `# grove:client-acl begin
+grove_meta_append <<GROVE_META_ACL
+acl {
+  enabled = true
+}
+GROVE_META_ACL
+# grove:client-acl end
+`
 
 // nomadMetaScript writes the Nomad client meta file naming this VM's pool/host/vm, at the path
 // appropriate for the guest OS. On macOS it also overrides cpu_total_compute — see docs/IMAGES.md

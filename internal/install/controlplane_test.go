@@ -27,6 +27,9 @@ func scriptWorkerEnrollmentToken(r *FakeRunner, home string) {
 	orchard := filepath.Join(home, ".local", "bin", "orchard")
 	r.Script(orchard+" get service-account grove/token", FakeResult{Stdout: "grove-account-secret\n"})
 	r.Script(orchard+" get service-account grove-enroller/token", FakeResult{Stdout: "enroller-account-secret\n"})
+	for _, host := range []string{"test-cp", "100.64.0.1"} {
+		r.Script("nomad acl bootstrap -address=http://"+host+":4646 -json", FakeResult{Stdout: `{"AccessorID":"acc","SecretID":"nomad-mgmt-secret"}`})
+	}
 }
 
 func TestControlPlaneOrchardHomePreservesExistingLayouts(t *testing.T) {

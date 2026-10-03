@@ -4,6 +4,14 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Security:** the control plane's Nomad runs with ACLs on. `grove install --role control-plane`
+  bootstraps them and stores the management token in `config.yaml` (`nomad.token`); re-running it
+  migrates an install that had ACLs off (restarts Nomad once). Each VM the fleet reconciler creates
+  gets its own node-only Nomad token, in its shutdown script's environment only, so it can drain
+  itself on recycle; the token is revoked once the VM is gone. The VM's Nomad client enforces ACLs
+  too. Existing VMs pick this up on their next recycle. See docs/OPERATIONS.md "Nomad ACLs and node
+  tokens".
+
 - **Security:** job history no longer keeps `env` values: the stored job (and every job the API
   returns) lists each key with the value `[redacted]`. `secrets` is rejected until grove can
   resolve named secrets, instead of being accepted and silently ignored.
