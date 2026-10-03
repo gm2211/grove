@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,6 +13,8 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +26,7 @@ import (
 
 var setupServer string
 var setupRegistryUser string
+var setupYes bool
 
 type joinStart struct {
 	ID, Secret, Code string
@@ -42,6 +46,7 @@ func init() {
 		RunE: runSetup,
 	}
 	setupCmd.Flags().StringVar(&setupServer, "server", "", "Grove server URL; normally discovered over Tailscale")
+	setupCmd.Flags().BoolVar(&setupYes, "yes", false, "join the discovered control plane without asking, when exactly one answers (several always need --server)")
 	setupCmd.Flags().StringVar(&setupRegistryUser, "registry-user", "", "registry username; password/PAT is read from GROVE_REGISTRY_TOKEN")
 	Root.AddCommand(setupCmd)
 
@@ -67,7 +72,8 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	}
 	serverURL := strings.TrimRight(setupServer, "/")
 	if serverURL == "" {
-		serverURL, err = discoverGrove(cmd.Context(), st)
+		candidates := discoverGrove(cmd.Context(), st, probeGrove)
+		serverURL, err = chooseGrove(candidates, cmd.InOrStdin(), cmd.OutOrStdout(), stdinIsTerminal(), setupYes)
 		if err != nil {
 			return err
 		}
@@ -108,44 +114,102 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 
 var runtimeOS = func() string { return runtime.GOOS }
 
-func discoverGrove(ctx context.Context, st *install.TailscaleStatus) (string, error) {
-	var ips []string
-	for _, peerIPs := range st.TailnetPeers() {
-		ips = append(ips, peerIPs...)
+// groveCandidate is one tailnet peer that answered like a Grove control plane.
+type groveCandidate struct {
+	URL  string // http://<tailnet-ip>:6130
+	Name string // the peer's MagicDNS name, for the operator to recognise
+}
+
+// probeGrove reports whether base answers /api/v1/healthz like a Grove control plane.
+func probeGrove(ctx context.Context, base string) bool {
+	client := &http.Client{Timeout: 1200 * time.Millisecond}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/healthz", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Version string `json:"version"`
+		Orchard string `json:"orchard"`
+		Nomad   string `json:"nomad"`
+	}
+	err = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&body)
+	return err == nil && (body.Orchard != "" || body.Nomad != "")
+}
+
+// discoverGrove probes every online tailnet peer (and this machine) on :6130 and returns all that
+// answer like Grove, sorted for a stable listing. It never picks one: see chooseGrove.
+func discoverGrove(ctx context.Context, st *install.TailscaleStatus, probe func(context.Context, string) bool) []groveCandidate {
+	type target struct{ ip, name string }
+	var targets []target
+	for name, peerIPs := range st.TailnetPeers() {
+		for _, ip := range peerIPs {
+			targets = append(targets, target{ip, name})
+		}
 	}
 	if st.TailnetIP() != "" {
-		ips = append(ips, st.TailnetIP())
+		targets = append(targets, target{st.TailnetIP(), st.Self.DNSName + " (this machine)"})
 	}
-	client := &http.Client{Timeout: 1200 * time.Millisecond}
-	var found []string
-	for _, ip := range ips {
-		if net.ParseIP(ip) == nil || strings.Contains(ip, ":") {
+	var found []groveCandidate
+	for _, t := range targets {
+		if net.ParseIP(t.ip) == nil || strings.Contains(t.ip, ":") {
 			continue
 		}
-		base := "http://" + net.JoinHostPort(ip, "6130")
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/healthz", nil)
-		resp, err := client.Do(req)
-		if err != nil {
-			continue
-		}
-		var body struct {
-			Version string `json:"version"`
-			Orchard string `json:"orchard"`
-			Nomad   string `json:"nomad"`
-		}
-		err = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&body)
-		resp.Body.Close()
-		if err == nil && (body.Orchard != "" || body.Nomad != "") {
-			found = append(found, base)
+		base := "http://" + net.JoinHostPort(t.ip, "6130")
+		if probe(ctx, base) {
+			found = append(found, groveCandidate{URL: base, Name: strings.TrimSuffix(t.name, ".")})
 		}
 	}
-	if len(found) == 0 {
+	sort.Slice(found, func(i, j int) bool { return found[i].URL < found[j].URL })
+	return found
+}
+
+var stdinIsTerminal = func() bool {
+	fi, err := os.Stdin.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// chooseGrove turns discovery results into the server setup will enrol with. A discovered peer is
+// only a tailnet node answering plain HTTP on :6130, so setup never silently trusts one: a single
+// candidate is shown and needs confirmation (or --yes); several are listed and the operator picks
+// one (or passes --server). Without a terminal and without --yes/--server it refuses.
+func chooseGrove(found []groveCandidate, in io.Reader, out io.Writer, interactive, yes bool) (string, error) {
+	switch len(found) {
+	case 0:
 		return "", errors.New("no Grove control plane found on this tailnet. To create the first one, run `grove install --role control-plane`; otherwise update Grove on the control plane and retry")
+	case 1:
+		c := found[0]
+		fmt.Fprintf(out, "Discovered a Grove control plane on this tailnet:\n\n  %s  (%s)\n\n", c.URL, c.Name)
+		if yes {
+			return c.URL, nil
+		}
+		if !interactive {
+			return "", fmt.Errorf("refusing to enrol with a discovered control plane unattended; confirm it is yours, then rerun with `--yes` or `--server %s`", c.URL)
+		}
+		fmt.Fprint(out, "Is this your control plane? This Mac will send it an enrollment request and later run its jobs. [y/N] ")
+		answer, _ := bufio.NewReader(in).ReadString('\n')
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "y", "yes":
+			return c.URL, nil
+		}
+		return "", errors.New("setup cancelled; rerun with `grove setup --server URL` to pick a control plane explicitly")
 	}
-	if len(found) > 1 {
-		return "", fmt.Errorf("multiple Grove control planes found: %s; rerun with `grove setup --server URL`", strings.Join(found, ", "))
+	var list strings.Builder
+	for i, c := range found {
+		fmt.Fprintf(&list, "  %d) %s  (%s)\n", i+1, c.URL, c.Name)
 	}
-	return found[0], nil
+	fmt.Fprintf(out, "Several tailnet peers answer like a Grove control plane:\n\n%s\n", list.String())
+	if !interactive {
+		return "", fmt.Errorf("multiple Grove control planes found; rerun with `grove setup --server URL` naming the one to join")
+	}
+	fmt.Fprintf(out, "Which one should this Mac join? [1-%d, anything else cancels] ", len(found))
+	answer, _ := bufio.NewReader(in).ReadString('\n')
+	n, err := strconv.Atoi(strings.TrimSpace(answer))
+	if err != nil || n < 1 || n > len(found) {
+		return "", errors.New("setup cancelled; rerun with `grove setup --server URL` to pick a control plane explicitly")
+	}
+	return found[n-1].URL, nil
 }
 
 func createJoin(ctx context.Context, serverURL, name, ip string) (*joinStart, error) {

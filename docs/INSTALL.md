@@ -70,6 +70,11 @@ grove setup
   no credential — a Mac that has not joined yet does not have one.
 - `grove setup` discovers Grove peers through Tailscale and creates a ten-minute enrollment
   request. It prints an approval code and waits.
+- Discovery is only "a tailnet peer answering on :6130", so setup never trusts it silently: it
+  shows the address and Tailscale name it found and asks you to confirm. If several peers answer,
+  it lists them and asks which one. Unattended, pass `--server http://<control-plane>:6130`
+  (always works, no prompt) or `--yes` (accepts the discovered control plane only when exactly one
+  answers).
 - Approve it. The Fleet page in `grove ui` lists every Mac that is waiting, with its name,
   tailnet address and code, and an **Approve** button beside each one — so you can do this from
   whatever device already has the UI open. On a terminal instead, run `grove join approve <CODE>`
