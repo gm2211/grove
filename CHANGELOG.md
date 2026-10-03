@@ -4,6 +4,10 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Security:** re-running `grove setup` on a Mac no longer leaves its earlier device credentials
+  valid. Once the Mac is back online with its new credential, grove revokes the older setup
+  credentials with the same name. Operator-issued credentials (`grove access issue`) are untouched.
+
 - **Security:** the control plane's Nomad runs with ACLs on. `grove install --role control-plane`
   bootstraps them and stores the management token in `config.yaml` (`nomad.token`); re-running it
   migrates an install that had ACLs off (restarts Nomad once). Each VM the fleet reconciler creates
