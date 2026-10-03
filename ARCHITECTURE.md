@@ -188,10 +188,10 @@ All under `/api/v1`, `Authorization: Bearer <token>`, bind to the tailnet addres
 | GET | `/fleet` | `{workers[], vms[], nodes[], fetchedAt, totals}` normalised: name, host, pool (vm entries only, derived — see above), arch, online, cordoned, capacity, running; `totals` is at-a-glance counts (workersOnline/Cordoned, vmsRunning, nodesReady/Draining, jobsRunning/Pending) |
 | POST | `/vms/{name}/recycle` | drain (via Nomad) then delete; reconciler recreates |
 | POST | `/workers/{name}/pause` · `/resume` | Orchard cordon |
-| GET | `/jobs` · `/jobs/{id}` | list / status |
+| GET | `/jobs` · `/jobs/{id}` | list / status. An operator sees every job; any other credential sees only the jobs it submitted (403 on someone else's). `request.env` keeps its keys but every value reads `[redacted]`, for every caller |
 | POST | `/jobs` | JobRequest → `{id}`; JobRequest.idempotencyKey replays the existing job (no re-dispatch) instead of creating a new one; JobRequest.timeout is a duration string ("30m", "2h") or a number of *seconds* (never nanoseconds) — see `docs/JOBS.md` |
-| GET | `/jobs/{id}/logs?follow=1` | SSE / chunked log stream; `Accept: application/x-ndjson` + `&sinceOffset=N` streams `{offset,ts,stream,line}` objects, resumable by offset |
-| GET | `/jobs/{id}/artifacts/{path}` | streams one uploaded artifact from the bucket via the server's own credentials |
+| GET | `/jobs/{id}/logs?follow=1` | same ownership rule as `/jobs/{id}`. SSE / chunked log stream; `Accept: application/x-ndjson` + `&sinceOffset=N` streams `{offset,ts,stream,line}` objects, resumable by offset |
+| GET | `/jobs/{id}/artifacts/{path}` | streams one uploaded artifact from the bucket via the server's own credentials; same ownership rule as `/jobs/{id}`. A path with a `.`/`..`/empty segment or a leading `/` (checked after URL-decoding) is a 400. Always served `Content-Disposition: attachment` + `X-Content-Type-Options: nosniff`, so a browser downloads it rather than rendering job output on grove's origin |
 | DELETE | `/jobs/{id}` · POST `/jobs/{id}/cancel` | cancel (same operation, two spellings) |
 | GET | `/healthz` | `{ok, version, orchard, nomad, serverTime}`; orchard/nomad are "up" or "down" |
 | GET · PUT · DELETE | `/github/sourcing` | operator-only: read / arm / disarm the credential jobs use to clone PRIVATE repositories. Off by default, never echoes the token — see `docs/JOBS.md` |
