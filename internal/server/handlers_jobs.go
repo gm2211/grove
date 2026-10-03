@@ -40,7 +40,9 @@ func allocationWaitFor(r *http.Request) time.Duration {
 // redactedEnvValue replaces every Job.Request.Env value the API hands back. The keys stay, so a
 // caller (the UI's job detail page, an orchestrator) can still see WHICH variables a job ran with,
 // but values are often credentials and the job's submitter already knows them.
-const redactedEnvValue = "[redacted]"
+//
+// internal/dispatch already stores jobs this way; this also covers history written before it did.
+const redactedEnvValue = dispatch.RedactedEnvValue
 
 // redactJob returns a copy of job safe to serialize to any principal: Request.Env values are
 // replaced with redactedEnvValue. The stored job is never mutated (Env is a shared map).

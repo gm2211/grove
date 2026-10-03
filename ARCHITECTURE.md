@@ -60,8 +60,8 @@ Tailscale standalone variant (not App Store — that one doesn't start before lo
 Control plane owns shared scheduling state; it is not a sole dispatcher. Every enrolled device
 receives an independent, revocable `read + build + agent` credential and can inspect or submit
 purpose-specific work. Raw shell jobs require operator credential or an explicitly issued
-`dispatch:shell` scope (plain `dispatch` covers build + agent only); named secrets require operator
-credential.
+`dispatch:shell` scope (plain `dispatch` covers build + agent only); named secrets are rejected
+until grove can resolve them.
 Raw device tokens live only in that device's Keychain; control plane persists SHA-256 hashes.
 Operator credential alone can enroll/revoke devices or mutate worker/VM state. Compromise of
 control-plane host still compromises cluster administration, so that host remains part of trusted

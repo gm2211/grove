@@ -50,7 +50,6 @@ Example submitted `JobRequest` for a `repo-verify` work unit:
   "repo": "https://github.com/gm2211/grove",
   "ref": "a1b2c3d",
   "script": "make verify",
-  "secrets": ["GH_TOKEN"],
   "timeout": "30m",
   "idempotencyKey": "orch:task-1234:run-2",
   "meta": {

@@ -132,7 +132,7 @@ Recycle a wedged VM:
   orchestrator, with `grove access issue --name argos --scope read --scope dispatch` (token printed
   to stdout once) — see `docs/OPERATIONS.md`.
 - Raw shell jobs need the operator credential or a credential explicitly issued `dispatch:shell`.
-  Named secrets, worker pause/resume, VM recycle, join approval, and device issue/revocation
+  Named secrets are rejected until grove can resolve them. Worker pause/resume, VM recycle, join approval, and device issue/revocation
   require the control-plane operator credential.
 - `grove_recycle_vm` and `grove_pause_worker` require operator scope and affect real machines
   immediately.
