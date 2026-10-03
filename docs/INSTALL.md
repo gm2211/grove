@@ -85,6 +85,11 @@ grove setup
 - The Mac stores both credentials in macOS Keychain and feeds worker credential to Orchard over
   stdin. Neither appears in shell history, process arguments, `config.yaml`, or LaunchAgent plist.
 - Re-run the same command any time — steps that are already satisfied are skipped.
+- After upgrading to a control plane that issues per-worker Orchard credentials, workers with
+  restricted credentials issued before worker binding need to enroll again with `grove setup` and
+  be approved. This binds the credential to the worker's exact name so Grove can synchronize its
+  assigned VMs and open watch connections. Registration remains allowed, and existing privileged
+  legacy credentials remain compatible.
 - Grove installs Orchard as `~/Applications/Grove Orchard Worker.app`, gives it a stable bundle
   identity and Local Network usage description, and associates the per-user LaunchAgent with that
   identity. The LaunchAgent is loaded automatically. When the worker first connects to a Tart VM

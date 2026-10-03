@@ -25,3 +25,26 @@ func TestNewWorkerCredentialFitsMacOSKeychainInteractiveLimit(t *testing.T) {
 		t.Fatalf("worker roles = %v", sa.Roles)
 	}
 }
+
+func TestNewWorkerCredentialBindsExactWorkerNameAndMinimalRoles(t *testing.T) {
+	workerNames := []string{
+		"studio.mac-2",
+		"worker-with-many-hyphens-and-dots.example.internal",
+		strings.Repeat("long.worker-name-", 20),
+	}
+
+	for _, workerName := range workerNames {
+		t.Run(workerName, func(t *testing.T) {
+			sa, _, err := newWorkerCredential(workerName)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sa.WorkerName != workerName {
+				t.Fatalf("worker binding = %q, want exact name %q", sa.WorkerName, workerName)
+			}
+			if len(sa.Roles) != 2 || sa.Roles[0] != v1.ServiceAccountRoleComputeWrite || sa.Roles[1] != v1.ServiceAccountRoleComputeConnect {
+				t.Fatalf("worker roles = %v, want only compute:write and compute:connect", sa.Roles)
+			}
+		})
+	}
+}
