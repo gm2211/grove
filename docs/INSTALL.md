@@ -126,6 +126,15 @@ Renders and starts Orchard controller, Nomad server, MinIO, and `grove serve`, a
 (launchd on macOS, `systemd --user` on Linux), plus `~/.config/grove/config.yaml` and a starter
 `fleet.yaml`. No privileged steps — everything here runs as your own user.
 
+MinIO's root credential lives only in `~/.config/grove/minio/env` (0600) and is used solely to
+administer MinIO. Once MinIO is up, the installer uses it (over stdin, via the pinned
+`~/.local/bin/grove-mc`) to create the `grove` bucket, a `grove-artifacts` policy allowing object
+read/write/list on that bucket only, and a `grove-artifacts-<random>` user with that policy. That
+user's key — never the root one — is what goes into `config.yaml`'s `artifacts` section and so to
+`grove serve`. Use the same credential for any job/worker `ARTIFACT_ACCESS_KEY`/`ARTIFACT_SECRET_KEY`.
+Re-running `grove install --role control-plane` on an older install, whose `config.yaml` still holds
+the root credential, mints the scoped user and replaces it (then reloads `grove serve`).
+
 ### Client (your laptop, or any machine that just talks to the fleet)
 
 Run `grove setup` on a Mac. Enrollment gives that device its own revocable dispatcher credential,

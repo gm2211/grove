@@ -139,6 +139,9 @@ func controlPlaneFinalizationSteps(r Runner, opts Options, isDarwin bool) []Step
 	for _, service := range services {
 		steps = append(steps, controlPlaneStartStep(r, opts, service, isDarwin))
 	}
+	// After MinIO is running and before grove serve reloads, so the server comes back up holding
+	// the bucket-scoped credential rather than MinIO's root one.
+	steps = append(steps, minioArtifactUserStep(r, opts))
 	steps = append(steps, controlPlaneReloadServerStep(r, opts, isDarwin))
 	return steps
 }
@@ -204,6 +207,7 @@ func controlPlaneDependencySteps(r Runner, opts Options, out io.Writer, destOrch
 	if isDarwin {
 		steps = append(steps, trustTapStep(r, tapMinIOStable, out))
 	}
+	steps = append(steps, minioClientStep(r, opts))
 	steps = append(steps, Step{
 		Name:        "minio-binary",
 		Description: minioInstallDescription(isDarwin),
@@ -326,7 +330,7 @@ func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string)
 		},
 		{
 			Name:        "config:minio-env",
-			Description: fmt.Sprintf("Render %s with generated MinIO root credentials, recorded in config.yaml's artifacts section.", minioEnvPath),
+			Description: fmt.Sprintf("Render %s with generated MinIO root credentials (used only to administer MinIO; grove's artifact credential is a separate bucket-scoped user).", minioEnvPath),
 			Check: func(ctx context.Context) (bool, error) {
 				_, err := os.Stat(minioEnvPath)
 				if os.IsNotExist(err) {
@@ -355,12 +359,12 @@ func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string)
 				if err := writeFile(minioEnvPath, content); err != nil {
 					return err
 				}
+				// Root credentials stay in the 0600 env file only. The artifact credential in
+				// config.yaml is minted later by the minio-artifact-user step.
 				return updateConfig(cfgDir, func(cfg *config.Config) {
 					cfg.Artifacts = config.ArtifactsConfig{
-						Endpoint:  "http://" + minioAddr,
-						Bucket:    "grove",
-						AccessKey: accessKey,
-						SecretKey: secretKey,
+						Endpoint: "http://" + minioAddr,
+						Bucket:   artifactBucket,
 					}
 				})
 			},
