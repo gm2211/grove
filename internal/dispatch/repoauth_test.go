@@ -246,3 +246,45 @@ func TestSubmit_RejectsUnsafeRequestFields(t *testing.T) {
 		})
 	}
 }
+
+// Env values go to Nomad with the dispatch and nowhere else: the job history keeps the keys only.
+func TestSubmit_EnvValuesNeverPersisted(t *testing.T) {
+	nc := &fakeNomad{}
+	storePath := filepath.Join(t.TempDir(), "jobs.json")
+	svc, err := New(nc, Options{StorePath: storePath, StatusTTL: time.Millisecond})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	req := JobRequest{Kind: KindShell, Pool: "linux", Script: "true", Env: map[string]string{"API_KEY": "sk-live-value"}}
+	job, _, err := svc.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if env := dispatchedEnv(t, nc); env["API_KEY"] != "sk-live-value" {
+		t.Fatalf("the job itself lost its env: %+v", env)
+	}
+	if req.Env["API_KEY"] != "sk-live-value" {
+		t.Fatal("Submit mutated the caller's Env map")
+	}
+	if got := job.Request.Env["API_KEY"]; got != RedactedEnvValue {
+		t.Fatalf("returned job env value = %q, want it redacted", got)
+	}
+	data, err := readStoreFile(storePath)
+	if err != nil {
+		t.Fatalf("read job store: %v", err)
+	}
+	if strings.Contains(data, "sk-live-value") || !strings.Contains(data, "API_KEY") {
+		t.Fatalf("job store should keep the key and drop the value: %s", data)
+	}
+}
+
+func TestSubmit_RejectsNamedSecrets(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestService(t, nc)
+	if _, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true", Secrets: []string{"GH_TOKEN"}}); err == nil {
+		t.Fatal("Submit accepted named secrets that nothing resolves")
+	}
+	if len(nc.dispatchCalls) != 0 {
+		t.Fatal("a rejected request was dispatched")
+	}
+}

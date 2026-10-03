@@ -192,6 +192,11 @@ func validate(req JobRequest) error {
 	if strings.HasPrefix(req.Ref, "-") {
 		return fmt.Errorf("dispatch: ref must not start with '-'")
 	}
+	// Nothing resolves named secrets yet; accepting them would let a caller believe a secret
+	// reached the job when it silently didn't.
+	if len(req.Secrets) > 0 {
+		return fmt.Errorf("dispatch: named secrets are not supported; nothing would resolve them")
+	}
 	for key := range req.Env {
 		if !envKeyPattern.MatchString(key) {
 			return fmt.Errorf("dispatch: env key %q is not a valid shell variable name", key)
@@ -310,7 +315,7 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	rec := &record{
 		Job: Job{
 			ID:                 id,
-			Request:            req,
+			Request:            withRedactedEnv(req),
 			Status:             StatusPending,
 			SubmittedAt:        now,
 			Meta:               req.Meta,
@@ -323,6 +328,25 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	}
 	job := rec.Job
 	return &job, true, nil
+}
+
+// RedactedEnvValue replaces every env value in the job history and in every Job handed back: the
+// values went to Nomad with the dispatch and are often credentials, so the record keeps only
+// which variables a job ran with.
+const RedactedEnvValue = "[redacted]"
+
+// withRedactedEnv returns req with a fresh Env whose values are RedactedEnvValue, leaving the
+// caller's map untouched.
+func withRedactedEnv(req JobRequest) JobRequest {
+	if len(req.Env) == 0 {
+		return req
+	}
+	env := make(map[string]string, len(req.Env))
+	for k := range req.Env {
+		env[k] = RedactedEnvValue
+	}
+	req.Env = env
+	return req
 }
 
 // repoCredential returns the control plane's armed private-repo credential for this job's

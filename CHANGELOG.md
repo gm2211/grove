@@ -4,6 +4,9 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Security:** job history no longer keeps `env` values: the stored job (and every job the API
+  returns) lists each key with the value `[redacted]`. `secrets` is rejected until grove can
+  resolve named secrets, instead of being accepted and silently ignored.
 - **Security:** the private-repo clone token no longer reaches a job's script. build and agent
   jobs clone in a separate `source` prestart task that alone receives the token (in the dispatch
   payload, never `env_json`), passes it to git only through its own environment, and deletes it

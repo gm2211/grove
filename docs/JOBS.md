@@ -66,11 +66,13 @@ payload := encodePayload(req.Kind, cloneToken, req.Script)
 client.Dispatch(ctx, "grove-"+string(req.Kind)+"-"+req.Pool, meta, payload)
 ```
 
-`req.Secrets` (names to resolve server-side) are **not** part of this mapping — resolve them to
-values and fold them into `env_json` before dispatch, so `run.sh` never has to know secrets exist
-as a separate concept from ordinary env vars. Nothing about secret handling lives in the job
-template; keeping that logic in `internal/dispatch` means changing how secrets are resolved never
-requires re-registering jobs.
+`req.Secrets` (names to resolve server-side) is reserved: nothing resolves names yet, so `Submit`
+rejects a request that sends any rather than dispatching a job that silently lacks them. When
+resolution exists it belongs in `internal/dispatch` (values folded into `env_json` before
+dispatch), so changing how secrets are resolved never requires re-registering jobs.
+
+`env` values go to Nomad with the dispatch and nowhere else: the stored job, and every `Job` the
+API returns, keeps each key with the value `[redacted]`.
 
 ## Per-job resource sizing
 
