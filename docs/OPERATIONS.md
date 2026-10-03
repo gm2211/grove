@@ -109,6 +109,12 @@ jobs; never implied by `dispatch`), `operator` (everything). A non-operator cred
 sees and cancels its own jobs, and job `env` values come back `[redacted]` to everyone. The same
 thing over HTTP is `POST /api/v1/access/devices` with `{"name": ..., "scopes": [...]}`.
 
+Re-running `grove setup` on a Mac gives it a new credential. Once that Mac is back online, grove
+revokes the Mac's earlier setup credentials (same name, read/dispatch scopes only), so
+`grove access list` holds one live credential per Mac. Credentials issued with `grove access issue`
+are never revoked this way. Stale ones left from before this change go with the Mac's next
+`grove setup`, or `grove access revoke DEVICE_ID` by hand.
+
 ## Letting jobs clone private repos (and turning it back off)
 
 Grove has no GitHub credential until you give it one, so a job against a private repository fails

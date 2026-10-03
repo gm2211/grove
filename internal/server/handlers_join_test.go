@@ -18,6 +18,22 @@ func TestJoinRequiresOperatorApprovalAndDeliversCredentialOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// An earlier `grove setup` run on the same Mac, plus credentials an operator issued.
+	_, earlier, err := access.Issue("new-mac", []string{ScopeRead, ScopeDispatch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, shellSameName, _ := access.Issue("new-mac", []string{ScopeRead, ScopeShell})
+	_, otherDevice, _ := access.Issue("argos", []string{ScopeRead, ScopeDispatch})
+	active := func(id string) bool {
+		for _, c := range access.List() {
+			if c.ID == id {
+				return c.RevokedAt == nil
+			}
+		}
+		t.Fatalf("credential %s missing", id)
+		return false
+	}
 	srv := newTestServer(oc, nil, nil, Options{Token: "operator-secret", AccessStore: access, ControllerURL: "http://100.64.0.1:6120", ServerURL: "http://100.64.0.1:6130", IssueWorkerBootstrap: func(context.Context, string) (string, error) { return "worker-bootstrap", nil }})
 	create := httptest.NewRequest(http.MethodPost, "/api/v1/join/requests", bytes.NewBufferString(`{"name":"new-mac","tailnetIp":"192.0.2.1"}`))
 	rec := httptest.NewRecorder()
@@ -69,9 +85,23 @@ func TestJoinRequiresOperatorApprovalAndDeliversCredentialOnce(t *testing.T) {
 	if again := poll(); again.Code != http.StatusOK || !bytes.Contains(again.Body.Bytes(), []byte(`"bootstrapToken":"worker-bootstrap"`)) {
 		t.Fatalf("credential delivery was not retryable: %d %s", again.Code, again.Body.String())
 	}
+	if !active(earlier.ID) {
+		t.Fatal("the Mac's earlier credential must stay valid until the new enrollment finishes")
+	}
+	var delivered struct{ DeviceID string }
+	_ = json.Unmarshal(got.Body.Bytes(), &delivered)
 	oc.workers = []orchard.Worker{{Name: "new-mac", Offline: false, LastSeen: time.Now().Add(time.Second)}}
 	if online := pollVerify(); online.Code != http.StatusOK || !bytes.Contains(online.Body.Bytes(), []byte(`"workerOnline":true`)) {
 		t.Fatalf("online status=%d %s", online.Code, online.Body.String())
+	}
+	if active(earlier.ID) {
+		t.Error("the Mac's earlier join credential should be revoked once the new one is enrolled")
+	}
+	if !active(delivered.DeviceID) {
+		t.Error("the newly delivered credential must stay active")
+	}
+	if !active(shellSameName.ID) || !active(otherDevice.ID) {
+		t.Error("operator-issued credentials (shell scope, other names) must never be revoked by a join")
 	}
 	if gone := poll(); gone.Code != http.StatusNotFound {
 		t.Fatalf("completed request retained: %d", gone.Code)

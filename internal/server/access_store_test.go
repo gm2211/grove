@@ -254,3 +254,36 @@ func TestIssueDeviceEndpoint_OperatorOnlyAndTokenWorks(t *testing.T) {
 		t.Fatalf("issued token authenticates as %+v ok=%v (device=%+v)", principal, ok, out.Device)
 	}
 }
+
+func TestAccessStoreRevokeSupersededPersists(t *testing.T) {
+	path := t.TempDir() + "/devices.json"
+	store, err := NewAccessStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, old, _ := store.IssueJoined("mac", []string{ScopeRead, ScopeBuild, ScopeAgent})
+	_, keep, _ := store.IssueJoined("mac", []string{ScopeRead, ScopeBuild, ScopeAgent})
+	_, operator, _ := store.Issue("mac", []string{ScopeOperator})
+
+	revoked, err := store.RevokeSuperseded("mac", keep.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(revoked) != 1 || revoked[0] != old.ID {
+		t.Fatalf("revoked %v, want only %s", revoked, old.ID)
+	}
+
+	reloaded, err := NewAccessStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range reloaded.List() {
+		wantRevoked := c.ID == old.ID
+		if (c.RevokedAt != nil) != wantRevoked {
+			t.Errorf("%s revoked=%v after reload, want %v", c.ID, c.RevokedAt != nil, wantRevoked)
+		}
+		if c.ID != operator.ID && c.Source != SourceJoin {
+			t.Errorf("%s source=%q, want %q", c.ID, c.Source, SourceJoin)
+		}
+	}
+}

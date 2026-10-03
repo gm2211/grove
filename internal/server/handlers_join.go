@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"sort"
@@ -131,6 +132,13 @@ func (s *Server) handlePollJoinRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		if online {
 			delete(s.joins.byID, id)
+			// Enrollment finished with the new credential, so this Mac's earlier ones (from
+			// previous `grove setup` runs) are dead weight that still authenticates.
+			if revoked, err := s.opts.AccessStore.RevokeSuperseded(jr.Name, jr.DeviceID); err != nil {
+				slog.Warn("join: could not revoke superseded device credentials", "name", jr.Name, "err", err)
+			} else if len(revoked) > 0 {
+				slog.Info("join: revoked superseded device credentials", "name", jr.Name, "count", len(revoked))
+			}
 			s.writeJSON(w, http.StatusOK, map[string]any{"status": "online", "workerOnline": true})
 			return
 		}
@@ -204,7 +212,7 @@ func (s *Server) handleApproveJoinRequest(w http.ResponseWriter, r *http.Request
 		s.writeError(w, http.StatusBadGateway, errors.New("issue worker credential"))
 		return
 	}
-	clientToken, principal, err := s.opts.AccessStore.Issue(jr.Name, []string{ScopeRead, ScopeBuild, ScopeAgent})
+	clientToken, principal, err := s.opts.AccessStore.IssueJoined(jr.Name, []string{ScopeRead, ScopeBuild, ScopeAgent})
 	if err != nil {
 		s.joins.mu.Lock()
 		jr.Approving = false

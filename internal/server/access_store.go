@@ -46,9 +46,12 @@ type Principal struct {
 // Token material is deliberately absent. The raw token is returned only once,
 // by Issue, so callers can put it in the device's secure credential store.
 type DeviceCredential struct {
-	ID         string     `json:"id"`
-	Name       string     `json:"name"`
-	Scopes     []string   `json:"scopes"`
+	ID     string   `json:"id"`
+	Name   string   `json:"name"`
+	Scopes []string `json:"scopes"`
+	// Source is "join" for a credential `grove setup` received through join approval, empty for
+	// one an operator issued (POST /access/devices, `grove access issue`).
+	Source     string     `json:"source,omitempty"`
 	CreatedAt  time.Time  `json:"createdAt"`
 	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
 	RevokedAt  *time.Time `json:"revokedAt,omitempty"`
@@ -112,8 +115,20 @@ func NewAccessStore(path string) (*AccessStore, error) {
 	return s, nil
 }
 
+// SourceJoin marks credentials issued through join approval (see DeviceCredential.Source).
+const SourceJoin = "join"
+
 // Issue creates a credential and returns its raw token exactly once.
 func (s *AccessStore) Issue(name string, scopes []string) (string, Principal, error) {
+	return s.issue(name, scopes, "")
+}
+
+// IssueJoined is Issue for a device enrolling through join approval; see RevokeSuperseded.
+func (s *AccessStore) IssueJoined(name string, scopes []string) (string, Principal, error) {
+	return s.issue(name, scopes, SourceJoin)
+}
+
+func (s *AccessStore) issue(name string, scopes []string, source string) (string, Principal, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", Principal{}, errors.New("device name is required")
@@ -137,6 +152,7 @@ func (s *AccessStore) Issue(name string, scopes []string) (string, Principal, er
 			ID:        hex.EncodeToString(idBytes),
 			Name:      name,
 			Scopes:    normalized,
+			Source:    source,
 			CreatedAt: time.Now().UTC(),
 		},
 		TokenHash: hashToken(token),
@@ -219,6 +235,58 @@ func (s *AccessStore) Revoke(id string) error {
 		return fmt.Errorf("persist credential revocation: %w", err)
 	}
 	return nil
+}
+
+// RevokeSuperseded revokes every other active join credential named name, once the device holding
+// keep has finished enrolling. Re-running `grove setup` on a Mac replaces the token in its
+// Keychain, so the earlier credentials are no longer held by anything legitimate. Credentials made
+// before Source existed count as join credentials when their scopes are ones join hands out (read
+// and dispatch kinds, never shell or operator). Operator-issued credentials are never touched.
+// It returns the IDs it revoked.
+func (s *AccessStore) RevokeSuperseded(name, keep string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	var revoked []string
+	originals := map[string]accessRecord{}
+	for id, record := range s.credentials {
+		if id == keep || record.Name != name || record.RevokedAt != nil || !supersededByJoin(record) {
+			continue
+		}
+		originals[id] = record
+		record.RevokedAt = &now
+		s.credentials[id] = record
+		revoked = append(revoked, id)
+	}
+	if len(revoked) == 0 {
+		return nil, nil
+	}
+	if err := s.persistLocked(); err != nil {
+		for id, record := range originals {
+			s.credentials[id] = record
+		}
+		return nil, fmt.Errorf("persist credential revocation: %w", err)
+	}
+	sort.Strings(revoked)
+	return revoked, nil
+}
+
+func supersededByJoin(record accessRecord) bool {
+	switch record.Source {
+	case SourceJoin:
+		return true
+	case "":
+		for _, scope := range record.Scopes {
+			switch scope {
+			case ScopeRead, ScopeDispatch, ScopeBuild, ScopeAgent:
+			default:
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *AccessStore) persistLocked() error {
