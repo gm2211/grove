@@ -19,10 +19,13 @@ const nomadDrainDeadline = "2h"
 // tailnet, and restarts the Nomad client so the new meta takes effect. pool.StartupScript, if
 // set, is appended verbatim after the generated part (see ARCHITECTURE.md → "Recycling").
 func BuildStartupScript(pool Pool, worker, vmName, tailscaleAuthKey string) string {
-	return buildStartupScript(pool, worker, vmName, tailscaleAuthKey, "")
+	return buildStartupScript(pool, worker, vmName, Options{TailscaleAuthKey: tailscaleAuthKey})
 }
 
-func buildStartupScript(pool Pool, worker, vmName, tailscaleAuthKey, nomadRPCAddress string) string {
+// buildStartupScript is BuildStartupScript with the Reconciler's full Options. An isolated pool's
+// section needs the auth key, tags and Nomad RPC address that Options.isolationProblem has
+// already vetted; Plan never builds a spec for a blocked pool.
+func buildStartupScript(pool Pool, worker, vmName string, opts Options) string {
 	var b strings.Builder
 
 	b.WriteString("#!/bin/sh\nset -eu\n\n")
@@ -37,14 +40,17 @@ func buildStartupScript(pool Pool, worker, vmName, tailscaleAuthKey, nomadRPCAdd
 	b.WriteString(nomadMetaScript)
 	b.WriteString("\n")
 
-	if tailscaleAuthKey != "" {
+	if pool.Isolated() {
+		b.WriteString(isolatedNetworkScript(opts.TailscaleAuthKey, opts.tailscaleTags(), opts.NomadRPCAddress))
+		b.WriteString("\n")
+	} else if opts.TailscaleAuthKey != "" {
 		fmt.Fprintf(&b, "tailscale up --authkey=%s --hostname=\"$grove_vm\" --ssh --accept-routes\n\n",
-			shQuote(tailscaleAuthKey))
+			shQuote(opts.TailscaleAuthKey))
 	}
 
 	if pool.Name == "macos" {
-		if nomadRPCAddress != "" {
-			fmt.Fprintf(&b, "grove_priv mkdir -p /usr/local/etc/nomad.d\ngrove_priv tee /usr/local/etc/nomad.d/grove-rpc.hcl >/dev/null <<'GROVE_NOMAD_RPC'\nclient {\n  servers = [%s]\n}\nGROVE_NOMAD_RPC\n\n", strconv.Quote(nomadRPCAddress))
+		if opts.NomadRPCAddress != "" {
+			fmt.Fprintf(&b, "grove_priv mkdir -p /usr/local/etc/nomad.d\ngrove_priv tee /usr/local/etc/nomad.d/grove-rpc.hcl >/dev/null <<'GROVE_NOMAD_RPC'\nclient {\n  servers = [%s]\n}\nGROVE_NOMAD_RPC\n\n", strconv.Quote(opts.NomadRPCAddress))
 		}
 		b.WriteString(nomadClientReadinessScript)
 		b.WriteString("\n")

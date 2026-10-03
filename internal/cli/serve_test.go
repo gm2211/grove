@@ -31,6 +31,73 @@ func TestFleetOptionsCarryConfiguredNomadRPCAddress(t *testing.T) {
 	}
 }
 
+func TestFleetOptionsCarryConfiguredTailscaleTags(t *testing.T) {
+	options, err := fleetOptions(&config.Config{
+		Tailscale: config.TailscaleConfig{AuthKey: "tskey-test", Tags: []string{"tag:grove-vm", "tag:ci"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(options.TailscaleTags, ",") != "tag:grove-vm,tag:ci" {
+		t.Errorf("TailscaleTags = %q, want the configured tags", options.TailscaleTags)
+	}
+}
+
+func writeIsolatedFleet(t *testing.T) string {
+	t.Helper()
+	fleetPath := filepath.Join(t.TempDir(), "fleet.yaml")
+	spec := `
+pools:
+  - name: linux
+    image: ghcr.io/example/linux:latest
+    perWorker: 1
+    cpu: 4
+    memory: 8192
+    network: isolated
+`
+	if err := os.WriteFile(fleetPath, []byte(spec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return fleetPath
+}
+
+func TestFleetReconcileLoop_IsolatedPool_CreatesOnceThenNoOp(t *testing.T) {
+	oc := &fakeReconcileOrchard{workers: []orchard.Worker{{Name: "mac1"}}}
+	cfg := &config.Config{
+		Fleet:     writeIsolatedFleet(t),
+		Nomad:     config.Endpoint{URL: "http://100.64.0.10:4646"},
+		Tailscale: config.TailscaleConfig{AuthKey: "tskey-auth-test"},
+	}
+	loop := newFleetReconcileLoop(cfg, oc, &server.FleetReconcileStatus{})
+
+	loop.tick(context.Background())
+	if oc.createCalls != 1 || !oc.vms[0].Softnet {
+		t.Fatalf("first tick should create one Softnet VM, got creates=%d vms=%+v", oc.createCalls, oc.vms)
+	}
+	if loop.warnedBlocked != "" {
+		t.Fatalf("pool should not be blocked, got %q", loop.warnedBlocked)
+	}
+
+	loop.tick(context.Background())
+	if oc.createCalls != 1 || oc.deleteCalls != 0 {
+		t.Fatalf("second tick should be a no-op, got creates=%d deletes=%d", oc.createCalls, oc.deleteCalls)
+	}
+}
+
+func TestFleetReconcileLoop_IsolatedPoolWithoutAuthKey_IsBlocked(t *testing.T) {
+	oc := &fakeReconcileOrchard{workers: []orchard.Worker{{Name: "mac1"}}}
+	cfg := &config.Config{Fleet: writeIsolatedFleet(t), Nomad: config.Endpoint{URL: "http://100.64.0.10:4646"}}
+	loop := newFleetReconcileLoop(cfg, oc, &server.FleetReconcileStatus{})
+
+	loop.tick(context.Background())
+	if oc.createCalls != 0 {
+		t.Fatalf("a blocked pool must not get VMs, got creates=%d", oc.createCalls)
+	}
+	if !strings.Contains(loop.warnedBlocked, `pool "linux" blocked`) || !strings.Contains(loop.warnedBlocked, "tailscale.authKey") {
+		t.Fatalf("blocked reason not reported, got %q", loop.warnedBlocked)
+	}
+}
+
 // TestPoolConfigs_ThreadsJobCPUAndMemoryFromFleetSpec is the regression test for the
 // hardcoded-job-resources defect: EnsureJobs used to always render every job at the templates'
 // fixed 2000 MHz/4096 MiB fallback because poolConfigs never read fleet.yaml's jobCPU/jobMemory.
@@ -162,6 +229,8 @@ func (f *fakeReconcileOrchard) CreateVM(_ context.Context, spec orchard.VMSpec) 
 		ShutdownScript:  spec.ShutdownScript,
 		ShutdownTimeout: spec.ShutdownTimeout,
 		TTL:             spec.TTL,
+		Softnet:         spec.Softnet,
+		SoftnetBlock:    spec.SoftnetBlock,
 	}
 	f.vms = append(f.vms, vm)
 	return &vm, nil

@@ -122,6 +122,7 @@ manually provisioned environments.
 | `--registry` | container registry a worker authenticates to (worker role; default `ghcr.io`) |
 | `--registry-user` | registry username for `tart login` (worker role) |
 | `--registry-token` | registry password/PAT for `tart login` (worker role); also read from `$GROVE_REGISTRY_TOKEN` |
+| `--softnet` | also install Softnet and print its one-time root step (worker role; only for Macs that run `network: isolated` pools, see [OPERATIONS.md](OPERATIONS.md#isolating-a-pools-network)) |
 | `--yes` | apply privileged steps too, **only takes effect when also running as root** |
 | `--dry-run` | print the whole plan, change nothing |
 

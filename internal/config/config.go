@@ -43,8 +43,13 @@ type EnrollmentConfig struct {
 
 type TailscaleConfig struct {
 	// AuthKey is an ephemeral, tagged Tailscale auth key used by worker VMs' StartupScript to
-	// join the tailnet (see ARCHITECTURE.md → "Recycling / hygiene").
+	// join the tailnet (see ARCHITECTURE.md → "Recycling / hygiene"). A Tailscale OAuth client
+	// secret (tskey-client-…) also works and never expires; isolated pools need one or the other.
 	AuthKey string `yaml:"authKey,omitempty"`
+	// Tags are the ACL tags VMs in isolated pools (fleet.yaml network: isolated) claim when they
+	// join the tailnet. Empty means fleet.DefaultIsolatedTailscaleTag. AuthKey must be allowed to
+	// apply them, and the tailnet policy should grant them only the Nomad servers' RPC port.
+	Tags []string `yaml:"tags,omitempty"`
 }
 
 type Endpoint struct {

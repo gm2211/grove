@@ -3,7 +3,9 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 
 	"github.com/gm2211/grove/internal/config"
 	"github.com/spf13/cobra"
@@ -72,7 +74,10 @@ var configShowCmd = &cobra.Command{
 var configSetCmd = &cobra.Command{
 	Use:   "set <key> <value>",
 	Short: "Set a single configuration key (dotted path, e.g. orchard.url) and save.",
-	Args:  cobra.ExactArgs(2),
+	Long: "Set a single configuration key (dotted path, e.g. orchard.url) and save.\n\n" +
+		"A value of - reads the value from standard input instead, so a secret such as\n" +
+		"tailscale.authKey never appears in the process list or shell history.",
+	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path, err := config.DefaultPath()
 		if err != nil {
@@ -87,7 +92,14 @@ var configSetCmd = &cobra.Command{
 			cfg = &config.Config{}
 		}
 
-		if err := setConfigKey(cfg, args[0], args[1]); err != nil {
+		value := args[1]
+		if value == "-" {
+			if value, err = readConfigValue(cmd.InOrStdin()); err != nil {
+				return err
+			}
+		}
+
+		if err := setConfigKey(cfg, args[0], value); err != nil {
 			return err
 		}
 
@@ -130,9 +142,37 @@ func setConfigKey(cfg *config.Config, key, value string) error {
 		cfg.Fleet = value
 	case "tailscale.authKey":
 		cfg.Tailscale.AuthKey = value
+	case "tailscale.tags":
+		cfg.Tailscale.Tags = splitList(value)
 	default:
 		return fmt.Errorf("unknown config key %q", key)
 	}
 
 	return nil
+}
+
+// readConfigValue reads one value from r for `grove config set <key> -`: everything up to EOF,
+// minus the trailing newline a pipe or `echo` adds. An empty value is refused rather than
+// silently clearing the key.
+func readConfigValue(r io.Reader) (string, error) {
+	data, err := io.ReadAll(io.LimitReader(r, 64<<10))
+	if err != nil {
+		return "", fmt.Errorf("read value from stdin: %w", err)
+	}
+	value := strings.TrimRight(string(data), "\r\n")
+	if value == "" {
+		return "", errors.New("no value on stdin")
+	}
+	return value, nil
+}
+
+// splitList parses a comma-separated config value, e.g. "tag:grove-vm,tag:ci", dropping blanks.
+func splitList(value string) []string {
+	var out []string
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
 }

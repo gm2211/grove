@@ -50,6 +50,10 @@ type VM struct {
 	ShutdownScript  string        `json:"shutdownScript,omitempty"`
 	ShutdownTimeout time.Duration `json:"shutdownTimeout,omitempty"`
 	HostDirs        []HostDir     `json:"hostDirs,omitempty"`
+	// Softnet and SoftnetBlock mirror the VM's Softnet settings, read back from v1.VM's
+	// netSoftnet/netSoftnetBlock, so drift detection notices a pool switching network mode.
+	Softnet      bool     `json:"softnet,omitempty"`
+	SoftnetBlock []string `json:"softnetBlock,omitempty"`
 }
 
 // HostDir is a host directory mounted into the guest through Orchard/Tart. It should only be
@@ -84,6 +88,13 @@ type VMSpec struct {
 	ShutdownTimeout time.Duration
 	TTL             time.Duration
 	HostDirs        []HostDir
+	// Softnet runs the VM on Tart's Softnet network instead of the default shared NAT. Softnet's
+	// default policy lets the guest reach only public IPv4 addresses and its host Mac;
+	// SoftnetBlock adds block rules on top, e.g. "out @host" to refuse connections the guest
+	// opens to its host while still letting the host's Orchard worker SSH in. Maps to v1.VM's
+	// netSoftnet/netSoftnetBlock, which Tart passes to softnet as --net-softnet-block.
+	Softnet      bool
+	SoftnetBlock []string
 }
 
 // ExecOptions controls a remote command.

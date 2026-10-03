@@ -45,6 +45,13 @@ type Pool struct {
 	// gives any job on the VM root-equivalent host control and breaks job-to-job isolation within
 	// the pool, so this is a deliberate per-pool trade-off, not something grove enables silently.
 	AllowDockerSocket bool `yaml:"allowDockerSocket,omitempty" json:"allowDockerSocket,omitempty"`
+	// Network chooses what this pool's VMs can reach. Empty or "shared" keeps Tart's default
+	// shared NAT, where a guest reaches everything its host Mac reaches: the LAN, the host's own
+	// services, and the whole tailnet through the host. "isolated" runs each VM on Softnet with
+	// the host blocked, so the guest reaches only public addresses, and gives it its own tagged
+	// tailnet login for the one control-plane port it needs (see isolation.go and
+	// docs/OPERATIONS.md "Isolating a pool's network").
+	Network string `yaml:"network,omitempty" json:"network,omitempty"`
 	// RunnerImage selects the fixed outer container used by every Linux Nomad job in this pool.
 	// It is independent of the VM image above and opt-in per-dispatch nested Docker overrides.
 	RunnerImage string `yaml:"runnerImage,omitempty" json:"runnerImage,omitempty"`

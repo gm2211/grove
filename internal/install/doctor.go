@@ -72,6 +72,9 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 
 	results = append(results, checkServiceUnits(opts))
 	results = append(results, checkTart(ctx, r, opts)...)
+	if _, err := opts.lookPath()("tart"); err == nil && opts.goos() == "darwin" {
+		results = append(results, checkSoftnet(ctx, r, opts, cfg))
+	}
 	results = append(results, checkTrustedTaps(ctx, r, opts)...)
 	if c := checkRegistryLogin(opts, cfg); c != nil {
 		results = append(results, *c)

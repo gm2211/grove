@@ -2,12 +2,14 @@ package fleet
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/url"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/gm2211/grove/internal/orchard"
@@ -26,8 +28,11 @@ type Options struct {
 	// TailscaleAuthKey, when set, makes generated StartupScripts join the tailnet (see
 	// scripts.go). Typically config.Config.Tailscale.AuthKey.
 	TailscaleAuthKey string
-	// NomadRPCAddress, when set, points macOS worker clients at the Nomad RPC listener.
-	// It is derived from the configured Nomad HTTP URL by the CLI.
+	// TailscaleTags are the ACL tags isolated VMs claim when they join the tailnet; empty means
+	// DefaultIsolatedTailscaleTag. Typically config.Config.Tailscale.Tags.
+	TailscaleTags []string
+	// NomadRPCAddress, when set, points macOS and isolated worker clients at the Nomad RPC
+	// listener. It is derived from the configured Nomad HTTP URL by the CLI.
 	NomadRPCAddress string
 	// Now returns the current time; defaults to time.Now. Overridable for tests.
 	Now func() time.Time
@@ -68,15 +73,40 @@ type PlannedDelete struct {
 	Reason string
 }
 
+// PlannedBlock is a pool the Reconciler refused to build VMs for, and why.
+type PlannedBlock struct {
+	Pool   string
+	Reason string
+}
+
 // Plan is the result of comparing desired state (Spec) against observed state (Orchard).
 type Plan struct {
 	Creates []PlannedCreate
 	Deletes []PlannedDelete
+	// Blocked lists pools whose VMs can't be built with the current configuration (see
+	// Options.isolationProblem). A blocked pool gets no new VMs; its already-isolated VMs keep
+	// running, and any other VM of it is deleted, so a pool asked to be isolated never keeps an
+	// unisolated VM.
+	Blocked []PlannedBlock
 }
 
 // Empty reports whether applying this Plan would be a no-op.
 func (p Plan) Empty() bool {
 	return len(p.Creates) == 0 && len(p.Deletes) == 0
+}
+
+// BlockedError summarises Blocked as one error, or returns nil when no pool is blocked, so
+// callers can report it even when the rest of the plan applied cleanly.
+func (p Plan) BlockedError() error {
+	if len(p.Blocked) == 0 {
+		return nil
+	}
+
+	reasons := make([]string, len(p.Blocked))
+	for i, b := range p.Blocked {
+		reasons[i] = fmt.Sprintf("pool %q blocked: %s", b.Pool, b.Reason)
+	}
+	return errors.New(strings.Join(reasons, "; "))
 }
 
 // Plan lists workers and VMs and computes the creates/deletes needed to match r.Spec.
@@ -94,8 +124,24 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 	var plan Plan
 
 	desired := make(map[string]bool)
+	blocked := make(map[string]string)
 
 	for _, pool := range r.Spec.Pools {
+		if problem := r.Options.isolationProblem(pool); problem != "" {
+			plan.Blocked = append(plan.Blocked, PlannedBlock{Pool: pool.Name, Reason: problem})
+			blocked[pool.Name] = problem
+
+			// Already-isolated VMs are safe to leave running until the configuration is fixed;
+			// every other VM of this pool falls through to the sweep below and is deleted.
+			for _, vm := range vms {
+				vmPool, worker, _, ok := ParseVMName(vm.Name)
+				if ok && vmPool == pool.Name && vm.Labels[LabelWorkerPin] == worker && isolatedVM(vm) {
+					desired[vm.Name] = true
+				}
+			}
+			continue
+		}
+
 		for _, worker := range workers {
 			if worker.Offline || worker.SchedulingPaused {
 				continue
@@ -152,11 +198,16 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 			continue
 		}
 
+		reason := "no longer desired"
+		if problem, ok := blocked[pool]; ok {
+			reason = "pool blocked: " + problem
+		}
+
 		plan.Deletes = append(plan.Deletes, PlannedDelete{
 			Name:   vm.Name,
 			Pool:   pool,
 			Worker: hostOf(vm, worker),
-			Reason: "no longer desired",
+			Reason: reason,
 		})
 	}
 
@@ -189,6 +240,7 @@ func (r *Reconciler) Apply(ctx context.Context, plan Plan) error {
 // the next tick will retry.
 func (r *Reconciler) Run(ctx context.Context, interval time.Duration) error {
 	logger := r.Options.logger()
+	lastBlocked := ""
 
 	tick := func() {
 		plan, err := r.Plan(ctx)
@@ -196,6 +248,15 @@ func (r *Reconciler) Run(ctx context.Context, interval time.Duration) error {
 			logger.Printf("fleet: plan failed: %v", err)
 			return
 		}
+
+		blocked := ""
+		if err := plan.BlockedError(); err != nil {
+			blocked = err.Error()
+			if blocked != lastBlocked {
+				logger.Printf("fleet: %s", blocked)
+			}
+		}
+		lastBlocked = blocked
 
 		if err := r.Apply(ctx, plan); err != nil {
 			logger.Printf("fleet: apply failed: %v", err)
@@ -222,10 +283,10 @@ func (r *Reconciler) Run(ctx context.Context, interval time.Duration) error {
 // the worker pin vmToV1 applies from Worker; pool/host bookkeeping lives in the VM's *name* and
 // in Worker, not in labels.
 func (r *Reconciler) vmSpec(pool Pool, worker, name string) orchard.VMSpec {
-	startup := buildStartupScript(pool, worker, name, r.Options.TailscaleAuthKey, r.Options.NomadRPCAddress)
+	startup := buildStartupScript(pool, worker, name, r.Options)
 	shutdown, shutdownTimeout := BuildShutdownScript(pool)
 
-	return orchard.VMSpec{
+	spec := orchard.VMSpec{
 		Name:            name,
 		Worker:          worker,
 		Image:           pool.Image,
@@ -243,6 +304,13 @@ func (r *Reconciler) vmSpec(pool Pool, worker, name string) orchard.VMSpec {
 		TTL:             pool.TTL.Std(),
 		HostDirs:        hostDirsForPool(pool),
 	}
+
+	if pool.Isolated() {
+		spec.Softnet = true
+		spec.SoftnetBlock = []string{softnetBlockHost}
+	}
+
+	return spec
 }
 
 // NomadRPCAddressFromHTTPURL derives the default Nomad RPC endpoint from the configured HTTP
@@ -304,7 +372,9 @@ func specDrifted(desired orchard.VMSpec, existing orchard.VM) bool {
 		desired.ShutdownScript != existing.ShutdownScript ||
 		desired.ShutdownTimeout != existing.ShutdownTimeout ||
 		desired.TTL != existing.TTL ||
-		!slices.Equal(desired.HostDirs, existing.HostDirs) {
+		!slices.Equal(desired.HostDirs, existing.HostDirs) ||
+		desired.Softnet != existing.Softnet ||
+		!slices.Equal(desired.SoftnetBlock, existing.SoftnetBlock) {
 		return true
 	}
 

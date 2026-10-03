@@ -119,6 +119,7 @@ pools:
     labels: {}               # extra Orchard *worker selectors* — see below, usually left empty
     workerSelector: {}      # only workers whose labels ⊇ this map
     allowDockerSocket: false # opt-in only; mounts the VM's docker socket into jobs (see docs/JOBS.md)
+    network: isolated        # Softnet, host blocked: jobs reach only the public internet (see below)
   - name: macos
     image: ghcr.io/gm2211/grove-macos-worker:latest
     perWorker: 1
@@ -136,8 +137,17 @@ named `<pool>-<worker>-<n>` exist, `restart_policy: OnFailure`, `ttl_seconds` se
 scripts from the pool. A VM's pool and host are never labelled — they're derived from its name and
 its observed placement (`fleet.PoolAndHost`): pool from parsing the name, host from Orchard's
 `worker` field once scheduled, falling back to the pinned worker while still pending. Missing →
-create; extra → delete; spec drift (image/cpu/memory/diskSize/restartPolicy/ttl/scripts) → delete +
-recreate.
+create; extra → delete; spec drift (image/cpu/memory/diskSize/restartPolicy/ttl/scripts/network)
+→ delete + recreate.
+
+**`network`** is `shared` (the default: Tart's NAT, so a guest reaches whatever its host Mac
+reaches, LAN and tailnet included) or `isolated`. An isolated pool's VMs run on Softnet with the
+host blocked (`netSoftnet` + `netSoftnetBlock: ["out @host"]`), use public DNS, keep job
+containers behind an in-guest fence, and log into the tailnet under their own tag
+(`tailscale.authKey`/`tailscale.tags`) just to reach the Nomad servers' RPC port. If that
+configuration is missing, the reconciler blocks the pool instead of booting VMs that can't join
+Nomad: no creates, unisolated VMs deleted, the reason reported. Linux pools only. Setup and the
+tailnet policy it needs: docs/OPERATIONS.md "Isolating a pool's network".
 
 **VM labels are a hard scheduler selector, not free-form tags.** Orchard's scheduler only ever
 places a VM on a worker whose own labels are a *superset* of the VM's

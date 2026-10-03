@@ -116,6 +116,9 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 			},
 		},
 	}
+	if opts.Softnet {
+		steps = append(steps, softnetSteps(r, lookPath, out)...)
+	}
 
 	if step := registryLoginStep(r, opts, out); step != nil {
 		steps = append(steps, *step)
