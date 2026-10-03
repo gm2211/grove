@@ -55,6 +55,10 @@ func buildStartupScript(pool Pool, worker, vmName string, opts Options) string {
 	if pool.Name == "macos" {
 		b.WriteString(macosJobUserScript)
 		b.WriteString("\n")
+		// The image binds Nomad to loopback. Nomad rejects implicit loopback
+		// advertisement, even for a client, so declare it before restarting.
+		b.WriteString(macosNomadAdvertiseScript)
+		b.WriteString("\n")
 		if opts.NomadRPCAddress != "" {
 			fmt.Fprintf(&b, "grove_priv mkdir -p /usr/local/etc/nomad.d\ngrove_priv tee /usr/local/etc/nomad.d/grove-rpc.hcl >/dev/null <<'GROVE_NOMAD_RPC'\nclient {\n  servers = [%s]\n}\nGROVE_NOMAD_RPC\n\n", strconv.Quote(opts.NomadRPCAddress))
 		}
@@ -76,6 +80,15 @@ func buildStartupScript(pool Pool, worker, vmName string, opts Options) string {
 }
 
 const guestHostXcodeMountPath = "/Volumes/My Shared Files/grove-xcode.app"
+
+const macosNomadAdvertiseScript = `grove_priv tee /usr/local/etc/nomad.d/grove-advertise.hcl >/dev/null <<'GROVE_NOMAD_ADVERTISE'
+advertise {
+  http = "127.0.0.1:4646"
+  rpc = "127.0.0.1:4647"
+  serf = "127.0.0.1:4648"
+}
+GROVE_NOMAD_ADVERTISE
+`
 
 func buildHostXcodeStartupScript(config HostXcodeConfig) string {
 	return strings.NewReplacer(
