@@ -518,9 +518,15 @@ func TestSourceTaskKeepsCloneTokenFromScript(t *testing.T) {
 
 		main := exec.Command("/bin/bash", filepath.Join(mainDir, "run.sh"))
 		main.Env = append(env, "NOMAD_TASK_DIR="+mainDir)
-		var buf bytes.Buffer
-		main.Stdout, main.Stderr = &buf, &buf
-		err := main.Run()
+		// A file, not a pipe: where the host has no timeout(1) (macOS), run.sh's watchdog leaves a
+		// `sleep` behind that would hold a pipe open, and Run would wait on it.
+		outFile, err := os.Create(filepath.Join(root, "main.out"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer outFile.Close()
+		main.Stdout, main.Stderr = outFile, outFile
+		err = main.Run()
 		var exitErr *exec.ExitError
 		switch {
 		case err == nil:
@@ -529,7 +535,8 @@ func TestSourceTaskKeepsCloneTokenFromScript(t *testing.T) {
 		default:
 			t.Fatalf("run.sh: %v", err)
 		}
-		return alloc, gitLog, code, buf.String()
+		got, _ := os.ReadFile(outFile.Name())
+		return alloc, gitLog, code, string(got)
 	}
 
 	t.Run("token reaches the clone only", func(t *testing.T) {
