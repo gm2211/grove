@@ -339,6 +339,9 @@ if [ "${1:-}" = "-version" ]; then
   printf 'Xcode 27.0\nBuild version %s\n' "$GROVE_TEST_XCODE_BUILD"
 fi
 `)
+			writeExecutable("dscl", "#!/bin/sh\n[ \"$2\" = -read ] && exit 1\nexit 0\n")
+			writeExecutable("chown", "#!/bin/sh\nexit 0\n")
+			writeExecutable("chmod", "#!/bin/sh\nexit 0\n")
 			writeExecutable("xcrun", `#!/bin/sh
 set -eu
 printf 'xcrun %s\n' "$*" >> "$GROVE_TEST_COMMAND_LOG"
@@ -476,6 +479,9 @@ esac
 `)
 			writeExecutable("sysctl", "#!/bin/sh\nprintf '12\\n'\n")
 			writeExecutable("mkdir", "#!/bin/sh\nexit 0\n")
+			writeExecutable("dscl", "#!/bin/sh\n[ \"$2\" = -read ] && exit 1\nexit 0\n")
+			writeExecutable("chown", "#!/bin/sh\nexit 0\n")
+			writeExecutable("chmod", "#!/bin/sh\nexit 0\n")
 			writeExecutable("tee", "#!/bin/sh\ncat >/dev/null\n")
 			writeExecutable("curl", `#!/bin/sh
 set -eu
@@ -587,5 +593,23 @@ func TestBuildShutdownScript_AppendsPoolScript(t *testing.T) {
 	want := "# --- pool.shutdownScript ---\necho custom-shutdown\n"
 	if !strings.HasSuffix(script, want) {
 		t.Errorf("shutdown script missing appended pool script %q at the end:\n%s", want, script)
+	}
+}
+
+// macOS jobs run as an unprivileged account (nomad/jobs/*.nomad.hcl's `user`); the startup script
+// must create it, with its home, before Nomad is restarted into service.
+func TestBuildStartupScript_MacOSCreatesJobUserBeforeNomad(t *testing.T) {
+	script := buildStartupScript(Pool{Name: "macos"}, "mac1", "macos-mac1-0", Options{})
+	userAt := strings.Index(script, "grove_priv dscl . -create /Users/"+MacOSJobUser+" UniqueID")
+	homeAt := strings.Index(script, "grove_priv chown "+MacOSJobUser+":"+MacOSJobUser+" "+MacOSJobHome)
+	restartAt := strings.Index(script, "launchctl kickstart -k system/com.grove.nomad")
+	if userAt < 0 || homeAt < 0 || restartAt < 0 || userAt > restartAt || homeAt > restartAt {
+		t.Fatalf("job user or home missing, or created after Nomad restarts:\n%s", script)
+	}
+	if !strings.Contains(script, "Password '*'") || !strings.Contains(script, "IsHidden 1") {
+		t.Fatalf("job user must have no password and stay hidden:\n%s", script)
+	}
+	if strings.Contains(BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", ""), "dscl") {
+		t.Fatal("Linux startup script must not touch macOS accounts")
 	}
 }

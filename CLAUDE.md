@@ -84,10 +84,15 @@ for it, deliberately.
   and answers `TokenFor(repoURL)`. It is the `dispatch.Options.RepoAuth` implementation.
 - `grove serve` builds ONE store and hands the same pointer to both the dispatch service and the
   HTTP server, so arming/disarming takes effect on the next dispatch with no restart.
-- The token goes into the Nomad dispatch's `env_json` as `GH_TOKEN` and nowhere else: never onto
-  `Job.Request.Env`, never into the on-disk job history, never back out of the API (`Status`
-  carries only a fingerprint). Keep it that way — `internal/dispatch/repoauth_test.go` and
+- The token goes into the build/agent dispatch PAYLOAD (`grove-payload/1`, token line, script)
+  and nowhere else. Only the job's `source` prestart task receives the payload: it clones, then
+  deletes it, so the caller's script never sees the token in its env, argv or files. Never put it
+  in `env_json` or any dispatch meta (every task sees those), onto `Job.Request.Env`, into the
+  on-disk job history, or back out of the API (`Status` carries only a fingerprint). Keep it that
+  way — `internal/dispatch/repoauth_test.go`, `nomad/jobs/nomadjobs_test.go` and
   `internal/server/handlers_github_test.go` assert it.
+- Arming always names repositories (`--repo owner/name` or `owner/*`); an empty scope covers
+  nothing.
 - Only `https://` repo URLs match: a token does nothing for an SSH remote, so handing one over
   there would be a leak with no upside.
 

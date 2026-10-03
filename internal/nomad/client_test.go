@@ -118,6 +118,20 @@ func TestPickTask_Deterministic(t *testing.T) {
 	}
 }
 
+// A build/agent allocation also carries its "source" prestart task, which sorts first; the job's
+// status, exit code and logs belong to "main".
+func TestPickTask_PrefersMain(t *testing.T) {
+	states := map[string]*nomadapi.TaskState{
+		"source": {State: "dead"},
+		"main":   {State: "running"},
+	}
+
+	name, ts := pickTask(states)
+	if name != "main" || ts.State != "running" {
+		t.Errorf("want the main task, got %q", name)
+	}
+}
+
 func TestPickTask_Empty(t *testing.T) {
 	name, ts := pickTask(nil)
 	if name != "" || ts != nil {

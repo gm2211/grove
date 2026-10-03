@@ -55,6 +55,19 @@ func dispatchedEnv(t *testing.T, nc *fakeNomad) map[string]string {
 	return env
 }
 
+// dispatchedToken returns the clone token line of the single dispatch's payload.
+func dispatchedToken(t *testing.T, nc *fakeNomad) string {
+	t.Helper()
+	if len(nc.dispatchCalls) != 1 {
+		t.Fatalf("got %d dispatch calls, want 1", len(nc.dispatchCalls))
+	}
+	lines := strings.SplitN(string(nc.dispatchCalls[0].payload), "\n", 3)
+	if len(lines) < 3 || lines[0] != "grove-payload/1" {
+		return ""
+	}
+	return lines[1]
+}
+
 func TestSubmit_InjectsArmedRepoCredential(t *testing.T) {
 	nc := &fakeNomad{}
 	auth := &fakeRepoAuth{repo: "https://github.com/gm2211/grove", token: "ghp_secret"}
@@ -68,9 +81,20 @@ func TestSubmit_InjectsArmedRepoCredential(t *testing.T) {
 		t.Fatalf("Submit: %v", err)
 	}
 
+	if got, want := dispatchedToken(t, nc), "ghp_secret"; got != want {
+		t.Fatalf("payload clone token = %q, want the armed token", got)
+	}
+	if want := "grove-payload/1\nghp_secret\nmake test"; string(nc.dispatchCalls[0].payload) != want {
+		t.Fatalf("payload = %q, want %q", nc.dispatchCalls[0].payload, want)
+	}
 	env := dispatchedEnv(t, nc)
-	if env["GH_TOKEN"] != "ghp_secret" {
-		t.Fatalf("dispatched env GH_TOKEN = %q, want the armed token", env["GH_TOKEN"])
+	if _, ok := env["GH_TOKEN"]; ok {
+		t.Fatalf("the armed token reached env_json, which the caller's script sees: %+v", env)
+	}
+	for key, value := range nc.dispatchCalls[0].meta {
+		if strings.Contains(value, "ghp_secret") {
+			t.Fatalf("the armed token reached dispatch meta %q, which every task sees", key)
+		}
 	}
 	if env["CI"] != "1" {
 		t.Fatalf("injection dropped the caller's env: %+v", env)
@@ -125,8 +149,8 @@ func TestSubmit_NoCredentialWhenNotArmedOrOutOfScope(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Submit: %v", err)
 		}
-		if env := dispatchedEnv(t, nc); env["GH_TOKEN"] != "" {
-			t.Fatalf("a control plane with no armed credential injected one: %+v", env)
+		if token := dispatchedToken(t, nc); token != "" {
+			t.Fatalf("a control plane with no armed credential injected one: %q", token)
 		}
 		if job.RepoCredentialUsed {
 			t.Fatal("RepoCredentialUsed set with no RepoAuth configured")
@@ -142,8 +166,8 @@ func TestSubmit_NoCredentialWhenNotArmedOrOutOfScope(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("Submit: %v", err)
 		}
-		if env := dispatchedEnv(t, nc); env["GH_TOKEN"] != "" {
-			t.Fatalf("an out-of-scope repo got the credential: %+v", env)
+		if token := dispatchedToken(t, nc); token != "" {
+			t.Fatalf("an out-of-scope repo got the credential: %q", token)
 		}
 	})
 
@@ -156,8 +180,8 @@ func TestSubmit_NoCredentialWhenNotArmedOrOutOfScope(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("Submit: %v", err)
 		}
-		if env := dispatchedEnv(t, nc); env["GH_TOKEN"] != "" {
-			t.Fatalf("a shell job got clone credentials: %+v", env)
+		if payload := string(nc.dispatchCalls[0].payload); payload != "true" {
+			t.Fatalf("a shell job's payload = %q, want the bare script", payload)
 		}
 		if len(auth.calls) != 0 {
 			t.Fatalf("the store was consulted for a shell job: %v", auth.calls)
@@ -184,7 +208,7 @@ func TestSubmit_ExplicitJobTokenWins(t *testing.T) {
 			if env[name] != "ghp_caller" {
 				t.Fatalf("%s = %q, want the caller's own token", name, env[name])
 			}
-			if env["GH_TOKEN"] == "ghp_armed" {
+			if env["GH_TOKEN"] == "ghp_armed" || dispatchedToken(t, nc) != "" {
 				t.Fatal("the armed credential overrode the caller's own")
 			}
 			if job.RepoCredentialUsed {
@@ -197,4 +221,28 @@ func TestSubmit_ExplicitJobTokenWins(t *testing.T) {
 func readStoreFile(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	return string(data), err
+}
+
+func TestSubmit_RejectsUnsafeRequestFields(t *testing.T) {
+	cases := map[string]JobRequest{
+		"ssh repo":         {Kind: KindBuild, Pool: "linux", Repo: "git@github.com:gm2211/grove.git", Script: "true"},
+		"option repo":      {Kind: KindBuild, Pool: "linux", Repo: "--upload-pack=touch /tmp/x", Script: "true"},
+		"plain http repo":  {Kind: KindAgent, Pool: "linux", Repo: "http://github.com/gm2211/grove", Script: "true"},
+		"option ref":       {Kind: KindBuild, Pool: "linux", Repo: "https://github.com/gm2211/grove", Ref: "--orphan=x", Script: "true"},
+		"multi-line repo":  {Kind: KindBuild, Pool: "linux", Repo: "https://github.com/gm2211/grove\nx", Script: "true"},
+		"shell in env key": {Kind: KindShell, Pool: "linux", Script: "true", Env: map[string]string{"A=$(id);B": "1"}},
+		"digit env key":    {Kind: KindShell, Pool: "linux", Script: "true", Env: map[string]string{"1A": "1"}},
+	}
+	for name, req := range cases {
+		t.Run(name, func(t *testing.T) {
+			nc := &fakeNomad{}
+			svc := newTestService(t, nc)
+			if _, _, err := svc.Submit(context.Background(), req); err == nil {
+				t.Fatal("Submit accepted the request")
+			}
+			if len(nc.dispatchCalls) != 0 {
+				t.Fatal("a rejected request was dispatched")
+			}
+		})
+	}
 }

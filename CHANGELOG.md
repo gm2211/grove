@@ -4,6 +4,18 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Security:** the private-repo clone token no longer reaches a job's script. build and agent
+  jobs clone in a separate `source` prestart task that alone receives the token (in the dispatch
+  payload, never `env_json`), passes it to git only through its own environment, and deletes it
+  before `main` starts. A failed clone still shows in the job's logs and exit code. Scripts that
+  relied on run.sh's `gh auth setup-git` must set up git auth themselves.
+- **Security:** macOS jobs no longer run as root. The fleet startup script creates a hidden,
+  passwordless `_grovejob` account (home `/private/var/grove-job`) and the job's `main` task runs
+  as it.
+- **Security:** `grove github enable` and `PUT /api/v1/github/sourcing` require at least one
+  repository; a credential armed earlier with no repositories named clones nothing until it is
+  re-armed. Only `https://` repo URLs are accepted for build/agent jobs, refs may not start with
+  `-`, and env keys must be shell variable names.
 - **Security:** `grove install` no longer installs anything it downloaded unverified. Nomad
   (Linux, now pinned to 2.0.7 instead of "latest"), MinIO (Linux, `RELEASE.2025-09-06T17-38-46Z`),
   the MinIO client and Homebrew's installer (pinned commit instead of `HEAD`) are checked against

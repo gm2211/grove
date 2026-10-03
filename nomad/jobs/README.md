@@ -46,26 +46,29 @@ Every rendered job:
 - `parameterized { payload = "required" meta_required = ["requester"] meta_optional = ["repo",
   "ref", "env_json", "timeout_seconds", "grove_meta_json", "artifact_prefix", "image"] }` — a
   `JobRequest` (see `internal/dispatch/dispatch.go`) maps onto these dispatch meta keys 1:1, plus
-  the request's `Script` becomes the dispatch payload.
+  the request's `Script` becomes the dispatch payload (for build/agent behind a
+  `grove-payload/1` header line and a clone-token line, read only by the `source` task).
 - `constraint { attribute = "${meta.pool}" value = "<Pool>" }` so the job only ever lands on a
   node whose Nomad client meta (`client.hcl`/`grove-meta.hcl` in `images/*-worker`) says
   `pool = "<Pool>"`.
-- One task group, one task, named `main`.
+- One task group. shell jobs have one task, `main`. build/agent jobs also have a `source`
+  prestart task that alone receives the payload, clones the repo into the alloc dir with the
+  clone token, deletes the payload and records its result, so the token never reaches `main`.
+  On the `macos` pool `main` runs as the unprivileged `_grovejob` user
+  (internal/fleet/scripts.go creates it); `source` stays root.
 - `restart { attempts = 0 }` and `reschedule { attempts = 0 }` on every job — grove owns retries
   at the `JobRequest` level (a caller that wants a retry submits a new request); Nomad must not
   also retry underneath it or the two retry policies fight each other.
-- The dispatched payload (the caller's script) is written to `${NOMAD_TASK_DIR}/script.sh` via
-  `dispatch_payload { file = "script.sh" }`.
+- The dispatched payload is written via `dispatch_payload`: `script.sh` in a shell job's `main`,
+  `request` in a build/agent job's `source`.
 - A `template` stanza writes an entrypoint wrapper to `local/run.sh` (`${NOMAD_TASK_DIR}/run.sh`
   at runtime). It is plain bash — no consul-template `{{ }}` directives — because Nomad already
   injects `NOMAD_META_*` and `NOMAD_TASK_DIR` as real environment variables for every task
   regardless of driver, so there's nothing left for consul-template to fill in. run.sh:
   1. Expands `NOMAD_META_env_json` (a JSON object) into `export`s via `jq`.
-  2. (build/agent only) clones `NOMAD_META_repo` at depth 50 into `./work`, checks out
-     `NOMAD_META_ref`, and runs `gh auth setup-git` first when `GH_TOKEN`/`GIT_TOKEN` is present
-     (grove itself puts `GH_TOKEN` in `env_json` only when an operator has armed private-repo
-     sourcing and the repo is in its scope — see docs/JOBS.md "Private repositories")
-     (private HTTPS clones).
+  2. (build/agent only) replays the `source` task's clone log, exits with its code if the clone
+     failed, and otherwise `cd`s into the checkout it left in the alloc dir (see docs/JOBS.md
+     "Private repositories").
   3. Runs `script.sh` under `timeout ${NOMAD_META_timeout_seconds:-3600}`.
   4. (build only) uploads `./artifacts/**` to the artifact store with `mc`, prefixed by
      `NOMAD_META_artifact_prefix` (falls back to the Nomad alloc ID).

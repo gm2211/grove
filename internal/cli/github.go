@@ -74,7 +74,7 @@ func init() {
 	}
 	enable.Flags().StringVar(&tokenEnv, "token-env", "GH_TOKEN", "environment variable holding the GitHub token")
 	enable.Flags().BoolVar(&tokenStdin, "token-stdin", false, "read the GitHub token from stdin instead of an environment variable")
-	enable.Flags().StringArrayVar(&repos, "repo", nil, "limit the credential to owner/name (repeatable; \"owner/*\" allows every repo of an owner). Default: any repo on the allowed hosts")
+	enable.Flags().StringArrayVar(&repos, "repo", nil, "owner/name the credential may clone (required, repeatable; \"owner/*\" allows every repo of an owner)")
 	enable.Flags().StringArrayVar(&hosts, "host", nil, "git host the credential may be used against (repeatable, default github.com — set for GitHub Enterprise)")
 	enable.Flags().DurationVar(&ttl, "ttl", 0, "auto-disable after this long, e.g. 4h (default: stays on until `grove github disable`)")
 	github.AddCommand(enable)
@@ -126,7 +126,7 @@ func printGitHubSourcingStatus(out io.Writer, status *gitauth.Status) {
 		fmt.Fprintln(out, "private-repo sourcing: off (jobs can clone public repositories only)")
 		return
 	}
-	scope := "any repo"
+	scope := "none (re-arm with --repo; nothing is cloned privately until then)"
 	if len(status.Repos) > 0 {
 		scope = strings.Join(status.Repos, ", ")
 	}

@@ -154,8 +154,8 @@ func TestSubmit_Success(t *testing.T) {
 	if call.jobName != "grove-build-linux" {
 		t.Errorf("job name = %q, want grove-build-linux", call.jobName)
 	}
-	if string(call.payload) != "make test" {
-		t.Errorf("payload = %q, want %q", call.payload, "make test")
+	if want := "grove-payload/1\n\nmake test"; string(call.payload) != want {
+		t.Errorf("payload = %q, want %q", call.payload, want)
 	}
 	if call.meta["repo"] != req.Repo {
 		t.Errorf("meta[repo] = %q", call.meta["repo"])

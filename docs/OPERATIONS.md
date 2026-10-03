@@ -95,7 +95,7 @@ at `git clone` with `Repository not found`. Arm one only for as long as you need
 ```bash
 # on any machine with the operator credential
 export GH_TOKEN=github_pat_…                       # or: grove github enable --token-stdin < token.txt
-grove github enable --repo gm2211/grove --ttl 4h   # --repo/--ttl are optional but recommended
+grove github enable --repo gm2211/grove --ttl 4h   # --repo is required; --ttl is recommended
 grove github status
 grove github disable                               # wipes the token from the control plane
 ```
@@ -103,12 +103,12 @@ grove github disable                               # wipes the token from the co
 Notes worth knowing before you arm it:
 
 - It applies **fleet-wide and immediately** — every build/agent job submitted while it's on, by
-  any device that can dispatch, gets the credential for a repo in scope. Narrow it with `--repo
-  owner/name` (repeatable, `owner/*` allowed) rather than arming a broad token.
+  any device that can dispatch, gets the credential for a repo in scope. Name each repo with
+  `--repo owner/name` (required, repeatable, `owner/*` allowed), and use a fine-grained,
+  read-only token limited to those repos.
 - `--ttl` auto-disarms it and wipes the stored token; without one it stays armed until you run
   `grove github disable`. Prefer a TTL — that is what makes this on-demand rather than permanent.
-- Use the **`https://`** clone URL for private repos. An SSH remote (`git@github.com:…`) never
-  receives the token and will still fail.
+- Use the **`https://`** clone URL. build/agent jobs with any other repo URL are refused.
 - The same controls are in the web UI under **Settings -> Private repository sourcing** (operator
   credential only), and `grove github status` shows the fingerprint, scope, expiry and last use.
 - Rotating: run `grove github enable` again with the new token; it replaces the armed one.

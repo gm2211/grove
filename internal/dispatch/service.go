@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -73,13 +74,14 @@ type Options struct {
 	// StatusTTL caps how often Get/List re-query Nomad for a job's allocations. Defaults to 3s.
 	StatusTTL time.Duration
 	// RepoAuth, when non-nil, is consulted at Submit time for a build/agent job's Repo: if the
-	// control plane has a credential armed for it (see internal/gitauth), the token is exported to
-	// the dispatched job as GH_TOKEN so run.sh's `gh auth setup-git` can clone a private
-	// repository. Nil — the default — means no job ever gets clone credentials from grove.
+	// control plane has a credential armed for it (see internal/gitauth), the token is handed to
+	// the job's "source" prestart task, which clones the private repository before the caller's
+	// script starts. Nil — the default — means no job ever gets clone credentials from grove.
 	//
-	// The token is injected into the dispatch's env_json only. It is deliberately NOT written to
-	// the stored Job.Request.Env, so it never lands in the on-disk job history nor in any API
-	// response; Job.RepoCredentialUsed records that one was used.
+	// The token travels only in the dispatch payload (see encodePayload), which only the source
+	// task receives: never env_json, so the caller's script never sees it, and never the stored
+	// Job.Request, so it never lands in the on-disk job history nor in any API response;
+	// Job.RepoCredentialUsed records that one was used.
 	RepoAuth RepoAuth
 	// Pools, when set, is used only to validate JobRequest.Resources hints against each pool's
 	// configured job CPU/Memory defaults (Submit rejects a hint that exceeds them with a 400). It
@@ -160,6 +162,10 @@ func jobName(kind Kind, pool string) string {
 	return fmt.Sprintf("grove-%s-%s", kind, pool)
 }
 
+// envKeyPattern is what a JobRequest.Env key must look like: run.sh turns each one into a bash
+// `export KEY=...`, so anything else would be shell syntax rather than a name.
+var envKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 func validate(req JobRequest) error {
 	switch req.Kind {
 	case KindBuild, KindAgent, KindShell:
@@ -176,6 +182,20 @@ func validate(req JobRequest) error {
 	}
 	if (req.Kind == KindBuild || req.Kind == KindAgent) && req.Repo == "" {
 		return fmt.Errorf("dispatch: repo is required for kind %q", req.Kind)
+	}
+	if req.Repo != "" && !strings.HasPrefix(req.Repo, "https://") {
+		return fmt.Errorf("dispatch: repo must be an https:// URL")
+	}
+	if strings.ContainsAny(req.Repo, "\n\r") || strings.ContainsAny(req.Ref, "\n\r") {
+		return fmt.Errorf("dispatch: repo and ref must be a single line")
+	}
+	if strings.HasPrefix(req.Ref, "-") {
+		return fmt.Errorf("dispatch: ref must not start with '-'")
+	}
+	for key := range req.Env {
+		if !envKeyPattern.MatchString(key) {
+			return fmt.Errorf("dispatch: env key %q is not a valid shell variable name", key)
+		}
 	}
 	if t := req.Timeout.Duration(); t > 0 && t < time.Second {
 		return fmt.Errorf(`dispatch: timeout must be at least 1s (send a duration string like "30m" or a number of seconds)`)
@@ -258,10 +278,10 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	if t := req.Timeout.Duration(); t > 0 {
 		meta["timeout_seconds"] = strconv.FormatFloat(t.Seconds(), 'f', 0, 64)
 	}
-	// The armed private-repo credential (if any) is merged into a COPY of req.Env: it goes to the
-	// Nomad dispatch, never onto the record persisted below. See Options.RepoAuth.
-	env, repoCredentialUsed := s.envWithRepoCredential(req)
-	if len(env) > 0 {
+	// The armed private-repo credential (if any) goes into the payload only the job's source task
+	// reads, never env_json and never the record persisted below. See Options.RepoAuth.
+	cloneToken, repoCredentialUsed := s.repoCredential(req)
+	if env := req.Env; len(env) > 0 {
 		envJSON, err := json.Marshal(env)
 		if err != nil {
 			return nil, false, fmt.Errorf("dispatch: marshal env: %w", err)
@@ -281,7 +301,7 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	}
 
 	name := jobName(req.Kind, req.Pool)
-	res, err := s.nomad.Dispatch(ctx, name, meta, []byte(req.Script))
+	res, err := s.nomad.Dispatch(ctx, name, meta, encodePayload(req.Kind, cloneToken, req.Script))
 	if err != nil {
 		return nil, false, fmt.Errorf("dispatch %s: %w", name, err)
 	}
@@ -305,33 +325,42 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	return &job, true, nil
 }
 
-// envWithRepoCredential returns the environment to dispatch with — req.Env plus, when the control
-// plane has a credential armed for this job's repository, GH_TOKEN. The returned map is always a
-// fresh copy, so nothing here mutates the caller's (and the stored record's) req.Env.
+// repoCredential returns the control plane's armed private-repo credential for this job's
+// repository, and whether there is one. Only build and agent jobs clone, so only they get one.
 //
-// A caller that set GH_TOKEN or GIT_TOKEN itself keeps its own value: an explicit per-job
-// credential is more specific than the fleet-wide armed one, and silently overriding it would be
-// the surprising behavior. run.sh reads either name (see nomad/jobs/*.nomad.hcl).
-func (s *service) envWithRepoCredential(req JobRequest) (map[string]string, bool) {
-	env := make(map[string]string, len(req.Env)+1)
-	for k, v := range req.Env {
-		env[k] = v
-	}
+// A caller that set GH_TOKEN or GIT_TOKEN in its own env gets none: an explicit per-job credential
+// is more specific than the fleet-wide armed one, and the source task clones with the caller's
+// value instead (see nomad/jobs/*.nomad.hcl).
+func (s *service) repoCredential(req JobRequest) (string, bool) {
 	if s.opts.RepoAuth == nil || req.Repo == "" {
-		return env, false
+		return "", false
 	}
 	if req.Kind != KindBuild && req.Kind != KindAgent {
-		return env, false
+		return "", false
 	}
-	if env["GH_TOKEN"] != "" || env["GIT_TOKEN"] != "" {
-		return env, false
+	if req.Env["GH_TOKEN"] != "" || req.Env["GIT_TOKEN"] != "" {
+		return "", false
 	}
 	token, ok := s.opts.RepoAuth.TokenFor(req.Repo)
-	if !ok || token == "" {
-		return env, false
+	if !ok || token == "" || strings.ContainsAny(token, "\n\r") {
+		return "", false
 	}
-	env["GH_TOKEN"] = token
-	return env, true
+	return token, true
+}
+
+// payloadHeader starts every build/agent dispatch payload. Those jobs' "source" prestart task is
+// the only task that receives the payload: it reads the clone token from the second line, writes
+// everything after it out as the caller's script, and deletes the payload before "main" starts.
+const payloadHeader = "grove-payload/1\n"
+
+// encodePayload builds the Nomad dispatch payload for kind. A shell job has no source task, so its
+// payload is the script itself; a build or agent job's is payloadHeader, the clone token (or an
+// empty line), then the script.
+func encodePayload(kind Kind, cloneToken, script string) []byte {
+	if kind != KindBuild && kind != KindAgent {
+		return []byte(script)
+	}
+	return []byte(payloadHeader + cloneToken + "\n" + script)
 }
 
 func isTerminal(status Status) bool {

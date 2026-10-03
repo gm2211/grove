@@ -38,7 +38,7 @@ func TestNewStoreStartsDisarmed(t *testing.T) {
 
 func TestEnableThenTokenFor(t *testing.T) {
 	store, _ := newTestStore(t)
-	status, err := store.Enable(EnableOptions{Token: "ghp_secret", By: "operator"})
+	status, err := store.Enable(EnableOptions{Token: "ghp_secret", Repos: []string{"gm2211/*"}, By: "operator"})
 	if err != nil {
 		t.Fatalf("Enable: %v", err)
 	}
@@ -67,13 +67,14 @@ func TestEnableThenTokenFor(t *testing.T) {
 
 func TestTokenForRejectsOutOfScopeURLs(t *testing.T) {
 	store, _ := newTestStore(t)
-	if _, err := store.Enable(EnableOptions{Token: "t"}); err != nil {
+	if _, err := store.Enable(EnableOptions{Token: "t", Repos: []string{"gm2211/*"}}); err != nil {
 		t.Fatalf("Enable: %v", err)
 	}
 	for _, repo := range []string{
 		"git@github.com:gm2211/grove.git",       // ssh: a token does nothing here
 		"ssh://git@github.com/gm2211/grove.git", // ditto
 		"https://gitlab.com/gm2211/grove.git",   // host not armed
+		"http://github.com/gm2211/grove.git",    // plain http would send the token in the clear
 		"https://github.com/gm2211",             // not an owner/name path
 		"https://github.com/",
 		"",
@@ -105,7 +106,7 @@ func TestRepoScopeNarrowsTheCredential(t *testing.T) {
 
 func TestEnterpriseHostScope(t *testing.T) {
 	store, _ := newTestStore(t)
-	if _, err := store.Enable(EnableOptions{Token: "t", Hosts: []string{"GitHub.example.com"}}); err != nil {
+	if _, err := store.Enable(EnableOptions{Token: "t", Hosts: []string{"GitHub.example.com"}, Repos: []string{"gm2211/grove"}}); err != nil {
 		t.Fatalf("Enable: %v", err)
 	}
 	if _, ok := store.TokenFor("https://github.example.com/gm2211/grove.git"); !ok {
@@ -118,7 +119,7 @@ func TestEnterpriseHostScope(t *testing.T) {
 
 func TestDisableWipesTheTokenFromDisk(t *testing.T) {
 	store, path := newTestStore(t)
-	if _, err := store.Enable(EnableOptions{Token: "ghp_secret"}); err != nil {
+	if _, err := store.Enable(EnableOptions{Token: "ghp_secret", Repos: []string{"gm2211/grove"}}); err != nil {
 		t.Fatalf("Enable: %v", err)
 	}
 	if _, err := store.Disable(); err != nil {
@@ -141,7 +142,7 @@ func TestDisableWipesTheTokenFromDisk(t *testing.T) {
 
 func TestTTLLapseDisarmsAndWipes(t *testing.T) {
 	store, path := newTestStore(t)
-	if _, err := store.Enable(EnableOptions{Token: "ghp_secret", TTL: 30 * time.Millisecond}); err != nil {
+	if _, err := store.Enable(EnableOptions{Token: "ghp_secret", Repos: []string{"gm2211/grove"}, TTL: 30 * time.Millisecond}); err != nil {
 		t.Fatalf("Enable: %v", err)
 	}
 	if _, ok := store.TokenFor("https://github.com/gm2211/grove"); !ok {
@@ -210,7 +211,7 @@ func TestNilStoreIsOff(t *testing.T) {
 	if _, ok := store.TokenFor("https://github.com/gm2211/grove"); ok {
 		t.Fatal("a nil store handed out a credential")
 	}
-	if _, err := store.Enable(EnableOptions{Token: "t"}); err == nil {
+	if _, err := store.Enable(EnableOptions{Token: "t", Repos: []string{"gm2211/*"}}); err == nil {
 		t.Fatal("a nil store accepted Enable")
 	}
 	if _, err := store.Disable(); err == nil {
@@ -241,4 +242,23 @@ func mustJSON(t *testing.T, v any) string {
 		t.Fatalf("marshal: %v", err)
 	}
 	return string(data)
+}
+
+// Arming must name its repositories: a credential for everything the token can see would hand
+// every job a key to all of them.
+func TestEnableRequiresRepos(t *testing.T) {
+	store, _ := newTestStore(t)
+	if _, err := store.Enable(EnableOptions{Token: "ghp_secret"}); err == nil {
+		t.Fatal("Enable armed a credential with no repositories named")
+	}
+	if status := store.Status(); status.Enabled {
+		t.Fatalf("a refused Enable left the store armed: %+v", status)
+	}
+}
+
+// A credential an older grove armed with no repositories named covers nothing now.
+func TestLegacyUnscopedCredentialIsInert(t *testing.T) {
+	if repoAllowed("gm2211/grove", nil) {
+		t.Fatal("an empty repo scope still covers every repository")
+	}
 }

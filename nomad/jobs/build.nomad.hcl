@@ -35,10 +35,137 @@ job "grove-{{.Kind}}-{{.Pool}}" {
       attempts = 0
     }
 
+    # source: a prestart task that fetches the job's inputs before "main" starts, so the
+    # private-repo credential never enters the environment, files or process tree of the
+    # caller's script. Only this task declares dispatch_payload, so only it receives the
+    # payload (see internal/dispatch's encodePayload: a "grove-payload/1" header line, the clone
+    # token or an empty line, then the caller's script). It writes the script and the checkout
+    # into the shared alloc dir (alloc/data/grove), deletes the payload, and always exits 0:
+    # its log and exit code are replayed by run.sh, so a failed clone still shows up in the
+    # job's own logs and exit status rather than in a task grove never reads.
+    task "source" {
+      lifecycle {
+        hook    = "prestart"
+        sidecar = false
+      }
+
+{{if eq .Pool "macos"}}
+      driver = "raw_exec"
+
+      config {
+        command = "/bin/bash"
+        args    = ["${NOMAD_TASK_DIR}/source.sh"]
+      }
+{{else}}
+      driver = "docker"
+
+      config {
+        image   = "{{.RunnerImage}}"
+        command = "/bin/bash"
+        args    = ["${NOMAD_TASK_DIR}/source.sh"]
+      }
+{{end}}
+
+      dispatch_payload {
+        file = "request"
+      }
+
+      template {
+        data        = <<-EOF
+        #!/bin/bash
+        set -uo pipefail
+        umask 077
+
+        # Nomad writes the payload world-readable; close this task's directory before reading it.
+        chmod 0700 "$NOMAD_TASK_DIR" 2>/dev/null || true
+
+        req="$NOMAD_TASK_DIR/request"
+        state="$NOMAD_ALLOC_DIR/data/grove"
+        mkdir -p "$state"
+        log="$state/source.log"
+        : > "$log"
+
+        finish() {
+          rm -f "$req"
+{{if eq .Pool "macos"}}
+          # "main" runs as the unprivileged job user (see its `user`); hand it the inputs.
+          chown -R _grovejob "$state" 2>/dev/null || true
+{{end}}
+          printf '%s\n' "$1" > "$state/source.exit"
+          chmod 0644 "$state/source.exit" "$log" 2>/dev/null || true
+          exit 0
+        }
+
+        token=""
+        if [ "$(head -n 1 "$req")" = "grove-payload/1" ]; then
+          token="$(sed -n 2p "$req")"
+          tail -n +3 "$req" > "$state/script.sh"
+        else
+          cp "$req" "$state/script.sh"
+        fi
+        rm -f "$req"
+
+        repo="$${NOMAD_META_repo:-}"
+        ref="$${NOMAD_META_ref:-HEAD}"
+        if [ -z "$repo" ]; then
+          finish 0
+        fi
+
+        # A token the caller put in its own env still works for the clone, as before; the armed
+        # control-plane token (from the payload) takes precedence.
+        if [ -z "$token" ] && [ -n "$${NOMAD_META_env_json:-}" ]; then
+          token="$(printf '%s' "$NOMAD_META_env_json" | jq -r '.GH_TOKEN // .GIT_TOKEN // empty')"
+        fi
+
+        case "$repo" in
+          https://*) ;;
+          *) echo "grove: repo must be an https:// URL" >> "$log"; finish 2 ;;
+        esac
+        case "$ref" in
+          -*) echo "grove: ref must not start with '-'" >> "$log"; finish 2 ;;
+        esac
+
+        # The token reaches git only through this process's environment and an inline credential
+        # helper: never argv (visible to every user in `ps`), never a config file, never the
+        # checkout's .git/config.
+        export GROVE_CLONE_TOKEN="$token"
+        export GIT_TERMINAL_PROMPT=0
+        helper='!f() { test "$1" = get || exit 0; echo username=x-access-token; printf "password=%s\n" "$GROVE_CLONE_TOKEN"; }; f'
+        auth=(-c credential.helper=)
+        if [ -n "$token" ]; then
+          auth+=(-c "credential.helper=$helper")
+        fi
+
+        work="$state/work"
+        if ! git "$${auth[@]}" clone --depth 50 -- "$repo" "$work" >> "$log" 2>&1; then
+          finish 128
+        fi
+        if ! git -C "$work" checkout "$ref" -- >> "$log" 2>&1; then
+          finish 1
+        fi
+        unset GROVE_CLONE_TOKEN
+        cp "$state/script.sh" "$work/script.sh"
+        finish 0
+        EOF
+        destination = "local/source.sh"
+        perms       = "0700"
+      }
+
+      resources {
+        cpu    = {{if .CPU}}{{.CPU}}{{else}}2000{{end}}
+        memory = {{if .Memory}}{{.Memory}}{{else}}4096{{end}}
+      }
+    }
+
     task "main" {
 {{if eq .Pool "macos"}}
       # macOS guests have no container runtime; jobs run as native processes.
       driver = "raw_exec"
+
+      # Never root: the caller's script runs as the unprivileged job user the fleet startup
+      # script creates, so it cannot read the "source" task's files, other jobs' state, or the
+      # VM's Nomad and Tailscale configuration.
+      user = "_grovejob"
 
       config {
         command = "/bin/bash"
@@ -66,13 +193,9 @@ job "grove-{{.Kind}}-{{.Pool}}" {
       }
 {{end}}
 
-      # The dispatched payload (the caller's script) lands at ${NOMAD_TASK_DIR}/script.sh.
-      dispatch_payload {
-        file = "script.sh"
-      }
-
-      # run.sh: applies env_json, clones repo@ref, runs script.sh under `timeout`, uploads
-      # artifacts, and propagates script.sh's exit code as the task's exit code. Plain bash only,
+      # run.sh: checks the "source" task's result, applies env_json, runs script.sh in the
+      # checkout under `timeout`, uploads artifacts, and propagates script.sh's exit code as the
+      # task's exit code. Plain bash only,
       # no consul-template directives, since env is available natively via NOMAD_META_* and
       # NOMAD_TASK_DIR, which Nomad injects into every task regardless of driver.
       template {
@@ -81,22 +204,34 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         set -euo pipefail
 
         DEFAULT_IMAGE="{{.RunnerImage}}"
-        script_src="$NOMAD_TASK_DIR/script.sh"
+        state="$NOMAD_ALLOC_DIR/data/grove"
         T="$${NOMAD_META_timeout_seconds:-3600}"
 
+        # The "source" prestart task fetched this job's inputs (see above). Replay its log and
+        # stop on its failure, so a failed clone reads in the job's logs and exit code exactly as
+        # it did when run.sh cloned inline.
+        if [ ! -f "$state/source.exit" ]; then
+          echo "grove: the source step did not finish" >&2
+          exit 1
+        fi
+        cat "$state/source.log" >&2 || true
+        source_code="$(cat "$state/source.exit")"
+        if [ "$source_code" != 0 ]; then
+          exit "$source_code"
+        fi
+        script_src="$state/script.sh"
+{{if eq .Pool "macos"}}
+        # This task runs as the unprivileged job user (see `user` above), whose home and temp
+        # directory the fleet startup script creates.
+        export HOME=/private/var/grove-job USER=_grovejob LOGNAME=_grovejob
+        export TMPDIR="$(dirname "$NOMAD_TASK_DIR")/tmp"
+{{end}}
         if [ -n "$${NOMAD_META_env_json:-}" ]; then
-          eval "$(printf '%s' "$NOMAD_META_env_json" | jq -r 'to_entries[] | "export " + .key + "=" + (.value|tostring|@sh)')"
+          eval "$(printf '%s' "$NOMAD_META_env_json" | jq -r 'to_entries[] | select(.key | test("^[A-Za-z_][A-Za-z0-9_]*$")) | "export " + .key + "=" + (.value|tostring|@sh)')"
         fi
 
         if [ -n "$${NOMAD_META_repo:-}" ]; then
-          if [ -n "$${GH_TOKEN:-}$${GIT_TOKEN:-}" ]; then
-            export GH_TOKEN="$${GH_TOKEN:-$GIT_TOKEN}"
-            gh auth setup-git || true
-          fi
-          git clone --depth 50 "$NOMAD_META_repo" work
-          cd work
-          git checkout "$${NOMAD_META_ref:-HEAD}"
-          cp "$script_src" ./script.sh
+          cd "$state/work"
           script_src="$PWD/script.sh"
         fi
 

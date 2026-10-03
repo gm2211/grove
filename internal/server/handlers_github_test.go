@@ -124,7 +124,7 @@ func TestGitHubSourcing_RequiresOperatorScope(t *testing.T) {
 		method, body string
 	}{
 		{http.MethodGet, ""},
-		{http.MethodPut, `{"token":"ghp_secret"}`},
+		{http.MethodPut, `{"token":"ghp_secret","repos":["gm2211/grove"]}`},
 		{http.MethodDelete, ""},
 	} {
 		rec := do(t, srv, tc.method, "/api/v1/github/sourcing", tc.body, dispatcherToken)

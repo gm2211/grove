@@ -85,7 +85,7 @@ export function PrivateRepoSourcing({ operator }: { operator: boolean }) {
           <dt>hosts</dt>
           <dd className="mono">{(status.data.hosts ?? []).join(", ")}</dd>
           <dt>repos</dt>
-          <dd className="mono">{status.data.repos?.length ? status.data.repos.join(", ") : "any repo"}</dd>
+          <dd className="mono">{status.data.repos?.length ? status.data.repos.join(", ") : "none, enable again with repos"}</dd>
           <dt>token</dt>
           <dd className="mono">sha256:{status.data.tokenFingerprint}</dd>
           <dt>expires</dt>
@@ -118,7 +118,7 @@ export function PrivateRepoSourcing({ operator }: { operator: boolean }) {
 
       <div className="flex gap-2">
         <label className="flex flex-1 flex-col gap-1 text-xs">
-          <span style={{ color: "var(--fg-faint)" }}>repos (comma-separated, blank = any)</span>
+          <span style={{ color: "var(--fg-faint)" }}>repos (comma-separated, required)</span>
           <input
             className="mono rounded border px-2 py-1.5 text-sm"
             style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
@@ -142,7 +142,7 @@ export function PrivateRepoSourcing({ operator }: { operator: boolean }) {
       <div className="flex items-center gap-2">
         <Button
           variant="primary"
-          disabled={!token.trim() || enable.isPending}
+          disabled={!token.trim() || !repos.trim() || enable.isPending}
           onClick={() => enable.mutate()}
         >
           {enable.isPending ? "Enabling…" : on ? "Replace credential" : "Enable"}

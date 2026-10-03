@@ -11,6 +11,7 @@ import (
 	"text/template"
 	"time"
 
+	nomadapi "github.com/hashicorp/nomad/api"
 	"github.com/hashicorp/nomad/jobspec2"
 )
 
@@ -91,12 +92,20 @@ func TestRenderAllKindsAndPools(t *testing.T) {
 					`meta_optional = ["repo", "ref", "env_json", "timeout_seconds", "grove_meta_json", "artifact_prefix", "image"]`,
 					`attempts = 0`, // reschedule/restart
 					`dispatch_payload`,
-					`file = "script.sh"`,
 					`destination = "local/run.sh"`,
 				} {
 					if !strings.Contains(out, want) {
 						t.Errorf("rendered %s/%s missing %q\n---\n%s", kind, pool, want, out)
 					}
+				}
+
+				// The payload lands in the source task for kinds that clone, else in main.
+				wantPayloadFile := `file = "request"`
+				if kind == "shell" {
+					wantPayloadFile = `file = "script.sh"`
+				}
+				if !strings.Contains(out, wantPayloadFile) {
+					t.Errorf("rendered %s/%s missing %q", kind, pool, wantPayloadFile)
 				}
 
 				// kind-specific shape.
@@ -240,20 +249,59 @@ func TestRenderedHCLParsesWithJobspec2(t *testing.T) {
 						t.Errorf("job.ID = %q, want %q", gotID, wantID)
 					}
 
-					if len(job.TaskGroups) != 1 || len(job.TaskGroups[0].Tasks) != 1 {
-						t.Fatalf("expected exactly one group with one task, got %d groups", len(job.TaskGroups))
+					if len(job.TaskGroups) != 1 {
+						t.Fatalf("expected exactly one group, got %d", len(job.TaskGroups))
 					}
-					task := job.TaskGroups[0].Tasks[0]
-					if task.Name != "main" {
-						t.Errorf("task.Name = %q, want %q", task.Name, "main")
+					tasks := map[string]*nomadapi.Task{}
+					var names []string
+					for _, task := range job.TaskGroups[0].Tasks {
+						tasks[task.Name] = task
+						names = append(names, task.Name)
+					}
+					wantNames := []string{"main"}
+					if kind != "shell" {
+						wantNames = []string{"source", "main"}
+					}
+					if strings.Join(names, ",") != strings.Join(wantNames, ",") {
+						t.Fatalf("tasks = %v, want %v", names, wantNames)
 					}
 
 					wantDriver := "docker"
 					if pool == "macos" {
 						wantDriver = "raw_exec"
 					}
-					if task.Driver != wantDriver {
-						t.Errorf("task.Driver = %q, want %q", task.Driver, wantDriver)
+					for _, task := range tasks {
+						if task.Driver != wantDriver {
+							t.Errorf("task %s driver = %q, want %q", task.Name, task.Driver, wantDriver)
+						}
+					}
+
+					main := tasks["main"]
+					if kind == "shell" {
+						return
+					}
+					// Only the source task may receive the payload (it carries the clone token),
+					// and only it runs before main.
+					if main.DispatchPayload != nil {
+						t.Error("main task declares dispatch_payload; the clone token would reach the caller's script")
+					}
+					source := tasks["source"]
+					if source.DispatchPayload == nil || source.DispatchPayload.File != "request" {
+						t.Errorf("source task dispatch_payload = %+v, want file \"request\"", source.DispatchPayload)
+					}
+					if source.Lifecycle == nil || source.Lifecycle.Hook != "prestart" || source.Lifecycle.Sidecar {
+						t.Errorf("source task lifecycle = %+v, want a non-sidecar prestart", source.Lifecycle)
+					}
+					// macOS jobs never run the caller's script as root.
+					wantUser := ""
+					if pool == "macos" {
+						wantUser = "_grovejob"
+					}
+					if main.User != wantUser {
+						t.Errorf("main task user = %q, want %q", main.User, wantUser)
+					}
+					if source.User != "" {
+						t.Errorf("source task user = %q, want the agent's own (root) user", source.User)
 					}
 				})
 			}
@@ -325,11 +373,23 @@ func renderedRunSH(t *testing.T, file string, data renderData) string {
 	if err != nil {
 		t.Fatalf("jobspec2 failed to parse rendered %s: %v", file, err)
 	}
-	task := job.TaskGroups[0].Tasks[0]
-	if len(task.Templates) != 1 || task.Templates[0].EmbeddedTmpl == nil {
-		t.Fatalf("rendered %s: expected exactly one template with embedded data on task %q", file, task.Name)
+	return taskScript(t, job, file, "main")
+}
+
+// taskScript returns the single embedded template body of the named task in a parsed job.
+func taskScript(t *testing.T, job *nomadapi.Job, file, name string) string {
+	t.Helper()
+	for _, task := range job.TaskGroups[0].Tasks {
+		if task.Name != name {
+			continue
+		}
+		if len(task.Templates) != 1 || task.Templates[0].EmbeddedTmpl == nil {
+			t.Fatalf("rendered %s: expected exactly one template with embedded data on task %q", file, task.Name)
+		}
+		return *task.Templates[0].EmbeddedTmpl
 	}
-	return *task.Templates[0].EmbeddedTmpl
+	t.Fatalf("rendered %s: no task %q", file, name)
+	return ""
 }
 
 // TestRunSHPortableTimeout is the regression test for the live defect this fix addresses: a
@@ -370,6 +430,174 @@ func TestRunSHPortableTimeout(t *testing.T) {
 		}
 		if elapsed > 3*time.Second {
 			t.Fatalf("timeout took %s, want well under the 30s sleep (watchdog fires ~1s after T, plus up to a 10s SIGKILL grace only if SIGTERM didn't work)", elapsed)
+		}
+	})
+}
+
+// fakeGit stands in for git in TestSourceTaskKeepsCloneTokenFromScript: `clone` records its argv,
+// its GROVE_CLONE_TOKEN and what its credential helper answers, then creates the destination (or
+// fails like a missing repository when FAKE_GIT_FAIL is set); every other subcommand succeeds.
+const fakeGit = `#!/bin/bash
+args=("$@")
+helper=""
+i=0
+while [ $i -lt ${#args[@]} ]; do
+  case "${args[$i]}" in
+    -c) case "${args[$((i+1))]}" in credential.helper=?*) helper="${args[$((i+1))]#credential.helper=}" ;; esac; i=$((i+2)) ;;
+    -C) i=$((i+2)) ;;
+    *) break ;;
+  esac
+done
+[ "${args[$i]}" = clone ] || exit 0
+printf '%s\n' "$@" > "$FAKE_GIT_LOG.argv"
+printf '%s' "${GROVE_CLONE_TOKEN:-}" > "$FAKE_GIT_LOG.env"
+if [ -n "$helper" ]; then
+  sh -c "${helper#!} get" > "$FAKE_GIT_LOG.helper"
+fi
+if [ -n "${FAKE_GIT_FAIL:-}" ]; then
+  echo "fatal: repository not found" >&2
+  exit 128
+fi
+mkdir -p "${@: -1}"
+`
+
+// TestSourceTaskKeepsCloneTokenFromScript runs the real source.sh and run.sh (as rendered for
+// Nomad) back to back, the way a build allocation does: the clone gets the token, while the
+// caller's script sees it in no environment variable, argv or file it can read.
+func TestSourceTaskKeepsCloneTokenFromScript(t *testing.T) {
+	const token = "ghp_armed_secret"
+	job, err := jobspec2.ParseWithConfig(&jobspec2.ParseConfig{
+		Path: "job.hcl", Body: []byte(render(t, "build.nomad.hcl", renderData{Kind: "build", Pool: "linux"})),
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	sourceSH := taskScript(t, job, "build.nomad.hcl", "source")
+	runSH := taskScript(t, job, "build.nomad.hcl", "main")
+
+	run := func(t *testing.T, payload string, extraEnv ...string) (alloc, gitLog string, code int, out string) {
+		t.Helper()
+		root := t.TempDir()
+		alloc = filepath.Join(root, "alloc")
+		sourceDir := filepath.Join(root, "source", "local")
+		mainDir := filepath.Join(root, "main", "local")
+		bin := filepath.Join(root, "bin")
+		for _, dir := range []string{alloc, sourceDir, mainDir, bin} {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		write := func(path, body string) {
+			if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		write(filepath.Join(bin, "git"), fakeGit)
+		write(filepath.Join(sourceDir, "request"), payload)
+		write(filepath.Join(sourceDir, "source.sh"), sourceSH)
+		write(filepath.Join(mainDir, "run.sh"), runSH)
+		gitLog = filepath.Join(root, "git")
+
+		env := append(os.Environ(),
+			"PATH="+bin+":"+os.Getenv("PATH"),
+			"NOMAD_ALLOC_DIR="+alloc,
+			"NOMAD_META_repo=https://github.com/gm2211/private",
+			"NOMAD_META_env_json={\"CI\":\"1\"}",
+			"FAKE_GIT_LOG="+gitLog,
+		)
+		env = append(env, extraEnv...)
+
+		source := exec.Command("/bin/bash", filepath.Join(sourceDir, "source.sh"))
+		source.Env = append(env, "NOMAD_TASK_DIR="+sourceDir)
+		if b, err := source.CombinedOutput(); err != nil {
+			t.Fatalf("source.sh: %v\n%s", err, b)
+		}
+		if _, err := os.Stat(filepath.Join(sourceDir, "request")); !os.IsNotExist(err) {
+			t.Fatalf("source.sh left the payload behind (stat err %v)", err)
+		}
+
+		main := exec.Command("/bin/bash", filepath.Join(mainDir, "run.sh"))
+		main.Env = append(env, "NOMAD_TASK_DIR="+mainDir)
+		// A file, not a pipe: where the host has no timeout(1) (macOS), run.sh's watchdog leaves a
+		// `sleep` behind that would hold a pipe open, and Run would wait on it.
+		outFile, err := os.Create(filepath.Join(root, "main.out"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer outFile.Close()
+		main.Stdout, main.Stderr = outFile, outFile
+		err = main.Run()
+		var exitErr *exec.ExitError
+		switch {
+		case err == nil:
+		case errors.As(err, &exitErr):
+			code = exitErr.ExitCode()
+		default:
+			t.Fatalf("run.sh: %v", err)
+		}
+		got, _ := os.ReadFile(outFile.Name())
+		return alloc, gitLog, code, string(got)
+	}
+
+	t.Run("token reaches the clone only", func(t *testing.T) {
+		script := "echo in-checkout=$(basename \"$PWD\"); env\n"
+		alloc, gitLog, code, out := run(t, "grove-payload/1\n"+token+"\n"+script)
+		if code != 0 {
+			t.Fatalf("run.sh exit = %d\n%s", code, out)
+		}
+		if !strings.Contains(out, "in-checkout=work") || !strings.Contains(out, "CI=1") {
+			t.Fatalf("script did not run in the checkout with the caller's env:\n%s", out)
+		}
+		if strings.Contains(out, token) {
+			t.Fatalf("the caller's script saw the clone token:\n%s", out)
+		}
+		filepath.Walk(alloc, func(path string, info os.FileInfo, err error) error {
+			if err == nil && !info.IsDir() {
+				if b, _ := os.ReadFile(path); strings.Contains(string(b), token) {
+					t.Errorf("%s holds the clone token", path)
+				}
+			}
+			return nil
+		})
+		argv, _ := os.ReadFile(gitLog + ".argv")
+		if strings.Contains(string(argv), token) {
+			t.Fatalf("the token was on git's command line: %s", argv)
+		}
+		if !strings.Contains(string(argv), "--\nhttps://github.com/gm2211/private\n") {
+			t.Fatalf("clone did not end options before the repo URL: %s", argv)
+		}
+		if b, _ := os.ReadFile(gitLog + ".env"); string(b) != token {
+			t.Fatalf("clone env token = %q, want the armed token", b)
+		}
+		if b, _ := os.ReadFile(gitLog + ".helper"); !strings.Contains(string(b), "password="+token) {
+			t.Fatalf("credential helper answered %q", b)
+		}
+	})
+
+	t.Run("caller env token still clones", func(t *testing.T) {
+		_, gitLog, code, out := run(t, "grove-payload/1\n\ntrue\n", "NOMAD_META_env_json={\"GH_TOKEN\":\"ghp_caller\"}")
+		if code != 0 {
+			t.Fatalf("run.sh exit = %d\n%s", code, out)
+		}
+		if b, _ := os.ReadFile(gitLog + ".env"); string(b) != "ghp_caller" {
+			t.Fatalf("clone env token = %q, want the caller's", b)
+		}
+	})
+
+	t.Run("failed clone shows in the job's output and exit code", func(t *testing.T) {
+		_, _, code, out := run(t, "grove-payload/1\n"+token+"\necho should-not-run\n", "FAKE_GIT_FAIL=1")
+		if code != 128 {
+			t.Fatalf("run.sh exit = %d, want git's 128\n%s", code, out)
+		}
+		if !strings.Contains(out, "repository not found") || strings.Contains(out, "should-not-run") {
+			t.Fatalf("output = %q", out)
+		}
+	})
+
+	t.Run("non-https repo is refused", func(t *testing.T) {
+		_, _, code, out := run(t, "grove-payload/1\n\ntrue\n", "NOMAD_META_repo=git@github.com:gm2211/private.git")
+		if code == 0 || !strings.Contains(out, "https://") {
+			t.Fatalf("run.sh exit = %d, output %q", code, out)
 		}
 	})
 }
