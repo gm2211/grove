@@ -17,16 +17,21 @@ import (
 )
 
 // Scopes control what an enrolled Grove device may do through the HTTP API.
+//
+// ScopeDispatch covers the purpose-specific kinds (build and agent) only. Raw `shell` jobs run an
+// arbitrary command with no repo checkout, so they need ScopeShell (or ScopeOperator) explicitly —
+// a plain dispatch credential, e.g. an orchestrator's, can never run one.
 const (
 	ScopeRead     = "read"
 	ScopeDispatch = "dispatch"
 	ScopeBuild    = "dispatch:build"
 	ScopeAgent    = "dispatch:agent"
+	ScopeShell    = "dispatch:shell"
 	ScopeOperator = "operator"
 )
 
 var validAccessScopes = map[string]struct{}{
-	ScopeRead: {}, ScopeDispatch: {}, ScopeBuild: {}, ScopeAgent: {}, ScopeOperator: {},
+	ScopeRead: {}, ScopeDispatch: {}, ScopeBuild: {}, ScopeAgent: {}, ScopeShell: {}, ScopeOperator: {},
 }
 
 // Principal identifies the device behind an authenticated access token.

@@ -69,6 +69,24 @@ credential:
    image (see docs/IMAGES.md "Size expectations") — the first real signal is the next VM the fleet
    reconciler creates (`grove vm ls`'s STATUS column) or the worker's Orchard log.
 
+## Credentials for orchestrators and scripts
+
+An orchestrator (argos, a CI script) should not hold the operator token: it can approve devices,
+recycle VMs and arm private-repo sourcing. Mint it its own revocable, scoped credential instead:
+
+```bash
+# on any machine with the operator credential; the raw token is printed to stdout once
+grove access issue --name argos --scope read --scope dispatch > argos.token
+grove access list                       # shows the new device id and its scopes
+grove access revoke DEVICE_ID           # when it's no longer needed
+```
+
+Scopes: `read` (fleet, and the jobs this credential submitted — status, logs, artifacts),
+`dispatch` (build + agent jobs), `dispatch:build`, `dispatch:agent`, `dispatch:shell` (raw `shell`
+jobs; never implied by `dispatch`), `operator` (everything). A non-operator credential only ever
+sees and cancels its own jobs, and job `env` values come back `[redacted]` to everyone. The same
+thing over HTTP is `POST /api/v1/access/devices` with `{"name": ..., "scopes": [...]}`.
+
 ## Letting jobs clone private repos (and turning it back off)
 
 Grove has no GitHub credential until you give it one, so a job against a private repository fails

@@ -616,3 +616,186 @@ func TestGetArtifact_NilClientYields404(t *testing.T) {
 		t.Fatalf("status = %d, want 404, body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+// jobReadFixture is a server with an access store, one job submitted by "owner" (carrying env
+// values) and one by another device, plus an artifact under each. Tokens: operator, owner, other.
+func jobReadFixture(t *testing.T) (srv *Server, ownerToken, otherToken string) {
+	t.Helper()
+	store, err := NewAccessStore(t.TempDir() + "/devices.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerToken, owner, err := store.Issue("owner", []string{ScopeRead, ScopeBuild})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherToken, other, err := store.Issue("other", []string{ScopeRead, ScopeBuild})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{
+		"job-1": {ID: "job-1", Request: dispatch.JobRequest{SubmittedBy: owner.ID, Env: map[string]string{"API_KEY": "s3cret"}}},
+		"job-2": {ID: "job-2", Request: dispatch.JobRequest{SubmittedBy: other.ID}},
+	}}
+	obj := func(key string) struct {
+		data []byte
+		obj  artifacts.Object
+	} {
+		return struct {
+			data []byte
+			obj  artifacts.Object
+		}{data: []byte("x"), obj: artifacts.Object{Path: key, Size: 1, ContentType: "text/html"}}
+	}
+	fa := &fakeArtifactsClient{objects: map[string]struct {
+		data []byte
+		obj  artifacts.Object
+	}{
+		"jobs/job-1/out.html": obj("jobs/job-1/out.html"),
+		"jobs/job-2/out.html": obj("jobs/job-2/out.html"),
+	}}
+	return New(&fakeOrchard{}, &fakeNomad{}, ds, fa, Options{Token: "operator", AccessStore: store}), ownerToken, otherToken
+}
+
+func getAs(srv *Server, token, path string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestJobReads_EnvValuesAreRedactedEvenForOperatorAndOwner(t *testing.T) {
+	srv, ownerToken, _ := jobReadFixture(t)
+	for _, token := range []string{"operator", ownerToken} {
+		rec := getAs(srv, token, "/api/v1/jobs/job-1")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("get status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "s3cret") {
+			t.Fatalf("env value leaked in GET /jobs/job-1: %s", rec.Body.String())
+		}
+		var got dispatch.Job
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Request.Env["API_KEY"] != redactedEnvValue {
+			t.Errorf("env = %v, want API_KEY kept with a redacted value", got.Request.Env)
+		}
+		list := getAs(srv, token, "/api/v1/jobs")
+		if list.Code != http.StatusOK || strings.Contains(list.Body.String(), "s3cret") {
+			t.Fatalf("list status=%d leaked env: %s", list.Code, list.Body.String())
+		}
+	}
+}
+
+func TestJobReads_NonOperatorSeesOnlyOwnJobs(t *testing.T) {
+	srv, ownerToken, otherToken := jobReadFixture(t)
+
+	var listed []dispatch.Job
+	rec := getAs(srv, ownerToken, "/api/v1/jobs")
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].ID != "job-1" {
+		t.Fatalf("owner list = %+v, want only job-1", listed)
+	}
+	rec = getAs(srv, "operator", "/api/v1/jobs")
+	listed = nil
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("operator list len = %d, want 2", len(listed))
+	}
+
+	for _, path := range []string{"/api/v1/jobs/job-1", "/api/v1/jobs/job-1/logs", "/api/v1/jobs/job-1/artifacts/out.html"} {
+		if got := getAs(srv, otherToken, path).Code; got != http.StatusForbidden {
+			t.Errorf("other device GET %s = %d, want 403", path, got)
+		}
+		if got := getAs(srv, ownerToken, path).Code; got != http.StatusOK {
+			t.Errorf("owner GET %s = %d, want 200", path, got)
+		}
+		if got := getAs(srv, "operator", path).Code; got != http.StatusOK {
+			t.Errorf("operator GET %s = %d, want 200", path, got)
+		}
+	}
+}
+
+func TestGetArtifact_RejectsTraversalAndSetsDownloadHeaders(t *testing.T) {
+	srv, ownerToken, _ := jobReadFixture(t)
+	for _, path := range []string{
+		"/api/v1/jobs/job-1/artifacts/%2e%2e/job-2/out.html",
+		"/api/v1/jobs/job-1/artifacts/%252e%252e/job-2/out.html",
+		"/api/v1/jobs/job-1/artifacts/a/%2E%2E/%2E%2E/job-2/out.html",
+		"/api/v1/jobs/job-1/artifacts/%2fetc%2fpasswd",
+		"/api/v1/jobs/%2e%2e/artifacts/job-2/out.html",
+	} {
+		for _, token := range []string{"operator", ownerToken} {
+			rec := getAs(srv, token, path)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("GET %s as %s = %d, want 400", path, token, rec.Code)
+			}
+		}
+	}
+	rec := getAs(srv, ownerToken, "/api/v1/jobs/job-1/artifacts/out.html")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q", got)
+	}
+	if got := rec.Header().Get("Content-Disposition"); got != `attachment; filename=out.html` {
+		t.Errorf("Content-Disposition = %q", got)
+	}
+}
+
+func TestSafeArtifactPath(t *testing.T) {
+	for p, want := range map[string]bool{
+		"out.bin": true, "dir/out.bin": true, "": false, "/abs": false, "..": false,
+		"a/../b": false, "./a": false, "a//b": false, `a\..\b`: false, "a/": false,
+	} {
+		if got := safeArtifactPath(p); got != want {
+			t.Errorf("safeArtifactPath(%q) = %v, want %v", p, got, want)
+		}
+	}
+}
+
+func TestDispatchScopeCannotRunShellWithoutShellScope(t *testing.T) {
+	store, err := NewAccessStore(t.TempDir() + "/devices.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchToken, _, err := store.Issue("argos", []string{ScopeRead, ScopeDispatch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shellToken, _, err := store.Issue("shell-box", []string{ScopeShell})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{}}
+	srv := newTestServer(nil, nil, ds, Options{Token: "operator", AccessStore: store})
+	submit := func(token, kind string) int {
+		body := `{"kind":"` + kind + `","pool":"linux","script":"id"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	for _, tc := range []struct {
+		token, kind string
+		want        int
+	}{
+		{dispatchToken, "shell", http.StatusForbidden},
+		{dispatchToken, "build", http.StatusCreated},
+		{dispatchToken, "agent", http.StatusCreated},
+		{shellToken, "shell", http.StatusCreated},
+		{shellToken, "build", http.StatusForbidden},
+		{"operator", "shell", http.StatusCreated},
+	} {
+		if got := submit(tc.token, tc.kind); got != tc.want {
+			t.Errorf("submit %s with token %.8s… = %d, want %d", tc.kind, tc.token, got, tc.want)
+		}
+	}
+}

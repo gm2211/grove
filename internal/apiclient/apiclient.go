@@ -143,6 +143,16 @@ func (c *Client) Devices(ctx context.Context) ([]server.DeviceCredential, error)
 	return out, nil
 }
 
+// IssueDevice mints a new device credential with the given scopes (operator only) and returns
+// its raw token, which the server never discloses again, alongside the device's public identity.
+func (c *Client) IssueDevice(ctx context.Context, name string, scopes []string) (string, server.Principal, error) {
+	var out server.IssueDeviceResponse
+	if err := c.doJSON(ctx, http.MethodPost, "/access/devices", server.IssueDeviceRequest{Name: name, Scopes: scopes}, &out); err != nil {
+		return "", server.Principal{}, err
+	}
+	return out.Token, out.Device, nil
+}
+
 // RevokeDevice disables one enrolled device credential.
 func (c *Client) RevokeDevice(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodDelete, "/access/devices/"+url.PathEscape(id), nil, nil)

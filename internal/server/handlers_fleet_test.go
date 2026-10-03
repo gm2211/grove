@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -146,5 +147,30 @@ func TestHandleFleet_UpstreamErrorBecomesBadGateway(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", rec.Code)
+	}
+}
+
+// GET /fleet is read scope; a VM's startup script carries the isolated-network Tailscale auth key
+// and pool setup commands, so it (and the shutdown script) must never appear in the response.
+func TestHandleFleet_StripsVMScripts(t *testing.T) {
+	oc := &fakeOrchard{vms: []orchard.VM{{
+		Name: "linux-mac1-0", Worker: "mac1", Status: "running",
+		StartupScript:  "tailscale up --auth-key=tskey-client-SECRET",
+		ShutdownScript: "echo shutdown-SECRET",
+	}}}
+	srv := newTestServer(oc, nil, nil, Options{})
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/fleet", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, leak := range []string{"SECRET", "startupScript", "shutdownScript"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("GET /fleet leaked %q: %s", leak, body)
+		}
+	}
+	if len(oc.vms[0].StartupScript) == 0 {
+		t.Error("handler mutated the orchard VM it was handed")
 	}
 }

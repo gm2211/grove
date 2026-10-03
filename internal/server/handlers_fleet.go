@@ -190,6 +190,13 @@ func normalizeVM(v orchard.VM) FleetEntry {
 
 	pool, host := fleet.PoolAndHost(v)
 
+	// The guest startup script embeds secrets — an isolated pool's Tailscale auth key, a pool's
+	// own setup commands — and GET /fleet is read scope. Nothing outside the reconciler (which
+	// reads orchard.VM directly, never this API) needs either script, so drop both from Raw for
+	// every caller, operator included.
+	v.StartupScript = ""
+	v.ShutdownScript = ""
+
 	return FleetEntry{
 		Name:   v.Name,
 		Kind:   "vm",
