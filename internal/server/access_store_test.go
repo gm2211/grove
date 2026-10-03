@@ -201,3 +201,17 @@ func sameStrings(left, right []string) bool {
 	}
 	return true
 }
+
+func TestAccessStoreIssueAcceptsShellScope(t *testing.T) {
+	store, err := NewAccessStore(t.TempDir() + "/devices.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, principal, err := store.Issue("shell-box", []string{ScopeShell})
+	if err != nil {
+		t.Fatalf("Issue(dispatch:shell): %v", err)
+	}
+	if !sameStrings(principal.Scopes, []string{ScopeShell}) {
+		t.Errorf("scopes = %v", principal.Scopes)
+	}
+}

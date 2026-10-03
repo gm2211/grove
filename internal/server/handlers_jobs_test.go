@@ -759,3 +759,43 @@ func TestSafeArtifactPath(t *testing.T) {
 		}
 	}
 }
+
+func TestDispatchScopeCannotRunShellWithoutShellScope(t *testing.T) {
+	store, err := NewAccessStore(t.TempDir() + "/devices.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchToken, _, err := store.Issue("argos", []string{ScopeRead, ScopeDispatch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shellToken, _, err := store.Issue("shell-box", []string{ScopeShell})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{}}
+	srv := newTestServer(nil, nil, ds, Options{Token: "operator", AccessStore: store})
+	submit := func(token, kind string) int {
+		body := `{"kind":"` + kind + `","pool":"linux","script":"id"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	for _, tc := range []struct {
+		token, kind string
+		want        int
+	}{
+		{dispatchToken, "shell", http.StatusForbidden},
+		{dispatchToken, "build", http.StatusCreated},
+		{dispatchToken, "agent", http.StatusCreated},
+		{shellToken, "shell", http.StatusCreated},
+		{shellToken, "build", http.StatusForbidden},
+		{"operator", "shell", http.StatusCreated},
+	} {
+		if got := submit(tc.token, tc.kind); got != tc.want {
+			t.Errorf("submit %s with token %.8s… = %d, want %d", tc.kind, tc.token, got, tc.want)
+		}
+	}
+}

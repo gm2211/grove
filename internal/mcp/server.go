@@ -57,7 +57,7 @@ func newServerWithClient(client *apiclient.Client, version string) *mcpsdk.Serve
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name: "grove_run",
-		Description: "Submit a job to the grove fleet: run a build (clone repo@ref then run script), an agent session, or an operator-only raw shell command. " +
+		Description: "Submit a job to the grove fleet: run a build (clone repo@ref then run script), an agent session, or a raw shell command (needs an operator or dispatch:shell credential). " +
 			"or a long-lived agent session on a given pool. By default (wait=true) this blocks until the job reaches " +
 			"a terminal state and returns its exit code, node, duration, and a log tail; pass wait=false to submit " +
 			"and return immediately with just the job id (useful for long-running agent sessions — poll with " +

@@ -23,19 +23,30 @@ func principalHasScope(p Principal, scope string) bool {
 		if candidate == ScopeOperator || candidate == scope {
 			return true
 		}
-		if scope == ScopeDispatch && (candidate == ScopeBuild || candidate == ScopeAgent) {
+		// The per-kind scopes each pass the route-level "may dispatch at all" gate;
+		// principalCanDispatchKind then decides which kind.
+		if scope == ScopeDispatch && (candidate == ScopeBuild || candidate == ScopeAgent || candidate == ScopeShell) {
 			return true
 		}
 	}
 	return false
 }
 
+// principalCanDispatchKind decides whether p may submit a job of kind. ScopeDispatch grants build
+// and agent only; shell needs ScopeShell or ScopeOperator (see the scope constants' doc comment).
 func principalCanDispatchKind(p Principal, kind dispatch.Kind) bool {
-	if principalHasScope(p, ScopeOperator) || hasExactScope(p, ScopeDispatch) {
+	if principalHasScope(p, ScopeOperator) {
 		return true
 	}
-	return kind == dispatch.KindBuild && hasExactScope(p, ScopeBuild) ||
-		kind == dispatch.KindAgent && hasExactScope(p, ScopeAgent)
+	switch kind {
+	case dispatch.KindBuild:
+		return hasExactScope(p, ScopeDispatch) || hasExactScope(p, ScopeBuild)
+	case dispatch.KindAgent:
+		return hasExactScope(p, ScopeDispatch) || hasExactScope(p, ScopeAgent)
+	case dispatch.KindShell:
+		return hasExactScope(p, ScopeShell)
+	}
+	return false
 }
 
 func hasExactScope(p Principal, scope string) bool {

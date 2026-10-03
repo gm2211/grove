@@ -51,8 +51,8 @@ grove setup
   whatever device already has the UI open. On a terminal instead, run `grove join approve <CODE>`
   on the control-plane machine. Either way, Grove then creates two unique,
   revocable credentials: an Orchard credential limited to worker registration/connect rights,
-  plus a Grove `read + build + agent` credential for this device. Raw shell jobs and named
-  secrets remain operator-only.
+  plus a Grove `read + build + agent` credential for this device. Raw shell jobs (operator or an
+  explicit `dispatch:shell` credential) and named secrets remain privileged.
 - The Mac stores both credentials in macOS Keychain and feeds worker credential to Orchard over
   stdin. Neither appears in shell history, process arguments, `config.yaml`, or LaunchAgent plist.
 - Re-run the same command any time — steps that are already satisfied are skipped.
