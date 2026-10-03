@@ -32,6 +32,30 @@ install gm2211/grove/grove` — the grove repo doubles as its own Homebrew tap (
 `homebrew-tap` repo, no personal access token). Once installed, upgrade in place any time with
 `brew upgrade grove`.
 
+On Linux the script resolves the latest release to a tag (or uses `GROVE_VERSION=vX.Y.Z` if set),
+downloads that release's tarball **and** its `checksums.txt`, and refuses to install unless the
+tarball's SHA-256 matches. When it has to install Homebrew first, it fetches Homebrew's installer
+at a pinned commit and checks it against a pinned SHA-256 before running it.
+
+### Verified downloads
+
+Nothing `grove install` downloads with `curl` is installed unverified. Each artifact is fetched at
+an explicit version into `~/.cache/grove/downloads/`, hashed, compared against the SHA-256 grove
+embeds for that version and platform (`internal/install/download.go`), and installed only on a
+match; a mismatch deletes the download and fails the step.
+
+| What | Pinned version | Where |
+|---|---|---|
+| Nomad (Linux control plane) | 2.0.7 | `releases.hashicorp.com` zip |
+| MinIO server (Linux control plane) | `RELEASE.2025-09-06T17-38-46Z` | `dl.min.io` archive |
+| MinIO client `mc` → `~/.local/bin/grove-mc` (control plane) | `RELEASE.2025-08-13T08-35-41Z` | `dl.min.io` archive |
+| Homebrew installer (worker, when `brew` is missing) | `Homebrew/install@35da6871c4be` | `raw.githubusercontent.com` |
+
+On macOS, Nomad and MinIO still come from their Homebrew taps (`hashicorp/tap`, `minio/stable`);
+Homebrew verifies each formula's own pinned sha256. The Homebrew installer, once verified, clones
+Homebrew itself from git as it always does. Bumping a pin means changing the version and every
+per-platform hash together — the file's header says where each upstream digest comes from.
+
 ## 2. Set up this machine
 
 ### Worker (every Mac that runs jobs)
@@ -46,6 +70,11 @@ grove setup
   no credential — a Mac that has not joined yet does not have one.
 - `grove setup` discovers Grove peers through Tailscale and creates a ten-minute enrollment
   request. It prints an approval code and waits.
+- Discovery is only "a tailnet peer answering on :6130", so setup never trusts it silently: it
+  shows the address and Tailscale name it found and asks you to confirm. If several peers answer,
+  it lists them and asks which one. Unattended, pass `--server http://<control-plane>:6130`
+  (always works, no prompt) or `--yes` (accepts the discovered control plane only when exactly one
+  answers).
 - Approve it. The Fleet page in `grove ui` lists every Mac that is waiting, with its name,
   tailnet address and code, and an **Approve** button beside each one — so you can do this from
   whatever device already has the UI open. On a terminal instead, run `grove join approve <CODE>`
@@ -101,6 +130,15 @@ grove install --role control-plane
 Renders and starts Orchard controller, Nomad server, MinIO, and `grove serve`, all supervised
 (launchd on macOS, `systemd --user` on Linux), plus `~/.config/grove/config.yaml` and a starter
 `fleet.yaml`. No privileged steps — everything here runs as your own user.
+
+MinIO's root credential lives only in `~/.config/grove/minio/env` (0600) and is used solely to
+administer MinIO. Once MinIO is up, the installer uses it (over stdin, via the pinned
+`~/.local/bin/grove-mc`) to create the `grove` bucket, a `grove-artifacts` policy allowing object
+read/write/list on that bucket only, and a `grove-artifacts-<random>` user with that policy. That
+user's key — never the root one — is what goes into `config.yaml`'s `artifacts` section and so to
+`grove serve`. Use the same credential for any job/worker `ARTIFACT_ACCESS_KEY`/`ARTIFACT_SECRET_KEY`.
+Re-running `grove install --role control-plane` on an older install, whose `config.yaml` still holds
+the root credential, mints the scoped user and replaces it (then reloads `grove serve`).
 
 ### Client (your laptop, or any machine that just talks to the fleet)
 

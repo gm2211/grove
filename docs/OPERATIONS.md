@@ -198,7 +198,8 @@ subcommands, or `GET /api/v1/jobs/{id}/logs?follow=1`.
 - **grove CLI**: re-run `scripts/install.sh` (or `brew upgrade grove` on macOS), then re-run
   `grove install --role <role>` to pick up any new config/unit templates — it's idempotent, so
   already-correct steps are skipped.
-- **Orchard / Nomad / MinIO**: `grove install` re-checks each binary; bump the version pin in this
+- **Orchard / Nomad / MinIO**: `grove install` re-checks each binary; bump the version pin (and
+  every per-platform SHA-256 beside it, in `internal/install/download.go`) in this
   repo's install steps and re-run to pick up the change (Homebrew formulae upgrade in place;
   Linux downloads re-fetch the pinned version).
 - **A Homebrew upgrade adds the third-party-tap trust gate**: `brew update && brew upgrade` on a Mac

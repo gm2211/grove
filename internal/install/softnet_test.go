@@ -16,6 +16,7 @@ func TestWorkerPlan_InstallsSoftnetAndLeavesRootStepToAHuman(t *testing.T) {
 	r := NewFakeRunner()
 	scriptTailscaleUp(r)
 	opts := testWorkerOptions(t.TempDir())
+	scriptPinnedDownloads(r, opts)
 	opts.Softnet = true
 
 	steps, err := BuildPlan(r, opts, io.Discard)
@@ -68,6 +69,7 @@ func TestWorkerPlan_SoftnetRootSatisfiedBySUIDBit(t *testing.T) {
 	r := NewFakeRunner()
 	r.Script("stat -L -f %u %p /usr/bin/softnet", FakeResult{Stdout: "0 104755\n"})
 	opts := testWorkerOptions(t.TempDir())
+	scriptPinnedDownloads(r, opts)
 	opts.LookPath = lookPathOnly("tailscale", "softnet")
 
 	for _, step := range softnetSteps(r, opts.lookPath(), io.Discard) {
