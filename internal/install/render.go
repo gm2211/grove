@@ -131,8 +131,10 @@ server {
 }
 
 acl {
-  # Off: the control plane is reachable only over the tailnet, nothing routes here from outside.
-  enabled = false
+  # On: anything on the tailnet (or inside a VM) that reaches this API without a token gets
+  # nothing. grove holds the management token (config.yaml nomad.token); each VM gets its own
+  # node-only token to drain itself on recycle.
+  enabled = true
 }
 `))
 

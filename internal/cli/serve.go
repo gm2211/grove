@@ -249,6 +249,11 @@ func (l *fleetReconcileLoop) tick(ctx context.Context) {
 			return
 		}
 	}
+	// Every tick, not only when the plan changed something: a deleted VM's token is revoked
+	// once Orchard has actually removed the VM, usually ticks after the delete.
+	if err := r.SweepNodeTokens(ctx); err != nil {
+		slog.Warn("serve: fleet reconciler: node token sweep failed", "err", err)
+	}
 
 	// A blocked pool is a configuration problem, not a failed tick: the rest of the plan still
 	// applied, but the operator has to see why that pool has no VMs.

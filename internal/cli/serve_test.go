@@ -43,6 +43,24 @@ func TestFleetOptionsCarryConfiguredTailscaleTags(t *testing.T) {
 	}
 }
 
+func TestFleetOptionsNodeTokensOnlyWithNomadToken(t *testing.T) {
+	options, err := fleetOptions(&config.Config{Nomad: config.Endpoint{URL: "http://127.0.0.1:4646"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.NodeTokens != nil {
+		t.Error("NodeTokens set without a nomad.token; ACLs are off, so VMs must not get node tokens")
+	}
+
+	options, err = fleetOptions(&config.Config{Nomad: config.Endpoint{URL: "http://127.0.0.1:4646", Token: "mgmt"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.NodeTokens == nil {
+		t.Error("NodeTokens nil with a nomad.token; VMs could not drain themselves under ACLs")
+	}
+}
+
 func writeIsolatedFleet(t *testing.T) string {
 	t.Helper()
 	fleetPath := filepath.Join(t.TempDir(), "fleet.yaml")

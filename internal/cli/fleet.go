@@ -10,6 +10,7 @@ import (
 	"github.com/gm2211/grove/internal/apiclient"
 	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/fleet"
+	"github.com/gm2211/grove/internal/nomad"
 	"github.com/spf13/cobra"
 )
 
@@ -82,6 +83,9 @@ var fleetApplyCmd = &cobra.Command{
 			if err := r.Apply(ctx, plan); err != nil {
 				return err
 			}
+		}
+		if err := r.SweepNodeTokens(ctx); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: node token sweep: %v\n", err)
 		}
 
 		return plan.BlockedError()
@@ -235,11 +239,25 @@ func fleetOptions(cfg *config.Config) (fleet.Options, error) {
 	if err != nil {
 		return fleet.Options{}, err
 	}
-	return fleet.Options{
+	options := fleet.Options{
 		TailscaleAuthKey: cfg.Tailscale.AuthKey,
 		TailscaleTags:    cfg.Tailscale.Tags,
 		NomadRPCAddress:  rpcAddress,
-	}, nil
+	}
+	// A nomad.token means Nomad runs with ACLs on: each VM then needs its own node token to
+	// drain itself on recycle, and its Nomad client should enforce ACLs too.
+	if cfg.Nomad.URL != "" && cfg.Nomad.Token != "" {
+		client, err := nomad.New(cfg.Nomad.URL, cfg.Nomad.Token)
+		if err != nil {
+			return fleet.Options{}, err
+		}
+		tokens, ok := nomad.AsNodeTokens(client)
+		if !ok {
+			return fleet.Options{}, fmt.Errorf("nomad client cannot mint node tokens")
+		}
+		options.NodeTokens = tokens
+	}
+	return options, nil
 }
 
 func printPlan(w io.Writer, plan fleet.Plan) {

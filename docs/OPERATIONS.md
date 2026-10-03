@@ -17,6 +17,28 @@ To force a recycle right now (bad VM, want fresh image): `POST /api/v1/vms/{name
 via Nomad, then deletes; the reconciler recreates it), or just `orchard delete <name>` directly if
 you don't need the graceful drain.
 
+## Nomad ACLs and node tokens
+
+`grove install --role control-plane` runs Nomad with ACLs on. It bootstraps them once and keeps
+the management token in `config.yaml` (`nomad.token`, file mode 0600); `grove serve` and the CLI
+send it on every Nomad call. A request without a token (from the tailnet, or from inside a job)
+gets nothing. An install made while ACLs were off is migrated by re-running the installer: it
+re-renders `server.hcl`, restarts Nomad once, and bootstraps. If Nomad was already bootstrapped by
+hand, set the existing management token with `grove config set nomad.token <secret>`.
+
+With `nomad.token` set, the fleet reconciler also gives each VM it creates:
+
+- **its own node token** (Nomad policy `grove-node`: `node` write and `agent` read, no namespace access, named
+  `grove-vm/<vm>`). It sits only in the VM's shutdown script environment, never on the VM's disk,
+  so `nomad node drain -self` works on recycle and jobs never see it. The reconciler revokes a
+  VM's token once Orchard has actually removed the VM (`nomad acl token list` shows the live ones).
+- **ACL enforcement in the VM's own Nomad client**, so a job can't read other allocations' files
+  or logs through `127.0.0.1:4646`.
+
+VMs created before this keep running unchanged and pick both up on their next recycle. To apply
+it now, recycle them with `POST /api/v1/vms/{name}/recycle`, which drains through grove's own token
+first (their old shutdown script has no token, so its own drain step fails).
+
 ## Rolling a new image
 
 Pool images (`ghcr.io/gm2211/grove-{linux,macos}-worker:latest`) are Packer-built under `images/`.

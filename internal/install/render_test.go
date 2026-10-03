@@ -132,8 +132,10 @@ func TestRenderNomadServerConfig(t *testing.T) {
 		"}\n" +
 		"\n" +
 		"acl {\n" +
-		"  # Off: the control plane is reachable only over the tailnet, nothing routes here from outside.\n" +
-		"  enabled = false\n" +
+		"  # On: anything on the tailnet (or inside a VM) that reaches this API without a token gets\n" +
+		"  # nothing. grove holds the management token (config.yaml nomad.token); each VM gets its own\n" +
+		"  # node-only token to drain itself on recycle.\n" +
+		"  enabled = true\n" +
 		"}\n"
 	if got != want {
 		t.Errorf("nomad config mismatch:\n--- got ---\n%s\n--- want ---\n%s", got, want)
