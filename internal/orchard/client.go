@@ -53,7 +53,12 @@ func newWorkerCredential(workerName string) (*v1.ServiceAccount, string, error) 
 		name = name[:29]
 	}
 	name += "-" + hex.EncodeToString(raw[:5])
-	sa := &v1.ServiceAccount{Meta: v1.Meta{Name: name}, Token: token, Roles: []v1.ServiceAccountRole{v1.ServiceAccountRoleComputeWrite, v1.ServiceAccountRoleComputeConnect}}
+	sa := &v1.ServiceAccount{
+		Meta:       v1.Meta{Name: name},
+		Token:      token,
+		Roles:      []v1.ServiceAccountRole{v1.ServiceAccountRoleComputeWrite, v1.ServiceAccountRoleComputeConnect},
+		WorkerName: workerName,
+	}
 	enc := base64.RawURLEncoding
 	bootstrap := "orchard-bootstrap-token-v0." + enc.EncodeToString([]byte(name)) + "." + enc.EncodeToString([]byte(token))
 	return sa, bootstrap, nil
