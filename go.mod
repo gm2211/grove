@@ -9,6 +9,7 @@ require (
 	github.com/hashicorp/nomad/jobspec2 v0.0.0-20260904223745-78e9d2aa0cc8
 	github.com/minio/minio-go/v7 v7.3.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/spf13/cobra v1.10.2
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -51,7 +52,6 @@ require (
 	github.com/rs/xid v1.6.0 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
-	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
@@ -74,4 +74,4 @@ require (
 	gopkg.in/ini.v1 v1.67.3 // indirect
 )
 
-replace github.com/cirruslabs/orchard => github.com/gm2211/orchard v0.0.0-20260920211145-fe0eb8fd982c
+replace github.com/cirruslabs/orchard => github.com/gm2211/orchard v0.0.0-20261003120857-649ebd69256b
