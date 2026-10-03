@@ -25,7 +25,7 @@ var distFS embed.FS
 const uiNotBuiltPage = `<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><title>grove</title></head>
-<body style="font-family: -apple-system, sans-serif; padding: 3rem; max-width: 40rem; margin: 0 auto;">
+<body>
 <h1>grove UI not built</h1>
 <p>This server binary was built without the web UI bundled in. Run <code>make ui</code> (or
 <code>cd ui &amp;&amp; npm ci &amp;&amp; npm run build</code>) from the repo root, then rebuild
@@ -34,6 +34,24 @@ const uiNotBuiltPage = `<!doctype html>
 </body>
 </html>
 `
+
+// uiContentSecurityPolicy is sent on every UI response. The UI keeps its bearer token in
+// localStorage, so an injected script would own the credential: only same-origin scripts and
+// styles may run (Vite emits the bundle as external /assets/*.js and *.css — index.html has no
+// inline <script> or <style>, and React's style={{}} props go through the CSSOM, which CSP does
+// not restrict), the API is same-origin only (withCORS refuses cross-origin anyway), and the page
+// cannot be framed. If a future UI change needs an inline script or style, hash it here rather
+// than adding 'unsafe-inline'.
+const uiContentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; " +
+	"img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+
+// setUISecurityHeaders applies the UI's CSP plus the usual hardening headers.
+func setUISecurityHeaders(h http.Header) {
+	h.Set("Content-Security-Policy", uiContentSecurityPolicy)
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Referrer-Policy", "no-referrer")
+	h.Set("X-Frame-Options", "DENY")
+}
 
 // UIHandler serves the embedded SPA at "/". Unknown non-file paths fall back to index.html so
 // client-side routing (react-router) works on a hard refresh of e.g. /jobs/abc123. Hashed assets
@@ -51,6 +69,7 @@ func UIHandler() http.Handler {
 	built := distHasUI(root)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		setUISecurityHeaders(w.Header())
 		if !built {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusOK)
