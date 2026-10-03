@@ -3,6 +3,7 @@ package install
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"text/template"
 )
 
@@ -184,6 +185,52 @@ func RenderOrchardControllerEnv(spec OrchardControllerEnvSpec) (string, error) {
 	var buf bytes.Buffer
 	if err := orchardControllerEnvTemplate.Execute(&buf, spec); err != nil {
 		return "", fmt.Errorf("render orchard controller env: %w", err)
+	}
+	return buf.String(), nil
+}
+
+// MinIOArtifactPolicySpec names the one bucket grove's artifact credential may touch.
+type MinIOArtifactPolicySpec struct {
+	Bucket string
+}
+
+var minioArtifactPolicyTemplate = template.Must(template.New("minio-artifact-policy").Parse(`{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetBucketLocation",
+        "s3:ListBucket",
+        "s3:ListBucketMultipartUploads"
+      ],
+      "Resource": ["arn:aws:s3:::{{.Bucket}}"]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:AbortMultipartUpload",
+        "s3:DeleteObject",
+        "s3:GetObject",
+        "s3:ListMultipartUploadParts",
+        "s3:PutObject"
+      ],
+      "Resource": ["arn:aws:s3:::{{.Bucket}}/*"]
+    }
+  ]
+}
+`))
+
+// RenderMinIOArtifactPolicy renders the IAM policy attached to grove's artifact user: object
+// read/write on Bucket only — no admin API, no other bucket, no bucket creation or deletion.
+// Deterministic: safe for golden tests.
+func RenderMinIOArtifactPolicy(spec MinIOArtifactPolicySpec) (string, error) {
+	if spec.Bucket == "" || strings.ContainsAny(spec.Bucket, "\"\\*/ ") {
+		return "", fmt.Errorf("render minio artifact policy: invalid bucket name %q", spec.Bucket)
+	}
+	var buf bytes.Buffer
+	if err := minioArtifactPolicyTemplate.Execute(&buf, spec); err != nil {
+		return "", fmt.Errorf("render minio artifact policy: %w", err)
 	}
 	return buf.String(), nil
 }

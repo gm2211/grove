@@ -65,6 +65,7 @@ func TestWorkerPlan_AppliesCommandsAndGatesPrivilegedSteps(t *testing.T) {
 	r := NewFakeRunner()
 	scriptTailscaleUp(r)
 	opts := testWorkerOptions(home)
+	scriptPinnedDownloads(r, opts)
 
 	steps, err := BuildPlan(r, opts, io.Discard)
 	if err != nil {
@@ -84,7 +85,7 @@ func TestWorkerPlan_AppliesCommandsAndGatesPrivilegedSteps(t *testing.T) {
 	sawHomebrewInstall := false
 	sawOrchardBuild := false
 	for _, c := range r.Calls {
-		if c.Name == "/bin/bash" {
+		if c.Name == "/usr/bin/env" && len(c.Args) >= 2 && c.Args[1] == "/bin/bash" {
 			sawHomebrewInstall = true
 		}
 		if c.Name == "/bin/sh" && len(c.Args) == 2 && c.Args[0] == "-c" {
@@ -289,6 +290,7 @@ func TestWorkerPlan_TartFallsBackToCirruslabsTap(t *testing.T) {
 	scriptTailscaleUp(r)
 	r.Script("brew install openai/tools/tart", FakeResult{Err: errors.New("no available formula (fake)")})
 	opts := testWorkerOptions(home)
+	scriptPinnedDownloads(r, opts)
 
 	steps, err := BuildPlan(r, opts, io.Discard)
 	if err != nil {
@@ -339,6 +341,7 @@ func TestWorkerPlan_TrustsOpenAIToolsTapBeforeInstallingTart(t *testing.T) {
 	scriptTailscaleUp(r)
 	scriptTapInfo(r, "openai/tools", false, false)
 	opts := testWorkerOptions(home)
+	scriptPinnedDownloads(r, opts)
 
 	steps, err := BuildPlan(r, opts, io.Discard)
 	if err != nil {
@@ -376,6 +379,7 @@ func TestWorkerPlan_SkipsTrustWhenTapAlreadyTrusted(t *testing.T) {
 	scriptTailscaleUp(r)
 	scriptTapInfo(r, "openai/tools", true, true)
 	opts := testWorkerOptions(home)
+	scriptPinnedDownloads(r, opts)
 
 	steps, err := BuildPlan(r, opts, io.Discard)
 	if err != nil {
@@ -409,6 +413,7 @@ func TestWorkerPlan_ToleratesOlderHomebrewWithoutTrustCommand(t *testing.T) {
 		Err: errors.New("brew trust openai/tools: exit status 1: Error: Invalid usage: Unknown command: brew trust openai/tools"),
 	})
 	opts := testWorkerOptions(home)
+	scriptPinnedDownloads(r, opts)
 
 	steps, err := BuildPlan(r, opts, io.Discard)
 	if err != nil {
@@ -427,6 +432,7 @@ func TestWorkerPlan_DryRunAppliesNothing(t *testing.T) {
 	r := NewFakeRunner()
 	scriptTailscaleUp(r)
 	opts := testWorkerOptions(home)
+	scriptPinnedDownloads(r, opts)
 
 	steps, err := BuildPlan(r, opts, io.Discard)
 	if err != nil {
@@ -477,6 +483,7 @@ func TestWorkerPlan_RegistryLoginRunsOnlyWithToken(t *testing.T) {
 	r := NewFakeRunner()
 	scriptTailscaleUp(r)
 	opts := testWorkerOptions(home)
+	scriptPinnedDownloads(r, opts)
 	opts.RegistryUser = "gm2211"
 	opts.RegistryToken = "ghp_supersecrettoken"
 
@@ -527,6 +534,7 @@ func TestWorkerPlan_NoRegistryTokenSkipsLoginStep(t *testing.T) {
 	r := NewFakeRunner()
 	scriptTailscaleUp(r)
 	opts := testWorkerOptions(home) // no RegistryUser/RegistryToken set
+	scriptPinnedDownloads(r, opts)
 
 	var out bytes.Buffer
 	steps, err := BuildPlan(r, opts, &out)
@@ -559,6 +567,7 @@ func TestWorkerPlan_RegistryLoginDryRunNeverExecutes(t *testing.T) {
 	r := NewFakeRunner()
 	scriptTailscaleUp(r)
 	opts := testWorkerOptions(home)
+	scriptPinnedDownloads(r, opts)
 	opts.RegistryUser = "gm2211"
 	opts.RegistryToken = "ghp_supersecrettoken"
 
@@ -611,6 +620,7 @@ func TestWorkerPlan_RegistryLoginIdempotent(t *testing.T) {
 	r := NewFakeRunner()
 	scriptTailscaleUp(r)
 	opts := testWorkerOptions(home)
+	scriptPinnedDownloads(r, opts)
 	opts.RegistryUser = "gm2211"
 	opts.RegistryToken = "ghp_supersecrettoken"
 

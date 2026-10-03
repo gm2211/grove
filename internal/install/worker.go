@@ -79,15 +79,19 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 
 	steps := []Step{
 		{
-			Name:        "homebrew",
-			Description: "Install Homebrew (`/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"`, NONINTERACTIVE=1).",
+			Name: "homebrew",
+			Description: fmt.Sprintf("Install Homebrew from its installer pinned at Homebrew/install@%s, verified against grove's pinned SHA-256 before it runs (NONINTERACTIVE=1).",
+				HomebrewInstallCommit[:12]),
 			Check: func(ctx context.Context) (bool, error) {
 				_, err := lookPath("brew")
 				return err == nil, nil
 			},
 			Apply: func(ctx context.Context) error {
-				_, _, err := r.Run(ctx, "/bin/bash", "-c",
-					`NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`)
+				script, err := fetchVerified(ctx, r, opts, homebrewInstallerDownload())
+				if err != nil {
+					return err
+				}
+				_, _, err = r.Run(ctx, "/usr/bin/env", "NONINTERACTIVE=1", "/bin/bash", script)
 				return err
 			},
 		},

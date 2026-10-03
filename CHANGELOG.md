@@ -4,6 +4,18 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Security:** `grove install` no longer installs anything it downloaded unverified. Nomad
+  (Linux, now pinned to 2.0.7 instead of "latest"), MinIO (Linux, `RELEASE.2025-09-06T17-38-46Z`),
+  the MinIO client and Homebrew's installer (pinned commit instead of `HEAD`) are checked against
+  SHA-256 digests embedded in grove and refused on mismatch. `scripts/install.sh` verifies the
+  Linux grove tarball against the release's `checksums.txt` (`GROVE_VERSION` pins a release) and
+  pins Homebrew's installer the same way. See docs/INSTALL.md "Verified downloads".
+- **Security:** the control plane's artifact credential in `config.yaml` is now a MinIO user
+  limited to the `grove` bucket (`grove-artifacts` policy), not MinIO's root credential. Re-running
+  `grove install --role control-plane` migrates an existing install and reloads `grove serve`.
+- **Security:** `grove setup` shows the control plane it discovered and asks for confirmation, or
+  a choice when several answer, instead of joining the first peer on :6130. Unattended runs need
+  `--server URL`, or `--yes` when exactly one control plane answers.
 - `fleet.yaml` pools take `network: isolated`: VMs run on Softnet with their host Mac blocked,
   use public DNS, fence job containers off private and tailnet addresses, and join the tailnet
   under their own tag (`tailscale.tags`, default `tag:grove-vm`) only to reach Nomad. A pool whose
