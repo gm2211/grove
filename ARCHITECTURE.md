@@ -187,7 +187,7 @@ All under `/api/v1`, `Authorization: Bearer <token>`, bind to the tailnet addres
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/fleet` | `{workers[], vms[], nodes[], fetchedAt, totals}` normalised: name, host, pool (vm entries only, derived — see above), arch, online, cordoned, capacity, running; `totals` is at-a-glance counts (workersOnline/Cordoned, vmsRunning, nodesReady/Draining, jobsRunning/Pending) |
+| GET | `/fleet` | `{workers[], vms[], nodes[], fetchedAt, totals}` normalised: name, host, pool (vm entries only, derived — see above), arch, online, cordoned, capacity, running; `totals` is at-a-glance counts (workersOnline/Cordoned, vmsRunning, nodesReady/Draining, jobsRunning/Pending). A VM's `raw` never includes its startup/shutdown scripts — they embed the isolated-network Tailscale auth key and pool setup commands |
 | POST | `/vms/{name}/recycle` | drain (via Nomad) then delete; reconciler recreates |
 | POST | `/workers/{name}/pause` · `/resume` | Orchard cordon |
 | GET | `/jobs` · `/jobs/{id}` | list / status. An operator sees every job; any other credential sees only the jobs it submitted (403 on someone else's). `request.env` keeps its keys but every value reads `[redacted]`, for every caller |
