@@ -60,6 +60,19 @@ func TestBuildStartupScript_MacOSNomadRPCServer(t *testing.T) {
 	}
 }
 
+func TestBuildStartupScript_MacOSExplicitLoopbackAdvertisement(t *testing.T) {
+	for _, pool := range []Pool{{Name: "macos"}, {Name: "macos", HostXcode: &HostXcodeConfig{Path: "/Applications/Xcode.app", BuildVersion: "27A266a"}}} {
+		script := buildStartupScript(pool, "mac1", "macos-mac1-0", Options{})
+		restartAt := strings.Index(script, "launchctl kickstart -k system/com.grove.nomad")
+		for _, line := range []string{`http = "127.0.0.1:4646"`, `rpc = "127.0.0.1:4647"`, `serf = "127.0.0.1:4648"`} {
+			at := strings.Index(script, line)
+			if at < 0 || restartAt < 0 || at > restartAt {
+				t.Fatalf("explicit advertisement missing before Nomad restart: %s", line)
+			}
+		}
+	}
+}
+
 func TestBuildStartupScript_LinuxMatchesV010(t *testing.T) {
 	want, err := os.ReadFile("testdata/startup-linux-v0.1.10.sh")
 	if err != nil {
