@@ -128,7 +128,9 @@ Recycle a wedged VM:
   `[redacted]` to every caller, operator included — the keys are kept.
 - Credential scopes: `read` (fleet, own jobs), `dispatch` (build + agent jobs), `dispatch:build`,
   `dispatch:agent`, `dispatch:shell` (raw `shell` jobs — never implied by `dispatch`), and
-  `operator` (everything).
+  `operator` (everything). An operator mints a non-interactive credential, e.g. for an
+  orchestrator, with `grove access issue --name argos --scope read --scope dispatch` (token printed
+  to stdout once) — see `docs/OPERATIONS.md`.
 - Raw shell jobs need the operator credential or a credential explicitly issued `dispatch:shell`.
   Named secrets, worker pause/resume, VM recycle, join approval, and device issue/revocation
   require the control-plane operator credential.

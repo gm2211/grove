@@ -195,6 +195,7 @@ All under `/api/v1`, `Authorization: Bearer <token>`, bind to the tailnet addres
 | GET | `/jobs/{id}/logs?follow=1` | same ownership rule as `/jobs/{id}`. SSE / chunked log stream; `Accept: application/x-ndjson` + `&sinceOffset=N` streams `{offset,ts,stream,line}` objects, resumable by offset |
 | GET | `/jobs/{id}/artifacts/{path}` | streams one uploaded artifact from the bucket via the server's own credentials; same ownership rule as `/jobs/{id}`. A path with a `.`/`..`/empty segment or a leading `/` (checked after URL-decoding) is a 400. Always served `Content-Disposition: attachment` + `X-Content-Type-Options: nosniff`, so a browser downloads it rather than rendering job output on grove's origin |
 | DELETE | `/jobs/{id}` · POST `/jobs/{id}/cancel` | cancel (same operation, two spellings) |
+| GET · POST · DELETE | `/access/devices` · `/access/devices/{id}` | operator-only: list device credentials / mint one (`{name, scopes}` → `{token, device}`; the raw token is returned only here, once) / revoke one |
 | GET | `/healthz` | `{ok, version, orchard, nomad, serverTime}`; orchard/nomad are "up" or "down" |
 | GET · PUT · DELETE | `/github/sourcing` | operator-only: read / arm / disarm the credential jobs use to clone PRIVATE repositories. Off by default, never echoes the token — see `docs/JOBS.md` |
 

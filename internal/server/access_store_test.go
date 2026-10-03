@@ -2,6 +2,8 @@ package server
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -213,5 +215,42 @@ func TestAccessStoreIssueAcceptsShellScope(t *testing.T) {
 	}
 	if !sameStrings(principal.Scopes, []string{ScopeShell}) {
 		t.Errorf("scopes = %v", principal.Scopes)
+	}
+}
+
+func TestIssueDeviceEndpoint_OperatorOnlyAndTokenWorks(t *testing.T) {
+	store, err := NewAccessStore(t.TempDir() + "/devices.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deviceToken, _, err := store.Issue("laptop", []string{ScopeRead, ScopeDispatch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newTestServer(nil, nil, nil, Options{Token: "operator", AccessStore: store})
+	issue := func(token, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/access/devices", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := issue(deviceToken, `{"name":"x","scopes":["operator"]}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("non-operator issue status=%d want 403", rec.Code)
+	}
+	if rec := issue("operator", `{"name":"x","scopes":["root"]}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("unknown scope status=%d want 400", rec.Code)
+	}
+	rec := issue("operator", `{"name":"argos","scopes":["read","dispatch"]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("issue status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out IssueDeviceResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	principal, ok := store.Authenticate(out.Token)
+	if !ok || principal.ID != out.Device.ID || !sameStrings(principal.Scopes, []string{ScopeDispatch, ScopeRead}) {
+		t.Fatalf("issued token authenticates as %+v ok=%v (device=%+v)", principal, ok, out.Device)
 	}
 }

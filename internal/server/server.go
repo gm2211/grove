@@ -122,6 +122,7 @@ func (s *Server) routes() http.Handler {
 	api.HandleFunc("GET /join/pending", s.handleListPendingJoins)
 	api.HandleFunc("POST /join/approve/{code}", s.handleApproveJoinRequest)
 	api.HandleFunc("GET /access/devices", s.handleListDevices)
+	api.HandleFunc("POST /access/devices", s.handleIssueDevice)
 	api.HandleFunc("DELETE /access/devices/{id}", s.handleRevokeDevice)
 	api.HandleFunc("GET /whoami", s.handleWhoAmI)
 	api.HandleFunc("GET /github/sourcing", s.handleGitHubSourcing)
