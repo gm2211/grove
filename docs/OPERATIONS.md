@@ -175,8 +175,8 @@ Limits:
 - `allowDockerSocket` can't be combined with it, because the socket gives every job root on the
   guest.
 - A job still reaches anything on the public internet, your home's public IP included.
-- Job images must come from a public registry (the default runner image is on ghcr.io): the
-  guest can't reach a registry on your LAN or tailnet.
+- Job images must already be in the VM image or come from a public registry (the default runner
+  image is on ghcr.io): the guest can't pull from a registry on your LAN or tailnet.
 - Jobs can't reach anything on your tailnet, so `ARTIFACT_*` uploads to a tailnet-only artifact
   store fail from an isolated pool.
 
