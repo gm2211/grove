@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gm2211/grove/internal/nomad"
+	"github.com/gm2211/grove/internal/orchard"
 )
 
 func TestRecycleVM_DrainsAndReturns202(t *testing.T) {
@@ -97,5 +98,34 @@ func TestRecycleVM_DeletesAfterDeadlineIfNeverDrains(t *testing.T) {
 		t.Fatal("vm should not have been deleted while allocations are still running")
 	case <-time.After(50 * time.Millisecond):
 		// expected: still draining, no delete yet.
+	}
+}
+
+func TestRecycleVM_SealedVMIsDeletedForItsShutdownScriptToDrain(t *testing.T) {
+	oc := &fakeOrchard{vms: []orchard.VM{{Name: "linux-mac1-0", Status: "running", Softnet: true, SoftnetBlock: []string{"out @host"}}}}
+	srv := newTestServer(oc, &fakeNomad{}, nil, Options{})
+	done := make(chan string, 1)
+	srv.recycleDone = done
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/vms/linux-mac1-0/recycle", nil))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	select {
+	case vm := <-done:
+		if vm != "linux-mac1-0" {
+			t.Errorf("deleted vm = %q", vm)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the delete")
+	}
+
+	// A VM that is neither a Nomad node nor sealed is still unknown.
+	oc.vms[0].Softnet = false
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/vms/linux-mac1-0/recycle", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unsealed VM without a node: status = %d, want 404", rec.Code)
 	}
 }

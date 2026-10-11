@@ -1321,3 +1321,34 @@ func TestSubmit_ResourceHintIgnoredForUnknownPool(t *testing.T) {
 		t.Fatalf("Submit: %v, want no error when the service has no pool config to validate against", err)
 	}
 }
+
+// TestGet_SealedPoolExit125IsLost: `grove sandbox run` exits 125 when the sealed VM it drives a
+// job in stops answering. That means lost for a sealed pool's job, and nothing special elsewhere.
+func TestGet_SealedPoolExit125IsLost(t *testing.T) {
+	for _, isolated := range []bool{true, false} {
+		nc := &fakeNomad{}
+		svc := newTestServiceWithOpts(t, nc, Options{Pools: []PoolConfig{{Name: "linux", Isolated: isolated}}})
+		job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+		if err != nil {
+			t.Fatalf("Submit: %v", err)
+		}
+		exit := 125
+		nc.allocationsByJob = map[string][]nomad.Allocation{
+			nc.dispatchCalls[0].jobName + "/dispatch-1": {{ID: "alloc-1", ClientStatus: "complete", ExitCode: &exit, CreatedAt: time.Now()}},
+		}
+		got, err := svc.Get(context.Background(), job.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		want := StatusFailed
+		if isolated {
+			want = StatusLost
+		}
+		if got.Status != want {
+			t.Errorf("isolated=%v: status = %v, want %v", isolated, got.Status, want)
+		}
+		if isolated && (got.FailureReason == nil || !strings.Contains(*got.FailureReason, "sealed VM")) {
+			t.Errorf("failure reason = %v, want it to name the sealed VM", got.FailureReason)
+		}
+	}
+}

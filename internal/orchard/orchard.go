@@ -101,15 +101,21 @@ type VMSpec struct {
 type ExecOptions struct {
 	// Session lets a caller reattach to a still-running exec after a disconnect.
 	Session string
-	Stdin   io.Reader
-	TTY     bool
+	// Stdin, when set, is copied to the command's standard input; its EOF closes that input, so
+	// a command such as `tar -x` sees the end of the stream and exits.
+	Stdin io.Reader
+	// Stderr, when set, receives the command's standard error, and Output then carries standard
+	// output alone. Nil keeps both streams combined in Output.
+	Stderr io.Writer
+	TTY    bool
 	// Wait is how long to wait for the VM to become ready before failing.
 	Wait time.Duration
 }
 
 // ExecSession is a running command inside a VM.
 type ExecSession interface {
-	// Output streams combined stdout/stderr until the command exits.
+	// Output streams combined stdout/stderr (stdout alone when ExecOptions.Stderr is set) until
+	// the command exits.
 	Output() io.Reader
 	// Wait blocks until exit and returns the exit code.
 	Wait(ctx context.Context) (int, error)

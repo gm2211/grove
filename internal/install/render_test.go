@@ -131,6 +131,23 @@ func TestRenderNomadServerConfig(t *testing.T) {
 		"  bootstrap_expect = 1\n" +
 		"}\n" +
 		"\n" +
+		"# The control plane is also a Nomad client for one kind of job only: `grove sandbox run`, which\n" +
+		"# drives a sealed pool's job in its VM from here (nomad/jobs/sandbox.nomad.hcl), since a sealed\n" +
+		"# VM can't reach Nomad. This node advertises grove_sandbox_host and no pool, so no other grove\n" +
+		"# job is ever placed on it.\n" +
+		"client {\n" +
+		"  enabled = true\n" +
+		"  meta {\n" +
+		"    grove_sandbox_host = \"true\"\n" +
+		"  }\n" +
+		"}\n" +
+		"\n" +
+		"plugin \"raw_exec\" {\n" +
+		"  config {\n" +
+		"    enabled = true\n" +
+		"  }\n" +
+		"}\n" +
+		"\n" +
 		"acl {\n" +
 		"  # On: anything on the tailnet (or inside a VM) that reaches this API without a token gets\n" +
 		"  # nothing. grove holds the management token (config.yaml nomad.token); each VM gets its own\n" +

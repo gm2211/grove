@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"text/template"
 
@@ -25,6 +27,13 @@ type PoolConfig struct {
 	CPU               int
 	Memory            int
 	AllowDockerSocket bool
+	// Isolated marks a sealed pool (fleet.yaml `network: isolated`): its VMs can't reach home, so
+	// every kind is registered from nomad/jobs/sandbox.nomad.hcl instead, which runs on the
+	// control plane and drives the job in a sealed VM from outside (see internal/sandbox).
+	Isolated bool
+	// Slots is how many jobs one of a sealed pool's VMs runs at once (see sandbox.Slots), since
+	// no Nomad client in the VM counts them. Values below 1 mean 1.
+	Slots int
 }
 
 // templateData is what a nomad/jobs/<kind>.nomad.hcl template is rendered with — see
@@ -38,6 +47,10 @@ type templateData struct {
 	Memory            int
 	AllowDockerSocket bool
 	RunnerImage       string
+	// GroveBin and Slots are only used by sandbox.nomad.hcl: the grove binary the control plane's
+	// Nomad client runs, and the pool's per-VM slot count.
+	GroveBin string
+	Slots    int
 }
 
 const DefaultRunnerImage = "ghcr.io/gm2211/grove-runner:latest"
@@ -77,15 +90,30 @@ func EnsureJobs(ctx context.Context, nc nomad.Client, pools []PoolConfig) error 
 		normalizedPools[i].RunnerImage = runnerImage
 	}
 
-	for _, kind := range allKinds {
-		file := fmt.Sprintf("%s.nomad.hcl", kind)
-		tmpl, err := template.New(file).ParseFS(nomadjobs.FS, file)
-		if err != nil {
-			return fmt.Errorf("nomadjobs: parse template for %s: %w", kind, err)
+	groveBin := ""
+	for _, pool := range normalizedPools {
+		if pool.Isolated {
+			bin, err := groveBinary()
+			if err != nil {
+				return fmt.Errorf("nomadjobs: pool %s is sealed, and its jobs run grove itself: %w", pool.Name, err)
+			}
+			groveBin = bin
+			break
 		}
+	}
+
+	for _, kind := range allKinds {
 		for _, pool := range normalizedPools {
+			file := fmt.Sprintf("%s.nomad.hcl", kind)
+			if pool.Isolated {
+				file = sandboxJobFile
+			}
+			tmpl, err := template.New(file).ParseFS(nomadjobs.FS, file)
+			if err != nil {
+				return fmt.Errorf("nomadjobs: parse template %s: %w", file, err)
+			}
 			var buf bytes.Buffer
-			data := templateData{Kind: kind, Pool: pool.Name, CPU: pool.CPU, Memory: pool.Memory, AllowDockerSocket: pool.AllowDockerSocket, RunnerImage: pool.RunnerImage}
+			data := templateData{Kind: kind, Pool: pool.Name, CPU: pool.CPU, Memory: pool.Memory, AllowDockerSocket: pool.AllowDockerSocket, RunnerImage: pool.RunnerImage, GroveBin: groveBin, Slots: max(pool.Slots, 1)}
 			if err := tmpl.ExecuteTemplate(&buf, file, data); err != nil {
 				return fmt.Errorf("nomadjobs: render %s/%s: %w", kind, pool.Name, err)
 			}
@@ -95,4 +123,33 @@ func EnsureJobs(ctx context.Context, nc nomad.Client, pools []PoolConfig) error 
 		}
 	}
 	return nil
+}
+
+// sandboxJobFile is the template every kind of a sealed pool is registered from.
+const sandboxJobFile = "sandbox.nomad.hcl"
+
+// groveBinary is the grove binary sealed pools' jobs run on the control plane. It is this very
+// binary, since EnsureJobs runs inside `grove serve` there. Overridden in tests.
+var groveBinary = func() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	return stableGroveBinary(exe)
+}
+
+// stableGroveBinary prefers Homebrew's version-independent link (…/bin/grove) over the versioned
+// Cellar path os.Executable reports, which `brew upgrade` removes from under the registered jobs.
+// It also refuses a path the job file can't carry safely.
+func stableGroveBinary(exe string) (string, error) {
+	if prefix, _, ok := strings.Cut(exe, "/Cellar/grove/"); ok {
+		link := filepath.Join(prefix, "bin", "grove")
+		if _, err := os.Stat(link); err == nil {
+			exe = link
+		}
+	}
+	if !filepath.IsAbs(exe) || strings.ContainsAny(exe, "\"\\\n$%") {
+		return "", fmt.Errorf("unusable grove binary path %q", exe)
+	}
+	return exe, nil
 }

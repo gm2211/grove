@@ -2,6 +2,8 @@ package dispatch
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -113,6 +115,49 @@ func TestEnsureJobs_RejectsUnsafeRunnerImage(t *testing.T) {
 		}
 		if len(nc.registerCalls) != 0 {
 			t.Errorf("unsafe runner image %q registered a job", image)
+		}
+	}
+}
+
+func TestEnsureJobs_SealedPoolUsesSandboxTemplate(t *testing.T) {
+	old := groveBinary
+	groveBinary = func() (string, error) { return "/usr/local/bin/grove", nil }
+	defer func() { groveBinary = old }()
+
+	nc := &fakeNomad{}
+	pools := []PoolConfig{{Name: "linux", Isolated: true, Slots: 4, CPU: 500, Memory: 1024}, {Name: "macos"}}
+	if err := EnsureJobs(context.Background(), nc, pools); err != nil {
+		t.Fatalf("EnsureJobs: %v", err)
+	}
+	for _, hcl := range nc.registerCalls {
+		sealed := strings.Contains(hcl, `-linux"`)
+		if got := strings.Contains(hcl, `"sandbox", "run"`); got != sealed {
+			t.Errorf("sandbox runner in job = %v, want %v:\n%s", got, sealed, hcl)
+		}
+		if sealed && (!strings.Contains(hcl, `command = "/usr/local/bin/grove"`) || !strings.Contains(hcl, `"--slots", "4"`)) {
+			t.Errorf("sealed job lacks grove's path or slot count:\n%s", hcl)
+		}
+	}
+}
+
+func TestStableGroveBinary(t *testing.T) {
+	prefix := t.TempDir()
+	cellar := filepath.Join(prefix, "Cellar", "grove", "0.1.15", "bin", "grove")
+	if got, err := stableGroveBinary(cellar); err != nil || got != cellar {
+		t.Fatalf("without a bin link: %q, %v; want the Cellar path", got, err)
+	}
+	if err := os.MkdirAll(filepath.Join(prefix, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prefix, "bin", "grove"), nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := stableGroveBinary(cellar); err != nil || got != filepath.Join(prefix, "bin", "grove") {
+		t.Fatalf("with a bin link: %q, %v", got, err)
+	}
+	for _, bad := range []string{"grove", "/tmp/${x}/grove", `/tmp/a"b`} {
+		if _, err := stableGroveBinary(bad); err == nil {
+			t.Errorf("stableGroveBinary(%q) accepted it", bad)
 		}
 	}
 }

@@ -130,6 +130,23 @@ server {
   bootstrap_expect = 1
 }
 
+# The control plane is also a Nomad client for one kind of job only: ` + "`grove sandbox run`" + `, which
+# drives a sealed pool's job in its VM from here (nomad/jobs/sandbox.nomad.hcl), since a sealed
+# VM can't reach Nomad. This node advertises grove_sandbox_host and no pool, so no other grove
+# job is ever placed on it.
+client {
+  enabled = true
+  meta {
+    grove_sandbox_host = "true"
+  }
+}
+
+plugin "raw_exec" {
+  config {
+    enabled = true
+  }
+}
+
 acl {
   # On: anything on the tailnet (or inside a VM) that reaches this API without a token gets
   # nothing. grove holds the management token (config.yaml nomad.token); each VM gets its own

@@ -22,9 +22,9 @@ func BuildStartupScript(pool Pool, worker, vmName, tailscaleAuthKey string) stri
 	return buildStartupScript(pool, worker, vmName, Options{TailscaleAuthKey: tailscaleAuthKey})
 }
 
-// buildStartupScript is BuildStartupScript with the Reconciler's full Options. An isolated pool's
-// section needs the auth key, tags and Nomad RPC address that Options.isolationProblem has
-// already vetted; Plan never builds a spec for a blocked pool.
+// buildStartupScript is BuildStartupScript with the Reconciler's full Options. An isolated
+// (sealed) pool's VMs get sealedStartupScript instead of any Nomad or Tailscale setup: they run no
+// Nomad client and never join the tailnet.
 func buildStartupScript(pool Pool, worker, vmName string, opts Options) string {
 	var b strings.Builder
 
@@ -32,6 +32,11 @@ func buildStartupScript(pool Pool, worker, vmName string, opts Options) string {
 	fmt.Fprintf(&b, "grove_pool=%s\n", shQuote(pool.Name))
 	fmt.Fprintf(&b, "grove_host=%s\n", shQuote(worker))
 	fmt.Fprintf(&b, "grove_vm=%s\n\n", shQuote(vmName))
+	if pool.Isolated() {
+		b.WriteString(sealedStartupScript())
+		appendUserScript(&b, "pool.startupScript", pool.StartupScript)
+		return b.String()
+	}
 	if pool.HostXcode != nil {
 		b.WriteString(buildHostXcodeStartupScript(*pool.HostXcode))
 		b.WriteString("\n")
@@ -44,10 +49,7 @@ func buildStartupScript(pool Pool, worker, vmName string, opts Options) string {
 		b.WriteString("\n")
 	}
 
-	if pool.Isolated() {
-		b.WriteString(isolatedNetworkScript(opts.TailscaleAuthKey, opts.tailscaleTags(), opts.NomadRPCAddress))
-		b.WriteString("\n")
-	} else if opts.TailscaleAuthKey != "" {
+	if opts.TailscaleAuthKey != "" {
 		fmt.Fprintf(&b, "tailscale up --authkey=%s --hostname=\"$grove_vm\" --ssh --accept-routes\n\n",
 			shQuote(opts.TailscaleAuthKey))
 	}
@@ -232,6 +234,13 @@ func buildShutdownScript(pool Pool, nodeToken bool) (script string, timeout time
 	var b strings.Builder
 
 	b.WriteString("#!/bin/sh\nset -eu\n\n")
+	if pool.Isolated() {
+		// A sealed VM has no Nomad client to drain, and no node token.
+		fmt.Fprintf(&b, "grove_deadline=$(( $(date +%%s) + %d ))\n", int(timeout.Seconds()))
+		b.WriteString(sealedShutdownScriptBody)
+		appendUserScript(&b, "pool.shutdownScript", pool.ShutdownScript)
+		return b.String(), timeout
+	}
 	if nodeToken {
 		b.WriteString(nodeTokenBlock)
 		b.WriteString("\n")

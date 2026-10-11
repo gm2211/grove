@@ -238,6 +238,11 @@ func randomID() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// sealedVMLostExitCode is what `grove sandbox run` exits with when the sealed VM it was driving a
+// job in stopped answering (internal/sandbox ExitLost). Only a sealed pool's jobs exit with it on
+// grove's behalf, so only there does it mean StatusLost.
+const sealedVMLostExitCode = 125
+
 func artifactPrefix(id string) string {
 	return "jobs/" + id + "/"
 }
@@ -479,11 +484,21 @@ func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {
 		if alloc.ExitCode != nil && *alloc.ExitCode == 124 {
 			updated.TimedOut = true
 		}
+		sealedVMLost := s.pools[rec.Request.Pool].Isolated && alloc.ExitCode != nil && *alloc.ExitCode == sealedVMLostExitCode &&
+			(updated.Status == StatusFailed || updated.Status == StatusSuccess)
+		if sealedVMLost {
+			// The job ran on the control plane, driving a sealed VM that stopped answering: the
+			// job's fate is unknown, exactly like an allocation on a node Nomad lost.
+			updated.Status = StatusLost
+		}
 		if alloc.Signal != nil {
 			name := signalName(*alloc.Signal)
 			updated.Signal = &name
 		}
-		if alloc.FailureReason != "" {
+		if sealedVMLost {
+			fr := "the sealed VM running the job stopped answering (see the job's log for which)"
+			updated.FailureReason = &fr
+		} else if alloc.FailureReason != "" {
 			fr := alloc.FailureReason
 			updated.FailureReason = &fr
 		} else if updated.Status == StatusLost {

@@ -92,3 +92,10 @@ func (c *client) Get(ctx context.Context, key string) (io.ReadCloser, Object, er
 	}
 	return obj, Object{Path: key, Size: info.Size, ContentType: contentTypeOf(info), ModTime: info.LastModified}, nil
 }
+
+func (c *client) Put(ctx context.Context, key string, r io.Reader, size int64, contentType string) error {
+	if _, err := c.raw.PutObject(ctx, c.bucket, key, r, size, minio.PutObjectOptions{ContentType: contentType}); err != nil {
+		return fmt.Errorf("artifacts: put %s: %w", key, err)
+	}
+	return nil
+}

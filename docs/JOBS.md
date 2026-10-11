@@ -212,6 +212,30 @@ With no TTL it stays armed until `grove github disable`.
    - exits with `script.sh`'s exit code, which becomes the Nomad task's (and therefore the
      allocation's, and therefore `Job.ExitCode`'s) exit status.
 
+### Sealed pools: the job runs from the control plane
+
+A pool with `network: isolated` registers every kind from `nomad/jobs/sandbox.nomad.hcl` instead.
+Its VMs run no Nomad client (they can't reach home), so the allocation is a single raw_exec task
+`main` on the control plane's own Nomad client (constraint `${meta.grove_sandbox_host} = "true"`),
+running `grove sandbox run` (`internal/sandbox`). The meta and payload contract above is
+unchanged; what differs is where each step happens:
+
+- the payload (with any clone token) is read and deleted by `grove sandbox run`, which fetches the
+  repository on the control plane with the same rules and exit codes as the `source` task, but
+  with `--no-checkout`: no file of the repository is written there;
+- that `.git`, `script.sh`, an `env.sh` built from `env_json` (minus `GH_TOKEN`/`GIT_TOKEN`) and a
+  `run.sh` wrapper are copied into a fresh container (`docker create --init`, the pool's runner
+  image, `--cpus`/`--memory` from the pool's job sizing) in one of the pool's sealed VMs, through
+  Orchard exec; the container checks out `ref` in `/workspace` (exit 1 if it can't), then runs
+  `script.sh` there under `timeout $T`;
+- its stdout and stderr stream into the task's own (`docker logs --follow --timestamps`, resumed
+  without repeats if the stream drops), so `GET /jobs/{id}/logs` reads the same;
+- the task exits with the container's exit code; 124 on a timeout; 125 when the VM stopped
+  answering for a minute, which `internal/dispatch` reports as `lost` for a sealed pool (a script's
+  own 125 is reported as 1);
+- (build) `./artifacts/**` are copied out and uploaded by the control plane under
+  `<artifact_prefix>/`, since the VM can't reach the artifact store.
+
 ### Portable timeout: macOS raw_exec hosts have no GNU `timeout(1)`
 
 GNU coreutils' `timeout(1)` does not exist on stock macOS (no coreutils installed by default), but

@@ -142,8 +142,6 @@ func setConfigKey(cfg *config.Config, key, value string) error {
 		cfg.Fleet = value
 	case "tailscale.authKey":
 		cfg.Tailscale.AuthKey = value
-	case "tailscale.tags":
-		cfg.Tailscale.Tags = splitList(value)
 	default:
 		return fmt.Errorf("unknown config key %q", key)
 	}
@@ -164,15 +162,4 @@ func readConfigValue(r io.Reader) (string, error) {
 		return "", errors.New("no value on stdin")
 	}
 	return value, nil
-}
-
-// splitList parses a comma-separated config value, e.g. "tag:grove-vm,tag:ci", dropping blanks.
-func splitList(value string) []string {
-	var out []string
-	for _, item := range strings.Split(value, ",") {
-		if item = strings.TrimSpace(item); item != "" {
-			out = append(out, item)
-		}
-	}
-	return out
 }

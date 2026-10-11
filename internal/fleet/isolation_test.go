@@ -98,8 +98,20 @@ func TestPlan_IsolatedPool_CreatesSoftnetVMWithHostBlocked(t *testing.T) {
 	if !spec.Softnet || !slices.Equal(spec.SoftnetBlock, []string{"out @host"}) {
 		t.Fatalf("isolated VM must run on Softnet with the host blocked, got Softnet=%v SoftnetBlock=%q", spec.Softnet, spec.SoftnetBlock)
 	}
-	if !strings.Contains(spec.StartupScript, "# --- network: isolated ---") {
-		t.Fatalf("isolated VM is missing the isolated startup section:\n%s", spec.StartupScript)
+	if !strings.Contains(spec.StartupScript, "# --- network: isolated (sealed) ---") {
+		t.Fatalf("isolated VM is missing the sealed startup section:\n%s", spec.StartupScript)
+	}
+	// Nothing in a sealed VM may reach home, so nothing that would gets set up there, even with
+	// a tailnet key and a Nomad address configured for the shared pools.
+	for _, unwanted := range []string{"tskey-auth-abc", "tailscale up", "grove-meta.hcl", "100.64.0.10", "systemctl restart nomad"} {
+		if strings.Contains(spec.StartupScript, unwanted) {
+			t.Errorf("sealed VM startup script contains %q:\n%s", unwanted, spec.StartupScript)
+		}
+	}
+	for _, unwanted := range []string{"nomad node drain", nodeTokenSecretPlaceholder} {
+		if strings.Contains(spec.ShutdownScript, unwanted) {
+			t.Errorf("sealed VM shutdown script contains %q:\n%s", unwanted, spec.ShutdownScript)
+		}
 	}
 }
 
@@ -124,82 +136,27 @@ func TestPlan_SharedPool_NoSoftnet(t *testing.T) {
 	}
 }
 
-func TestPlan_IsolatedPool_BlockedWithoutUsableConfig(t *testing.T) {
-	for _, tt := range []struct {
-		name    string
-		mutate  func(*Options)
-		wantErr string
-	}{
-		{name: "no auth key", mutate: func(o *Options) { o.TailscaleAuthKey = "" }, wantErr: "tailscale.authKey"},
-		{name: "no Nomad address", mutate: func(o *Options) { o.NomadRPCAddress = "" }, wantErr: "nomad.url"},
-		{name: "Nomad by name", mutate: func(o *Options) { o.NomadRPCAddress = "studio.tail1234.ts.net:4647" }, wantErr: "tailnet IP"},
-		{name: "Nomad on the LAN", mutate: func(o *Options) { o.NomadRPCAddress = "192.168.1.10:4647" }, wantErr: "tailnet IP"},
-		{name: "untagged", mutate: func(o *Options) { o.TailscaleTags = []string{"grove-vm"} }, wantErr: "not a Tailscale ACL tag"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			opts := isolatedOptions()
-			tt.mutate(&opts)
-			client := &fakeOrchardClient{workers: []orchard.Worker{onlineWorker("mac1")}}
-			r := &Reconciler{Client: client, Spec: &Spec{Pools: []Pool{isolatedPool()}}, Options: opts}
-
-			plan, err := r.Plan(context.Background())
-			if err != nil {
-				t.Fatalf("Plan: %v", err)
-			}
-			if len(plan.Creates) != 0 {
-				t.Fatalf("blocked pool must not get VMs, got %+v", plan.Creates)
-			}
-			if len(plan.Blocked) != 1 || plan.Blocked[0].Pool != "linux" || !strings.Contains(plan.Blocked[0].Reason, tt.wantErr) {
-				t.Fatalf("want linux blocked with %q, got %+v", tt.wantErr, plan.Blocked)
-			}
-			if err := plan.BlockedError(); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("BlockedError() = %v, want it to mention %q", err, tt.wantErr)
-			}
-		})
-	}
-}
-
-func TestPlan_IsolatedPool_TailnetIPv6Allowed(t *testing.T) {
-	opts := isolatedOptions()
-	opts.NomadRPCAddress = "[fd7a:115c:a1e0::1]:4647"
-	if problem := opts.isolationProblem(isolatedPool()); problem != "" {
-		t.Fatalf("tailnet IPv6 address should be usable, got %q", problem)
-	}
-}
-
-func TestPlan_BlockedIsolatedPool_DeletesUnisolatedVMsKeepsIsolatedOnes(t *testing.T) {
-	shared := orchard.VM{
-		Name:   "linux-mac1-0",
-		Status: "running",
-		Labels: map[string]string{LabelWorkerPin: "mac1"},
-	}
-	isolated := orchard.VM{
-		Name:         "linux-mac2-0",
-		Status:       "running",
-		Labels:       map[string]string{LabelWorkerPin: "mac2"},
-		Softnet:      true,
-		SoftnetBlock: []string{"out @host"},
-	}
-	client := &fakeOrchardClient{
-		workers: []orchard.Worker{onlineWorker("mac1"), onlineWorker("mac2")},
-		vms:     []orchard.VM{shared, isolated},
-	}
-	opts := isolatedOptions()
-	opts.TailscaleAuthKey = ""
-	r := &Reconciler{Client: client, Spec: &Spec{Pools: []Pool{isolatedPool()}}, Options: opts}
+func TestPlan_IsolatedPool_NeedsNoTailnetConfig(t *testing.T) {
+	client := &fakeOrchardClient{workers: []orchard.Worker{onlineWorker("mac1")}}
+	r := &Reconciler{Client: client, Spec: &Spec{Pools: []Pool{isolatedPool()}}}
 
 	plan, err := r.Plan(context.Background())
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
-	if len(plan.Creates) != 0 {
-		t.Fatalf("blocked pool must not get VMs, got %+v", plan.Creates)
+	if len(plan.Blocked) != 0 || len(plan.Creates) != 1 || !plan.Creates[0].Spec.Softnet {
+		t.Fatalf("want one sealed VM with no tailnet key or Nomad address configured, got %+v", plan)
 	}
-	if len(plan.Deletes) != 1 || plan.Deletes[0].Name != "linux-mac1-0" {
-		t.Fatalf("want only the unisolated VM deleted, got %+v", plan.Deletes)
+}
+
+func TestIsolationProblem_LinuxOnly(t *testing.T) {
+	if problem := isolationProblem(isolatedPool()); problem != "" {
+		t.Errorf("isolated Linux pool: %q", problem)
 	}
-	if !strings.HasPrefix(plan.Deletes[0].Reason, "pool blocked: ") {
-		t.Fatalf("delete reason should say the pool is blocked, got %q", plan.Deletes[0].Reason)
+	macos := isolatedPool()
+	macos.Name = "macos"
+	if problem := isolationProblem(macos); !strings.Contains(problem, "only for Linux pools") {
+		t.Errorf("isolated macOS pool: %q", problem)
 	}
 }
 
@@ -265,54 +222,43 @@ func TestSpecDrifted_Softnet(t *testing.T) {
 	}
 }
 
-func TestTailscaleAuthKeyForVM(t *testing.T) {
-	for in, want := range map[string]string{
-		"tskey-auth-abc":                     "tskey-auth-abc",
-		"tskey-client-k1-secret":             "tskey-client-k1-secret?ephemeral=true&preauthorized=true",
-		"tskey-client-k1-secret?ephemeral=1": "tskey-client-k1-secret?ephemeral=1",
-	} {
-		if got := tailscaleAuthKeyForVM(in); got != want {
-			t.Errorf("tailscaleAuthKeyForVM(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
 func TestBuildStartupScript_Isolated(t *testing.T) {
-	opts := isolatedOptions()
-	opts.TailscaleTags = []string{"tag:grove-vm", "tag:ci"}
-	script := buildStartupScript(isolatedPool(), "mac1", "linux-mac1-0", opts)
+	script := buildStartupScript(isolatedPool(), "mac1", "linux-mac1-0", isolatedOptions())
 
-	// Each step must come after the previous one: meta first, then the fence, then the tailnet
-	// login, then the RPC address, and only then the Nomad restart that picks it all up.
+	// Nomad and Tailscale go off first, then DNS, then the fence, and only then Docker, so no job
+	// container ever runs unfenced.
 	last := -1
 	for _, want := range []string{
-		"grove_meta_header <<GROVE_META",
+		"grove_vm='linux-mac1-0'",
+		"for grove_unit in nomad.service tailscaled.service; do\n  grove_priv systemctl disable --now \"$grove_unit\"",
+		"grove_priv rm -f /run/grove-draining",
 		"grove_priv rm -f /etc/resolv.conf",
 		"nameserver 1.1.1.1\nnameserver 8.8.8.8\nGROVE_RESOLV_CONF",
 		"grove_priv tee /usr/local/sbin/grove-egress-fence",
 		"grove_priv tee /etc/systemd/system/docker.service.d/grove-egress-fence.conf",
 		"grove_priv /usr/local/sbin/grove-egress-fence",
-		"grove_priv tailscale up --reset --auth-key='tskey-auth-abc' --hostname=\"$grove_vm\" \\\n" +
-			"  --advertise-tags='tag:grove-vm,tag:ci' --accept-dns=false --accept-routes=false --ssh=false \\\n" +
-			"  --shields-up --timeout=120s",
-		"grove_priv tee /etc/nomad.d/grove-rpc.hcl",
-		`servers = ["100.64.0.10:4647"]`,
-		"grove_priv systemctl restart nomad",
+		"grove_priv systemctl enable --now docker.service",
 	} {
 		at := strings.Index(script, want)
 		if at < 0 {
-			t.Fatalf("isolated startup script missing %q:\n%s", want, script)
+			t.Fatalf("sealed startup script missing %q:\n%s", want, script)
 		}
 		if at < last {
-			t.Fatalf("isolated startup script has %q out of order:\n%s", want, script)
+			t.Fatalf("sealed startup script has %q out of order:\n%s", want, script)
 		}
 		last = at
 	}
 
-	for _, unwanted := range []string{"--ssh --accept-routes", "--accept-routes\n", "--authkey="} {
+	for _, unwanted := range []string{"tailscale up", "--authkey", "--auth-key", "grove-rpc.hcl", "grove_meta"} {
 		if strings.Contains(script, unwanted) {
-			t.Errorf("isolated startup script must not contain %q:\n%s", unwanted, script)
+			t.Errorf("sealed startup script must not contain %q:\n%s", unwanted, script)
 		}
+	}
+
+	pool := isolatedPool()
+	pool.StartupScript = "echo custom"
+	if script := buildStartupScript(pool, "mac1", "linux-mac1-0", Options{}); !strings.HasSuffix(script, "# --- pool.startupScript ---\necho custom\n") {
+		t.Errorf("the pool's own startup script must run last:\n%s", script)
 	}
 }
 
@@ -331,7 +277,7 @@ func TestBuildStartupScript_IsolatedRunsThroughFakeSudo(t *testing.T) {
 	}
 	writeExecutable("id", "#!/bin/sh\necho 502\n")
 	writeExecutable("uname", "#!/bin/sh\necho Linux\n")
-	writeExecutable("tailscale", "#!/bin/sh\nexit 64\n") // only ever run through sudo
+	writeExecutable("systemctl", "#!/bin/sh\nexit 64\n") // only ever run through sudo
 	writeExecutable("sudo", `#!/bin/sh
 set -eu
 [ "${1:-}" = "-n" ] || exit 65
@@ -358,7 +304,7 @@ fi
 		"GROVE_TEST_ROOT="+root,
 	)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("isolated startup script failed through fake sudo: %v\n%s", err, output)
+		t.Fatalf("sealed startup script failed through fake sudo: %v\n%s", err, output)
 	}
 
 	log, err := os.ReadFile(logPath)
@@ -367,9 +313,9 @@ fi
 	}
 	got := strings.Split(strings.TrimSpace(string(log)), "\n")
 	want := []string{
-		"mkdir -p /etc/nomad.d",
-		"tee /etc/nomad.d/grove-meta.hcl",
-		"tee -a /etc/nomad.d/grove-meta.hcl",
+		"systemctl disable --now nomad.service",
+		"systemctl disable --now tailscaled.service",
+		"rm -f /run/grove-draining",
 		"rm -f /etc/resolv.conf",
 		"tee /etc/resolv.conf",
 		"mkdir -p /usr/local/sbin /etc/systemd/system/docker.service.d",
@@ -378,11 +324,7 @@ fi
 		"tee /etc/systemd/system/docker.service.d/grove-egress-fence.conf",
 		"systemctl daemon-reload",
 		"/usr/local/sbin/grove-egress-fence",
-		"systemctl enable --now tailscaled",
-		"tailscale up --reset --auth-key=tskey-auth-abc --hostname=linux-mac1-0 --advertise-tags=tag:grove-vm " +
-			"--accept-dns=false --accept-routes=false --ssh=false --shields-up --timeout=120s",
-		"tee /etc/nomad.d/grove-rpc.hcl",
-		"systemctl restart nomad",
+		"systemctl enable --now docker.service",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("privileged steps:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -391,7 +333,6 @@ fi
 	for path, want := range map[string]string{
 		"/etc/resolv.conf":                                             "nameserver 1.1.1.1\nnameserver 8.8.8.8\n",
 		"/usr/local/sbin/grove-egress-fence":                           egressFenceScript,
-		"/etc/nomad.d/grove-rpc.hcl":                                   "client {\n  servers = [\"100.64.0.10:4647\"]\n}\n",
 		"/etc/systemd/system/docker.service.d/grove-egress-fence.conf": egressFenceDockerDropIn,
 	} {
 		data, err := os.ReadFile(filepath.Join(root, path))
@@ -456,7 +397,7 @@ esac
 			return string(data)
 		}
 		reject := " -j REJECT --reject-with icmp-admin-prohibited\n"
-		if got, want := readChain("GROVE-EGRESS"), "-o docker0 -j RETURN\n-o br-+ -j RETURN\n-o tailscale0"+reject+
+		if got, want := readChain("GROVE-EGRESS"), "-o docker0 -j RETURN\n-o br-+ -j RETURN\n"+
 			"-d 10.0.0.0/8"+reject+"-d 100.64.0.0/10"+reject+"-d 169.254.0.0/16"+reject+
 			"-d 172.16.0.0/12"+reject+"-d 192.168.0.0/16"+reject; got != want {
 			t.Errorf("dockerStarted=%v GROVE-EGRESS =\n%s\nwant:\n%s", dockerStarted, got, want)
@@ -476,5 +417,44 @@ esac
 		if got, want := readChain("INPUT"), "-j GROVE-INGRESS\n-p tcp --dport 22 -j ACCEPT\n"; got != want {
 			t.Errorf("dockerStarted=%v INPUT =\n%s\nwant:\n%s", dockerStarted, got, want)
 		}
+	}
+}
+
+// TestBuildShutdownScript_SealedWaitsForJobs runs a sealed VM's shutdown script against a stub
+// docker that reports a job for two polls: it must mark the VM draining first, then wait for the
+// job to finish, and never touch Nomad.
+func TestBuildShutdownScript_SealedWaitsForJobs(t *testing.T) {
+	fakeBin := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "sudo.log")
+	counter := filepath.Join(t.TempDir(), "polls")
+	for name, body := range map[string]string{
+		"id":     "#!/bin/sh\necho 502\n",
+		"sleep":  "#!/bin/sh\nexit 0\n",
+		"nomad":  "#!/bin/sh\nexit 70\n",
+		"docker": "#!/bin/sh\nn=$(cat \"$GROVE_TEST_COUNTER\" 2>/dev/null || echo 0)\nn=$((n+1))\necho $n > \"$GROVE_TEST_COUNTER\"\n[ $n -gt 2 ] || echo abc123\n",
+		"sudo":   "#!/bin/sh\n[ \"$1\" = -n ] || exit 65\nshift\nprintf '%s\\n' \"$*\" >> \"$GROVE_TEST_SUDO_LOG\"\nexec \"$@\"\n",
+		"touch":  "#!/bin/sh\nexit 0\n",
+	} {
+		if err := os.WriteFile(filepath.Join(fakeBin, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	script, timeout := buildShutdownScript(isolatedPool(), true)
+	if timeout != defaultShutdownTimeout {
+		t.Errorf("timeout = %s", timeout)
+	}
+	cmd := exec.Command("/bin/sh", "-c", script)
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_SUDO_LOG="+logPath, "GROVE_TEST_COUNTER="+counter)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("sealed shutdown script failed: %v\n%s", err, output)
+	}
+	log, _ := os.ReadFile(logPath)
+	want := "touch /run/grove-draining\n" + strings.Repeat("docker ps --quiet --filter label=grove.alloc\n", 3)
+	if string(log) != want {
+		t.Fatalf("privileged steps:\n%s\nwant:\n%s", log, want)
+	}
+	if strings.Contains(script, "nomad") || strings.Contains(script, nodeTokenSecretPlaceholder) {
+		t.Errorf("sealed shutdown script mentions Nomad:\n%s", script)
 	}
 }

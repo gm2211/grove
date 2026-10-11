@@ -148,7 +148,7 @@ while a job runs — is in [docs/JOBS.md](JOBS.md#private-repositories).
 
 By default a worker VM shares its host Mac's network through Tart's NAT, so a job can reach
 whatever that Mac reaches: your LAN, services the Mac itself runs, and every device on your
-tailnet, through the Mac's own Tailscale login. `network: isolated` closes that for a pool:
+tailnet, through the Mac's own Tailscale login. `network: isolated` seals a pool's VMs instead:
 
 ```yaml
 pools:
@@ -156,23 +156,42 @@ pools:
     network: isolated
 ```
 
+A sealed VM reaches the public internet and nothing at home: not your LAN, not your tailnet, not
+its host Mac, and not grove's control plane (Nomad, Orchard, the artifact store, the API). Every
+exchange between home and a running job is opened from home.
+
 What changes for that pool's VMs:
 
 - **Softnet, host blocked.** Each VM runs on Softnet instead of Tart's NAT, with
-  `--net-softnet-block "out @host"`. The guest reaches public internet addresses only: not your
-  LAN, not tailnet (100.64.0.0/10) addresses, and not its own host Mac. The host can still open
-  connections into the guest, which is how Orchard runs the startup script.
+  `--net-softnet-block "out @host"`. The guest reaches public internet addresses only. The host
+  can still open connections into the guest, which is how Orchard runs the startup script and how
+  grove drives each job.
+- **No Nomad, no Tailscale, no credentials.** The startup script turns off the image's Nomad client
+  and Tailscale. The VM holds no tailnet key, no Nomad token, no artifact store key and no clone
+  token.
 - **Public DNS.** The guest's `/etc/resolv.conf` points at 1.1.1.1 and 8.8.8.8, because the
   resolver DHCP hands out is the blocked host.
-- **Its own tailnet login.** The guest joins the tailnet with `tailscale.authKey` as an ephemeral
-  device tagged with `tailscale.tags` (default `tag:grove-vm`), with no Tailscale SSH, no subnet
-  routes, no tailnet DNS and no inbound connections. Its Nomad client dials the servers' tailnet
-  IP, taken from `nomad.url`. Your tailnet policy decides what the tag can reach: give it the
-  Nomad RPC port and nothing else (step 2 below).
 - **A fence for job containers.** `/usr/local/sbin/grove-egress-fence`, run before every Docker
-  start and once by the startup script, keeps job containers off private, tailnet and link-local
-  addresses, off the guest's tailnet link, and off the guest itself. A job can't borrow the guest's
-  tailnet login; only the guest's own Nomad client uses it.
+  start and once by the startup script, keeps job containers off private, CGNAT and link-local
+  addresses and off the guest itself.
+
+How a sealed pool's job runs. Its Nomad job (`nomad/jobs/sandbox.nomad.hcl`) isn't placed in a VM
+but on the control plane, whose own Nomad agent is also a client for exactly these jobs (node meta
+`grove_sandbox_host`). There `grove sandbox run`:
+
+1. fetches the repository on the control plane, with the armed clone token if there is one, but
+   checks out no file there: the checkout happens inside the job's container;
+2. takes a free slot in one of the pool's sealed VMs (a VM runs as many jobs at once as fit its
+   CPU and memory at the pool's `jobCPU`/`jobMemory`), skipping VMs that are shutting down;
+3. through Orchard, creates a fresh container in that VM from the pool's runner image and copies
+   in the checkout, the script and the job's environment (minus `GH_TOKEN`/`GIT_TOKEN`, which only
+   served the clone);
+4. starts it, streams its output into the job's log, and polls it every 15 seconds;
+5. when it exits, copies a build's `./artifacts/**` out and uploads them to the artifact store,
+   then removes the container.
+
+A job whose VM stops answering for a minute is reported **lost**, and its timeout (124) and
+cancellation work as for any other job. The job's log names the VM it ran in.
 
 Before you switch a pool over:
 
@@ -181,50 +200,27 @@ Before you switch a pool over:
    --softnet` installs it and prints the one-time `softnet-root` command for an admin to run;
    `grove doctor` shows a `softnet` row. Redo that command after any `brew upgrade softnet`,
    which drops the SUID bit (isolated VMs on that Mac fail to start until you do).
-2. **A tailnet policy for the tag.** In the Tailscale admin console's access controls, make the tag
-   one you own and let it reach only the Nomad server's RPC port. A rule whose source is `"*"`
-   covers tagged devices too, so narrow those to `autogroup:member` (plus any other tags you use)
-   at the same time. For example, with your control plane's tailnet IP:
-
-   ```jsonc
-   "tagOwners": { "tag:grove-vm": ["autogroup:admin"] },
-   "acls": [
-     { "action": "accept", "src": ["autogroup:member"], "dst": ["*:*"] },
-     { "action": "accept", "src": ["tag:grove-vm"], "dst": ["100.x.y.z:4647"] }
-   ]
-   ```
-
-3. **A key for the tag.** Either an OAuth client secret (`auth_keys` scope, tagged
-   `tag:grove-vm`), which doesn't expire and to which grove adds
-   `?ephemeral=true&preauthorized=true` itself, or a reusable, ephemeral auth key tagged
-   `tag:grove-vm`, which expires within 90 days. Store it from stdin so it stays out of your shell
-   history and the process list:
-
-   ```bash
-   grove config set tailscale.authKey - < key.txt
-   grove config set tailscale.tags tag:grove-vm      # only needed for a different tag
-   ```
-
-4. **`nomad.url` on the control plane's tailnet IP**, not a hostname: isolated guests don't use
-   MagicDNS.
+2. **The control plane runs sealed jobs.** Re-run `grove install --role control-plane` on the
+   control plane after upgrading grove: it makes the control plane's Nomad agent the client for
+   sealed pools' jobs and restarts it. `grove doctor` shows a `sandbox-host` row once a pool is
+   sealed.
 
 Then set `network: isolated` and let the reconciler recreate the pool's VMs (`grove fleet plan`
-shows the change first). If step 3 or 4 is missing, `grove fleet plan` prints
-`! blocked pool=… : <reason>` and the reconciler refuses to build that pool's VMs: it deletes the
-pool's unisolated VMs, keeps any already-isolated ones, and shows the reason as the last reconcile
-error in `grove fleet status` until it's fixed.
+shows the change first). Re-running `grove serve` (the control-plane install reloads it)
+registers the pool's jobs from the sealed template.
+
+Recycling a sealed VM (`POST /api/v1/vms/{name}/recycle`, TTL, or drift) runs its shutdown
+script, which marks the VM so no new job lands in it and waits for the running ones to finish.
 
 Limits:
 
-- Linux pools only for now. macOS jobs run as root in the guest with no container boundary, so
-  they could use the guest's tailnet login; isolating them needs jobs to run as a normal user first.
-- `allowDockerSocket` can't be combined with it, because the socket gives every job root on the
-  guest.
+- Linux pools only: grove drives sealed jobs through Docker, which macOS guests don't have.
+- `allowDockerSocket` can't be combined with it, and the per-job `image` override is ignored.
 - A job still reaches anything on the public internet, your home's public IP included.
 - Job images must already be in the VM image or come from a public registry (the default runner
   image is on ghcr.io): the guest can't pull from a registry on your LAN or tailnet.
-- Jobs can't reach anything on your tailnet, so `ARTIFACT_*` uploads to a tailnet-only artifact
-  store fail from an isolated pool.
+- A job can't call home while it runs (the grove API, Argos, anything on your tailnet). Whatever
+  it needs goes in with it; whatever it produces comes out as its log, exit code and artifacts.
 
 ## Log locations
 

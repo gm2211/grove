@@ -176,6 +176,8 @@ type fakeNomadNode struct {
 	Name      string
 	NodeClass string
 	cpuMHz    int64
+	Status    string
+	Meta      map[string]string
 }
 
 // newFakeNomadServer serves just enough of the Nomad HTTP API (/v1/nodes, /v1/node/<id>,
@@ -198,6 +200,8 @@ func newFakeNomadServer(t *testing.T, nodes []fakeNomadNode) *httptest.Server {
 				"ID":        n.ID,
 				"Name":      n.Name,
 				"NodeClass": n.NodeClass,
+				"Status":    n.Status,
+				"Meta":      n.Meta,
 				"NodeResources": map[string]any{
 					"Cpu":    map[string]any{"CpuShares": n.cpuMHz},
 					"Memory": map[string]any{"MemoryMB": 8192},
@@ -394,5 +398,34 @@ func TestCountRunningMacOSVMs(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("countRunningMacOSVMs = %d, want 1", n)
+	}
+}
+
+func TestCheckSandboxHost(t *testing.T) {
+	fleetPath := filepath.Join(t.TempDir(), "fleet.yaml")
+	writeFleet := func(network string) {
+		t.Helper()
+		spec := "pools:\n  - name: linux\n    image: img\n    perWorker: 1\n    network: " + network + "\n"
+		if err := os.WriteFile(fleetPath, []byte(spec), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	controlPlane := fakeNomadNode{ID: "cp", Name: "studio", Status: "ready", Meta: map[string]string{"grove_sandbox_host": "true"}}
+	worker := fakeNomadNode{ID: "w", Name: "linux-mac1-0", Status: "ready", Meta: map[string]string{"pool": "linux"}}
+
+	writeFleet("shared")
+	cfg := &config.Config{Fleet: fleetPath, Nomad: config.Endpoint{URL: newFakeNomadServer(t, []fakeNomadNode{worker}).URL}}
+	if r := checkSandboxHost(context.Background(), cfg); !r.OK || r.Detail != "no sealed pools" {
+		t.Errorf("no sealed pools: %+v", r)
+	}
+
+	writeFleet("isolated")
+	if r := checkSandboxHost(context.Background(), cfg); r.OK || !strings.Contains(r.Detail, "jobs for linux stay pending") || r.Remediation == "" {
+		t.Errorf("sealed pool, no sandbox host: %+v", r)
+	}
+
+	cfg.Nomad.URL = newFakeNomadServer(t, []fakeNomadNode{worker, controlPlane}).URL
+	if r := checkSandboxHost(context.Background(), cfg); !r.OK || !strings.Contains(r.Detail, "studio runs sealed pools' jobs (linux)") {
+		t.Errorf("sealed pool with the sandbox host: %+v", r)
 	}
 }
