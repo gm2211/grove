@@ -241,7 +241,6 @@ func fleetOptions(cfg *config.Config) (fleet.Options, error) {
 	}
 	options := fleet.Options{
 		TailscaleAuthKey: cfg.Tailscale.AuthKey,
-		TailscaleTags:    cfg.Tailscale.Tags,
 		NomadRPCAddress:  rpcAddress,
 	}
 	// A nomad.token means Nomad runs with ACLs on: each VM then needs its own node token to

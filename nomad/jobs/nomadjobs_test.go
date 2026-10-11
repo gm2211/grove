@@ -25,6 +25,8 @@ type renderData struct {
 	Memory            int
 	AllowDockerSocket bool
 	RunnerImage       string
+	GroveBin          string
+	Slots             int
 }
 
 func render(t *testing.T, file string, data renderData) string {
@@ -600,4 +602,60 @@ func TestSourceTaskKeepsCloneTokenFromScript(t *testing.T) {
 			t.Fatalf("run.sh exit = %d, output %q", code, out)
 		}
 	})
+}
+
+// TestSandboxTemplate checks the sealed-pool template: one raw_exec task on the control plane's
+// sandbox host, running `grove sandbox run` with the pool's settings, and the only task that gets
+// the payload.
+func TestSandboxTemplate(t *testing.T) {
+	for _, kind := range []string{"build", "agent", "shell"} {
+		{
+			t.Run(kind, func(t *testing.T) {
+				hcl := render(t, "sandbox.nomad.hcl", renderData{
+					Kind: kind, Pool: "linux", CPU: 1000, Memory: 2048,
+					GroveBin: "/opt/homebrew/bin/grove", Slots: 3,
+				})
+				job, err := jobspec2.ParseWithConfig(&jobspec2.ParseConfig{Path: "job.hcl", Body: []byte(hcl)})
+				if err != nil {
+					t.Fatalf("parse: %v\n%s", err, hcl)
+				}
+				if *job.ID != "grove-"+kind+"-linux" {
+					t.Errorf("job.ID = %q", *job.ID)
+				}
+				if len(job.Constraints) != 1 || job.Constraints[0].LTarget != "${meta.grove_sandbox_host}" || job.Constraints[0].RTarget != "true" {
+					t.Errorf("constraints = %+v, want only the sandbox host", job.Constraints)
+				}
+				if job.ParameterizedJob == nil || job.ParameterizedJob.Payload != "required" {
+					t.Errorf("parameterized = %+v", job.ParameterizedJob)
+				}
+				tasks := job.TaskGroups[0].Tasks
+				if len(tasks) != 1 || tasks[0].Name != "main" || tasks[0].Driver != "raw_exec" {
+					t.Fatalf("tasks = %+v, want one raw_exec task named main (dispatch reads its logs)", tasks)
+				}
+				task := tasks[0]
+				if task.DispatchPayload == nil || task.DispatchPayload.File != "request" {
+					t.Errorf("dispatch_payload = %+v", task.DispatchPayload)
+				}
+				if task.Config["command"] != "/opt/homebrew/bin/grove" {
+					t.Errorf("command = %v", task.Config["command"])
+				}
+				var args []string
+				for _, a := range task.Config["args"].([]any) {
+					args = append(args, a.(string))
+				}
+				want := []string{"sandbox", "run", "--kind", kind, "--pool", "linux", "--image", "ghcr.io/gm2211/grove-runner:latest",
+					"--slots", "3", "--cpu", "1000", "--memory", "2048", "--payload", "${NOMAD_TASK_DIR}/request"}
+				if strings.Join(args, " ") != strings.Join(want, " ") {
+					t.Errorf("args = %q\nwant   %q", args, want)
+				}
+				wantKill := time.Minute
+				if kind == "agent" {
+					wantKill = 10 * time.Minute
+				}
+				if task.KillTimeout == nil || *task.KillTimeout != wantKill {
+					t.Errorf("kill_timeout = %v, want %s", task.KillTimeout, wantKill)
+				}
+			})
+		}
+	}
 }

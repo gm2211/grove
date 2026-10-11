@@ -143,13 +143,14 @@ create; extra → delete; spec drift (image/cpu/memory/diskSize/restartPolicy/tt
 → delete + recreate.
 
 **`network`** is `shared` (the default: Tart's NAT, so a guest reaches whatever its host Mac
-reaches, LAN and tailnet included) or `isolated`. An isolated pool's VMs run on Softnet with the
-host blocked (`netSoftnet` + `netSoftnetBlock: ["out @host"]`), use public DNS, keep job
-containers behind an in-guest fence, and log into the tailnet under their own tag
-(`tailscale.authKey`/`tailscale.tags`) just to reach the Nomad servers' RPC port. If that
-configuration is missing, the reconciler blocks the pool instead of booting VMs that can't join
-Nomad: no creates, unisolated VMs deleted, the reason reported. Linux pools only. Setup and the
-tailnet policy it needs: docs/OPERATIONS.md "Isolating a pool's network".
+reaches, LAN and tailnet included) or `isolated`. An isolated (sealed) pool's VMs run on Softnet
+with the host blocked (`netSoftnet` + `netSoftnetBlock: ["out @host"]`), use public DNS, keep job
+containers behind an in-guest fence, and run neither Nomad nor Tailscale: they reach the public
+internet and nothing at home. Their jobs are placed on the control plane instead, whose Nomad
+agent is also a client (node meta `grove_sandbox_host`, raw_exec), where `grove sandbox run`
+(`internal/sandbox`) drives each one in a sealed VM from outside through Orchard exec: push the
+checkout in, run it in a fresh container, follow its logs, poll it, pull its artifacts out.
+Linux pools only. Setup: docs/OPERATIONS.md "Isolating a pool's network".
 
 **VM labels are a hard scheduler selector, not free-form tags.** Orchard's scheduler only ever
 places a VM on a worker whose own labels are a *superset* of the VM's

@@ -43,11 +43,15 @@ All notable changes to grove are documented here.
 - **Security:** `grove setup` shows the control plane it discovered and asks for confirmation, or
   a choice when several answer, instead of joining the first peer on :6130. Unattended runs need
   `--server URL`, or `--yes` when exactly one control plane answers.
-- `fleet.yaml` pools take `network: isolated`: VMs run on Softnet with their host Mac blocked,
-  use public DNS, fence job containers off private and tailnet addresses, and join the tailnet
-  under their own tag (`tailscale.tags`, default `tag:grove-vm`) only to reach Nomad. A pool whose
-  isolation can't be set up is blocked and reported instead of booting unusable VMs. Linux pools
-  only. See docs/OPERATIONS.md "Isolating a pool's network".
+- `fleet.yaml` pools take `network: isolated`, which seals their VMs: Softnet with the host Mac
+  blocked, public DNS, a fence for job containers, and no Nomad client, Tailscale login or
+  credential inside. A sealed VM reaches the public internet and nothing at home. Its pool's jobs
+  run from the control plane instead (`grove sandbox run`, whose Nomad client the control-plane
+  install now enables): it clones there, pushes the checkout into a fresh container in a sealed VM,
+  streams its logs, polls it, and pulls its artifacts out. A job whose VM stops answering is
+  reported lost. Linux pools only. See docs/OPERATIONS.md "Isolating a pool's network".
+- Re-running `grove install --role control-plane` restarts Nomad when its config changed, so a new
+  config takes effect.
 - `grove install --role worker --softnet` installs Softnet and prints the one-time command that
   lets it become root; `grove doctor` reports whether it can.
 - `grove config set <key> -` reads the value from stdin, so secrets stay out of shell history.

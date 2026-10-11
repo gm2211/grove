@@ -38,6 +38,14 @@ nomadClient.RegisterJobFile(ctx, buf.String())
 
 See `nomadjobs_test.go` for a full render-and-assert example across every (kind, pool) pair.
 
+## Sealed pools
+
+`sandbox.nomad.hcl` replaces all three for a pool with `network: isolated` (`PoolConfig.Isolated`):
+one raw_exec task on the control plane's own Nomad client that runs `grove sandbox run`, which
+drives the job in one of the pool's sealed VMs from outside. It additionally takes `GroveBin` (the
+absolute path of the grove binary, resolved by `EnsureJobs`) and `Slots` (jobs per VM). See
+`docs/JOBS.md` "Sealed pools".
+
 ## The dispatch contract (fixed — shared with `internal/dispatch`)
 
 Every rendered job:

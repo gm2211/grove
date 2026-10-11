@@ -11,6 +11,7 @@ import (
 
 	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/dispatch"
+	"github.com/gm2211/grove/internal/fleet"
 	"github.com/gm2211/grove/internal/orchard"
 	"github.com/gm2211/grove/internal/server"
 )
@@ -28,18 +29,6 @@ func TestFleetOptionsCarryConfiguredNomadRPCAddress(t *testing.T) {
 	}
 	if options.TailscaleAuthKey != "tskey-test" {
 		t.Errorf("TailscaleAuthKey = %q, want to preserve configured auth key", options.TailscaleAuthKey)
-	}
-}
-
-func TestFleetOptionsCarryConfiguredTailscaleTags(t *testing.T) {
-	options, err := fleetOptions(&config.Config{
-		Tailscale: config.TailscaleConfig{AuthKey: "tskey-test", Tags: []string{"tag:grove-vm", "tag:ci"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(options.TailscaleTags, ",") != "tag:grove-vm,tag:ci" {
-		t.Errorf("TailscaleTags = %q, want the configured tags", options.TailscaleTags)
 	}
 }
 
@@ -61,12 +50,12 @@ func TestFleetOptionsNodeTokensOnlyWithNomadToken(t *testing.T) {
 	}
 }
 
-func writeIsolatedFleet(t *testing.T) string {
+func writeIsolatedFleet(t *testing.T, pool string) string {
 	t.Helper()
 	fleetPath := filepath.Join(t.TempDir(), "fleet.yaml")
 	spec := `
 pools:
-  - name: linux
+  - name: ` + pool + `
     image: ghcr.io/example/linux:latest
     perWorker: 1
     cpu: 4
@@ -79,12 +68,12 @@ pools:
 	return fleetPath
 }
 
+// A sealed pool needs nothing from the tailnet: no auth key, and no tailnet address for Nomad.
 func TestFleetReconcileLoop_IsolatedPool_CreatesOnceThenNoOp(t *testing.T) {
 	oc := &fakeReconcileOrchard{workers: []orchard.Worker{{Name: "mac1"}}}
 	cfg := &config.Config{
-		Fleet:     writeIsolatedFleet(t),
-		Nomad:     config.Endpoint{URL: "http://100.64.0.10:4646"},
-		Tailscale: config.TailscaleConfig{AuthKey: "tskey-auth-test"},
+		Fleet: writeIsolatedFleet(t, "linux"),
+		Nomad: config.Endpoint{URL: "http://studio.local:4646"},
 	}
 	loop := newFleetReconcileLoop(cfg, oc, &server.FleetReconcileStatus{})
 
@@ -102,17 +91,34 @@ func TestFleetReconcileLoop_IsolatedPool_CreatesOnceThenNoOp(t *testing.T) {
 	}
 }
 
-func TestFleetReconcileLoop_IsolatedPoolWithoutAuthKey_IsBlocked(t *testing.T) {
+// grove can seal only Linux VMs (it drives their jobs through docker); fleet.yaml validation
+// refuses an isolated macOS pool, so it never gets a VM.
+func TestFleetReconcileLoop_IsolatedMacOSPool_GetsNoVMs(t *testing.T) {
 	oc := &fakeReconcileOrchard{workers: []orchard.Worker{{Name: "mac1"}}}
-	cfg := &config.Config{Fleet: writeIsolatedFleet(t), Nomad: config.Endpoint{URL: "http://100.64.0.10:4646"}}
+	cfg := &config.Config{Fleet: writeIsolatedFleet(t, "macos"), Nomad: config.Endpoint{URL: "http://100.64.0.10:4646"}}
 	loop := newFleetReconcileLoop(cfg, oc, &server.FleetReconcileStatus{})
 
 	loop.tick(context.Background())
 	if oc.createCalls != 0 {
-		t.Fatalf("a blocked pool must not get VMs, got creates=%d", oc.createCalls)
+		t.Fatalf("an isolated macOS pool must not get VMs, got creates=%d", oc.createCalls)
 	}
-	if !strings.Contains(loop.warnedBlocked, `pool "linux" blocked`) || !strings.Contains(loop.warnedBlocked, "tailscale.authKey") {
-		t.Fatalf("blocked reason not reported, got %q", loop.warnedBlocked)
+}
+
+func TestPoolConfigs_SealedPoolSlots(t *testing.T) {
+	cfg := &config.Config{Fleet: writeIsolatedFleet(t, "linux")} // cpu 4, memory 8192
+	pools, err := poolConfigs(cfg)
+	if err != nil {
+		t.Fatalf("poolConfigs: %v", err)
+	}
+	// Default job sizing is 500 MHz / 1024 MiB: 16 by CPU, (8192-512)/1024 = 7 by memory.
+	if len(pools) != 1 || !pools[0].Isolated || pools[0].Slots != 7 {
+		t.Fatalf("pools = %+v, want one isolated pool with 7 slots", pools)
+	}
+	if got := sealedVMSlots(fleet.Pool{Network: fleet.NetworkIsolated, CPU: 1, Memory: 256}); got != 1 {
+		t.Errorf("a tiny sealed VM gets %d slots, want at least 1", got)
+	}
+	if got := sealedVMSlots(fleet.Pool{CPU: 4, Memory: 8192}); got != 0 {
+		t.Errorf("a shared pool gets %d slots, want 0 (Nomad counts its jobs)", got)
 	}
 }
 

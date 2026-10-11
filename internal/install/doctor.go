@@ -68,6 +68,7 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 			checkHTTPEndpoint(ctx, "grove-server", cfg.Server.URL, "/api/v1/healthz", cfg.Server.Token),
 		)
 		results = append(results, checkMacOSCPUFingerprint(ctx, cfg))
+		results = append(results, checkSandboxHost(ctx, cfg))
 	}
 
 	results = append(results, checkServiceUnits(opts))
@@ -289,6 +290,52 @@ func checkMacOSCPUFingerprint(ctx context.Context, cfg *config.Config) CheckResu
 		}
 	}
 	return CheckResult{Name: name, OK: true, Detail: "no undersized macOS CPU fingerprints found"}
+}
+
+// checkSandboxHost reports whether a sealed pool's jobs (fleet.yaml network: isolated) have
+// somewhere to run: a ready Nomad node advertising grove_sandbox_host, i.e. the control plane's
+// own client (see RenderNomadServerConfig), where `grove sandbox run` drives them. Skipped (OK)
+// when no pool is sealed.
+func checkSandboxHost(ctx context.Context, cfg *config.Config) CheckResult {
+	const name = "sandbox-host"
+	if cfg == nil || cfg.Fleet == "" || cfg.Nomad.URL == "" {
+		return CheckResult{Name: name, OK: true, Detail: "no fleet or nomad configured (skipped)"}
+	}
+	spec, err := fleet.Load(cfg.Fleet)
+	if err != nil {
+		return CheckResult{Name: name, OK: true, Detail: "could not read the fleet spec (skipped): " + err.Error()}
+	}
+	var sealed []string
+	for _, pool := range spec.Pools {
+		if pool.Isolated() {
+			sealed = append(sealed, pool.Name)
+		}
+	}
+	if len(sealed) == 0 {
+		return CheckResult{Name: name, OK: true, Detail: "no sealed pools"}
+	}
+
+	nc, err := wire.NewNomadClient(cfg.Nomad)
+	if err != nil {
+		return CheckResult{Name: name, OK: false, Detail: "could not build nomad client: " + err.Error()}
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, macOSCPUFingerprintCheckTimeout)
+	defer cancel()
+	nodes, err := nc.ListNodes(reqCtx)
+	if err != nil {
+		return CheckResult{Name: name, OK: false, Detail: "could not list nomad nodes: " + err.Error()}
+	}
+	for _, n := range nodes {
+		if n.Meta["grove_sandbox_host"] == "true" && n.Status == "ready" {
+			return CheckResult{Name: name, OK: true, Detail: fmt.Sprintf("%s runs sealed pools' jobs (%s)", n.Name, strings.Join(sealed, ", "))}
+		}
+	}
+	return CheckResult{
+		Name:        name,
+		OK:          false,
+		Detail:      fmt.Sprintf("no ready Nomad node runs sealed pools' jobs, so jobs for %s stay pending", strings.Join(sealed, ", ")),
+		Remediation: "re-run `grove install --role control-plane` on the control plane: it makes the control plane's own Nomad agent the client that drives sealed VMs",
+	}
 }
 
 // checkServiceUnits reports whether grove's launchd agents (macOS) or systemd --user units

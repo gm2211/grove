@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -323,5 +324,47 @@ func TestControlPlanePlan_DryRunAppliesNothing(t *testing.T) {
 	}
 	if r.CalledWith("brew install hashicorp/tap/nomad") {
 		t.Error("no install command should run during --dry-run")
+	}
+}
+
+// TestControlPlanePlan_RestartsNomadOnlyWhenItsConfigChanges: re-running the install on a control
+// plane whose server.hcl predates the sandbox client must restart the running agent, or the new
+// config never takes effect; with the config already current, the agent is left alone.
+func TestControlPlanePlan_RestartsNomadOnlyWhenItsConfigChanges(t *testing.T) {
+	home := t.TempDir()
+	domain := "gui/" + strconv.Itoa(os.Getuid())
+	run := func() *FakeRunner {
+		t.Helper()
+		r := NewFakeRunner()
+		scriptWorkerEnrollmentToken(r, home)
+		scriptTailscaleUp(r)
+		opts := testControlPlaneOptions(home, "darwin")
+		scriptPinnedDownloads(r, opts)
+		steps, err := BuildPlan(r, opts, io.Discard)
+		if err != nil {
+			t.Fatalf("BuildPlan: %v", err)
+		}
+		if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
+			t.Fatalf("RunPlan: %v", err)
+		}
+		return r
+	}
+	restart := "launchctl bootout " + domain + "/com.grove.nomad"
+
+	run() // fresh install
+	if r := run(); r.CalledWith(restart) {
+		t.Error("a re-run with an unchanged Nomad config restarted Nomad")
+	}
+
+	conf := filepath.Join(home, ".config", "grove", "nomad", "server.hcl")
+	if err := os.WriteFile(conf, []byte("server { enabled = true }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := run(); !r.CalledWith(restart) || !r.CalledWith("launchctl bootstrap "+domain+" "+filepath.Join(home, "Library", "LaunchAgents", "com.grove.nomad.plist")) {
+		t.Error("a re-run that rewrote the Nomad config did not restart Nomad")
+	}
+	data, _ := os.ReadFile(conf)
+	if !strings.Contains(string(data), `grove_sandbox_host = "true"`) {
+		t.Errorf("server.hcl = %s, want the sandbox client", data)
 	}
 }

@@ -30,11 +30,8 @@ type Options struct {
 	// TailscaleAuthKey, when set, makes generated StartupScripts join the tailnet (see
 	// scripts.go). Typically config.Config.Tailscale.AuthKey.
 	TailscaleAuthKey string
-	// TailscaleTags are the ACL tags isolated VMs claim when they join the tailnet; empty means
-	// DefaultIsolatedTailscaleTag. Typically config.Config.Tailscale.Tags.
-	TailscaleTags []string
-	// NomadRPCAddress, when set, points macOS and isolated worker clients at the Nomad RPC
-	// listener. It is derived from the configured Nomad HTTP URL by the CLI.
+	// NomadRPCAddress, when set, points macOS worker clients at the Nomad RPC listener. It is
+	// derived from the configured Nomad HTTP URL by the CLI.
 	NomadRPCAddress string
 	// NodeTokens, when set, gives every VM it creates its own node-scoped Nomad ACL token (in the
 	// shutdown script only, so the VM can drain itself) and turns on ACL enforcement in the VM's
@@ -99,7 +96,7 @@ type Plan struct {
 	Creates []PlannedCreate
 	Deletes []PlannedDelete
 	// Blocked lists pools whose VMs can't be built with the current configuration (see
-	// Options.isolationProblem). A blocked pool gets no new VMs; its already-isolated VMs keep
+	// isolationProblem). A blocked pool gets no new VMs; its already-isolated VMs keep
 	// running, and any other VM of it is deleted, so a pool asked to be isolated never keeps an
 	// unisolated VM.
 	Blocked []PlannedBlock
@@ -142,7 +139,7 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 	blocked := make(map[string]string)
 
 	for _, pool := range r.Spec.Pools {
-		if problem := r.Options.isolationProblem(pool); problem != "" {
+		if problem := isolationProblem(pool); problem != "" {
 			plan.Blocked = append(plan.Blocked, PlannedBlock{Pool: pool.Name, Reason: problem})
 			blocked[pool.Name] = problem
 
@@ -150,7 +147,7 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 			// every other VM of this pool falls through to the sweep below and is deleted.
 			for _, vm := range vms {
 				vmPool, worker, _, ok := ParseVMName(vm.Name)
-				if ok && vmPool == pool.Name && vm.Labels[LabelWorkerPin] == worker && isolatedVM(vm) {
+				if ok && vmPool == pool.Name && vm.Labels[LabelWorkerPin] == worker && IsolatedVM(vm) {
 					desired[vm.Name] = true
 				}
 			}

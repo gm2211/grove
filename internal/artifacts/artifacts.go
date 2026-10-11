@@ -32,3 +32,11 @@ type Client interface {
 	// Get streams one object's bytes; key is the full bucket key (not urlencoded, not relative).
 	Get(ctx context.Context, key string) (io.ReadCloser, Object, error)
 }
+
+// Uploader writes objects into the artifact bucket. The Client New returns implements it; it is
+// a separate interface so read-only users (and their fakes) don't need it. `grove sandbox run`
+// uses it to upload a sealed VM's build artifacts, since the VM itself can't reach the bucket.
+type Uploader interface {
+	// Put stores size bytes from r at key (the full bucket key).
+	Put(ctx context.Context, key string, r io.Reader, size int64, contentType string) error
+}

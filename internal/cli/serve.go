@@ -309,7 +309,28 @@ func poolConfigs(cfg *config.Config) ([]dispatch.PoolConfig, error) {
 			CPU:               int(p.JobCPUOrDefault()),
 			Memory:            int(p.JobMemoryOrDefault()),
 			AllowDockerSocket: p.AllowDockerSocket,
+			Isolated:          p.Isolated(),
+			Slots:             sealedVMSlots(p),
 		})
 	}
 	return pools, nil
+}
+
+// sealedVMGuestReserveMiB is the memory a sealed VM keeps for its own OS and docker daemon when
+// sealedVMSlots works out how many jobs fit.
+const sealedVMGuestReserveMiB = 512
+
+// sealedVMSlots is how many jobs one VM of a sealed pool runs at once: as many as fit its CPU (at
+// Nomad's 2000 MHz per core) and memory at the pool's per-job sizing, and at least one. Nomad
+// does this sum for a shared pool's VMs; a sealed VM runs no Nomad client.
+func sealedVMSlots(p fleet.Pool) int {
+	if !p.Isolated() {
+		return 0
+	}
+	byCPU := int(p.CPU*2000) / int(p.JobCPUOrDefault())
+	byMemory := 0
+	if p.Memory > sealedVMGuestReserveMiB {
+		byMemory = int(p.Memory-sealedVMGuestReserveMiB) / int(p.JobMemoryOrDefault())
+	}
+	return max(1, min(byCPU, byMemory))
 }

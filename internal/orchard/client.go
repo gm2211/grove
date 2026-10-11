@@ -334,7 +334,7 @@ func (c *client) Exec(ctx context.Context, vm string, command []string, opts Exe
 		return nil, fmt.Errorf("exec %s: %w", vm, err)
 	}
 
-	return newExecSession(ctx, conn, opts.Stdin), nil
+	return newExecSession(ctx, conn, opts.Stdin, opts.Stderr), nil
 }
 
 // execFrameType and execFrame mirror the wire format of the fork's internal
@@ -365,23 +365,25 @@ type execExit struct {
 
 // execSession implements orchard.ExecSession over the raw exec WebSocket connection.
 type execSession struct {
-	conn *websocket.Conn
-	pr   *io.PipeReader
-	pw   *io.PipeWriter
-	done chan struct{}
+	conn   *websocket.Conn
+	pr     *io.PipeReader
+	pw     *io.PipeWriter
+	stderr io.Writer // nil: stderr frames go to pw with stdout
+	done   chan struct{}
 
 	exitCode int
 	exitErr  error
 }
 
-func newExecSession(ctx context.Context, conn *websocket.Conn, stdin io.Reader) *execSession {
+func newExecSession(ctx context.Context, conn *websocket.Conn, stdin io.Reader, stderr io.Writer) *execSession {
 	pr, pw := io.Pipe()
 
 	s := &execSession{
-		conn: conn,
-		pr:   pr,
-		pw:   pw,
-		done: make(chan struct{}),
+		conn:   conn,
+		pr:     pr,
+		pw:     pw,
+		stderr: stderr,
+		done:   make(chan struct{}),
 	}
 
 	go s.readLoop(ctx)
@@ -437,7 +439,16 @@ func (s *execSession) readLoop(ctx context.Context) {
 		}
 
 		switch frame.Type {
-		case execFrameStdout, execFrameStderr:
+		case execFrameStderr:
+			if s.stderr != nil {
+				_, _ = s.stderr.Write(frame.Data)
+				continue
+			}
+
+			if _, werr := s.pw.Write(frame.Data); werr != nil {
+				return
+			}
+		case execFrameStdout:
 			if _, werr := s.pw.Write(frame.Data); werr != nil {
 				return
 			}
@@ -477,6 +488,14 @@ func (s *execSession) writeStdin(ctx context.Context, r io.Reader) {
 		}
 
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				// A stdin frame with no data closes the command's stdin on the controller side
+				// (the fork's exec_sessions.go writeStdin), so the command sees end-of-input.
+				if payload, merr := json.Marshal(execFrame{Type: execFrameStdin}); merr == nil {
+					_ = s.conn.Write(ctx, websocket.MessageText, payload)
+				}
+			}
+
 			return
 		}
 	}

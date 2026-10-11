@@ -35,11 +35,15 @@ func buildControlPlaneSteps(r Runner, opts Options, out io.Writer) []Step {
 	destOrchard := filepath.Join(orchardBinDir(opts), orchardBinName)
 	isDarwin := opts.goos() == "darwin"
 
+	// Set when the Nomad config on disk differs from what this plan renders, so the Nomad start
+	// step restarts an already-running agent onto the new config.
+	nomadConfigChanged := new(bool)
+
 	var steps []Step
 	steps = append(steps, controlPlaneDependencySteps(r, opts, out, destOrchard, isDarwin)...)
-	steps = append(steps, controlPlaneConfigSteps(r, opts, cfgDir, destOrchard)...)
+	steps = append(steps, controlPlaneConfigSteps(r, opts, cfgDir, destOrchard, nomadConfigChanged)...)
 	steps = append(steps, controlPlaneServiceSteps(r, opts, cfgDir, destOrchard, isDarwin)...)
-	steps = append(steps, controlPlaneStartStep(r, opts, "orchard-controller", isDarwin))
+	steps = append(steps, controlPlaneStartStep(r, opts, "orchard-controller", isDarwin, nil))
 	steps = append(steps, Step{
 		Name:        "orchard-service-account",
 		Description: "Create Orchard `grove` service account (compute:read, compute:write, compute:connect); retrieve its generated token without placing it in argv.",
@@ -100,17 +104,27 @@ func buildControlPlaneSteps(r Runner, opts Options, out io.Writer) []Step {
 			return updateConfig(cfgDir, func(cfg *config.Config) { cfg.Enrollment.IssuerToken = name + ":" + token })
 		},
 	})
-	steps = append(steps, controlPlaneFinalizationSteps(r, opts, isDarwin)...)
+	steps = append(steps, controlPlaneFinalizationSteps(r, opts, isDarwin, nomadConfigChanged)...)
 	return steps
 }
 
-func controlPlaneStartStep(r Runner, opts Options, service string, isDarwin bool) Step {
+// controlPlaneStartStep starts service if it isn't running. With restart set (its config just
+// changed), it restarts a running one too, so the new config takes effect.
+func controlPlaneStartStep(r Runner, opts Options, service string, isDarwin bool, restart *bool) Step {
+	description := "Start " + service + " as current user."
+	if restart != nil {
+		description = "Start " + service + " as current user (restarting it if its config changed)."
+	}
+	mustRestart := func() bool { return restart != nil && *restart }
 	if isDarwin {
 		label := "com.grove." + service
 		plist := filepath.Join(opts.LaunchAgentsDir(), label+".plist")
 		domain := fmt.Sprintf("gui/%d", os.Getuid())
-		return Step{Name: "service-start:" + service, Description: "Start " + service + " as current user.",
+		return Step{Name: "service-start:" + service, Description: description,
 			Check: func(ctx context.Context) (bool, error) {
+				if mustRestart() {
+					return false, nil
+				}
 				_, _, err := r.Run(ctx, "launchctl", "print", domain+"/"+label)
 				return err == nil, nil
 			},
@@ -121,23 +135,33 @@ func controlPlaneStartStep(r Runner, opts Options, service string, isDarwin bool
 			}}
 	}
 	unit := "grove-" + service + ".service"
-	return Step{Name: "service-start:" + service, Description: "Start " + service + " as current user.",
+	return Step{Name: "service-start:" + service, Description: description,
 		Check: func(ctx context.Context) (bool, error) {
+			if mustRestart() {
+				return false, nil
+			}
 			_, _, err := r.Run(ctx, "systemctl", "--user", "is-active", "--quiet", unit)
 			return err == nil, nil
 		},
 		Apply: func(ctx context.Context) error {
 			_, _, _ = r.Run(ctx, "systemctl", "--user", "daemon-reload")
 			_, _, err := r.Run(ctx, "systemctl", "--user", "enable", "--now", unit)
+			if err == nil && mustRestart() {
+				_, _, err = r.Run(ctx, "systemctl", "--user", "restart", unit)
+			}
 			return err
 		}}
 }
 
-func controlPlaneFinalizationSteps(r Runner, opts Options, isDarwin bool) []Step {
+func controlPlaneFinalizationSteps(r Runner, opts Options, isDarwin bool, nomadConfigChanged *bool) []Step {
 	services := []string{"orchard-controller", "nomad", "minio"}
 	steps := make([]Step, 0, len(services))
 	for _, service := range services {
-		steps = append(steps, controlPlaneStartStep(r, opts, service, isDarwin))
+		var restart *bool
+		if service == "nomad" {
+			restart = nomadConfigChanged
+		}
+		steps = append(steps, controlPlaneStartStep(r, opts, service, isDarwin, restart))
 	}
 	// Nomad is running by now; bootstrap its ACLs before grove serve reloads so the server comes
 	// back up holding the management token.
@@ -285,7 +309,7 @@ func installPinnedNomad(ctx context.Context, r Runner, opts Options) error {
 
 // controlPlaneConfigSteps render the files under ~/.config/grove/ that the supervised processes
 // and the grove CLI itself read.
-func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string) []Step {
+func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string, nomadConfigChanged *bool) []Step {
 	tailnetHost := resolvedTailnetHost(r, opts)
 	orchardAddr := hostPortOrDefault(opts.Controller, tailnetHost, defaultOrchardControllerPort)
 	nomadAddr := hostPortOrDefault(opts.NomadAddr, tailnetHost, defaultNomadPort)
@@ -317,13 +341,19 @@ func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string)
 		},
 		{
 			Name:        "config:nomad-server",
-			Description: fmt.Sprintf("Render %s (single-node server, bootstrap_expect=1, ACLs on, bind %s).", nomadConfPath, nomadAddr),
-			Check: fileHasContent(nomadConfPath, func() (string, error) {
-				return RenderNomadServerConfig(NomadServerConfigSpec{
-					DataDir:  filepath.Join(cfgDir, "nomad", "data"),
-					BindAddr: hostOnly(nomadAddr),
-				})
-			}),
+			Description: fmt.Sprintf("Render %s (single-node server, bootstrap_expect=1, ACLs on, bind %s; also the client that runs sealed pools' jobs).", nomadConfPath, nomadAddr),
+			Check: func(ctx context.Context) (bool, error) {
+				ok, err := fileHasContent(nomadConfPath, func() (string, error) {
+					return RenderNomadServerConfig(NomadServerConfigSpec{
+						DataDir:  filepath.Join(cfgDir, "nomad", "data"),
+						BindAddr: hostOnly(nomadAddr),
+					})
+				})(ctx)
+				if err == nil && !ok {
+					*nomadConfigChanged = true
+				}
+				return ok, err
+			},
 			Apply: writeRenderedFile(nomadConfPath, func() (string, error) {
 				return RenderNomadServerConfig(NomadServerConfigSpec{
 					DataDir:  filepath.Join(cfgDir, "nomad", "data"),

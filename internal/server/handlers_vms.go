@@ -5,13 +5,16 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/gm2211/grove/internal/fleet"
 )
 
 const recycleDrainDeadline = 2 * time.Hour
 
 // handleRecycleVM finds the Nomad node running vm (matched by meta.vm), drains it, and returns
 // 202 immediately. A background goroutine deletes the VM via Orchard once the node has 0 running
-// allocations, or once the drain deadline passes (whichever comes first).
+// allocations, or once the drain deadline passes (whichever comes first). A sealed VM has no node:
+// it is deleted right away, and its own shutdown script does the draining.
 func (s *Server) handleRecycleVM(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if name == "" {
@@ -35,6 +38,14 @@ func (s *Server) handleRecycleVM(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !found {
+		// A sealed VM (network: isolated) runs no Nomad client to drain. Deleting it runs its
+		// shutdown script instead, which stops new jobs landing in it and waits for the running
+		// ones to finish (see internal/fleet's sealed shutdown script).
+		if vm, verr := s.orchard.GetVM(ctx, name); verr == nil && vm != nil && fleet.IsolatedVM(*vm) {
+			go s.deleteVM(name)
+			s.writeJSON(w, http.StatusAccepted, map[string]any{"drainStarted": true})
+			return
+		}
 		http.Error(w, fmt.Sprintf("no nomad node found for vm %q", name), http.StatusNotFound)
 		return
 	}

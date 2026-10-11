@@ -7,16 +7,6 @@ import (
 	"github.com/gm2211/grove/internal/config"
 )
 
-func TestSetConfigKey_TailscaleTags(t *testing.T) {
-	var cfg config.Config
-	if err := setConfigKey(&cfg, "tailscale.tags", " tag:grove-vm, tag:ci ,"); err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Join(cfg.Tailscale.Tags, ","); got != "tag:grove-vm,tag:ci" {
-		t.Fatalf("Tailscale.Tags = %q, want [tag:grove-vm tag:ci]", cfg.Tailscale.Tags)
-	}
-}
-
 func TestReadConfigValue(t *testing.T) {
 	got, err := readConfigValue(strings.NewReader("tskey-client-k1-secret\n"))
 	if err != nil {
