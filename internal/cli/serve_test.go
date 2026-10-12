@@ -18,14 +18,14 @@ import (
 
 func TestFleetOptionsCarryConfiguredNomadRPCAddress(t *testing.T) {
 	options, err := fleetOptions(&config.Config{
-		Nomad:     config.Endpoint{URL: "https://nomad.studio.example:4646"},
+		Nomad:     config.Endpoint{URL: "https://nomad.cp.example:4646"},
 		Tailscale: config.TailscaleConfig{AuthKey: "tskey-test"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if options.NomadRPCAddress != "nomad.studio.example:4647" {
-		t.Errorf("NomadRPCAddress = %q, want nomad.studio.example:4647", options.NomadRPCAddress)
+	if options.NomadRPCAddress != "nomad.cp.example:4647" {
+		t.Errorf("NomadRPCAddress = %q, want nomad.cp.example:4647", options.NomadRPCAddress)
 	}
 	if options.TailscaleAuthKey != "tskey-test" {
 		t.Errorf("TailscaleAuthKey = %q, want to preserve configured auth key", options.TailscaleAuthKey)
@@ -73,7 +73,7 @@ func TestFleetReconcileLoop_IsolatedPool_CreatesOnceThenNoOp(t *testing.T) {
 	oc := &fakeReconcileOrchard{workers: []orchard.Worker{{Name: "mac1"}}}
 	cfg := &config.Config{
 		Fleet: writeIsolatedFleet(t, "linux"),
-		Nomad: config.Endpoint{URL: "http://studio.local:4646"},
+		Nomad: config.Endpoint{URL: "http://cp.local:4646"},
 	}
 	loop := newFleetReconcileLoop(cfg, oc, &server.FleetReconcileStatus{})
 
@@ -136,7 +136,7 @@ pools:
     perWorker: 1
     jobCPU: 1500
     jobMemory: 3072
-    runnerImage: registry.example.test/grove/studio-runner:v1
+    runnerImage: registry.example.test/grove/custom-runner:v1
   - name: macos
     image: ghcr.io/example/macos:latest
     perWorker: 1
@@ -163,7 +163,7 @@ pools:
 	if linux.CPU != 1500 || linux.Memory != 3072 {
 		t.Errorf("linux pool = %+v, want CPU=1500 Memory=3072 (explicit fleet.yaml values)", linux)
 	}
-	if linux.RunnerImage != "registry.example.test/grove/studio-runner:v1" {
+	if linux.RunnerImage != "registry.example.test/grove/custom-runner:v1" {
 		t.Errorf("linux runner image = %q", linux.RunnerImage)
 	}
 

@@ -28,7 +28,7 @@ func TestNewWorkerCredentialFitsMacOSKeychainInteractiveLimit(t *testing.T) {
 
 func TestNewWorkerCredentialBindsExactWorkerNameAndMinimalRoles(t *testing.T) {
 	workerNames := []string{
-		"studio.mac-2",
+		"office.mac-2",
 		"worker-with-many-hyphens-and-dots.example.internal",
 		strings.Repeat("long.worker-name-", 20),
 	}

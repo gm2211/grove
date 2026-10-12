@@ -410,7 +410,7 @@ func TestCheckSandboxHost(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	controlPlane := fakeNomadNode{ID: "cp", Name: "studio", Status: "ready", Meta: map[string]string{"grove_sandbox_host": "true"}}
+	controlPlane := fakeNomadNode{ID: "cp", Name: "cp-1", Status: "ready", Meta: map[string]string{"grove_sandbox_host": "true"}}
 	worker := fakeNomadNode{ID: "w", Name: "linux-mac1-0", Status: "ready", Meta: map[string]string{"pool": "linux"}}
 
 	writeFleet("shared")
@@ -425,7 +425,7 @@ func TestCheckSandboxHost(t *testing.T) {
 	}
 
 	cfg.Nomad.URL = newFakeNomadServer(t, []fakeNomadNode{worker, controlPlane}).URL
-	if r := checkSandboxHost(context.Background(), cfg); !r.OK || !strings.Contains(r.Detail, "studio runs sealed pools' jobs (linux)") {
+	if r := checkSandboxHost(context.Background(), cfg); !r.OK || !strings.Contains(r.Detail, "cp-1 runs sealed pools' jobs (linux)") {
 		t.Errorf("sealed pool with the sandbox host: %+v", r)
 	}
 }

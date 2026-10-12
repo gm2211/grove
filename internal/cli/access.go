@@ -78,7 +78,7 @@ func newAccessIssueCmd() *cobra.Command {
 			"to stdout exactly once; the control plane keeps only a hash, so store it now.\n\n" +
 			"Scopes: read, dispatch (build + agent jobs), dispatch:build, dispatch:agent,\n" +
 			"dispatch:shell (raw shell jobs), operator. Example, for an orchestrator:\n\n" +
-			"  grove access issue --name argos --scope read --scope dispatch",
+			"  grove access issue --name ci-bot --scope read --scope dispatch",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if strings.TrimSpace(name) == "" {

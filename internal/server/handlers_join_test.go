@@ -24,7 +24,7 @@ func TestJoinRequiresOperatorApprovalAndDeliversCredentialOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, shellSameName, _ := access.Issue("new-mac", []string{ScopeRead, ScopeShell})
-	_, otherDevice, _ := access.Issue("argos", []string{ScopeRead, ScopeDispatch})
+	_, otherDevice, _ := access.Issue("ci-bot", []string{ScopeRead, ScopeDispatch})
 	active := func(id string) bool {
 		for _, c := range access.List() {
 			if c.ID == id {

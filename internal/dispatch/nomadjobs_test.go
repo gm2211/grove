@@ -82,7 +82,7 @@ func TestEnsureJobs_RendersPoolCPUAndMemory(t *testing.T) {
 
 func TestEnsureJobs_RendersDefaultAndCustomRunnerImages(t *testing.T) {
 	nc := &fakeNomad{}
-	custom := "registry.example.test/grove/studio-runner:v1"
+	custom := "registry.example.test/grove/custom-runner:v1"
 	if err := EnsureJobs(context.Background(), nc, []PoolConfig{{Name: "linux", RunnerImage: custom}}); err != nil {
 		t.Fatalf("EnsureJobs: %v", err)
 	}

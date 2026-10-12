@@ -76,7 +76,7 @@ func TestAccessStoreRevokePersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAccessStore: %v", err)
 	}
-	token, principal, err := store.Issue("studio", []string{ScopeRead})
+	token, principal, err := store.Issue("mac-1", []string{ScopeRead})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestIssueDeviceEndpoint_OperatorOnlyAndTokenWorks(t *testing.T) {
 	if rec := issue("operator", `{"name":"x","scopes":["root"]}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("unknown scope status=%d want 400", rec.Code)
 	}
-	rec := issue("operator", `{"name":"argos","scopes":["read","dispatch"]}`)
+	rec := issue("operator", `{"name":"ci-bot","scopes":["read","dispatch"]}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("issue status=%d body=%s", rec.Code, rec.Body.String())
 	}

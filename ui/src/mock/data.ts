@@ -28,7 +28,7 @@ interface HostDef {
 
 const hosts: HostDef[] = [
   { host: "mac-mini-1", arch: "arm64", cordoned: false, online: true, vmSlots: 4 },
-  { host: "mac-studio-1", arch: "arm64", cordoned: false, online: true, vmSlots: 6 },
+  { host: "mac-1", arch: "arm64", cordoned: false, online: true, vmSlots: 6 },
   { host: "mac-mini-2", arch: "arm64", cordoned: true, online: true, vmSlots: 4 },
   { host: "linux-box-1", arch: "amd64", cordoned: false, online: false, vmSlots: 8 },
 ];
@@ -317,7 +317,7 @@ export const pendingJoins: PendingJoin[] = [
   },
   {
     code: "B3XR9T1C",
-    name: "gio-macbook",
+    name: "macbook-1",
     tailnetIp: "100.64.0.42",
     expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
   },

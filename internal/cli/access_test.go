@@ -33,7 +33,7 @@ func TestAccessIssue_PrintsTokenOnceOnStdout(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
-	cmd.SetArgs([]string{"--name", "argos", "--scope", "read", "--scope", "dispatch"})
+	cmd.SetArgs([]string{"--name", "ci-bot", "--scope", "read", "--scope", "dispatch"})
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		t.Fatalf("issue: %v (stderr=%s)", err, stderr.String())
 	}
@@ -45,13 +45,13 @@ func TestAccessIssue_PrintsTokenOnceOnStdout(t *testing.T) {
 		t.Errorf("token echoed on stderr too: %s", stderr.String())
 	}
 	principal, ok := store.Authenticate(token)
-	if !ok || principal.Name != "argos" || strings.Join(principal.Scopes, ",") != "dispatch,read" {
+	if !ok || principal.Name != "ci-bot" || strings.Join(principal.Scopes, ",") != "dispatch,read" {
 		t.Fatalf("issued principal = %+v ok=%v", principal, ok)
 	}
 }
 
 func TestAccessIssue_RequiresNameAndScope(t *testing.T) {
-	for _, args := range [][]string{{"--scope", "read"}, {"--name", "argos"}} {
+	for _, args := range [][]string{{"--scope", "read"}, {"--name", "ci-bot"}} {
 		cmd := newAccessIssueCmd()
 		cmd.SetOut(&bytes.Buffer{})
 		cmd.SetErr(&bytes.Buffer{})

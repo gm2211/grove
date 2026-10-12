@@ -62,7 +62,7 @@ grove doctor
 ```
 
 Every enrolled Mac is both worker and dispatcher. Grove keeps shared scheduling state on one
-control-plane host, but Argos, Codex, or a human can inspect and submit work from any enrolled
+control-plane host, but an agent, a CI script, or a human can inspect and submit work from any enrolled
 device. Each device has its own revocable `read + build + agent` credential; raw shell jobs
 (operator or an explicit `dispatch:shell` credential) and named secrets remain privileged. Only control-plane
 operator credentials can approve/revoke devices or change worker/VM state.

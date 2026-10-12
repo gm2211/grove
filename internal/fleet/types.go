@@ -133,7 +133,7 @@ func VMName(pool, worker string, n int) string {
 // ParseVMName is VMName's inverse: given a VM name grove could have generated, it recovers pool,
 // worker, and n. It relies on pool names being restricted to a dash/dot-free alphabet (see
 // Spec.Validate) so the first "-" unambiguously ends the pool component, while worker names may
-// themselves contain dashes or dots (real-world hostnames like "g-macbook-m5.local"), so the
+// themselves contain dashes or dots (real-world hostnames like "my-macbook-pro.local"), so the
 // *last* "-" is taken to end the worker component and start the trailing index.
 //
 // ok is false for anything that doesn't parse as "<pool>-<worker>-<n>" — including plain names
