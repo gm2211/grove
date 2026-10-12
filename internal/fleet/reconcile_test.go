@@ -557,7 +557,7 @@ func TestParseVMName(t *testing.T) {
 		wantOK     bool
 	}{
 		{"linux-mac1-0", "linux", "mac1", 0, true},
-		{"synth-g-macbook-m5.local-0", "synth", "g-macbook-m5.local", 0, true},
+		{"synth-my-macbook-pro.local-0", "synth", "my-macbook-pro.local", 0, true},
 		{"macos-worker-01.example.com-12", "macos", "worker-01.example.com", 12, true},
 		{"linux-mac1-3", "linux", "mac1", 3, true},
 		{"noseparator", "", "", 0, false},
@@ -586,14 +586,14 @@ func TestParseVMName(t *testing.T) {
 }
 
 func TestParseVMName_RoundTripsWithVMName(t *testing.T) {
-	name := VMName("linux", "g-macbook-m5.local", 7)
+	name := VMName("linux", "my-macbook-pro.local", 7)
 
 	pool, worker, n, ok := ParseVMName(name)
 	if !ok {
 		t.Fatalf("ParseVMName(%q) ok = false, want true", name)
 	}
-	if pool != "linux" || worker != "g-macbook-m5.local" || n != 7 {
-		t.Errorf("ParseVMName(%q) = (%q, %q, %d), want (linux, g-macbook-m5.local, 7)", name, pool, worker, n)
+	if pool != "linux" || worker != "my-macbook-pro.local" || n != 7 {
+		t.Errorf("ParseVMName(%q) = (%q, %q, %d), want (linux, my-macbook-pro.local, 7)", name, pool, worker, n)
 	}
 }
 

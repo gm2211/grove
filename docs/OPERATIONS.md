@@ -93,12 +93,12 @@ credential:
 
 ## Credentials for orchestrators and scripts
 
-An orchestrator (argos, a CI script) should not hold the operator token: it can approve devices,
+An orchestrator (an agent runner, a CI script) should not hold the operator token: it can approve devices,
 recycle VMs and arm private-repo sourcing. Mint it its own revocable, scoped credential instead:
 
 ```bash
 # on any machine with the operator credential; the raw token is printed to stdout once
-grove access issue --name argos --scope read --scope dispatch > argos.token
+grove access issue --name ci-bot --scope read --scope dispatch > ci-bot.token
 grove access list                       # shows the new device id and its scopes
 grove access revoke DEVICE_ID           # when it's no longer needed
 ```
@@ -219,7 +219,7 @@ Limits:
 - A job still reaches anything on the public internet, your home's public IP included.
 - Job images must already be in the VM image or come from a public registry (the default runner
   image is on ghcr.io): the guest can't pull from a registry on your LAN or tailnet.
-- A job can't call home while it runs (the grove API, Argos, anything on your tailnet). Whatever
+- A job can't call home while it runs (the grove API, your orchestrator, anything on your tailnet). Whatever
   it needs goes in with it; whatever it produces comes out as its log, exit code and artifacts.
 
 ## Log locations

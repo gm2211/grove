@@ -765,7 +765,7 @@ func TestDispatchScopeCannotRunShellWithoutShellScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dispatchToken, _, err := store.Issue("argos", []string{ScopeRead, ScopeDispatch})
+	dispatchToken, _, err := store.Issue("ci-bot", []string{ScopeRead, ScopeDispatch})
 	if err != nil {
 		t.Fatal(err)
 	}

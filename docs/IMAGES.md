@@ -170,7 +170,7 @@ building a local runner. The default build retains the client using a pinned, ch
 GitHub release rather than the retired moving download URL:
 
 ```bash
-docker build --build-arg INSTALL_MINIO_CLIENT=false -t grove-runner:studio-v1 images/runner
+docker build --build-arg INSTALL_MINIO_CLIENT=false -t grove-runner:custom-v1 images/runner
 ```
 
 Set that pool's `runnerImage` to the same pinned tag. Do not use `latest` for an image that exists

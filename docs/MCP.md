@@ -129,7 +129,7 @@ Recycle a wedged VM:
 - Credential scopes: `read` (fleet, own jobs), `dispatch` (build + agent jobs), `dispatch:build`,
   `dispatch:agent`, `dispatch:shell` (raw `shell` jobs — never implied by `dispatch`), and
   `operator` (everything). An operator mints a non-interactive credential, e.g. for an
-  orchestrator, with `grove access issue --name argos --scope read --scope dispatch` (token printed
+  orchestrator, with `grove access issue --name ci-bot --scope read --scope dispatch` (token printed
   to stdout once) — see `docs/OPERATIONS.md`.
 - Raw shell jobs need the operator credential or a credential explicitly issued `dispatch:shell`.
   Named secrets are rejected until grove can resolve them. Worker pause/resume, VM recycle, join approval, and device issue/revocation

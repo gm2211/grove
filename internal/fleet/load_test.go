@@ -53,7 +53,7 @@ pools:
     perWorker: 1
     jobCPU: 1500
     jobMemory: 3072
-    runnerImage: registry.example.test/grove/studio-runner:v1
+    runnerImage: registry.example.test/grove/custom-runner:v1
   - name: macos
     image: ghcr.io/example/macos:latest
     perWorker: 1
@@ -67,7 +67,7 @@ pools:
 	if spec.Pools[0].JobCPU != 1500 || spec.Pools[0].JobMemory != 3072 {
 		t.Errorf("unexpected pool[0] jobCPU/jobMemory: %+v", spec.Pools[0])
 	}
-	if spec.Pools[0].RunnerImage != "registry.example.test/grove/studio-runner:v1" {
+	if spec.Pools[0].RunnerImage != "registry.example.test/grove/custom-runner:v1" {
 		t.Errorf("RunnerImage = %q", spec.Pools[0].RunnerImage)
 	}
 	if got := spec.Pools[0].JobCPUOrDefault(); got != 1500 {

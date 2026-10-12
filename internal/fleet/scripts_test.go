@@ -91,7 +91,7 @@ func TestNomadRPCAddressFromHTTPURL(t *testing.T) {
 		want    string
 		wantErr bool
 	}{
-		{name: "hostname", url: "http://nomad.studio.example:4646", want: "nomad.studio.example:4647"},
+		{name: "hostname", url: "http://nomad.cp.example:4646", want: "nomad.cp.example:4647"},
 		{name: "IPv4", url: "http://100.101.229.60:4646", want: "100.101.229.60:4647"},
 		{name: "IPv6", url: "http://[2001:db8::60]:4646", want: "[2001:db8::60]:4647"},
 		{name: "unset", want: ""},
