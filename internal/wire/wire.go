@@ -19,8 +19,8 @@ func NewNomadClient(cfg config.Endpoint) (nomad.Client, error) {
 	return nomad.New(cfg.URL, cfg.Token)
 }
 
-// NewArtifactsClient builds the concrete artifact-bucket client from config. Returns
-// artifacts.ErrNotConfigured (not fatal) when no bucket is configured.
+// NewArtifactsClient builds the concrete artifact store (a directory on this machine) from config.
+// Returns artifacts.ErrNotConfigured (not fatal) when no store directory can be determined.
 func NewArtifactsClient(cfg config.ArtifactsConfig) (artifacts.Client, error) {
 	return artifacts.New(cfg)
 }

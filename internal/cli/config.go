@@ -130,14 +130,10 @@ func setConfigKey(cfg *config.Config, key, value string) error {
 		cfg.Server.URL = value
 	case "server.token":
 		cfg.Server.Token = value
-	case "artifacts.endpoint":
-		cfg.Artifacts.Endpoint = value
-	case "artifacts.bucket":
-		cfg.Artifacts.Bucket = value
-	case "artifacts.accessKey":
-		cfg.Artifacts.AccessKey = value
-	case "artifacts.secretKey":
-		cfg.Artifacts.SecretKey = value
+	case "artifacts.dir":
+		cfg.Artifacts.Dir = value
+	case "artifacts.endpoint", "artifacts.bucket", "artifacts.accessKey", "artifacts.secretKey":
+		return fmt.Errorf("config key %q is no longer used: artifacts are kept on the control plane's disk (set artifacts.dir to move them)", key)
 	case "fleet":
 		cfg.Fleet = value
 	case "tailscale.authKey":

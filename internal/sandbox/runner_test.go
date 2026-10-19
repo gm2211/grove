@@ -4,10 +4,12 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gm2211/grove/internal/artifacts"
 	"github.com/gm2211/grove/internal/orchard"
 )
 
@@ -310,11 +312,62 @@ func TestArtifactPath(t *testing.T) {
 		"artifacts/../x":      "",
 		"artifacts/d/../../x": "",
 		"artifacts//etc/x":    "",
+		"artifacts/a\\b":      "",
 	}
 	for in, want := range cases {
 		got, ok := artifactPath(in)
 		if got != want || ok != (want != "") {
 			t.Errorf("artifactPath(%q) = %q, %v; want %q", in, got, ok, want)
 		}
+	}
+}
+
+// TestUploadTarIntoFSStore feeds a VM's artifacts tar through uploadTar into the real on-disk
+// store: regular files land under the job's prefix, links and escaping names are skipped.
+func TestUploadTarIntoFSStore(t *testing.T) {
+	store, err := artifacts.NewFS(filepath.Join(t.TempDir(), "artifacts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	add := func(hdr *tar.Header, body string) {
+		hdr.Size = int64(len(body))
+		if hdr.Typeflag != tar.TypeReg {
+			hdr.Size = 0
+			body = ""
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add(&tar.Header{Name: "artifacts/", Typeflag: tar.TypeDir, Mode: 0o755}, "")
+	add(&tar.Header{Name: "artifacts/dist/app.txt", Typeflag: tar.TypeReg, Mode: 0o644}, "app")
+	add(&tar.Header{Name: "artifacts/../escape", Typeflag: tar.TypeReg, Mode: 0o644}, "no")
+	add(&tar.Header{Name: "artifacts/link", Typeflag: tar.TypeSymlink, Linkname: "/etc/passwd"}, "")
+	add(&tar.Header{Name: "artifacts/w\\in", Typeflag: tar.TypeReg, Mode: 0o644}, "no")
+	add(&tar.Header{Name: "artifacts/last.log", Typeflag: tar.TypeReg, Mode: 0o644}, "done")
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	j := &job{r: &Runner{Uploader: store, ArtifactLimit: 1 << 20}, req: Request{ArtifactPrefix: "jobs/j1"}}
+	n, err := j.uploadTar(&buf)
+	if err != nil || n != 2 {
+		t.Fatalf("uploadTar = %d, %v; want 2, nil", n, err)
+	}
+	objs, err := store.List(context.Background(), "jobs/j1/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, o := range objs {
+		got = append(got, o.Path)
+	}
+	if strings.Join(got, ",") != "dist/app.txt,last.log" {
+		t.Errorf("stored %v", got)
 	}
 }

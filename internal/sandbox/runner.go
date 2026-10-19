@@ -511,9 +511,9 @@ func (j *job) stop(grace time.Duration) int {
 	return code
 }
 
-// collectArtifacts copies the build's ./artifacts/** out of the VM and uploads each file under
-// the job's artifact prefix, as the regular build template's `mc cp` does. The VM sends a tar;
-// nothing from it touches the control plane's disk.
+// collectArtifacts copies the build's ./artifacts/** out of the VM and stores each regular file
+// under the job's artifact prefix in the control plane's artifact store. The VM sends a tar; only
+// the regular files in it, validated paths and all, are written (by the store, never extracted).
 func (j *job) collectArtifacts() {
 	if j.r.Uploader == nil || j.req.ArtifactPrefix == "" {
 		return
@@ -596,6 +596,9 @@ func artifactPath(name string) (string, bool) {
 	_, rel, ok := strings.Cut(name, "/")
 	if !ok || rel == "" || strings.HasPrefix(rel, "/") {
 		return "", false
+	}
+	if strings.ContainsAny(rel, "\\\x00") {
+		return "", false // the store (and the download API) refuse these; skip, don't abort
 	}
 	for _, part := range strings.Split(rel, "/") {
 		if part == ".." {

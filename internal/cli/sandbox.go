@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -104,7 +103,7 @@ func runSandbox(ctx context.Context, f sandboxRunFlags) error {
 	var uploader artifacts.Uploader
 	if ac, err := artifacts.New(cfg.Artifacts); err == nil {
 		uploader, _ = ac.(artifacts.Uploader)
-	} else if !errors.Is(err, artifacts.ErrNotConfigured) {
+	} else {
 		slog.Warn("sandbox: artifact store unavailable; build artifacts won't be collected", "err", err)
 	}
 

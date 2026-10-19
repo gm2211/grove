@@ -71,13 +71,16 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 		return fmt.Errorf("nomad client: %w", err)
 	}
 
+	if legacy := cfg.Artifacts.LegacyKeys(); len(legacy) > 0 {
+		slog.Warn("serve: ignoring legacy S3/MinIO artifact settings; artifacts are kept on this machine's disk now (re-run `grove install --role control-plane` to remove them)", "keys", legacy)
+	}
 	ac, err := wire.NewArtifactsClient(cfg.Artifacts)
 	if err != nil {
 		if errors.Is(err, artifacts.ErrNotConfigured) {
-			slog.Info("serve: no artifact store configured; job artifact download/listing is disabled", "err", err)
+			slog.Info("serve: no artifact store directory; job artifact download/listing is disabled", "err", err)
 			ac = nil
 		} else {
-			return fmt.Errorf("artifacts client: %w", err)
+			return fmt.Errorf("artifact store: %w", err)
 		}
 	}
 
@@ -97,7 +100,7 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 		return fmt.Errorf("private-repo credential store: %w", err)
 	}
 
-	ds, err := dispatch.New(nc, dispatch.Options{ArtifactsBase: cfg.Artifacts.Bucket, Artifacts: ac, ArtifactRetention: cfg.Artifacts.Retention, Pools: pools, RepoAuth: gitAuthStore})
+	ds, err := dispatch.New(nc, dispatch.Options{Artifacts: ac, ArtifactRetention: cfg.Artifacts.Retention, Pools: pools, RepoAuth: gitAuthStore})
 	if err != nil {
 		return fmt.Errorf("dispatch service: %w", err)
 	}

@@ -48,3 +48,22 @@ func TestConfigSet_ReadsValueFromStdin(t *testing.T) {
 		t.Fatalf("Tailscale.AuthKey = %q, want the value read from stdin", cfg.Tailscale.AuthKey)
 	}
 }
+
+func TestSetConfigKey_ArtifactsDirAndRetiredS3Keys(t *testing.T) {
+	cfg := &config.Config{}
+	if err := setConfigKey(cfg, "artifacts.dir", "/srv/grove/artifacts"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Artifacts.Dir != "/srv/grove/artifacts" {
+		t.Errorf("artifacts.dir = %q", cfg.Artifacts.Dir)
+	}
+	for _, key := range []string{"artifacts.endpoint", "artifacts.bucket", "artifacts.accessKey", "artifacts.secretKey"} {
+		err := setConfigKey(cfg, key, "x")
+		if err == nil || !strings.Contains(err.Error(), "no longer used") {
+			t.Errorf("setConfigKey(%s) err = %v, want a retired-key error", key, err)
+		}
+	}
+	if len(cfg.Artifacts.LegacyKeys()) != 0 {
+		t.Error("retired keys must not be written")
+	}
+}
