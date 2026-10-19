@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -97,6 +98,34 @@ type ArtifactsConfig struct {
 	Bucket    string `yaml:"bucket"`
 	AccessKey string `yaml:"accessKey,omitempty"`
 	SecretKey string `yaml:"secretKey,omitempty"`
+	// Retention bounds how long a finished job's artifacts stay in the bucket. Zero values take
+	// the defaults (DefaultArtifactRetentionSuccess/Failure).
+	Retention ArtifactRetention `yaml:"retention,omitempty"`
+}
+
+// ArtifactRetention is how long `grove serve` keeps a job's artifacts after the job finishes:
+// Success for a job that succeeded, Failure for every other end (failed, canceled, lost), which
+// people tend to want to look at a little longer. Durations use Go's syntax ("15m", "2h").
+type ArtifactRetention struct {
+	Success time.Duration `yaml:"success,omitempty"`
+	Failure time.Duration `yaml:"failure,omitempty"`
+}
+
+// Default artifact retention: short on purpose, so the bucket never grows without bound.
+const (
+	DefaultArtifactRetentionSuccess = 15 * time.Minute
+	DefaultArtifactRetentionFailure = time.Hour
+)
+
+// WithDefaults fills zero durations with the defaults.
+func (r ArtifactRetention) WithDefaults() ArtifactRetention {
+	if r.Success <= 0 {
+		r.Success = DefaultArtifactRetentionSuccess
+	}
+	if r.Failure <= 0 {
+		r.Failure = DefaultArtifactRetentionFailure
+	}
+	return r
 }
 
 // ErrNotFound is returned by Load when no config file exists yet.

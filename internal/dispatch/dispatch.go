@@ -75,17 +75,20 @@ const (
 
 // Job is a submitted request plus what happened to it.
 type Job struct {
-	ID          string            `json:"id"` // dispatched Nomad job id
-	Request     JobRequest        `json:"request"`
-	Status      Status            `json:"status"`
-	AllocID     string            `json:"allocId,omitempty"`
-	Node        string            `json:"node,omitempty"`
-	ExitCode    *int              `json:"exitCode,omitempty"`
-	SubmittedAt time.Time         `json:"submittedAt"`
-	StartedAt   *time.Time        `json:"startedAt,omitempty"`
-	FinishedAt  *time.Time        `json:"finishedAt,omitempty"`
-	Artifacts   []Artifact        `json:"artifacts,omitempty"`
-	Meta        map[string]string `json:"meta,omitempty"`
+	ID          string     `json:"id"` // dispatched Nomad job id
+	Request     JobRequest `json:"request"`
+	Status      Status     `json:"status"`
+	AllocID     string     `json:"allocId,omitempty"`
+	Node        string     `json:"node,omitempty"`
+	ExitCode    *int       `json:"exitCode,omitempty"`
+	SubmittedAt time.Time  `json:"submittedAt"`
+	StartedAt   *time.Time `json:"startedAt,omitempty"`
+	FinishedAt  *time.Time `json:"finishedAt,omitempty"`
+	Artifacts   []Artifact `json:"artifacts,omitempty"`
+	// ArtifactsExpiredAt is when grove deleted this job's artifacts under its retention policy
+	// (see config.ArtifactRetention); Artifacts is empty from then on.
+	ArtifactsExpiredAt *time.Time        `json:"artifactsExpiredAt,omitempty"`
+	Meta               map[string]string `json:"meta,omitempty"`
 	// TimedOut is true when the job's script was killed by run.sh's own `timeout` wrapper (exit code
 	// 124 is the POSIX `timeout(1)` convention for "killed for exceeding the deadline" — see
 	// nomad/jobs/*.nomad.hcl's run.sh).

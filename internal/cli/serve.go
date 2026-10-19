@@ -96,7 +96,7 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 		return fmt.Errorf("private-repo credential store: %w", err)
 	}
 
-	ds, err := dispatch.New(nc, dispatch.Options{ArtifactsBase: cfg.Artifacts.Bucket, Artifacts: ac, Pools: pools, RepoAuth: gitAuthStore})
+	ds, err := dispatch.New(nc, dispatch.Options{ArtifactsBase: cfg.Artifacts.Bucket, Artifacts: ac, ArtifactRetention: cfg.Artifacts.Retention, Pools: pools, RepoAuth: gitAuthStore})
 	if err != nil {
 		return fmt.Errorf("dispatch service: %w", err)
 	}

@@ -20,6 +20,7 @@ import (
 	"context"
 
 	"github.com/gm2211/grove/internal/artifacts"
+	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/nomad"
 )
 
@@ -66,6 +67,10 @@ type Options struct {
 	// Artifacts, when non-nil, is used to populate Job.Artifacts once a job reaches a terminal
 	// status. Nil means "no artifact store configured" — Job.Artifacts is just never populated.
 	Artifacts artifacts.Client
+	// ArtifactRetention is how long a finished job's artifacts are kept (see
+	// config.ArtifactRetention); zero values take the defaults. RunReconciler deletes them once
+	// expired, when Artifacts also implements artifacts.Deleter.
+	ArtifactRetention config.ArtifactRetention
 	// StorePath overrides the on-disk job history location. Empty uses
 	// $XDG_STATE_HOME/grove/jobs.json (default ~/.local/state/grove/jobs.json). Pass a path in a
 	// throwaway directory (or leave the default empty-string sentinel via NewForTest) to disable
@@ -147,6 +152,7 @@ func New(nc nomad.Client, opts Options) (Service, error) {
 	if opts.LogTerminalPollInterval <= 0 {
 		opts.LogTerminalPollInterval = defaultLogTerminalPollInterval
 	}
+	opts.ArtifactRetention = opts.ArtifactRetention.WithDefaults()
 	if opts.LogStreamGracePeriod <= 0 {
 		opts.LogStreamGracePeriod = defaultLogStreamGracePeriod
 	}
@@ -649,6 +655,7 @@ func (s *service) RunReconciler(ctx context.Context, interval time.Duration) err
 				slog.Warn("dispatch: reconcile sweep failed for job", "id", recs[i].ID, "err", err)
 			}
 		}
+		s.expireArtifacts(ctx, time.Now().UTC())
 	}
 
 	tick()

@@ -4,6 +4,11 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- Build artifacts now expire: `grove serve` deletes a job's artifacts 15 minutes after it succeeds
+  and 1 hour after it fails, is canceled or is lost (`artifacts.retention.success`/`.failure` in
+  `config.yaml`). Expired jobs report `artifactsExpiredAt`. The first sweep after upgrading deletes existing
+  artifacts that are already past those windows. See docs/JOBS.md "Artifact retention".
+
 - **Security:** re-running `grove setup` on a Mac no longer leaves its earlier device credentials
   valid. Once the Mac is back online with its new credential, grove revokes the older setup
   credentials with the same name. Operator-issued credentials (`grove access issue`) are untouched.
