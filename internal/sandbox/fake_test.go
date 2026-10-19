@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -65,24 +66,53 @@ func (f *fakeVM) exit(code int) {
 	}
 }
 
-// fakeOrchard serves a set of VMs; only vms in docker answer exec.
+// fakeOrchard serves a set of VMs; only vms in docker (Linux, a fakeVM) or mac (macOS, a
+// fakeMacVM) answer exec. DeleteVM takes a VM off the list, as Orchard would once it is gone.
 type fakeOrchard struct {
-	vms    []orchard.VM
-	docker map[string]*fakeVM
+	mu      sync.Mutex
+	vms     []orchard.VM
+	docker  map[string]*fakeVM
+	mac     map[string]*fakeMacVM
+	deleted []string
+	// deleteErr makes that many DeleteVM calls fail.
+	deleteErr int
 }
 
 func (o *fakeOrchard) ListWorkers(context.Context) ([]orchard.Worker, error) { return nil, nil }
 func (o *fakeOrchard) PauseWorker(context.Context, string) error             { return nil }
 func (o *fakeOrchard) ResumeWorker(context.Context, string) error            { return nil }
-func (o *fakeOrchard) ListVMs(context.Context) ([]orchard.VM, error)         { return o.vms, nil }
-func (o *fakeOrchard) GetVM(context.Context, string) (*orchard.VM, error)    { return nil, nil }
+func (o *fakeOrchard) ListVMs(context.Context) ([]orchard.VM, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return slices.Clone(o.vms), nil
+}
+func (o *fakeOrchard) GetVM(context.Context, string) (*orchard.VM, error) { return nil, nil }
 func (o *fakeOrchard) CreateVM(context.Context, orchard.VMSpec) (*orchard.VM, error) {
 	return nil, nil
 }
-func (o *fakeOrchard) DeleteVM(context.Context, string) error { return nil }
-func (o *fakeOrchard) Ping(context.Context) error             { return nil }
+func (o *fakeOrchard) DeleteVM(_ context.Context, name string) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.deleteErr > 0 {
+		o.deleteErr--
+		return errors.New("controller unavailable")
+	}
+	o.deleted = append(o.deleted, name)
+	o.vms = slices.DeleteFunc(o.vms, func(vm orchard.VM) bool { return vm.Name == name })
+	return nil
+}
+func (o *fakeOrchard) Ping(context.Context) error { return nil }
+
+func (o *fakeOrchard) wasDeleted(name string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return slices.Contains(o.deleted, name)
+}
 
 func (o *fakeOrchard) Exec(ctx context.Context, vm string, command []string, opts orchard.ExecOptions) (orchard.ExecSession, error) {
+	if f, ok := o.mac[vm]; ok {
+		return f.exec(ctx, strings.Join(command, " "), opts)
+	}
 	f, ok := o.docker[vm]
 	if !ok {
 		return nil, fmt.Errorf("exec into %s: not a VM this test expects jobs in", vm)

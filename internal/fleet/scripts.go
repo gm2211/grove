@@ -33,7 +33,13 @@ func buildStartupScript(pool Pool, worker, vmName string, opts Options) string {
 	fmt.Fprintf(&b, "grove_host=%s\n", shQuote(worker))
 	fmt.Fprintf(&b, "grove_vm=%s\n\n", shQuote(vmName))
 	if pool.Isolated() {
-		b.WriteString(sealedStartupScript())
+		b.WriteString(sealedStartupScript(pool))
+		if pool.MacOS() && pool.HostXcode != nil {
+			// The shared Xcode check boots Nomad out itself and expects it to stay out, which it
+			// does here: nothing brings it back.
+			b.WriteString("\n")
+			b.WriteString(buildHostXcodeStartupScript(*pool.HostXcode))
+		}
 		appendUserScript(&b, "pool.startupScript", pool.StartupScript)
 		return b.String()
 	}
@@ -54,7 +60,7 @@ func buildStartupScript(pool Pool, worker, vmName string, opts Options) string {
 			shQuote(opts.TailscaleAuthKey))
 	}
 
-	if pool.Name == "macos" {
+	if pool.MacOS() {
 		b.WriteString(macosJobUserScript)
 		b.WriteString("\n")
 		// The image binds Nomad to loopback. Nomad rejects implicit loopback
@@ -237,7 +243,11 @@ func buildShutdownScript(pool Pool, nodeToken bool) (script string, timeout time
 	if pool.Isolated() {
 		// A sealed VM has no Nomad client to drain, and no node token.
 		fmt.Fprintf(&b, "grove_deadline=$(( $(date +%%s) + %d ))\n", int(timeout.Seconds()))
-		b.WriteString(sealedShutdownScriptBody)
+		if pool.MacOS() {
+			b.WriteString(sealedMacOSShutdownScriptBody)
+		} else {
+			b.WriteString(sealedShutdownScriptBody)
+		}
 		appendUserScript(&b, "pool.shutdownScript", pool.ShutdownScript)
 		return b.String(), timeout
 	}

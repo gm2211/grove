@@ -43,8 +43,9 @@ See `nomadjobs_test.go` for a full render-and-assert example across every (kind,
 `sandbox.nomad.hcl` replaces all three for a pool with `network: isolated` (`PoolConfig.Isolated`):
 one raw_exec task on the control plane's own Nomad client that runs `grove sandbox run`, which
 drives the job in one of the pool's sealed VMs from outside. It additionally takes `GroveBin` (the
-absolute path of the grove binary, resolved by `EnsureJobs`) and `Slots` (jobs per VM). See
-`docs/JOBS.md` "Sealed pools".
+absolute path of the grove binary, resolved by `EnsureJobs`), `Slots` (jobs per VM) and `OS`
+(`PoolConfig.OS`: `"darwin"` for the macos pool adds `--os darwin`, which runs the job as the VM's
+job user instead of in a container, one job per VM). See `docs/JOBS.md` "Sealed pools".
 
 ## The dispatch contract (fixed — shared with `internal/dispatch`)
 

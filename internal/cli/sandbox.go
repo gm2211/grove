@@ -28,8 +28,8 @@ var sandboxCmd = &cobra.Command{
 }
 
 type sandboxRunFlags struct {
-	kind, pool, image, payload string
-	slots, cpu, memory         int
+	kind, pool, image, payload, os string
+	slots, cpu, memory             int
 }
 
 func init() {
@@ -44,9 +44,10 @@ func init() {
 	}
 	run.Flags().StringVar(&f.kind, "kind", "", "job kind: build, agent or shell")
 	run.Flags().StringVar(&f.pool, "pool", "", "fleet.yaml pool whose sealed VMs run the job")
-	run.Flags().StringVar(&f.image, "image", "", "container image the job runs in")
+	run.Flags().StringVar(&f.image, "image", "", "container image the job runs in (ignored for --os darwin)")
+	run.Flags().StringVar(&f.os, "os", sandbox.OSLinux, "the pool's guest OS: linux (jobs run in docker containers) or darwin (jobs run as the VM's job user, one per VM)")
 	run.Flags().StringVar(&f.payload, "payload", "", "the Nomad dispatch payload file; deleted once read")
-	run.Flags().IntVar(&f.slots, "slots", 1, "how many jobs one VM of the pool runs at once")
+	run.Flags().IntVar(&f.slots, "slots", 1, "how many jobs one VM of the pool runs at once (always 1 for --os darwin)")
 	run.Flags().IntVar(&f.cpu, "cpu", 0, "the job's CPU in MHz (2000 per core); 0 leaves it unlimited")
 	run.Flags().IntVar(&f.memory, "memory", 0, "the job's memory in MiB; 0 leaves it unlimited")
 	sandboxCmd.AddCommand(run)
@@ -68,6 +69,7 @@ func runSandbox(ctx context.Context, f sandboxRunFlags) error {
 	req := sandbox.Request{
 		Kind:           f.kind,
 		Pool:           f.pool,
+		OS:             f.os,
 		AllocID:        os.Getenv("NOMAD_ALLOC_ID"),
 		Image:          f.image,
 		CPU:            f.cpu,
@@ -109,7 +111,7 @@ func runSandbox(ctx context.Context, f sandboxRunFlags) error {
 	runner := &sandbox.Runner{
 		Orchard:  oc,
 		Uploader: uploader,
-		Slots:    sandbox.Slots{Dir: sandboxSlotDir(), PerVM: f.slots},
+		Slots:    sandbox.Slots{Dir: sandboxSlotDir(), PerVM: sandboxSlots(f)},
 		WorkDir:  os.Getenv("NOMAD_TASK_DIR"),
 	}
 	if f.kind == sandbox.KindAgent {
@@ -124,6 +126,14 @@ func runSandbox(ctx context.Context, f sandboxRunFlags) error {
 		return &ExitError{Code: code}
 	}
 	return nil
+}
+
+// sandboxSlots is the per-VM slot count: a macOS VM runs one job and is then deleted.
+func sandboxSlots(f sandboxRunFlags) int {
+	if f.os == sandbox.OSDarwin {
+		return 1
+	}
+	return f.slots
 }
 
 // sandboxSlotDir holds the per-VM slot locks every `grove sandbox run` on this machine shares.

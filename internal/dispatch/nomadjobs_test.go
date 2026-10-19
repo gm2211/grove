@@ -140,6 +140,27 @@ func TestEnsureJobs_SealedPoolUsesSandboxTemplate(t *testing.T) {
 	}
 }
 
+func TestEnsureJobs_SealedMacOSPoolRunsAsDarwin(t *testing.T) {
+	old := groveBinary
+	groveBinary = func() (string, error) { return "/usr/local/bin/grove", nil }
+	defer func() { groveBinary = old }()
+
+	nc := &fakeNomad{}
+	pools := []PoolConfig{{Name: "macos", Isolated: true, Slots: 1, OS: "darwin"}, {Name: "linux", Isolated: true, Slots: 2, OS: "linux"}}
+	if err := EnsureJobs(context.Background(), nc, pools); err != nil {
+		t.Fatalf("EnsureJobs: %v", err)
+	}
+	if len(nc.registerCalls) != 6 {
+		t.Fatalf("registered %d jobs, want 6", len(nc.registerCalls))
+	}
+	for _, hcl := range nc.registerCalls {
+		macos := strings.Contains(hcl, `-macos"`)
+		if got := strings.Contains(hcl, `"--os", "darwin"`); got != macos {
+			t.Errorf("--os darwin in job = %v, want %v:\n%s", got, macos, hcl)
+		}
+	}
+}
+
 func TestStableGroveBinary(t *testing.T) {
 	prefix := t.TempDir()
 	cellar := filepath.Join(prefix, "Cellar", "grove", "0.1.15", "bin", "grove")

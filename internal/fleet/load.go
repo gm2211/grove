@@ -78,12 +78,6 @@ func (s *Spec) Validate() error {
 		switch p.Network {
 		case "", NetworkShared:
 		case NetworkIsolated:
-			// macOS jobs run as root in the guest with no container boundary, so they could use
-			// the guest's own tailnet login; isolating them needs jobs to run as a normal user
-			// first.
-			if p.Name == "macos" {
-				return fmt.Errorf("pool %q: network %q is only supported for Linux pools", p.Name, NetworkIsolated)
-			}
 			// The docker socket gives every job root on the guest, past the in-guest fence that
 			// keeps jobs off the guest's tailnet login.
 			if p.AllowDockerSocket {
