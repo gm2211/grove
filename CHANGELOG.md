@@ -4,6 +4,15 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- macOS pools can be sealed too (`network: isolated` on the `macos` pool). The VM runs on Softnet
+  with the host blocked, public DNS on every network service, and its Nomad client and Tailscale
+  turned off, exactly like a sealed Linux VM. With no container runtime in the guest, `grove
+  sandbox run --os darwin` runs the job as the unprivileged `_grovejob` user in a fresh run
+  directory, and every sealed macOS VM runs **one job only**: once the job is over, grove deletes
+  the VM and the fleet reconciler recreates it fresh from the image, so expect a VM boot before
+  each job. Timeouts, cancellation, lost VMs, logs and build artifacts work as on sealed Linux
+  pools. See docs/OPERATIONS.md "Isolating a pool's network".
+
 - Build artifacts now expire: `grove serve` deletes a job's artifacts 15 minutes after it succeeds
   and 1 hour after it fails, is canceled or is lost (`artifacts.retention.success`/`.failure` in
   `config.yaml`). Expired jobs report `artifactsExpiredAt`. The first sweep after upgrading deletes existing

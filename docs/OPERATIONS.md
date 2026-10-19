@@ -154,6 +154,8 @@ tailnet, through the Mac's own Tailscale login. `network: isolated` seals a pool
 pools:
   - name: linux
     network: isolated
+  - name: macos
+    network: isolated
 ```
 
 A sealed VM reaches the public internet and nothing at home: not your LAN, not your tailnet, not
@@ -167,13 +169,15 @@ What changes for that pool's VMs:
   can still open connections into the guest, which is how Orchard runs the startup script and how
   grove drives each job.
 - **No Nomad, no Tailscale, no credentials.** The startup script turns off the image's Nomad client
-  and Tailscale. The VM holds no tailnet key, no Nomad token, no artifact store key and no clone
-  token.
-- **Public DNS.** The guest's `/etc/resolv.conf` points at 1.1.1.1 and 8.8.8.8, because the
-  resolver DHCP hands out is the blocked host.
-- **A fence for job containers.** `/usr/local/sbin/grove-egress-fence`, run before every Docker
-  start and once by the startup script, keeps job containers off private, CGNAT and link-local
-  addresses and off the guest itself.
+  and Tailscale (on macOS it disables and boots out their launchd jobs, `com.grove.nomad` and
+  `homebrew.mxcl.tailscale`). The VM holds no tailnet key, no Nomad token, no artifact store key
+  and no clone token.
+- **Public DNS.** The guest resolves through 1.1.1.1 and 8.8.8.8 (Linux: `/etc/resolv.conf`;
+  macOS: `networksetup -setdnsservers` on every network service), because the resolver DHCP hands
+  out is the blocked host.
+- **A fence for job containers** (Linux). `/usr/local/sbin/grove-egress-fence`, run before every
+  Docker start and once by the startup script, keeps job containers off private, CGNAT and
+  link-local addresses and off the guest itself.
 
 How a sealed pool's job runs. Its Nomad job (`nomad/jobs/sandbox.nomad.hcl`) isn't placed in a VM
 but on the control plane, whose own Nomad agent is also a client for exactly these jobs (node meta
@@ -181,8 +185,9 @@ but on the control plane, whose own Nomad agent is also a client for exactly the
 
 1. fetches the repository on the control plane, with the armed clone token if there is one, but
    checks out no file there: the checkout happens inside the job's container;
-2. takes a free slot in one of the pool's sealed VMs (a VM runs as many jobs at once as fit its
-   CPU and memory at the pool's `jobCPU`/`jobMemory`), skipping VMs that are shutting down;
+2. takes a free slot in one of the pool's sealed VMs (a Linux VM runs as many jobs at once as fit
+   its CPU and memory at the pool's `jobCPU`/`jobMemory`; a macOS VM runs one), skipping VMs that
+   are shutting down;
 3. through Orchard, creates a fresh container in that VM from the pool's runner image and copies
    in the checkout, the script and the job's environment (minus `GH_TOKEN`/`GIT_TOKEN`, which only
    served the clone);
@@ -214,13 +219,42 @@ script, which marks the VM so no new job lands in it and waits for the running o
 
 Limits:
 
-- Linux pools only: grove drives sealed jobs through Docker, which macOS guests don't have.
 - `allowDockerSocket` can't be combined with it, and the per-job `image` override is ignored.
 - A job still reaches anything on the public internet, your home's public IP included.
-- Job images must already be in the VM image or come from a public registry (the default runner
+- (Linux) Job images must already be in the VM image or come from a public registry (the default runner
   image is on ghcr.io): the guest can't pull from a registry on your LAN or tailnet.
 - A job can't call home while it runs (the grove API, your orchestrator, anything on your tailnet). Whatever
   it needs goes in with it; whatever it produces comes out as its log, exit code and artifacts.
+
+### Sealed macOS pools
+
+A macOS guest has no container runtime, so a sealed macOS pool's jobs run differently in step 3
+and after step 5:
+
+- **The job runs as the unprivileged `_grovejob` user** (the same account a shared macOS pool's
+  jobs use), in a fresh run directory under `/private/var/grove-job/runs/`, in its own process
+  group; never as root and never as the VM's admin login. See docs/JOBS.md "Sealed pools".
+- **A fresh VM for every job.** A sealed macOS VM runs one job at a time and only one job ever:
+  once the job is over, grove marks the VM draining, deletes it through Orchard, and the fleet
+  reconciler recreates it from the image on its next tick (every 30 seconds by default). Nothing a
+  job leaves behind (files, processes, a changed system setting) can reach the next job. A VM
+  that still holds an earlier job (its `grove sandbox run` was killed before it could clean up)
+  is deleted by the next job's runner instead of being used.
+- **Boot cost.** Each job waits for its VM to be recreated and boot first, typically a minute or
+  two on top of the job itself, and longer for a large image on a busy Mac. A queue of jobs runs
+  at the pace VMs come back.
+- **Two VMs per Mac.** Apple's licence lets a Mac run at most two macOS VMs at once, and the
+  virtualization framework enforces it. A sealed macOS pool's `perWorker` is therefore 1 or 2,
+  and counts against the same two VMs as any shared macOS pool on that Mac; jobs per Mac at a time
+  equal the pool's `perWorker`.
+- **Sizing.** `jobCPU`/`jobMemory` and the runner image don't apply: the job has the whole VM, as
+  sized by the pool's `cpu`/`memory`.
+- **Timeouts** are enforced from the control plane (macOS has no `timeout(1)`): a job past its
+  timeout is stopped (TERM, then KILL after 10 seconds) and reports 124 as usual.
+- `hostXcode` works as on a shared macOS pool: the shared Xcode is checked at boot, and Nomad
+  stays off.
+- There is no in-guest packet fence like Linux's `grove-egress-fence`: Softnet's host block is
+  what keeps the guest (and so the job) off home addresses.
 
 ## Log locations
 

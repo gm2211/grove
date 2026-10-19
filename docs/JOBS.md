@@ -236,6 +236,28 @@ unchanged; what differs is where each step happens:
 - (build) `./artifacts/**` are copied out and uploaded by the control plane under
   `<artifact_prefix>/`, since the VM can't reach the artifact store.
 
+A sealed **macOS** pool (`--os darwin`) has no container runtime, so the same steps run as plain
+processes, through `sudo` over the same Orchard exec:
+
+- the bundle is unpacked, as the job user `_grovejob`, into a fresh run directory
+  `/private/var/grove-job/runs/<alloc>` (mode 0700): `workspace/` (the `.git`; `run.sh` checks out
+  `ref` there), `grove/` (`run.sh`, `script.sh`, `env.sh`) and `tmp/` (the job's `TMPDIR`);
+- a detached root launcher starts `run.sh` as `_grovejob` in its own process group, with an
+  empty environment plus `HOME`, `USER`, `LOGNAME`, `TMPDIR`, the image's `PATH` and the caller's
+  `env.sh`; the job's stdout, stderr and exit code go to a root-only directory
+  `/private/var/grove-sandbox/<alloc>` that the job can't write;
+- logs are followed with `tail -c +<offset> -f`, resumed at the exact byte if the stream drops;
+- macOS has no `timeout(1)`, so the job's timeout is enforced by `grove sandbox run` itself: past
+  the timeout (plus a minute) it sends TERM to the job's process group, then KILL to it and to every
+  process of the job user, and the job reports 124; a cancel does the same and reports the job's
+  own exit status, as `docker stop` would;
+- `./artifacts` is read back as a tar, as the job user;
+- the job's CPU/memory sizing and runner image don't apply: the job has the whole VM. Once it's
+  over, grove deletes the run directory and then the VM itself, which the fleet reconciler
+  recreates from the image, so no job ever runs in a VM another job has used.
+
+Exit codes are the same as on a Linux sealed pool (124, 125 → lost, a script's own 125 → 1).
+
 ### Artifact retention
 
 Artifacts are kept briefly, so the bucket never grows without bound: `grove serve` deletes a

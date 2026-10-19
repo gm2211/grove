@@ -149,8 +149,10 @@ containers behind an in-guest fence, and run neither Nomad nor Tailscale: they r
 internet and nothing at home. Their jobs are placed on the control plane instead, whose Nomad
 agent is also a client (node meta `grove_sandbox_host`, raw_exec), where `grove sandbox run`
 (`internal/sandbox`) drives each one in a sealed VM from outside through Orchard exec: push the
-checkout in, run it in a fresh container, follow its logs, poll it, pull its artifacts out.
-Linux pools only. Setup: docs/OPERATIONS.md "Isolating a pool's network".
+checkout in, run it in a fresh container, follow its logs, poll it, pull its artifacts out. A
+macOS guest has no container runtime: there the job runs as the unprivileged job user in a fresh
+run directory, and the VM serves that one job only (the runner deletes it afterwards and the
+reconciler recreates it from the image). Setup: docs/OPERATIONS.md "Isolating a pool's network".
 
 **VM labels are a hard scheduler selector, not free-form tags.** Orchard's scheduler only ever
 places a VM on a worker whose own labels are a *superset* of the VM's
