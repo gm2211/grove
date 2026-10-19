@@ -40,3 +40,10 @@ type Uploader interface {
 	// Put stores size bytes from r at key (the full bucket key).
 	Put(ctx context.Context, key string, r io.Reader, size int64, contentType string) error
 }
+
+// Deleter removes objects from the artifact bucket. The Client New returns implements it; `grove
+// serve` uses it to expire finished jobs' artifacts (see config.ArtifactRetention).
+type Deleter interface {
+	// DeletePrefix removes every object whose key starts with prefix.
+	DeletePrefix(ctx context.Context, prefix string) error
+}

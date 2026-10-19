@@ -99,3 +99,29 @@ func (c *client) Put(ctx context.Context, key string, r io.Reader, size int64, c
 	}
 	return nil
 }
+
+func (c *client) DeletePrefix(ctx context.Context, prefix string) error {
+	if prefix == "" {
+		return fmt.Errorf("artifacts: refusing to delete the whole bucket")
+	}
+	objects := make(chan minio.ObjectInfo)
+	go func() {
+		defer close(objects)
+		for obj := range c.raw.ListObjects(ctx, c.bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: true}) {
+			if obj.Err != nil {
+				return
+			}
+			select {
+			case objects <- obj:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	for rerr := range c.raw.RemoveObjects(ctx, c.bucket, objects, minio.RemoveObjectsOptions{}) {
+		if rerr.Err != nil {
+			return fmt.Errorf("artifacts: delete %s: %w", rerr.ObjectName, rerr.Err)
+		}
+	}
+	return nil
+}

@@ -236,6 +236,25 @@ unchanged; what differs is where each step happens:
 - (build) `./artifacts/**` are copied out and uploaded by the control plane under
   `<artifact_prefix>/`, since the VM can't reach the artifact store.
 
+### Artifact retention
+
+Artifacts are kept briefly, so the bucket never grows without bound: `grove serve` deletes a
+job's `<artifact_prefix>/` **15 minutes** after the job succeeded and **1 hour** after any other end
+(failed, canceled, lost), counting from the later of the job's finish and its last upload. Objects
+under `jobs/` that belong to no job grove knows about expire 1 hour after their last write. Once
+deleted, the job's `artifacts` list is empty and `artifactsExpiredAt` says when. Both durations
+are set in `config.yaml`:
+
+```yaml
+artifacts:
+  retention:
+    success: 15m
+    failure: 1h
+```
+
+The sweep runs with the job reconciler (every 30 seconds), so a deletion can land up to that much
+after its deadline. Download what you need to keep.
+
 ### Portable timeout: macOS raw_exec hosts have no GNU `timeout(1)`
 
 GNU coreutils' `timeout(1)` does not exist on stock macOS (no coreutils installed by default), but
