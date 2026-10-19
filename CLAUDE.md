@@ -64,7 +64,7 @@ calls, returns scripted results) is for tests. This is what makes `--dry-run` ac
   checklist.
 - `RunPlan` walks the list, never stopping early on a failed step, and returns the first error
   alongside the full per-step results.
-- Templates (launchd plists, systemd units, Nomad/MinIO/Orchard config) live in `render.go` as
+- Templates (launchd plists, systemd units, Nomad/Orchard config) live in `render.go` as
   `text/template`s over typed spec structs — keep them deterministic (no map iteration order
   surprises; Go's `text/template` sorts map keys, so that's safe) so golden tests stay meaningful.
 

@@ -4,6 +4,21 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **MinIO is gone: build artifacts are kept in a plain directory on the control plane**
+  (`artifacts.dir` in `config.yaml`, default `~/.local/state/grove/artifacts`, next to `jobs.json`).
+  Only the control plane ever read or wrote artifacts, so there is no longer an artifact service,
+  port, bucket or credential: `grove sandbox run` stores what it copies out of a sealed VM
+  (files 0600 in 0700 directories, written by atomic rename, paths confined to the directory), and
+  `grove serve` serves and expires them exactly as before (15 min / 1 h retention, same API).
+  `grove install --role control-plane` no longer installs MinIO or its client; re-running it on an
+  existing control plane stops and removes the old MinIO service, drops the `artifacts.endpoint`/
+  `bucket`/`accessKey`/`secretKey` keys from `config.yaml` and sets `artifacts.dir`. Until then an
+  old `config.yaml` still loads and `grove serve` just warns that those keys are ignored. MinIO's
+  data under `~/.config/grove/minio` is left for you to delete (artifacts are not migrated). Shared
+  (non-sealed) pools' build template no longer tries to upload with `mc`, and the runner image no
+  longer ships `mc`: those builds don't collect artifacts for now. See docs/OPERATIONS.md
+  "Artifacts".
+
 - macOS pools can be sealed too (`network: isolated` on the `macos` pool). The VM runs on Softnet
   with the host blocked, public DNS on every network service, and its Nomad client and Tailscale
   turned off, exactly like a sealed Linux VM. With no container runtime in the guest, `grove

@@ -3,8 +3,9 @@
 ## See README.md for the full dispatch contract and docs/JOBS.md for how internal/dispatch maps a
 ## JobRequest onto `nomad job dispatch`.
 ##
-## build: clones repo@ref, runs the dispatched script, uploads ./artifacts/** to the artifact
-## store, and exits with the script's exit code.
+## build: clones repo@ref, runs the dispatched script, and exits with the script's exit code.
+## ./artifacts/** is collected only on sealed pools (sandbox.nomad.hcl, from the control plane);
+## a shared pool's VM has no way to write to the control plane's artifact store.
 
 job "grove-{{.Kind}}-{{.Pool}}" {
   datacenters = ["dc1"]
@@ -321,11 +322,9 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         code=$?
         set -e
 
-        if [ -d ./artifacts ] && [ -n "$${ARTIFACT_ENDPOINT:-}" ]; then
-          prefix="$${NOMAD_META_artifact_prefix:-$NOMAD_ALLOC_ID}"
-          mc alias set grove "$ARTIFACT_ENDPOINT" "$ARTIFACT_ACCESS_KEY" "$ARTIFACT_SECRET_KEY" >/dev/null
-          mc cp --recursive ./artifacts/ "grove/$ARTIFACT_BUCKET/$prefix/" || true
-        fi
+        # No artifact upload here: the artifact store is a directory on the control plane that
+        # only the control plane writes (sealed pools' `grove sandbox run` copies ./artifacts/**
+        # out of the VM). A shared-pool VM has no credential that could write to it.
 
         exit $code
         EOF

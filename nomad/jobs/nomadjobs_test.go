@@ -118,8 +118,12 @@ func TestRenderAllKindsAndPools(t *testing.T) {
 						t.Errorf("rendered agent/%s missing kill_timeout = \"10m\"", pool)
 					}
 				case "build":
-					if !strings.Contains(out, "mc alias set") {
-						t.Errorf("rendered build/%s missing artifact upload via mc", pool)
+					// Artifacts live on the control plane's disk; a shared VM never uploads
+					// them and is never handed object-store credentials.
+					for _, gone := range []string{"mc alias", "mc cp", "ARTIFACT_ENDPOINT", "ARTIFACT_SECRET_KEY"} {
+						if strings.Contains(out, gone) {
+							t.Errorf("rendered build/%s still uploads artifacts from the VM (%q)", pool, gone)
+						}
 					}
 				case "shell":
 					if strings.Contains(out, "git clone --depth") {
