@@ -25,7 +25,6 @@ import (
 const (
 	defaultOrchardControllerPort = "6120"
 	defaultNomadPort             = "4646"
-	defaultMinIOPort             = "9000"
 	defaultGroveServerPort       = "6130"
 )
 
@@ -154,7 +153,7 @@ func controlPlaneStartStep(r Runner, opts Options, service string, isDarwin bool
 }
 
 func controlPlaneFinalizationSteps(r Runner, opts Options, isDarwin bool, nomadConfigChanged *bool) []Step {
-	services := []string{"orchard-controller", "nomad", "minio"}
+	services := []string{"orchard-controller", "nomad"}
 	steps := make([]Step, 0, len(services))
 	for _, service := range services {
 		var restart *bool
@@ -166,9 +165,8 @@ func controlPlaneFinalizationSteps(r Runner, opts Options, isDarwin bool, nomadC
 	// Nomad is running by now; bootstrap its ACLs before grove serve reloads so the server comes
 	// back up holding the management token.
 	steps = append(steps, nomadACLBootstrapStep(r, opts, isDarwin))
-	// After MinIO is running and before grove serve reloads, so the server comes back up holding
-	// the bucket-scoped credential rather than MinIO's root one.
-	steps = append(steps, minioArtifactUserStep(r, opts))
+	// Older installs ran MinIO as the artifact store; artifacts now live on this machine's disk.
+	steps = append(steps, retireLegacyMinIOStep(r, opts, isDarwin))
 	steps = append(steps, controlPlaneReloadServerStep(r, opts, isDarwin))
 	return steps
 }
@@ -231,21 +229,6 @@ func controlPlaneDependencySteps(r Runner, opts Options, out io.Writer, destOrch
 			},
 		},
 	)
-	if isDarwin {
-		steps = append(steps, trustTapStep(r, tapMinIOStable, out))
-	}
-	steps = append(steps, minioClientStep(r, opts))
-	steps = append(steps, Step{
-		Name:        "minio-binary",
-		Description: minioInstallDescription(isDarwin),
-		Check: func(ctx context.Context) (bool, error) {
-			_, err := lookPath("minio")
-			return err == nil, nil
-		},
-		Apply: func(ctx context.Context) error {
-			return installMinIO(ctx, r, opts, isDarwin)
-		},
-	})
 	return steps
 }
 
@@ -262,26 +245,6 @@ func installNomad(ctx context.Context, r Runner, opts Options, isDarwin bool) er
 		return err
 	}
 	return installPinnedNomad(ctx, r, opts)
-}
-
-func minioInstallDescription(isDarwin bool) string {
-	if isDarwin {
-		return "Install MinIO (`brew install minio/stable/minio`; Homebrew verifies the formula's sha256)."
-	}
-	return fmt.Sprintf("Install MinIO %s to ~/.local/bin from dl.min.io, verifying it against grove's pinned SHA-256.", MinIOVersion)
-}
-
-func installMinIO(ctx context.Context, r Runner, opts Options, isDarwin bool) error {
-	if isDarwin {
-		_, _, err := r.Run(ctx, "brew", "install", "minio/stable/minio")
-		return err
-	}
-	d, err := minioDownload(opts)
-	if err != nil {
-		return err
-	}
-	// ~/.local/bin is shared by every binary grove downloads.
-	return installVerifiedBinary(ctx, r, opts, d, filepath.Join(orchardBinDir(opts), "minio"))
 }
 
 // installPinnedNomad fetches the pinned Nomad release zip for this GOOS/GOARCH, verifies it, and
@@ -313,12 +276,11 @@ func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string,
 	tailnetHost := resolvedTailnetHost(r, opts)
 	orchardAddr := hostPortOrDefault(opts.Controller, tailnetHost, defaultOrchardControllerPort)
 	nomadAddr := hostPortOrDefault(opts.NomadAddr, tailnetHost, defaultNomadPort)
-	minioAddr := tailnetHost + ":" + defaultMinIOPort
 	serverAddr := hostPortOrDefault(opts.ServerURL, tailnetHost, defaultGroveServerPort)
 
 	orchardEnvPath := filepath.Join(cfgDir, "orchard-controller", "env")
 	nomadConfPath := filepath.Join(cfgDir, "nomad", "server.hcl")
-	minioEnvPath := filepath.Join(cfgDir, "minio", "env")
+	artifactDir := artifactStoreDir(opts)
 	fleetPath := filepath.Join(cfgDir, "fleet.yaml")
 	orchardHome := controlPlaneOrchardHome(cfgDir)
 
@@ -362,43 +324,37 @@ func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string,
 			}),
 		},
 		{
-			Name:        "config:minio-env",
-			Description: fmt.Sprintf("Render %s with generated MinIO root credentials (used only to administer MinIO; grove's artifact credential is a separate bucket-scoped user).", minioEnvPath),
+			Name:        "config:artifact-store",
+			Description: fmt.Sprintf("Create the artifact store directory (0700) and record it in config.yaml as artifacts.dir (default %s); drop any legacy S3/MinIO artifact keys.", artifactDir),
 			Check: func(ctx context.Context) (bool, error) {
-				_, err := os.Stat(minioEnvPath)
+				cfg, err := loadOrInitConfig(cfgDir)
+				if err != nil {
+					return false, err
+				}
+				if cfg.Artifacts.Dir == "" || len(cfg.Artifacts.LegacyKeys()) > 0 {
+					return false, nil
+				}
+				info, err := os.Stat(cfg.Artifacts.Dir)
 				if os.IsNotExist(err) {
 					return false, nil
 				}
-				return err == nil, err
+				return err == nil && info.IsDir(), err
 			},
 			Apply: func(ctx context.Context) error {
-				accessKey, err := randomHex(16)
+				cfg, err := loadOrInitConfig(cfgDir)
 				if err != nil {
 					return err
 				}
-				secretKey, err := randomHex(32)
-				if err != nil {
+				dir := cfg.Artifacts.Dir
+				if dir == "" {
+					dir = artifactDir
+				}
+				if err := os.MkdirAll(dir, 0o700); err != nil {
 					return err
 				}
-				content, err := RenderMinIOEnv(MinIOEnvSpec{
-					RootUser:     accessKey,
-					RootPassword: secretKey,
-					DataDir:      filepath.Join(cfgDir, "minio", "data"),
-					Address:      minioAddr,
-				})
-				if err != nil {
-					return err
-				}
-				if err := writeFile(minioEnvPath, content); err != nil {
-					return err
-				}
-				// Root credentials stay in the 0600 env file only. The artifact credential in
-				// config.yaml is minted later by the minio-artifact-user step.
 				return updateConfig(cfgDir, func(cfg *config.Config) {
-					cfg.Artifacts = config.ArtifactsConfig{
-						Endpoint: "http://" + minioAddr,
-						Bucket:   artifactBucket,
-					}
+					cfg.Artifacts.Dir = dir
+					cfg.Artifacts.ClearLegacy()
 				})
 			},
 		},
@@ -445,13 +401,11 @@ func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string,
 }
 
 // controlPlaneServiceSteps render the process supervisors (launchd on macOS, systemd --user on
-// Linux) for orchard controller, nomad, minio and `grove serve`.
+// Linux) for orchard controller, nomad and `grove serve`.
 func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string, isDarwin bool) []Step {
 	groveBin := "grove" // resolved via PATH at runtime by the supervisor
 	nomadConf := filepath.Join(cfgDir, "nomad", "server.hcl")
 	nomadDataDir := filepath.Join(cfgDir, "nomad", "data")
-	minioEnv := filepath.Join(cfgDir, "minio", "env")
-	minioDataDir := filepath.Join(cfgDir, "minio", "data")
 	orchardHome := controlPlaneOrchardHome(cfgDir)
 
 	units := []struct {
@@ -478,14 +432,6 @@ func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string
 			program:     "nomad",
 			args:        []string{"agent", "-config", nomadConf},
 			workingDir:  nomadDataDir,
-		},
-		{
-			name:        "minio",
-			label:       "com.grove.minio",
-			description: "MinIO artifact store",
-			program:     "minio",
-			args:        []string{"server", minioDataDir},
-			env:         map[string]string{"MINIO_CONFIG_ENV_FILE": minioEnv},
 		},
 		{
 			name:        "server",
@@ -560,6 +506,67 @@ func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string
 		}
 	}
 	return steps
+}
+
+// artifactStoreDir is where a fresh control plane keeps job artifacts: next to grove serve's job
+// history (~/.local/state/grove/jobs.json). Written into config.yaml as an absolute path, so
+// `grove serve` and `grove sandbox run` agree on it whatever environment their supervisor gives
+// them.
+func artifactStoreDir(opts Options) string {
+	return filepath.Join(opts.homeDir(), ".local", "state", "grove", "artifacts")
+}
+
+// retireLegacyMinIOStep stops and removes the MinIO service an older `grove install --role
+// control-plane` set up, now that artifacts live on the control plane's disk. It removes only the
+// launchd plist / systemd unit; MinIO's data and credentials under ~/.config/grove/minio are left
+// for the operator to delete (docs/OPERATIONS.md). Satisfied when no such service file exists.
+func retireLegacyMinIOStep(r Runner, opts Options, isDarwin bool) Step {
+	if isDarwin {
+		label := "com.grove.minio"
+		plist := filepath.Join(opts.LaunchAgentsDir(), label+".plist")
+		domain := fmt.Sprintf("gui/%d", os.Getuid())
+		return Step{
+			Name:        "legacy-minio:retire",
+			Description: fmt.Sprintf("Stop and remove the MinIO LaunchAgent (%s) an older grove installed; artifacts are now kept on disk.", plist),
+			Check:       fileAbsent(plist),
+			Apply: func(ctx context.Context) error {
+				_, _, _ = r.Run(ctx, "launchctl", "bootout", domain+"/"+label)
+				return removeIfExists(plist)
+			},
+		}
+	}
+	unit := "grove-minio.service"
+	unitPath := filepath.Join(opts.SystemdUserDir(), unit)
+	return Step{
+		Name:        "legacy-minio:retire",
+		Description: fmt.Sprintf("Stop and remove the MinIO systemd --user unit (%s) an older grove installed; artifacts are now kept on disk.", unitPath),
+		Check:       fileAbsent(unitPath),
+		Apply: func(ctx context.Context) error {
+			_, _, _ = r.Run(ctx, "systemctl", "--user", "disable", "--now", unit)
+			if err := removeIfExists(unitPath); err != nil {
+				return err
+			}
+			_, _, err := r.Run(ctx, "systemctl", "--user", "daemon-reload")
+			return err
+		},
+	}
+}
+
+func fileAbsent(path string) func(context.Context) (bool, error) {
+	return func(context.Context) (bool, error) {
+		_, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, err
+	}
+}
+
+func removeIfExists(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // controlPlaneOrchardHome preserves both layouts Grove has shipped. Early/manual installs put

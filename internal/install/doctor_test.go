@@ -279,7 +279,6 @@ func TestRunDoctor_ReportsUntrustedRequiredTapWithRemediation(t *testing.T) {
 	scriptTapInfo(r, "openai/tools", true, false)
 	scriptTapInfo(r, "cirruslabs/cli", false, false)
 	scriptTapInfo(r, "hashicorp/tap", false, false)
-	scriptTapInfo(r, "minio/stable", false, false)
 	opts := Options{Home: t.TempDir(), GOOS: "darwin", LookPath: alwaysFailLookPath, Exists: alwaysFalseExists}
 
 	results := RunDoctor(context.Background(), r, opts, nil)
@@ -292,7 +291,7 @@ func TestRunDoctor_ReportsUntrustedRequiredTapWithRemediation(t *testing.T) {
 	}
 
 	for _, r := range results {
-		if r.Name == "brew-trust:cirruslabs/cli" || r.Name == "brew-trust:hashicorp/tap" || r.Name == "brew-trust:minio/stable" {
+		if r.Name == "brew-trust:cirruslabs/cli" || r.Name == "brew-trust:hashicorp/tap" {
 			t.Errorf("a tap that was never tapped on this machine should not be reported, got %+v", r)
 		}
 	}

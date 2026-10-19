@@ -177,7 +177,8 @@ func TestCheckTrustedTaps_FlagsInstalledButUntrusted(t *testing.T) {
 	scriptTapInfo(r, "openai/tools", true, false)
 	scriptTapInfo(r, "cirruslabs/cli", false, false)
 	scriptTapInfo(r, "hashicorp/tap", true, true)
-	scriptTapInfo(r, "minio/stable", false, false)
+	// grove no longer installs MinIO: even tapped and untrusted, minio/stable isn't audited.
+	scriptTapInfo(r, "minio/stable", true, false)
 
 	opts := Options{GOOS: "darwin"}
 	results := checkTrustedTaps(context.Background(), r, opts)
@@ -202,7 +203,7 @@ func TestCheckTrustedTaps_FlagsInstalledButUntrusted(t *testing.T) {
 		t.Error("a tap that was never tapped should not be reported (it isn't required yet)")
 	}
 	if _, ok := byName["brew-trust:minio/stable"]; ok {
-		t.Error("a tap that was never tapped should not be reported (it isn't required yet)")
+		t.Error("minio/stable is no longer a grove dependency and should not be audited")
 	}
 
 	hashicorp, ok := byName["brew-trust:hashicorp/tap"]

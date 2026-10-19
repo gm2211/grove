@@ -12,7 +12,7 @@ import (
 // i.e. simulates untampered downloads for opts' platform.
 func scriptPinnedDownloads(r *FakeRunner, opts Options) {
 	ds := []pinnedDownload{homebrewInstallerDownload()}
-	for _, f := range []func(Options) (pinnedDownload, error){nomadDownload, minioDownload, minioClientDownload} {
+	for _, f := range []func(Options) (pinnedDownload, error){nomadDownload} {
 		if d, err := f(opts); err == nil {
 			ds = append(ds, d)
 		}
@@ -24,7 +24,7 @@ func scriptPinnedDownloads(r *FakeRunner, opts Options) {
 }
 
 func TestPinnedChecksumsCoverEverySupportedPlatform(t *testing.T) {
-	for _, table := range []map[string]string{nomadZipSHA256, minioSHA256, minioClientSHA256} {
+	for _, table := range []map[string]string{nomadZipSHA256} {
 		for _, key := range []string{"darwin/amd64", "darwin/arm64", "linux/amd64", "linux/arm64"} {
 			if sum := table[key]; len(sum) != 64 || strings.ToLower(sum) != sum {
 				t.Errorf("%s: pinned sha256 %q is not 64 lower-case hex chars", key, sum)
@@ -52,12 +52,12 @@ func TestPinnedNomadDownloadIsVersionedNotLatest(t *testing.T) {
 
 func TestFetchVerifiedFailsClosedOnMismatch(t *testing.T) {
 	opts := Options{Home: t.TempDir(), GOOS: "linux", GOARCH: "arm64"}
-	d, _ := minioDownload(opts)
+	d, _ := nomadDownload(opts)
 	staged := filepath.Join(downloadDir(opts), d.File)
 	r := NewFakeRunner()
 	r.Script("sha256sum "+staged, FakeResult{Stdout: strings.Repeat("0", 64) + "  " + staged + "\n"})
 
-	err := installVerifiedBinary(context.Background(), r, opts, d, filepath.Join(opts.Home, ".local", "bin", "minio"))
+	_, err := fetchVerified(context.Background(), r, opts, d)
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("expected checksum mismatch, got %v", err)
 	}
@@ -65,7 +65,7 @@ func TestFetchVerifiedFailsClosedOnMismatch(t *testing.T) {
 		t.Error("a download that failed verification must be deleted")
 	}
 	for _, c := range r.Calls {
-		if c.Name == "install" || c.Name == "chmod" {
+		if c.Name == "install" || c.Name == "chmod" || c.Name == "unzip" {
 			t.Fatalf("nothing may be installed after a mismatch, got %s", c.String())
 		}
 	}
@@ -87,11 +87,8 @@ func TestControlPlanePlan_LinuxVerifiesDownloadsBeforeInstalling(t *testing.T) {
 		t.Fatalf("RunPlan: %v", err)
 	}
 	dl := downloadDir(opts)
-	bin := filepath.Join(home, ".local", "bin")
 	nomadZip := filepath.Join(dl, "nomad_"+NomadVersion+"_linux_arm64.zip")
-	minio := filepath.Join(dl, "minio."+MinIOVersion)
 	assertBefore(t, r, "sha256sum "+nomadZip, "unzip -o "+nomadZip+" nomad -d "+filepath.Join(dl, "nomad-"+NomadVersion))
-	assertBefore(t, r, "sha256sum "+minio, "install -m 0755 "+minio+" "+filepath.Join(bin, "minio"))
 	for _, c := range r.Calls {
 		if c.Name == "curl" && strings.Contains(c.String(), "latest") {
 			t.Errorf("no unpinned 'latest' download allowed: %s", c.String())
