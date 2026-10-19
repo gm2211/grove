@@ -69,6 +69,12 @@ type Pool struct {
 	JobMemory uint64 `yaml:"jobMemory,omitempty" json:"jobMemory,omitempty"`
 }
 
+// MacOSPool is the name of the pool whose VMs are macOS guests; every other pool is Linux.
+const MacOSPool = "macos"
+
+// MacOS reports whether p's VMs are macOS guests (the macos pool).
+func (p Pool) MacOS() bool { return p.Name == MacOSPool }
+
 // HostXcodeConfig describes an Xcode application that Orchard mounts from the host into a
 // macOS guest at /Volumes/My Shared Files/grove-xcode.app.
 type HostXcodeConfig struct {

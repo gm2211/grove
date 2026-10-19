@@ -13,17 +13,33 @@ import (
 	"time"
 )
 
-// Paths inside the job's container. The bundle is a tar extracted at the container's root.
+// Top-level directories of the bundle: extracted at a container's root, or in a macOS job's run
+// directory.
 const (
 	workspaceDir = "workspace"
 	groveDir     = "grove"
 )
 
-// runScript is the container's entrypoint: for a job with a repository, the checkout of ref from
-// the .git the control plane fetched (exit 1 if that fails, as with the regular templates); then
-// the job's environment, then its script in /workspace under the same timeout the regular
-// templates apply (124 on expiry). Runner keeps its own timer too, for images without timeout(1).
+// jobPaths says where run.sh finds things in the VM: workspace and grove are shell words (quoted
+// as needed) naming the job's checkout and the directory holding run.sh, script.sh and env.sh, and
+// prelude is shell run first, which may define variables those words use.
+type jobPaths struct {
+	prelude   string
+	workspace string
+	grove     string
+}
+
+// runScript is run.sh for a docker job (see runScriptAt), whose bundle is extracted at its
+// container's root.
 func runScript(timeout time.Duration, ref string, checkout bool) string {
+	return runScriptAt(containerPaths, timeout, ref, checkout)
+}
+
+// runScriptAt is the job's entrypoint: for a job with a repository, the checkout of ref from the
+// .git the control plane fetched (exit 1 if that fails, as with the regular templates); then the
+// job's environment, then its script in the workspace under the same timeout the regular templates
+// apply (124 on expiry). Runner keeps its own timer too, for guests without timeout(1) (macOS).
+func runScriptAt(p jobPaths, timeout time.Duration, ref string, checkout bool) string {
 	secs := int64(timeout / time.Second)
 	if secs < 1 {
 		secs = 1
@@ -35,8 +51,9 @@ func runScript(timeout time.Duration, ref string, checkout bool) string {
 	b.WriteString(`#!/bin/bash
 # Written by grove sandbox run: this job's entrypoint inside its sealed VM.
 set -uo pipefail
-cd /workspace
 `)
+	b.WriteString(p.prelude)
+	fmt.Fprintf(&b, "cd %s\n", p.workspace)
 	if checkout {
 		fmt.Fprintf(&b, `if ! git checkout --force --quiet %[1]s --; then
   echo "grove: could not check out "%[1]s >&2
@@ -44,12 +61,12 @@ cd /workspace
 fi
 `, shQuote(ref))
 	}
-	fmt.Fprintf(&b, `. /grove/env.sh
+	fmt.Fprintf(&b, `. %[2]s/env.sh
 if command -v timeout >/dev/null 2>&1; then
-  exec timeout --kill-after=10 %d bash -eo pipefail /grove/script.sh
+  exec timeout --kill-after=10 %[1]d bash -eo pipefail %[2]s/script.sh
 fi
-exec bash -eo pipefail /grove/script.sh
-`, secs)
+exec bash -eo pipefail %[2]s/script.sh
+`, secs, p.grove)
 	return b.String()
 }
 

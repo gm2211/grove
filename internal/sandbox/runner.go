@@ -24,9 +24,10 @@ import (
 // ExitCanceled is what Run returns when its context ends (Nomad stopping the job): 128+SIGTERM.
 const ExitCanceled = 143
 
-// drainingMarker is the file a sealed VM's shutdown script creates (internal/fleet) to stop new
-// jobs landing in it; drainingExit is how the create command reports it, and exitDraining is how
-// job.run hands that back to Run, which then picks another VM. Run never returns exitDraining.
+// drainingMarker is the file a sealed Linux VM's shutdown script creates (internal/fleet) to stop
+// new jobs landing in it (fleet.SealedDrainingMarkerMacOS in a macOS VM); drainingExit is how the
+// create command reports it, and exitDraining is how job.run hands that back to Run, which then
+// picks another VM. Run never returns exitDraining.
 const (
 	drainingMarker = fleet.SealedDrainingMarker
 	drainingExit   = 75
@@ -45,7 +46,8 @@ const (
 	defaultTimeoutSlack = time.Minute
 	// createTimeout bounds `docker create`, which pulls the image on first use.
 	createTimeout = 30 * time.Minute
-	// commandTimeout bounds the short docker commands (inspect, start, rm).
+	// commandTimeout bounds the short commands (docker inspect, start, rm and their macOS
+	// counterparts).
 	commandTimeout = time.Minute
 	// vmWait is how long an exec waits for the VM's agent to come up.
 	vmWait = 30 * time.Second
@@ -73,10 +75,11 @@ type Runner struct {
 	// when the pool has no sealed VM running at all.
 	SlotWait    time.Duration
 	NoVMTimeout time.Duration
-	// StopGrace is how long `docker stop` lets the job shut down before killing it.
+	// StopGrace is how long stopping the job (`docker stop`, or TERM to a macOS job's process
+	// group) lets it shut down before killing it.
 	StopGrace time.Duration
-	// TimeoutSlack is how long past the job's own timeout Runner waits before stopping the
-	// container itself. The container's timeout(1) normally fires first.
+	// TimeoutSlack is how long past the job's own timeout Runner waits before stopping the job
+	// itself. A container's timeout(1) normally fires first; a macOS guest has none.
 	TimeoutSlack time.Duration
 	// ArtifactLimit caps the bytes of artifacts collected from one job.
 	ArtifactLimit int64
@@ -169,8 +172,7 @@ func (r *Runner) Run(ctx context.Context, req Request) int {
 		if slot == nil {
 			return code
 		}
-		j := &job{r: r, req: req, vm: slot.VM, name: req.containerName()}
-		code = j.run(ctx, checkout)
+		code = r.newJob(req, slot.VM).run(ctx, checkout)
 		slot.Release()
 		if code != exitDraining {
 			return code
@@ -237,8 +239,20 @@ type job struct {
 	req  Request
 	vm   string
 	name string
+	// b runs the job's steps in the VM: docker in a Linux VM, plain processes in a macOS one.
+	b backend
 
-	stdout, stderr *logStream
+	logs jobLogs
+}
+
+func (r *Runner) newJob(req Request, vm string) *job {
+	j := &job{r: r, req: req, vm: vm, name: req.containerName()}
+	if req.OS == OSDarwin {
+		j.b = macBackend{}
+	} else {
+		j.b = dockerBackend{}
+	}
+	return j
 }
 
 // errLost marks a failure to talk to the VM at all, as opposed to a command that ran and failed.
@@ -277,8 +291,6 @@ func (j *job) exec(ctx context.Context, timeout time.Duration, cmd string, stdin
 }
 
 func (j *job) run(ctx context.Context, checkout string) int {
-	defer j.remove()
-
 	// A step that failed because Nomad is stopping the job reports that, not the failure.
 	failed := func(code int) int {
 		if ctx.Err() != nil {
@@ -286,7 +298,12 @@ func (j *job) run(ctx context.Context, checkout string) int {
 		}
 		return code
 	}
-	if code := j.create(ctx); code != 0 {
+	code := j.b.create(ctx, j)
+	// A VM that refused the job because it is shutting down was left untouched.
+	if code != exitDraining {
+		defer j.b.remove(j)
+	}
+	if code != 0 {
 		return failed(code)
 	}
 	j.r.say("running in sealed VM %s (pool %s)", j.vm, j.req.Pool)
@@ -296,59 +313,21 @@ func (j *job) run(ctx context.Context, checkout string) int {
 	if code := j.start(ctx); code != 0 {
 		return failed(code)
 	}
-	code := j.supervise(ctx)
+	code = j.supervise(ctx)
 	if code != ExitLost && ctx.Err() == nil && j.req.Kind == KindBuild {
 		j.collectArtifacts()
 	}
 	return code
 }
 
-// create makes the job's container without starting it, pulling the image if the VM lacks it.
-func (j *job) create(ctx context.Context) int {
-	args := []string{"docker", "create", "--init", "--name", j.name,
-		"--label", "grove.alloc=" + j.req.AllocID,
-		"--label", "grove.pool=" + j.req.Pool,
-		"--label", "grove.kind=" + j.req.Kind,
-		"--workdir", "/workspace", "--entrypoint", "/bin/bash"}
-	if j.req.CPU > 0 {
-		// The regular templates size jobs in Nomad MHz at 2000 MHz per core.
-		args = append(args, "--cpus", strconv.FormatFloat(float64(j.req.CPU)/2000, 'f', 2, 64))
-	}
-	if j.req.Memory > 0 {
-		args = append(args, "--memory", strconv.Itoa(j.req.Memory)+"m")
-	}
-	args = append(args, j.req.Image, "/grove/run.sh")
-
-	// A VM whose shutdown script has started (fleet's sealed shutdown script) takes no new job.
-	cmd := fmt.Sprintf("if [ -e %s ]; then exit %d; fi; %s", drainingMarker, drainingExit, shellJoin(args))
-	var errBuf bytes.Buffer
-	code, err := j.exec(ctx, createTimeout, cmd, nil, nil, io.MultiWriter(j.r.stderr(), &errBuf))
-	if err != nil {
-		j.r.say("could not create the job's container in %s: %v", j.vm, err)
-		return ExitLost
-	}
-	if code == drainingExit {
-		return exitDraining
-	}
-	if code != 0 {
-		if strings.Contains(errBuf.String(), "Cannot connect to the Docker daemon") {
-			j.r.say("docker isn't running in %s", j.vm)
-			return ExitLost
-		}
-		j.r.say("could not create the job's container (docker create exited %d)", code)
-		return ExitSetup
-	}
-	return 0
-}
-
-// push copies the checkout and the job's files into the container.
+// push copies the checkout and the job's files into the job's place in the VM.
 func (j *job) push(ctx context.Context, checkout string) int {
 	env, dropped := envScript(j.req.Env)
 	if len(dropped) > 0 {
 		j.r.say("%s served only the checkout and are not passed into the sealed VM", strings.Join(dropped, " and "))
 	}
 	files := map[string]string{
-		"run.sh":    runScript(j.req.timeout(), j.req.Ref, checkout != ""),
+		"run.sh":    runScriptAt(j.b.paths(), j.req.timeout(), j.req.Ref, checkout != ""),
 		"script.sh": j.req.Script,
 		"env.sh":    env,
 	}
@@ -367,8 +346,9 @@ func (j *job) push(ctx context.Context, checkout string) int {
 		bundled <- err
 	}()
 
+	step := j.b.push(j)
 	var errBuf bytes.Buffer
-	code, err := j.exec(ctx, createTimeout, shellJoin([]string{"docker", "cp", "-", j.name + ":/"}), pr, nil, &errBuf)
+	code, err := j.exec(ctx, createTimeout, step.cmd, pr, nil, &errBuf)
 	pr.Close() // a writer the VM stopped reading from gets io.ErrClosedPipe
 	if bundleErr := <-bundled; bundleErr != nil && !errors.Is(bundleErr, io.ErrClosedPipe) {
 		j.r.say("could not pack the job's files: %v", bundleErr)
@@ -379,21 +359,22 @@ func (j *job) push(ctx context.Context, checkout string) int {
 		return ExitLost
 	}
 	if code != 0 {
-		j.r.say("could not copy the job's files into its container (docker cp exited %d): %s", code, strings.TrimSpace(errBuf.String()))
+		j.r.say("could not copy the job's files into %s (%s exited %d): %s", j.b.place(), step.tool, code, strings.TrimSpace(errBuf.String()))
 		return ExitSetup
 	}
 	return 0
 }
 
 func (j *job) start(ctx context.Context) int {
+	step := j.b.start(j)
 	var errBuf bytes.Buffer
-	code, err := j.exec(ctx, commandTimeout, shellJoin([]string{"docker", "start", j.name}), nil, nil, &errBuf)
+	code, err := j.exec(ctx, commandTimeout, step.cmd, nil, nil, &errBuf)
 	if err != nil {
 		j.r.say("could not start the job in %s: %v", j.vm, err)
 		return ExitLost
 	}
 	if code != 0 {
-		j.r.say("could not start the job (docker start exited %d): %s", code, strings.TrimSpace(errBuf.String()))
+		j.r.say("could not start the job (%s exited %d): %s", step.tool, code, strings.TrimSpace(errBuf.String()))
 		return ExitSetup
 	}
 	return 0
@@ -402,8 +383,7 @@ func (j *job) start(ctx context.Context) int {
 // supervise follows the running job's logs, polls it until it exits, and enforces its timeout and
 // cancellation. It returns the job's exit code.
 func (j *job) supervise(ctx context.Context) int {
-	j.stdout = newLogStream(j.r.Stdout)
-	j.stderr = newLogStream(j.r.stderr())
+	j.logs = j.b.newLogs(j)
 
 	poke := make(chan struct{}, 1)
 	followCtx, stopFollow := context.WithCancel(context.Background())
@@ -473,13 +453,9 @@ func (j *job) supervise(ctx context.Context) int {
 func (j *job) follow(ctx context.Context, poke chan<- struct{}, done chan<- struct{}) {
 	defer close(done)
 	for {
-		args := []string{"docker", "logs", "--follow", "--timestamps"}
-		if s := since(j.stdout, j.stderr); s != "" {
-			args = append(args, "--since", s)
-		}
-		_, _ = j.exec(ctx, 0, shellJoin(append(args, j.name)), nil, j.stdout, j.stderr)
-		j.stdout.reset()
-		j.stderr.reset()
+		stdout, stderr := j.logs.streams()
+		_, _ = j.exec(ctx, 0, j.logs.command(true), nil, stdout, stderr)
+		j.logs.reset()
 		select {
 		case poke <- struct{}{}:
 		default:
@@ -494,42 +470,37 @@ func (j *job) follow(ctx context.Context, poke chan<- struct{}, done chan<- stru
 
 // catchUp fetches whatever output follow didn't deliver, once the job has exited.
 func (j *job) catchUp() {
-	args := []string{"docker", "logs", "--timestamps"}
-	if s := since(j.stdout, j.stderr); s != "" {
-		args = append(args, "--since", s)
-	}
-	if _, err := j.exec(context.Background(), 30*time.Second, shellJoin(append(args, j.name)), nil, j.stdout, j.stderr); err != nil {
+	stdout, stderr := j.logs.streams()
+	if _, err := j.exec(context.Background(), 30*time.Second, j.logs.command(false), nil, stdout, stderr); err != nil {
 		j.r.say("could not fetch the end of the job's output: %v", err)
 	}
-	j.stdout.flush()
-	j.stderr.flush()
+	j.logs.flush()
 }
 
-// inspect reports the container's state ("running", "exited", …) and exit code.
+// inspect reports the job's state ("running", "exited", …) and exit code. The backend's inspect
+// command prints both as "<state> <code>".
 func (j *job) inspect() (string, int, error) {
+	step := j.b.inspect(j)
 	var out bytes.Buffer
-	code, err := j.exec(context.Background(), commandTimeout,
-		shellJoin([]string{"docker", "inspect", "--format", "{{.State.Status}} {{.State.ExitCode}}", j.name}), nil, &out, nil)
+	code, err := j.exec(context.Background(), commandTimeout, step.cmd, nil, &out, nil)
 	if err != nil {
 		return "", 0, err
 	}
 	if code != 0 {
-		return "", 0, fmt.Errorf("docker inspect exited %d", code)
+		return "", 0, fmt.Errorf("%s exited %d", step.tool, code)
 	}
 	status, exit, ok := strings.Cut(strings.TrimSpace(out.String()), " ")
 	n, perr := strconv.Atoi(exit)
 	if !ok || perr != nil {
-		return "", 0, fmt.Errorf("unexpected docker inspect output %q", out.String())
+		return "", 0, fmt.Errorf("unexpected %s output %q", step.tool, out.String())
 	}
 	return status, n, nil
 }
 
-// stop asks the container to stop, killing it after grace, and returns its exit code, or -1 when
-// that can't be read.
+// stop asks the job to stop, killing it after grace, and returns its exit code, or -1 when that
+// can't be read.
 func (j *job) stop(grace time.Duration) int {
-	secs := strconv.Itoa(max(int(grace/time.Second), 1))
-	if _, err := j.exec(context.Background(), grace+commandTimeout,
-		shellJoin([]string{"docker", "stop", "-t", secs, j.name}), nil, nil, nil); err != nil {
+	if _, err := j.exec(context.Background(), grace+commandTimeout, j.b.stop(j, grace).cmd, nil, nil, nil); err != nil {
 		j.r.say("could not stop the job in %s: %v", j.vm, err)
 		return -1
 	}
@@ -540,16 +511,9 @@ func (j *job) stop(grace time.Duration) int {
 	return code
 }
 
-// remove deletes the container and everything in it.
-func (j *job) remove() {
-	if _, err := j.exec(context.Background(), commandTimeout, shellJoin([]string{"docker", "rm", "--force", j.name}), nil, nil, nil); err != nil {
-		j.r.say("could not remove the job's container from %s: %v", j.vm, err)
-	}
-}
-
-// collectArtifacts copies the build's ./artifacts/** out of its container and uploads each file
-// under the job's artifact prefix, as the regular build template's `mc cp` does. The VM sends a
-// tar; nothing from it touches the control plane's disk.
+// collectArtifacts copies the build's ./artifacts/** out of the VM and uploads each file under
+// the job's artifact prefix, as the regular build template's `mc cp` does. The VM sends a tar;
+// nothing from it touches the control plane's disk.
 func (j *job) collectArtifacts() {
 	if j.r.Uploader == nil || j.req.ArtifactPrefix == "" {
 		return
@@ -564,21 +528,21 @@ func (j *job) collectArtifacts() {
 		uploaded <- err
 	}()
 
+	step := j.b.artifacts(j)
 	var errBuf bytes.Buffer
-	code, err := j.exec(context.Background(), createTimeout,
-		shellJoin([]string{"docker", "cp", j.name + ":/workspace/artifacts", "-"}), nil, pw, &errBuf)
+	code, err := j.exec(context.Background(), createTimeout, step.cmd, nil, pw, &errBuf)
 	pw.CloseWithError(err)
 	upErr := <-uploaded
 
 	switch {
-	case code != 0 && strings.Contains(errBuf.String(), "Could not find the file"):
+	case code != 0 && j.b.noArtifacts(errBuf.String()):
 		return // the job made no artifacts
 	case upErr != nil:
 		j.r.say("could not upload the job's artifacts: %v", upErr)
 	case err != nil:
 		j.r.say("could not copy the job's artifacts out of %s: %v", j.vm, err)
 	case code != 0:
-		j.r.say("could not copy the job's artifacts out (docker cp exited %d): %s", code, strings.TrimSpace(errBuf.String()))
+		j.r.say("could not copy the job's artifacts out (%s exited %d): %s", step.tool, code, strings.TrimSpace(errBuf.String()))
 	default:
 		if count > 0 {
 			j.r.say("uploaded %d artifact(s)", count)
@@ -586,8 +550,9 @@ func (j *job) collectArtifacts() {
 	}
 }
 
-// uploadTar uploads the regular files in a `docker cp …/artifacts -` stream. Paths are taken
-// relative to the artifacts directory; anything that would climb out of it is skipped.
+// uploadTar uploads the regular files in an artifacts tar stream (`docker cp …/artifacts -`, or
+// `tar -c … artifacts` in a macOS VM). Paths are taken relative to the artifacts directory;
+// anything that would climb out of it is skipped.
 func (j *job) uploadTar(r io.Reader) (int, error) {
 	prefix := strings.TrimSuffix(j.req.ArtifactPrefix, "/") + "/"
 	tr := tar.NewReader(r)

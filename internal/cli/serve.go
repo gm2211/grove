@@ -20,6 +20,7 @@ import (
 	"github.com/gm2211/grove/internal/fleet"
 	"github.com/gm2211/grove/internal/gitauth"
 	"github.com/gm2211/grove/internal/orchard"
+	"github.com/gm2211/grove/internal/sandbox"
 	"github.com/gm2211/grove/internal/server"
 	"github.com/gm2211/grove/internal/wire"
 )
@@ -311,9 +312,19 @@ func poolConfigs(cfg *config.Config) ([]dispatch.PoolConfig, error) {
 			AllowDockerSocket: p.AllowDockerSocket,
 			Isolated:          p.Isolated(),
 			Slots:             sealedVMSlots(p),
+			OS:                poolOS(p),
 		})
 	}
 	return pools, nil
+}
+
+// poolOS is the guest OS of p's VMs, as `grove sandbox run --os` takes it: sandbox.OSDarwin for
+// the macos pool, sandbox.OSLinux for every other.
+func poolOS(p fleet.Pool) string {
+	if p.MacOS() {
+		return sandbox.OSDarwin
+	}
+	return sandbox.OSLinux
 }
 
 // sealedVMGuestReserveMiB is the memory a sealed VM keeps for its own OS and docker daemon when
@@ -322,10 +333,14 @@ const sealedVMGuestReserveMiB = 512
 
 // sealedVMSlots is how many jobs one VM of a sealed pool runs at once: as many as fit its CPU (at
 // Nomad's 2000 MHz per core) and memory at the pool's per-job sizing, and at least one. Nomad
-// does this sum for a shared pool's VMs; a sealed VM runs no Nomad client.
+// does this sum for a shared pool's VMs; a sealed VM runs no Nomad client. A sealed macOS VM runs
+// exactly one job, and is then deleted and recreated (see internal/sandbox).
 func sealedVMSlots(p fleet.Pool) int {
 	if !p.Isolated() {
 		return 0
+	}
+	if p.MacOS() {
+		return 1
 	}
 	byCPU := int(p.CPU*2000) / int(p.JobCPUOrDefault())
 	byMemory := 0

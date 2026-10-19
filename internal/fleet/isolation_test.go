@@ -18,6 +18,13 @@ func isolatedPool() Pool {
 	return pool
 }
 
+func isolatedMacOSPool() Pool {
+	pool := isolatedPool()
+	pool.Name = "macos"
+	pool.Image = "ghcr.io/example/macos:latest"
+	return pool
+}
+
 func isolatedOptions() Options {
 	return Options{TailscaleAuthKey: "tskey-auth-abc", NomadRPCAddress: "100.64.0.10:4647"}
 }
@@ -36,10 +43,11 @@ func TestSpecValidate_Network(t *testing.T) {
 			pool:    Pool{Name: "linux", Image: "image", PerWorker: 1, Network: "softnet"},
 			wantErr: `network must be "shared" or "isolated"`,
 		},
+		{name: "isolated macos pool", pool: Pool{Name: "macos", Image: "image", PerWorker: 1, Network: "isolated"}},
 		{
-			name:    "isolated macos pool",
-			pool:    Pool{Name: "macos", Image: "image", PerWorker: 1, Network: "isolated"},
-			wantErr: "only supported for Linux pools",
+			name:    "isolated macos with docker socket",
+			pool:    Pool{Name: "macos", Image: "image", PerWorker: 1, Network: "isolated", AllowDockerSocket: true},
+			wantErr: "allowDockerSocket can't be combined",
 		},
 		{
 			name:    "isolated with docker socket",
@@ -149,13 +157,11 @@ func TestPlan_IsolatedPool_NeedsNoTailnetConfig(t *testing.T) {
 	}
 }
 
-func TestIsolationProblem_LinuxOnly(t *testing.T) {
+func TestIsolationProblem_EveryPoolCanBeSealed(t *testing.T) {
 	if problem := isolationProblem(isolatedPool()); problem != "" {
 		t.Errorf("isolated Linux pool: %q", problem)
 	}
-	macos := isolatedPool()
-	macos.Name = "macos"
-	if problem := isolationProblem(macos); !strings.Contains(problem, "only for Linux pools") {
+	if problem := isolationProblem(isolatedMacOSPool()); problem != "" {
 		t.Errorf("isolated macOS pool: %q", problem)
 	}
 }
@@ -456,5 +462,224 @@ func TestBuildShutdownScript_SealedWaitsForJobs(t *testing.T) {
 	}
 	if strings.Contains(script, "nomad") || strings.Contains(script, nodeTokenSecretPlaceholder) {
 		t.Errorf("sealed shutdown script mentions Nomad:\n%s", script)
+	}
+}
+
+func TestPlan_IsolatedMacOSPool_CreatesSealedVM(t *testing.T) {
+	client := &fakeOrchardClient{workers: []orchard.Worker{onlineWorker("mac1")}}
+	opts := isolatedOptions()
+	r := &Reconciler{Client: client, Spec: &Spec{Pools: []Pool{isolatedMacOSPool()}}, Options: opts}
+
+	plan, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(plan.Blocked) != 0 || len(plan.Creates) != 1 {
+		t.Fatalf("want one sealed macOS VM, got %+v", plan)
+	}
+	spec := plan.Creates[0].Spec
+	if !spec.Softnet || !slices.Equal(spec.SoftnetBlock, []string{"out @host"}) {
+		t.Fatalf("sealed macOS VM must run on Softnet with the host blocked, got Softnet=%v SoftnetBlock=%q", spec.Softnet, spec.SoftnetBlock)
+	}
+	if !strings.Contains(spec.StartupScript, "# --- network: isolated (sealed, macOS) ---") {
+		t.Fatalf("missing the sealed macOS section:\n%s", spec.StartupScript)
+	}
+	// No secret and nothing that reaches home, even with a tailnet key and a Nomad address
+	// configured for the shared pools.
+	for _, unwanted := range []string{"tskey-auth-abc", "tailscale up", "--authkey", "grove-meta.hcl", "grove-rpc.hcl",
+		"100.64.0.10", "launchctl kickstart", "launchctl bootstrap", "systemctl", "docker", "egress-fence"} {
+		if strings.Contains(spec.StartupScript, unwanted) {
+			t.Errorf("sealed macOS startup script contains %q:\n%s", unwanted, spec.StartupScript)
+		}
+	}
+	for _, unwanted := range []string{"nomad", "NOMAD_TOKEN", nodeTokenSecretPlaceholder, nodeTokenAccessorPlaceholder, "docker", "tskey"} {
+		if strings.Contains(spec.ShutdownScript, unwanted) {
+			t.Errorf("sealed macOS shutdown script contains %q:\n%s", unwanted, spec.ShutdownScript)
+		}
+	}
+
+	// With Nomad ACLs on, a shared VM's scripts carry node-token blocks; a sealed one never does.
+	r.Options.NodeTokens = &fakeNodeTokens{}
+	plan, err = r.Plan(context.Background())
+	if err != nil {
+		t.Fatalf("Plan with node tokens: %v", err)
+	}
+	spec = plan.Creates[0].Spec
+	if strings.Contains(spec.StartupScript+spec.ShutdownScript, "grove:node-token") || strings.Contains(spec.StartupScript, "grove:client-acl") {
+		t.Errorf("sealed macOS VM got a Nomad token block:\n%s\n%s", spec.StartupScript, spec.ShutdownScript)
+	}
+}
+
+// TestPlan_SealedMacOSVMDeletedAfterItsJob_IsRecreated: the job runner deletes a sealed macOS VM
+// once its one job is over; the next reconcile simply creates it again under the same name, from
+// the image, with the same sealed spec.
+func TestPlan_SealedMacOSVMDeletedAfterItsJob_IsRecreated(t *testing.T) {
+	pool := isolatedMacOSPool()
+	r := &Reconciler{Spec: &Spec{Pools: []Pool{pool}}}
+	want := r.vmSpec(pool, "mac1", "macos-mac1-0")
+	running := orchard.VM{
+		Name: want.Name, Status: "running", Image: want.Image, CPU: want.CPU, Memory: want.Memory,
+		RestartPolicy: want.RestartPolicy, StartupScript: want.StartupScript, ShutdownScript: want.ShutdownScript,
+		ShutdownTimeout: want.ShutdownTimeout, Softnet: true, SoftnetBlock: []string{"out @host"},
+		Labels: map[string]string{LabelWorkerPin: "mac1"},
+	}
+	client := &fakeOrchardClient{workers: []orchard.Worker{onlineWorker("mac1")}, vms: []orchard.VM{running}}
+	r.Client = client
+
+	plan, err := r.Plan(context.Background())
+	if err != nil || !plan.Empty() {
+		t.Fatalf("Plan with the VM running = %+v, %v; want nothing to do", plan, err)
+	}
+
+	client.vms = nil // the runner deleted it
+	plan, err = r.Plan(context.Background())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(plan.Deletes) != 0 || len(plan.Creates) != 1 || plan.Creates[0].Spec.Name != "macos-mac1-0" {
+		t.Fatalf("plan = %+v, want macos-mac1-0 recreated", plan)
+	}
+	if got := plan.Creates[0].Spec; got.StartupScript != want.StartupScript || !got.Softnet {
+		t.Fatalf("recreated spec differs from the original sealed spec: %+v", got)
+	}
+}
+
+func TestBuildStartupScript_IsolatedMacOS(t *testing.T) {
+	script := buildStartupScript(isolatedMacOSPool(), "mac1", "macos-mac1-0", isolatedOptions())
+
+	// Nomad and Tailscale go off first; then DNS, then the job user.
+	last := -1
+	for _, want := range []string{
+		"grove_vm='macos-mac1-0'",
+		"for grove_service in com.grove.nomad homebrew.mxcl.tailscale; do",
+		`grove_priv launchctl disable "system/$grove_service"`,
+		`grove_priv launchctl bootout "system/$grove_service"`,
+		"grove_priv rm -f /private/var/run/grove-draining",
+		`grove_priv networksetup -setdnsservers "$grove_dns_service" 1.1.1.1 8.8.8.8`,
+		macosJobUserScript,
+	} {
+		at := strings.Index(script, want)
+		if at < 0 {
+			t.Fatalf("sealed macOS startup script missing %q:\n%s", want, script)
+		}
+		if at < last {
+			t.Fatalf("sealed macOS startup script has %q out of order:\n%s", want, script)
+		}
+		last = at
+	}
+	if strings.Count(script, "dscl . -create /Users/"+MacOSJobUser+" UniqueID") != 1 {
+		t.Errorf("the job user must be created by the shared macosJobUserScript, once:\n%s", script)
+	}
+
+	pool := isolatedMacOSPool()
+	pool.HostXcode = &HostXcodeConfig{Path: "/Applications/Xcode.app", BuildVersion: "27A266a"}
+	pool.StartupScript = "echo custom"
+	script = buildStartupScript(pool, "mac1", "macos-mac1-0", Options{})
+	if !strings.Contains(script, "xcrun --sdk macosx --show-sdk-path") || strings.Contains(script, "launchctl bootstrap") {
+		t.Errorf("a sealed pool with hostXcode checks Xcode but never brings Nomad back:\n%s", script)
+	}
+	if !strings.HasSuffix(script, "# --- pool.startupScript ---\necho custom\n") {
+		t.Errorf("the pool's own startup script must run last:\n%s", script)
+	}
+}
+
+// TestBuildStartupScript_IsolatedMacOSRunsThroughFakeSudo executes the sealed macOS startup script
+// as an unprivileged guest user against stub commands and checks every privileged step, in order.
+func TestBuildStartupScript_IsolatedMacOSRunsThroughFakeSudo(t *testing.T) {
+	fakeBin := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "sudo.log")
+	for name, body := range map[string]string{
+		"id":    "#!/bin/sh\necho 502\n",
+		"uname": "#!/bin/sh\necho Darwin\n",
+		// Only -listallnetworkservices runs unprivileged.
+		"networksetup": "#!/bin/sh\n[ \"$1\" = -listallnetworkservices ] || exit 64\n" +
+			"printf '%s\\n' 'An asterisk (*) denotes that a network service is disabled.' 'Ethernet' '*Thunderbolt Bridge' 'Wi-Fi'\n",
+		"dscl":      "#!/bin/sh\n[ \"$2\" = -read ] || exit 64\nexit 56\n", // no job user yet
+		"launchctl": "#!/bin/sh\nexit 64\n",
+		"sudo":      "#!/bin/sh\nset -eu\n[ \"${1:-}\" = \"-n\" ] || exit 65\nshift\nprintf '%s\\n' \"$*\" >> \"$GROVE_TEST_SUDO_LOG\"\n",
+	} {
+		if err := os.WriteFile(filepath.Join(fakeBin, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	script := buildStartupScript(isolatedMacOSPool(), "mac1", "macos-mac1-0", isolatedOptions())
+	cmd := exec.Command("/bin/sh", "-c", script)
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_SUDO_LOG="+logPath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("sealed macOS startup script failed through fake sudo: %v\n%s", err, output)
+	}
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read sudo log: %v", err)
+	}
+	got := strings.Split(strings.TrimSpace(string(log)), "\n")
+	want := []string{
+		"launchctl disable system/com.grove.nomad",
+		"launchctl bootout system/com.grove.nomad",
+		"launchctl disable system/homebrew.mxcl.tailscale",
+		"launchctl bootout system/homebrew.mxcl.tailscale",
+		"pkill -x nomad",
+		"pkill -x tailscaled",
+		"rm -f /private/var/run/grove-draining",
+		"networksetup -setdnsservers Ethernet 1.1.1.1 8.8.8.8",
+		"networksetup -setdnsservers Thunderbolt Bridge 1.1.1.1 8.8.8.8",
+		"networksetup -setdnsservers Wi-Fi 1.1.1.1 8.8.8.8",
+		"dscacheutil -flushcache",
+		"killall -HUP mDNSResponder",
+		"dscl . -create /Groups/_grovejob",
+	}
+	if len(got) < len(want) || !slices.Equal(got[:len(want)], want) {
+		t.Fatalf("privileged steps:\n%s\nwant them to start with:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	tail := strings.Join(got[len(want):], "\n")
+	for _, step := range []string{"dscl . -create /Users/_grovejob UniqueID 7460", "mkdir -p /private/var/grove-job", "chmod 0700 /private/var/grove-job"} {
+		if !strings.Contains(tail, step) {
+			t.Errorf("privileged steps miss %q:\n%s", step, tail)
+		}
+	}
+}
+
+// TestBuildShutdownScript_SealedMacOSWaitsForJobs runs a sealed macOS VM's shutdown script against
+// a stub pgrep that finds job processes for two polls: it must mark the VM draining first, then
+// wait for the job user's processes to end, and never touch Nomad or docker.
+func TestBuildShutdownScript_SealedMacOSWaitsForJobs(t *testing.T) {
+	fakeBin := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "steps.log")
+	counter := filepath.Join(t.TempDir(), "polls")
+	for name, body := range map[string]string{
+		"id":     "#!/bin/sh\necho 502\n",
+		"sleep":  "#!/bin/sh\nexit 0\n",
+		"nomad":  "#!/bin/sh\nexit 70\n",
+		"docker": "#!/bin/sh\nexit 70\n",
+		"pgrep": "#!/bin/sh\nprintf 'pgrep %s\\n' \"$*\" >> \"$GROVE_TEST_LOG\"\n" +
+			"n=$(cat \"$GROVE_TEST_COUNTER\" 2>/dev/null || echo 0)\nn=$((n+1))\necho $n > \"$GROVE_TEST_COUNTER\"\n[ $n -le 2 ]\n",
+		"sudo":  "#!/bin/sh\n[ \"$1\" = -n ] || exit 65\nshift\nprintf 'sudo %s\\n' \"$*\" >> \"$GROVE_TEST_LOG\"\nexec \"$@\"\n",
+		"touch": "#!/bin/sh\nexit 0\n",
+	} {
+		if err := os.WriteFile(filepath.Join(fakeBin, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	script, timeout := buildShutdownScript(isolatedMacOSPool(), true)
+	if timeout != defaultShutdownTimeout {
+		t.Errorf("timeout = %s", timeout)
+	}
+	if !strings.Contains(script, "grove_deadline=$(( $(date +%s) + 9000 ))") {
+		t.Errorf("shutdown wait must be bounded by grove_deadline:\n%s", script)
+	}
+	cmd := exec.Command("/bin/sh", "-c", script)
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_LOG="+logPath, "GROVE_TEST_COUNTER="+counter)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("sealed macOS shutdown script failed: %v\n%s", err, output)
+	}
+	log, _ := os.ReadFile(logPath)
+	want := "sudo touch /private/var/run/grove-draining\n" + strings.Repeat("pgrep -U _grovejob\n", 3)
+	if string(log) != want {
+		t.Fatalf("steps:\n%s\nwant:\n%s", log, want)
+	}
+	if strings.Contains(script, "nomad") || strings.Contains(script, nodeTokenSecretPlaceholder) {
+		t.Errorf("sealed macOS shutdown script mentions Nomad:\n%s", script)
 	}
 }

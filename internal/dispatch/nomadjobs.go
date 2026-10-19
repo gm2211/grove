@@ -34,6 +34,9 @@ type PoolConfig struct {
 	// Slots is how many jobs one of a sealed pool's VMs runs at once (see sandbox.Slots), since
 	// no Nomad client in the VM counts them. Values below 1 mean 1.
 	Slots int
+	// OS is a sealed pool's guest OS ("linux" or "darwin", see sandbox.Request.OS), which picks
+	// how `grove sandbox run` drives its jobs. "" means linux.
+	OS string
 }
 
 // templateData is what a nomad/jobs/<kind>.nomad.hcl template is rendered with — see
@@ -51,6 +54,8 @@ type templateData struct {
 	// Nomad client runs, and the pool's per-VM slot count.
 	GroveBin string
 	Slots    int
+	// OS is the pool's guest OS for sandbox.nomad.hcl's --os; "" for a Linux pool.
+	OS string
 }
 
 const DefaultRunnerImage = "ghcr.io/gm2211/grove-runner:latest"
@@ -113,7 +118,7 @@ func EnsureJobs(ctx context.Context, nc nomad.Client, pools []PoolConfig) error 
 				return fmt.Errorf("nomadjobs: parse template %s: %w", file, err)
 			}
 			var buf bytes.Buffer
-			data := templateData{Kind: kind, Pool: pool.Name, CPU: pool.CPU, Memory: pool.Memory, AllowDockerSocket: pool.AllowDockerSocket, RunnerImage: pool.RunnerImage, GroveBin: groveBin, Slots: max(pool.Slots, 1)}
+			data := templateData{Kind: kind, Pool: pool.Name, CPU: pool.CPU, Memory: pool.Memory, AllowDockerSocket: pool.AllowDockerSocket, RunnerImage: pool.RunnerImage, GroveBin: groveBin, Slots: max(pool.Slots, 1), OS: pool.OS}
 			if err := tmpl.ExecuteTemplate(&buf, file, data); err != nil {
 				return fmt.Errorf("nomadjobs: render %s/%s: %w", kind, pool.Name, err)
 			}

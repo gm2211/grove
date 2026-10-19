@@ -27,6 +27,7 @@ type renderData struct {
 	RunnerImage       string
 	GroveBin          string
 	Slots             int
+	OS                string
 }
 
 func render(t *testing.T, file string, data renderData) string {
@@ -657,5 +658,32 @@ func TestSandboxTemplate(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestSandboxTemplate_MacOS: a sealed macOS pool's job tells `grove sandbox run` to drive the VM
+// as darwin; a Linux pool's args stay exactly as before (see TestSandboxTemplate).
+func TestSandboxTemplate_MacOS(t *testing.T) {
+	hcl := render(t, "sandbox.nomad.hcl", renderData{
+		Kind: "build", Pool: "macos", CPU: 500, Memory: 1024,
+		GroveBin: "/opt/homebrew/bin/grove", Slots: 1, OS: "darwin",
+	})
+	job, err := jobspec2.ParseWithConfig(&jobspec2.ParseConfig{Path: "job.hcl", Body: []byte(hcl)})
+	if err != nil {
+		t.Fatalf("parse: %v\n%s", err, hcl)
+	}
+	var args []string
+	for _, a := range job.TaskGroups[0].Tasks[0].Config["args"].([]any) {
+		args = append(args, a.(string))
+	}
+	want := []string{"sandbox", "run", "--kind", "build", "--pool", "macos", "--image", "ghcr.io/gm2211/grove-runner:latest",
+		"--slots", "1", "--cpu", "500", "--memory", "1024", "--payload", "${NOMAD_TASK_DIR}/request", "--os", "darwin"}
+	if strings.Join(args, " ") != strings.Join(want, " ") {
+		t.Errorf("args = %q\nwant   %q", args, want)
+	}
+
+	linux := render(t, "sandbox.nomad.hcl", renderData{Kind: "build", Pool: "linux", GroveBin: "/g", Slots: 2, OS: "linux"})
+	if strings.Contains(linux, `"--os"`) {
+		t.Errorf("a Linux pool's sandbox job passes --os:\n%s", linux)
 	}
 }

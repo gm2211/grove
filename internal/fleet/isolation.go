@@ -28,14 +28,11 @@ var isolatedDNSServers = []string{"1.1.1.1", "8.8.8.8"}
 // Isolated reports whether p asks for network isolation (Pool.Network "isolated").
 func (p Pool) Isolated() bool { return p.Network == NetworkIsolated }
 
-// isolationProblem explains why grove can't build VMs for pool, or returns "" when it can (always,
-// for a pool that isn't isolated). A sealed VM is driven from outside through docker, which only
-// the Linux guests have; Plan refuses an isolated macOS pool instead (see Plan.Blocked).
+// isolationProblem explains why grove can't build VMs for pool, or returns "" when it can. Every
+// pool can be sealed today: a Linux VM's jobs run in containers, a macOS VM's as plain processes
+// of its job user, one job per VM (see internal/sandbox). Plan still reports a problem here as
+// Plan.Blocked, should a pool ever ask for isolation grove can't provide.
 func isolationProblem(pool Pool) string {
-	if pool.Isolated() && pool.Name == "macos" {
-		return "network: isolated is supported only for Linux pools: grove drives a sealed VM's " +
-			"jobs in containers, and macOS guests have no container runtime"
-	}
 	return ""
 }
 
@@ -45,9 +42,13 @@ func IsolatedVM(vm orchard.VM) bool {
 	return vm.Softnet && slices.Contains(vm.SoftnetBlock, softnetBlockHost)
 }
 
-// sealedStartupScript renders the generated part of a network: isolated (sealed) Linux guest's
-// startup script, which replaces the shared pools' Nomad and Tailscale setup entirely.
-func sealedStartupScript() string {
+// sealedStartupScript renders the generated part of a network: isolated (sealed) guest's startup
+// script, which replaces the shared pools' Nomad and Tailscale setup entirely. The macos pool gets
+// sealedMacOSStartupScript.
+func sealedStartupScript(pool Pool) string {
+	if pool.MacOS() {
+		return sealedMacOSStartupScript()
+	}
 	var resolv strings.Builder
 	for _, server := range isolatedDNSServers {
 		fmt.Fprintf(&resolv, "nameserver %s\n", server)
@@ -61,6 +62,15 @@ func sealedStartupScript() string {
 	).Replace(sealedStartupScriptTemplate)
 }
 
+// sealedMacOSStartupScript is sealedStartupScript for a macOS guest.
+func sealedMacOSStartupScript() string {
+	return strings.NewReplacer(
+		"@GROVE_PRIV@", strings.TrimSuffix(grovePrivFunc, "\n"),
+		"@DNS_SERVERS@", strings.Join(isolatedDNSServers, " "),
+		"@JOB_USER@", strings.TrimSuffix(macosJobUserScript, "\n"),
+	).Replace(sealedMacOSStartupScriptTemplate)
+}
+
 // grovePrivFunc runs a command as root: directly when the script already is, else via sudo.
 const grovePrivFunc = `grove_priv() {
   if [ "$(id -u)" -eq 0 ]; then
@@ -71,9 +81,14 @@ const grovePrivFunc = `grove_priv() {
 }
 `
 
-// SealedDrainingMarker tells grove's job runners (internal/sandbox) to place no new job in a VM
-// whose shutdown script has started; they check for it right before creating a job's container.
-const SealedDrainingMarker = "/run/grove-draining"
+// SealedDrainingMarker tells grove's job runners (internal/sandbox) to place no new job in a
+// Linux VM whose shutdown script has started; they check for it right before creating a job's
+// container. SealedDrainingMarkerMacOS is the same marker in a macOS VM, which has no /run; the
+// runner also sets it itself once a macOS VM's one job is over.
+const (
+	SealedDrainingMarker      = "/run/grove-draining"
+	SealedDrainingMarkerMacOS = "/private/var/run/grove-draining"
+)
 
 const sealedStartupScriptTemplate = `# --- network: isolated (sealed) ---
 # Softnet keeps this guest off its host Mac, the LAN and the tailnet: it reaches only public
@@ -128,6 +143,60 @@ while [ "$(date +%s)" -lt "$grove_deadline" ]; do
   fi
   sleep 10
 done
+`
+
+// sealedMacOSShutdownScriptBody is sealedShutdownScriptBody for a macOS VM, whose job runs as a
+// process tree of the job user rather than in a container: it waits until that user runs nothing.
+// The runner normally ends and kills the job (and deletes the VM) before this runs.
+const sealedMacOSShutdownScriptBody = grovePrivFunc + `
+grove_priv touch ` + SealedDrainingMarkerMacOS + `
+while [ "$(date +%s)" -lt "$grove_deadline" ]; do
+  if ! pgrep -U ` + MacOSJobUser + ` >/dev/null 2>&1; then
+    break
+  fi
+  sleep 10
+done
+`
+
+// sealedMacOSStartupScriptTemplate is the macOS counterpart of sealedStartupScriptTemplate. The
+// guest's services are launchd jobs: the image's Nomad client (com.grove.nomad, see
+// nomadRestartScript) and Tailscale's daemon (homebrew.mxcl.tailscale, which `brew services`
+// installed). Each is disabled, so launchd doesn't load it again at the next boot, and booted out,
+// which stops it now; either may be absent.
+const sealedMacOSStartupScriptTemplate = `# --- network: isolated (sealed, macOS) ---
+# Softnet keeps this guest off its host Mac, the LAN and the tailnet: it reaches only public
+# addresses, and home reaches it only through Orchard. It runs no Nomad client and holds no
+# credential for anything at home: grove's control plane drives its one job from outside, as the
+# unprivileged job user, then deletes the VM (see docs/OPERATIONS.md "Isolating a pool's
+# network").
+if [ "$(uname -s)" != "Darwin" ]; then
+  echo "grove: this pool's sealed setup is for macOS guests" >&2
+  exit 1
+fi
+
+@GROVE_PRIV@
+
+# The image's Nomad client and Tailscale would try to reach home; they stay off here.
+for grove_service in com.grove.nomad homebrew.mxcl.tailscale; do
+  grove_priv launchctl disable "system/$grove_service" >/dev/null 2>&1 || true
+  grove_priv launchctl bootout "system/$grove_service" >/dev/null 2>&1 || true
+done
+grove_priv pkill -x nomad >/dev/null 2>&1 || true
+grove_priv pkill -x tailscaled >/dev/null 2>&1 || true
+grove_priv rm -f ` + SealedDrainingMarkerMacOS + `
+
+# DHCP names the host Mac as the DNS server, and Softnet blocks the host. Every network service
+# (the first line of the listing is a legend; a leading * marks a disabled service) gets the
+# public resolvers.
+grove_dns_services=$(networksetup -listallnetworkservices | sed -e 1d -e 's/^\*//')
+printf '%s\n' "$grove_dns_services" | while IFS= read -r grove_dns_service; do
+  [ -n "$grove_dns_service" ] || continue
+  grove_priv networksetup -setdnsservers "$grove_dns_service" @DNS_SERVERS@
+done
+grove_priv dscacheutil -flushcache >/dev/null 2>&1 || true
+grove_priv killall -HUP mDNSResponder >/dev/null 2>&1 || true
+
+@JOB_USER@
 `
 
 // egressFenceScript is installed in isolated guests as /usr/local/sbin/grove-egress-fence. It is

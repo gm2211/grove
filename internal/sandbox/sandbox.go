@@ -10,9 +10,14 @@
 // checks out the job's ref itself), follows its logs, polls it for liveness, and pulls its
 // artifacts and exit status back out.
 //
-// The clone token and the artifact store's keys stay on the control plane; the job's container
-// sees the checkout, its script and the caller's environment (minus GH_TOKEN/GIT_TOKEN, which only
-// ever served the clone).
+// A macOS guest has no container runtime, so a sealed macOS pool's job runs as a plain process
+// tree of the VM's unprivileged job user (fleet.MacOSJobUser) in a fresh run directory instead
+// (see macos.go), and every such VM is used for one job only: the runner deletes it through
+// Orchard once the job is over, and the fleet reconciler recreates it from the image.
+//
+// The clone token and the artifact store's keys stay on the control plane; the job sees the
+// checkout, its script and the caller's environment (minus GH_TOKEN/GIT_TOKEN, which only ever
+// served the clone).
 package sandbox
 
 import (
@@ -42,6 +47,13 @@ const (
 	ExitSetup = 1
 )
 
+// Guest operating systems a sealed pool's VMs run (Request.OS): Runner drives a Linux VM's jobs in
+// docker containers and a macOS VM's as plain processes of its unprivileged job user.
+const (
+	OSLinux  = "linux"
+	OSDarwin = "darwin"
+)
+
 // DefaultTimeout applies when a job sets none, matching the regular templates'
 // `${NOMAD_META_timeout_seconds:-3600}`.
 const DefaultTimeout = time.Hour
@@ -51,10 +63,13 @@ type Request struct {
 	Kind    string
 	Pool    string
 	AllocID string
-	// Image is the container image the job runs in (the pool's runner image).
+	// OS is the pool's guest OS: OSLinux (or "") or OSDarwin.
+	OS string
+	// Image is the container image the job runs in (the pool's runner image). A macOS job runs in
+	// no container; its Image is only validated.
 	Image string
 	// CPU (MHz) and Memory (MiB) size the job's container, like the regular templates' resources
-	// block. Zero leaves it unlimited.
+	// block. Zero leaves it unlimited. A macOS job has its VM to itself and ignores them.
 	CPU    int
 	Memory int
 
@@ -82,6 +97,11 @@ func (r Request) validate() error {
 	case KindBuild, KindAgent, KindShell:
 	default:
 		return fmt.Errorf("unknown job kind %q", r.Kind)
+	}
+	switch r.OS {
+	case "", OSLinux, OSDarwin:
+	default:
+		return fmt.Errorf("unknown guest OS %q", r.OS)
 	}
 	if !poolRE.MatchString(r.Pool) {
 		return fmt.Errorf("invalid pool name %q", r.Pool)
