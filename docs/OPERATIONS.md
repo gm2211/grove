@@ -7,37 +7,56 @@ hygiene" section for the full mechanism; the short version:
 
 1. Every worker VM has an Orchard **TTL** (fork feature, e.g. `ttl: 12h` in `fleet.yaml`).
 2. When it expires, Orchard deletes the VM, running its **ShutdownScript** (fork feature) inside
-   the guest first: `nomad node drain -self -enable -deadline 2h`, then it waits for zero
-   allocations before letting the delete proceed. The guest drains itself — Orchard never learns
-   Nomad exists, and Nomad never learns about VM lifecycle.
+   the guest first: it marks the VM draining (no new job starts there; grove retries a refused
+   job on another VM) and waits for the jobs still running in it to finish.
 3. grove's fleet reconciler notices the VM is gone (or spec drifted) and recreates it from the
    pool's `image`.
 
-To force a recycle right now (bad VM, want fresh image): `POST /api/v1/vms/{name}/recycle` (drains
-via Nomad, then deletes; the reconciler recreates it), or just `orchard delete <name>` directly if
-you don't need the graceful drain.
+A macOS VM is also deleted right after the one job it ran, and recreated the same way.
 
-## Nomad ACLs and node tokens
+To force a recycle right now (bad VM, want fresh image): `POST /api/v1/vms/{name}/recycle` (deletes
+it through Orchard, which runs the same shutdown script first; the reconciler recreates it), or
+`orchard delete <name>` directly.
 
-`grove install --role control-plane` runs Nomad with ACLs on. It bootstraps them once and keeps
-the management token in `config.yaml` (`nomad.token`, file mode 0600); `grove serve` and the CLI
-send it on every Nomad call. A request without a token (from the tailnet, or from inside a job)
-gets nothing. An install made while ACLs were off is migrated by re-running the installer: it
-re-renders `server.hcl`, restarts Nomad once, and bootstraps. If Nomad was already bootstrapped by
-hand, set the existing management token with `grove config set nomad.token <secret>`.
+## Jobs, queues and restarts
 
-With `nomad.token` set, the fleet reconciler also gives each VM it creates:
+There is no separate job scheduler: `grove serve` runs every job itself.
 
-- **its own node token** (Nomad policy `grove-node`: `node` write and `agent` read, no namespace access, named
-  `grove-vm/<vm>`). It sits only in the VM's shutdown script environment, never on the VM's disk,
-  so `nomad node drain -self` works on recycle and jobs never see it. The reconciler revokes a
-  VM's token once Orchard has actually removed the VM (`nomad acl token list` shows the live ones).
-- **ACL enforcement in the VM's own Nomad client**, so a job can't read other allocations' files
-  or logs through `127.0.0.1:4646`.
+- **Queues.** Each pool has a FIFO queue. Jobs start in submission order, as fast as the pool's
+  sealed VMs have free slots: a Linux VM takes as many jobs at once as fit its CPU and memory at
+  the pool's `jobCPU`/`jobMemory`, a macOS VM takes one. A queued job's `pendingReason` says
+  whether it waits for a slot or behind other jobs of its pool. One pool's backlog never holds up
+  another pool.
+- **State.** Job history is `~/.local/state/grove/jobs.json`. A queued job's env values wait in
+  `queue/<id>.json` beside it (0600) and are deleted the moment the job starts; the history keeps
+  env keys only. Each job's output is `logs/<id>.log` beside it (0600).
+- **Restarting or upgrading `grove serve`** (or the machine it runs on) loses the jobs running at
+  that moment: they are marked `lost` (exit 125, "grove serve restarted while the job was
+  running"), and the VMs they ran in are deleted so the reconciler recreates them clean. Queued
+  jobs are kept and start again in order. Restart when the fleet is quiet if you can
+  (`grove status` / the Jobs page shows what's running).
+- **Exit codes grove sets:** 124 timeout, 125 lost (VM vanished or `grove serve` restarted),
+  143 canceled. A VM that refuses a job because it's draining (75) is retried on another VM, up
+  to 3 times, before the job starts.
 
-VMs created before this keep running unchanged and pick both up on their next recycle. To apply
-it now, recycle them with `POST /api/v1/vms/{name}/recycle`, which drains through grove's own token
-first (their old shutdown script has no token, so its own drain step fails).
+## Upgrading from a Nomad-based grove
+
+Older releases scheduled jobs with Nomad and could run pools on their host's shared network. Now:
+
+1. Upgrade the `grove` binary on the control plane and re-run `grove install --role
+   control-plane`. Its `legacy-nomad:retire` step stops and removes the Nomad LaunchAgent /
+   systemd unit, and the config step drops `nomad.url`, `nomad.token` and `tailscale.authKey`
+   from `config.yaml`. Nomad's config and data in `~/.config/grove/nomad` are left alone: delete
+   them (and `brew uninstall nomad` on macOS, or `~/.local/bin/nomad` on Linux) once you're happy.
+2. Jobs that Nomad was still running show as `lost`. Resubmit what you need.
+3. Every pool is sealed now. `network: shared` (or no `network:`) in `fleet.yaml` is read as
+   `isolated`, with a warning for an explicit `shared`; `allowDockerSocket` is ignored. The
+   reconciler recreates every VM that isn't sealed yet. Make sure every worker Mac has Softnet
+   able to become root first (`grove install --role worker` prints the step; `grove doctor` shows
+   a `softnet` row), or those VMs fail to start.
+4. Worker images no longer need Nomad or Tailscale. Older images still work: the sealed startup
+   script keeps their Nomad client and Tailscale switched off.
+5. Any Tailscale auth key you created for worker VMs can be revoked in the Tailscale admin console.
 
 ## Rolling a new image
 
@@ -144,34 +163,23 @@ Notes worth knowing before you arm it:
 The full contract — how the token reaches the clone, what is and isn't stored, and who can read it
 while a job runs — is in [docs/JOBS.md](JOBS.md#private-repositories).
 
-## Isolating a pool's network
+## Sealed pools
 
-By default a worker VM shares its host Mac's network through Tart's NAT, so a job can reach
-whatever that Mac reaches: your LAN, services the Mac itself runs, and every device on your
-tailnet, through the Mac's own Tailscale login. `network: isolated` seals a pool's VMs instead:
+(This section was called "Isolating a pool's network" when sealing was opt-in.)
 
-```yaml
-pools:
-  - name: linux
-    network: isolated
-  - name: macos
-    network: isolated
-```
+Every pool is sealed: its VMs reach the public internet and nothing at home — not your LAN, not
+your tailnet, not their host Mac, and not grove's control plane (Orchard, the artifact store, the
+API). Every exchange between home and a running job is opened from home.
 
-A sealed VM reaches the public internet and nothing at home: not your LAN, not your tailnet, not
-its host Mac, and not grove's control plane (Nomad, Orchard, the artifact store, the API). Every
-exchange between home and a running job is opened from home.
-
-What changes for that pool's VMs:
+What that means for a pool's VMs:
 
 - **Softnet, host blocked.** Each VM runs on Softnet instead of Tart's NAT, with
   `--net-softnet-block "out @host"`. The guest reaches public internet addresses only. The host
   can still open connections into the guest, which is how Orchard runs the startup script and how
   grove drives each job.
-- **No Nomad, no Tailscale, no credentials.** The startup script turns off the image's Nomad client
-  and Tailscale (on macOS it disables and boots out their launchd jobs, `com.grove.nomad` and
-  `homebrew.mxcl.tailscale`). The VM holds no tailnet key, no Nomad token, no artifact store key
-  and no clone token.
+- **No agents, no credentials.** The VM runs no scheduler client and holds no tailnet key, no
+  token, no artifact store key and no clone token. (The startup script still switches off the
+  Nomad client and Tailscale that older worker images carry.)
 - **Public DNS.** The guest resolves through 1.1.1.1 and 8.8.8.8 (Linux: `/etc/resolv.conf`;
   macOS: `networksetup -setdnsservers` on every network service), because the resolver DHCP hands
   out is the blocked host.
@@ -179,15 +187,12 @@ What changes for that pool's VMs:
   Docker start and once by the startup script, keeps job containers off private, CGNAT and
   link-local addresses and off the guest itself.
 
-How a sealed pool's job runs. Its Nomad job (`nomad/jobs/sandbox.nomad.hcl`) isn't placed in a VM
-but on the control plane, whose own Nomad agent is also a client for exactly these jobs (node meta
-`grove_sandbox_host`). There `grove sandbox run`:
+How a job runs. `grove serve`, on the control plane:
 
-1. fetches the repository on the control plane, with the armed clone token if there is one, but
+1. waits for the job's turn in its pool's queue and a free slot in one of the pool's sealed VMs,
+   skipping VMs that are shutting down;
+2. fetches the repository on the control plane, with the armed clone token if there is one, but
    checks out no file there: the checkout happens inside the job's container;
-2. takes a free slot in one of the pool's sealed VMs (a Linux VM runs as many jobs at once as fit
-   its CPU and memory at the pool's `jobCPU`/`jobMemory`; a macOS VM runs one), skipping VMs that
-   are shutting down;
 3. through Orchard, creates a fresh container in that VM from the pool's runner image and copies
    in the checkout, the script and the job's environment (minus `GH_TOKEN`/`GIT_TOKEN`, which only
    served the clone);
@@ -198,28 +203,18 @@ but on the control plane, whose own Nomad agent is also a client for exactly the
 A job whose VM stops answering for a minute is reported **lost**, and its timeout (124) and
 cancellation work as for any other job. The job's log names the VM it ran in.
 
-Before you switch a pool over:
+Every worker Mac needs **Softnet able to become root by itself**, because Orchard starts it with no
+terminal to ask for a password. `grove setup` / `grove install --role worker` install it and print
+the one-time `softnet-root` command for an admin to run; `grove doctor` shows a `softnet` row.
+Redo that command after any `brew upgrade softnet`, which drops the SUID bit (VMs on that Mac
+fail to start until you do).
 
-1. **Softnet on every worker Mac that runs the pool**, able to become root by itself, because
-   Orchard starts it with no terminal to ask for a password. `grove install --role worker
-   --softnet` installs it and prints the one-time `softnet-root` command for an admin to run;
-   `grove doctor` shows a `softnet` row. Redo that command after any `brew upgrade softnet`,
-   which drops the SUID bit (isolated VMs on that Mac fail to start until you do).
-2. **The control plane runs sealed jobs.** Re-run `grove install --role control-plane` on the
-   control plane after upgrading grove: it makes the control plane's Nomad agent the client for
-   sealed pools' jobs and restarts it. `grove doctor` shows a `sandbox-host` row once a pool is
-   sealed.
-
-Then set `network: isolated` and let the reconciler recreate the pool's VMs (`grove fleet plan`
-shows the change first). Re-running `grove serve` (the control-plane install reloads it)
-registers the pool's jobs from the sealed template.
-
-Recycling a sealed VM (`POST /api/v1/vms/{name}/recycle`, TTL, or drift) runs its shutdown
-script, which marks the VM so no new job lands in it and waits for the running ones to finish.
+Recycling a VM (`POST /api/v1/vms/{name}/recycle`, TTL, or drift) runs its shutdown script, which
+marks the VM so no new job lands in it and waits for the running ones to finish.
 
 Limits:
 
-- `allowDockerSocket` can't be combined with it, and the per-job `image` override is ignored.
+- The per-job `image` override is ignored, and no job gets the VM's Docker socket.
 - A job still reaches anything on the public internet, your home's public IP included.
 - (Linux) Job images must already be in the VM image or come from a public registry (the default runner
   image is on ghcr.io): the guest can't pull from a registry on your LAN or tailnet.
@@ -228,31 +223,29 @@ Limits:
 
 ### Sealed macOS pools
 
-A macOS guest has no container runtime, so a sealed macOS pool's jobs run differently in step 3
-and after step 5:
+A macOS guest has no container runtime, so a macOS pool's jobs run differently in step 3 and
+after step 5:
 
-- **The job runs as the unprivileged `_grovejob` user** (the same account a shared macOS pool's
-  jobs use), in a fresh run directory under `/private/var/grove-job/runs/`, in its own process
+- **The job runs as the unprivileged `_grovejob` user**, in a fresh run directory under `/private/var/grove-job/runs/`, in its own process
   group; never as root and never as the VM's admin login. See docs/JOBS.md "Sealed pools".
 - **A fresh VM for every job.** A sealed macOS VM runs one job at a time and only one job ever:
   once the job is over, grove marks the VM draining, deletes it through Orchard, and the fleet
   reconciler recreates it from the image on its next tick (every 30 seconds by default). Nothing a
   job leaves behind (files, processes, a changed system setting) can reach the next job. A VM
-  that still holds an earlier job (its `grove sandbox run` was killed before it could clean up)
-  is deleted by the next job's runner instead of being used.
+  that still holds an earlier job (its runner was stopped before it could clean up, e.g. by a
+  `grove serve` restart) is deleted instead of being used.
 - **Boot cost.** Each job waits for its VM to be recreated and boot first, typically a minute or
   two on top of the job itself, and longer for a large image on a busy Mac. A queue of jobs runs
   at the pace VMs come back.
 - **Two VMs per Mac.** Apple's licence lets a Mac run at most two macOS VMs at once, and the
-  virtualization framework enforces it. A sealed macOS pool's `perWorker` is therefore 1 or 2,
-  and counts against the same two VMs as any shared macOS pool on that Mac; jobs per Mac at a time
+  virtualization framework enforces it. A macOS pool's `perWorker` is therefore 1 or 2, and
+  counts against the same two VMs as any other macOS pool on that Mac; jobs per Mac at a time
   equal the pool's `perWorker`.
 - **Sizing.** `jobCPU`/`jobMemory` and the runner image don't apply: the job has the whole VM, as
   sized by the pool's `cpu`/`memory`.
 - **Timeouts** are enforced from the control plane (macOS has no `timeout(1)`): a job past its
   timeout is stopped (TERM, then KILL after 10 seconds) and reports 124 as usual.
-- `hostXcode` works as on a shared macOS pool: the shared Xcode is checked at boot, and Nomad
-  stays off.
+- `hostXcode`: the host's shared Xcode is checked at boot before the VM takes a job.
 - There is no in-guest packet fence like Linux's `grove-egress-fence`: Softnet's host block is
   what keeps the guest (and so the job) off home addresses.
 
@@ -262,26 +255,28 @@ and after step 5:
 |---|---|---|
 | Orchard worker | `~/Library/Logs/grove/orchard-worker.log` (+`.err.log`) | n/a (worker is macOS-only) |
 | Orchard controller | `~/Library/Logs/grove/orchard-controller.log` | `journalctl --user -u grove-orchard-controller` |
-| Nomad server | `~/Library/Logs/grove/nomad.log` | `journalctl --user -u grove-nomad` |
 | grove server | `~/Library/Logs/grove/server.log` | `journalctl --user -u grove-server` |
 
-Job logs themselves (build/agent/shell) come from Nomad — `grove dispatch`'s status/logs
-subcommands, or `GET /api/v1/jobs/{id}/logs?follow=1`.
+Job logs themselves (build/agent/shell) are files on the control plane,
+`~/.local/state/grove/logs/<job id>.log` (0600, one JSON record per line: time, stream, line).
+Read them with `grove dispatch`'s status/logs subcommands or `GET /api/v1/jobs/{id}/logs?follow=1`.
+They expire with the job's artifacts: 15 minutes after a successful job, an hour after any other
+outcome (the job record stays, with `logsExpiredAt` set).
 
 ## Upgrading
 
 - **grove CLI**: re-run `scripts/install.sh` (or `brew upgrade grove` on macOS), then re-run
   `grove install --role <role>` to pick up any new config/unit templates — it's idempotent, so
-  already-correct steps are skipped.
-- **Orchard / Nomad**: `grove install` re-checks each binary; bump the version pin (and
-  every per-platform SHA-256 beside it, in `internal/install/download.go`) in this
-  repo's install steps and re-run to pick up the change (Homebrew formulae upgrade in place;
-  Linux downloads re-fetch the pinned version).
+  already-correct steps are skipped. Restarting `grove serve` marks the jobs it was running
+  `lost` (see "Jobs, queues and restarts").
+- **Orchard / Tart / Softnet**: `grove install` re-checks each binary; Homebrew formulae upgrade
+  in place, and the Orchard fork is re-fetched from its release (or rebuilt) when it lacks a
+  feature grove needs.
 - **A Homebrew upgrade adds the third-party-tap trust gate**: `brew update && brew upgrade` on a Mac
-  that already has `tart`/`nomad` installed can pick up a Homebrew version that now refuses
+  that already has `tart`/`softnet` installed can pick up a Homebrew version that now refuses
   to load formulae from an untrusted tap (`Error: Refusing to load formula … from untrusted tap …`)
   even though nothing about grove's own config changed. Re-running `grove install --role <role>`
-  fixes it — it re-trusts `openai/tools`/`cirruslabs/cli`/`hashicorp/tap` as needed
+  fixes it — it re-trusts `openai/tools`/`cirruslabs/cli` as needed
   before touching anything that installs from them — or run `grove doctor` first to see exactly
   which tap it is and the `brew trust <tap>` command to run by hand.
 - **Restart a supervised service** after a config change: macOS —
@@ -294,8 +289,8 @@ Build artifacts live in a plain directory on the control plane: `artifacts.dir` 
 `~/.local/state/grove/artifacts` unless you changed it, laid out as `jobs/<job id>/<path>`
 (directories 0700, files 0600). Nothing else serves or holds them: `grove serve` lists them,
 streams them through `GET /api/v1/jobs/{id}/artifacts/{path}` and deletes them once their
-retention runs out (docs/JOBS.md "Artifact retention"); `grove sandbox run` writes the ones it
-copies out of sealed VMs. Only sealed pools' builds produce artifacts today.
+retention runs out (docs/JOBS.md "Artifact retention"), and writes the ones it copies out of
+sealed VMs.
 
 - **Disk use**: at most 2 GiB per job, gone 15 min / 1 h after the job ends. `du -sh
   ~/.local/state/grove/artifacts` shows what's there now.
@@ -314,23 +309,13 @@ copies out of sealed VMs. Only sealed pools' builds produce artifacts today.
 
 ## Troubleshooting
 
-**Jobs pending with `DimensionExhausted cpu` on macOS.** Nomad's stock CPU fingerprinter badly
-under-reports on Apple Silicon (a real M5 Max worker fingerprinted `cpu.totalcompute=24`), which
-fails placement for any job whose `resources.cpu` request is a realistic MHz value — every
-build/agent/shell job on that node stays `pending` forever. `internal/fleet/scripts.go`'s
-startup script is supposed to fix this automatically by computing `cpu_total_compute` from the
-guest's actual core count (`ncpu * 2000` MHz) and writing it into the dynamic `grove-meta.hcl` (see
-docs/IMAGES.md's two-file config contract) — if you're hitting this anyway:
+**A job stays `pending`.** Its `pendingReason` says why: waiting for a free slot in one of its
+pool's sealed VMs (are the pool's VMs running? `grove vm ls`), or queued behind other jobs of the
+same pool. A pool with no running VM leaves jobs queued until one boots; a job that then can't find
+any sealed VM of its pool for long enough reports `lost`. A request whose resources exceed the
+pool's job default is refused with a 400 at submit time, never left pending — see docs/JOBS.md
+"Per-job resource sizing".
 
-1. Run `grove doctor` — it warns (`macos-cpu-fingerprint`) when any `macos`-class Nomad node
-   reports a fingerprinted CPU under 1000 MHz.
-2. On the affected Mac, check `/usr/local/etc/nomad.d/grove-meta.hcl` for a `cpu_total_compute`
-   line inside its `client {}` block. Missing entirely usually means the startup script hasn't run
-   since this fix shipped — recycle the VM (`grove` fleet reconciler recreates it, re-running the
-   startup script) rather than editing the file by hand.
-3. Present but the Nomad client hasn't picked it up — a `grove-meta.hcl` edit only takes effect on
-   the next Nomad client restart: `sudo launchctl kickstart -k system/com.grove.nomad`, then
-   `nomad node status -self -verbose | grep cpu.totalcompute` to confirm.
-4. Per-job sizing (`JobRequest.Resources` / fleet.yaml's `pools[].jobCPU`/`jobMemory`) is unrelated
-   to this — see docs/JOBS.md "Per-job resource sizing" — a request rejected there is a 400 with an
-   explicit "exceeds pool's job default" message, not a silently-pending job.
+**VMs of a pool never start after upgrading.** Every pool is sealed now, which needs Softnet able
+to become root on each worker Mac (see "Sealed pools"); `grove doctor` on that Mac shows the
+`softnet` row and the command to run.

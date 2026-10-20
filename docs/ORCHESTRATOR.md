@@ -5,8 +5,8 @@ that hands work to grove) uses to drive grove: which endpoints it calls and why,
 maps onto a `JobRequest`, how grove's `Job.status` maps back onto a typical orchestrator status
 vocabulary, the idempotency-key convention that makes orchestrator retries safe, and how to
 resume a dropped NDJSON log stream. Read this if you're implementing or debugging a `grove`
-executor. For the underlying job-template/dispatch mechanics (how `kind`+`pool` map onto Nomad
-jobs, what runs inside the allocation), see `docs/JOBS.md` — this doc only covers the
+executor. For the underlying mechanics (how a job is queued per pool and run in a sealed VM), see
+`docs/JOBS.md` — this doc only covers the
 orchestrator-facing surface.
 
 ## Endpoints the executor calls
@@ -75,18 +75,18 @@ when `idempotencyKey` matched an existing job (nothing was re-dispatched).
 | `canceled` | `cancelled` |
 | `lost` | `lost` |
 
-`lost` deliberately does **not** collapse into `failed`: it means the allocation itself
-disappeared (a node died, a driver/setup error, Nomad lost track of it) rather than the script
-running and exiting non-zero. When `status` is `lost`, `Job.failureReason` is set specifically so
+`lost` deliberately does **not** collapse into `failed`: it means the job's VM
+disappeared or stopped answering, no VM of the pool came up in time, or `grove serve` restarted
+while the job ran — rather than the script running and exiting non-zero. When `status` is `lost`, `Job.failureReason` is set specifically so
 the executor can classify the work unit as transient/retryable instead of a genuine script
 failure. Related `Job` fields useful to the executor:
 
-- `timedOut` — the script hit its own `timeout` wrapper inside the allocation (run.sh, not an
+- `timedOut` — the script hit its `JobRequest.timeout` (enforced by grove, not an
   orchestrator-side timeout); a `timedOut: true` job is `status: "failed"`, not `lost`.
 - `signal` — the Unix signal (by name, e.g. `"SIGTERM"`) that ended the task, when known. Set on
-  a `canceled` job (grove cancels via `nomad job stop`, which signals the task) and occasionally
-  on `lost`/`failed` ones.
-- `placement` — `{allocId, nodeId, vmId, workerId}`, which alloc/node/VM/worker the job ran on.
+  a `canceled` job (exit 143, `SIGTERM`) and on a job whose script was killed by a signal.
+- `placement` — `{vmId, workerId}`, which VM/worker the job ran on (`allocId`/`nodeId` are
+  no longer set).
   Not needed to interpret status, but useful for debugging a flaky worker (correlate several
   `lost` jobs by `workerId`).
 
@@ -95,7 +95,7 @@ failure. Related `Job` fields useful to the executor:
 Use `<orchestrator>:<taskId>:<runId>` as `JobRequest.idempotencyKey` for every submit. An
 orchestrator's own retry logic may re-submit a work unit after a network blip without knowing
 whether the first `POST /jobs` actually landed on the server. Submitting the same key again
-doesn't dispatch a second Nomad job — grove returns the already-dispatched `Job` (`200 OK`
+doesn't queue a second job — grove returns the already-dispatched `Job` (`200 OK`
 instead of `201 Created`), so a retried submit is safe by construction; the executor never needs
 its own dedupe table.
 
@@ -109,9 +109,8 @@ object per line:
 {"offset": 20, "ts": "2026-09-06T10:15:03.4Z", "stream": "stdout", "line": "running make verify"}
 ```
 
-`offset` is a running byte counter over the *emitted* NDJSON stream itself, not any offset Nomad
-tracks internally — grove replays the job's full log from Nomad's own retained start on every
-request and recomputes offsets from 0 each time, only emitting (or, with `sinceOffset` set,
+`offset` is a running byte counter over the *emitted* NDJSON stream itself, not an offset into
+grove's log file — grove replays the job's full log from its start on every request and recomputes offsets from 0 each time, only emitting (or, with `sinceOffset` set,
 skipping) lines below the threshold. Practically this means: resuming after a dropped connection
 is "reconnect with `sinceOffset` set to the last offset you successfully processed," not
 client-side deduping of a continuous stream — the server does the skipping, the client just
@@ -127,7 +126,7 @@ The executor's reconnect loop, in prose:
    re-sending the last-seen offset harmless, at worst re-checking one already-processed line).
 4. Stop when the connection closes cleanly *and* a `GET /jobs/{id}` poll shows a terminal status
    (`success`, `failed`, `canceled`, `lost`) — a clean close before that just means grove finished
-   replaying what Nomad had buffered so far; treat it as another reconnect point, not the end.
+   replaying what had been written so far; treat it as another reconnect point, not the end.
 
 ## Artifact download
 

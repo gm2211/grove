@@ -6,8 +6,9 @@ contracts these diagrams summarize.
 
 ## 1. Layering — who talks to what
 
-Intent flows down through one control plane into two independent systems (VM lifecycle, job
-scheduling), which meet only inside each Mac.
+Intent flows down through one control plane, which both keeps the fleet of VMs (through Orchard)
+and runs every job in those VMs (also through Orchard). Nothing inside a VM dials home: every VM
+is sealed.
 
 ```mermaid
 flowchart TB
@@ -20,17 +21,17 @@ flowchart TB
     subgraph cp["control plane — grove server"]
         api["HTTP API /api/v1/...\n+ embedded web UI"]
         reconciler["fleet reconciler\n(desired VMs -> Orchard)"]
-        dispatcher["job dispatch\n(JobRequest -> Nomad)"]
+        runner["job runner\n(per-pool queue -> sealed VM slot)"]
+        disk["jobs.json, job logs,\nartifact store (local disk)"]
     end
 
-    orchard["Orchard controller\n(VM lifecycle: create, place, TTL, delete)"]
-    nomad["Nomad server\n(job scheduler: placement, packing, queueing)"]
+    orchard["Orchard controller\n(VM lifecycle + exec into guests)"]
 
     subgraph mac["each Mac"]
         worker["Orchard worker"]
-        subgraph tart["Tart VMs"]
-            linuxvm["Linux VM\nnomad client + docker\n-> jobs as containers"]
-            macosvm["macOS VM\nnomad client + xcode\n-> jobs as processes"]
+        subgraph tart["Tart VMs (Softnet, host blocked)"]
+            linuxvm["Linux VM\ndocker\n-> one container per job"]
+            macosvm["macOS VM\nxcode\n-> one job, then recycled"]
         end
     end
 
@@ -39,14 +40,13 @@ flowchart TB
     cli -- HTTP --> api
 
     api --> reconciler
-    api --> dispatcher
+    api --> runner
+    runner --> disk
     reconciler -- Orchard REST --> orchard
-    dispatcher -- Nomad HTTP --> nomad
+    runner -- "Orchard exec" --> orchard
 
     orchard -- "workers dial out" --> worker
     worker --> tart
-    nomad -- "clients dial out" --> linuxvm
-    nomad -- "clients dial out" --> macosvm
 
     style intent fill:transparent,stroke:#8a9182
     style cp fill:transparent,stroke:#2f6f4f
@@ -54,50 +54,44 @@ flowchart TB
     style tart fill:transparent,stroke:#8a9182
 ```
 
-Three separate responsibilities, three separate systems (see ARCHITECTURE.md's "The layering"
-table for what each layer owns and never knows about): **Orchard** owns VM lifecycle, **Nomad**
-owns job scheduling inside VMs, **grove** is the only layer that sees both.
+Two systems (see ARCHITECTURE.md's "The layering" table for what each owns and never knows
+about): **Orchard** owns VM lifecycle, **grove** owns the fleet spec, the job queue and the
+runner, and is the only layer that sees both.
 
 ## 2. One job, start to finish
 
 `grove dispatch` (or the MCP `grove_run` tool, or an orchestrator's executor) to a finished job
-with logs
-and an exit code:
+with logs and an exit code:
 
 ```mermaid
 sequenceDiagram
     participant U as grove dispatch
     participant API as grove server\n(/api/v1/jobs)
-    participant N as Nomad server
-    participant VM as VM's Nomad client
-    participant R as run.sh\n(clone, script, artifacts)
+    participant Q as pool queue + runner\n(in grove serve)
+    participant O as Orchard
+    participant VM as sealed VM
 
     U->>API: POST /api/v1/jobs\n{kind, pool, repo, ref, script, timeout}
-    API->>API: map JobRequest -> meta + payload
-    API->>N: nomad job dispatch grove-<kind>-<pool>
-    N-->>API: dispatch accepted -> job id
+    API->>Q: validate, record in jobs.json, spool env (0600)
     API-->>U: 201 {"id": "j-8f2"}
 
-    N->>VM: place allocation (constraint: meta.pool)
-    VM->>R: exec run.sh (script.sh written to NOMAD_TASK_DIR)
-    R->>R: expand env_json -> export
-    R->>R: git clone --depth 50 repo@ref (build/agent only)
-    R->>R: run_with_timeout $T bash -eo pipefail script.sh
-    R-->>VM: exit code
+    Q->>Q: wait for this pool's turn and a free VM slot
+    Q->>Q: git clone repo@ref on the control plane\n(armed token only here; build/agent only)
+    Q->>O: exec: push checkout + script into the VM
+    O->>VM: run in a fresh container (Linux)\nor as the job user (macOS)
+    VM-->>Q: stdout/stderr (followed) -> logs/<id>.log
+    VM-->>Q: exit code
+    Q->>O: exec: copy ./artifacts out (build)
 
     U->>API: GET /api/v1/jobs/j-8f2/logs?follow=1&sinceOffset=N
-    API->>N: stream allocation logs
-    N-->>API: log frames
-    API-->>U: NDJSON {offset, ts, stream, line}
+    API-->>U: NDJSON {offset, ts, stream, line} from logs/<id>.log
 
-    VM-->>N: allocation terminal (exit code)
-    N-->>API: status change (poll / event)
     U->>API: GET /api/v1/jobs/j-8f2
     API-->>U: {"status": "success", "exitCode": 0, ...}
 ```
 
-Kinds differ only in what `run.sh` does after the clone (see docs/JOBS.md): `build` uploads
-artifacts, `agent` stays long-running with a 10m `kill_timeout`, `shell` skips the clone entirely.
+Kinds differ only in what runs around the script (see docs/JOBS.md): `build` collects
+artifacts, `agent` gets a longer stop grace, `shell` skips the clone entirely.
 
 ## 3. Recycling loop — nothing is cleaned, only replaced
 
@@ -105,8 +99,8 @@ artifacts, `agent` stays long-running with a 10m `kill_timeout`, `shell` skips t
 flowchart LR
     A["VM's Orchard TTL\nexpires (e.g. 12h)"] --> B["Orchard deletes the VM\nvia the normal path"]
     B --> C["ShutdownScript runs\ninside the guest first"]
-    C --> D["nomad node drain -self\n-enable -deadline 2h"]
-    D --> E["guest waits for\nzero allocations"]
+    C --> D["mark the VM draining:\nno new job starts there"]
+    D --> E["guest waits for its\nrunning jobs to finish"]
     E --> F["Orchard proceeds\nwith delete"]
     F --> G["grove fleet reconciler\nnotices VM is gone"]
     G --> H["recreates VM from\npool's image"]
@@ -116,9 +110,9 @@ flowchart LR
     style H fill:transparent,stroke:#2f6f4f
 ```
 
-The guest drains itself — Orchard never learns Nomad exists, and Nomad never learns about VM
-lifecycle (ARCHITECTURE.md's "Recycling / hygiene"). Tailscale inside guests uses ephemeral tagged
-auth keys, so a recycled VM also vanishes and reappears on the tailnet under a fresh identity.
+The guest drains itself; a job a draining VM refuses is retried by grove on another VM before it
+starts (ARCHITECTURE.md's "Recycling / hygiene"). A macOS VM is deleted after the one job it ran
+and comes back the same way.
 
 Same mechanism drives a forced recycle (`POST /api/v1/vms/{name}/recycle`, or the MCP
 `grove_recycle_vm` tool) — it's the TTL-expiry path run on demand instead of waiting for the
