@@ -312,8 +312,8 @@ func (s *Server) handleJobLogsNDJSON(w http.ResponseWriter, r *http.Request, id 
 	}
 }
 
-// handleGetArtifact streams one artifact a job uploaded, from the server's own artifact-bucket
-// credentials — clients never talk to the bucket directly.
+// handleGetArtifact streams one artifact of a job from the control plane's artifact store —
+// clients never touch the store directly.
 func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	if s.artifacts == nil {
 		http.Error(w, "artifact store is not configured on this grove server", http.StatusNotFound)
@@ -325,8 +325,8 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		path = raw
 	}
-	// Both the id and the path end up inside an object-store key, which the store takes verbatim:
-	// "jobs/<id>/../<other-id>/x" would read another job's artifact past the ownership check below.
+	// Both the id and the path end up inside a store key: "jobs/<id>/../<other-id>/x" would read
+	// another job's artifact past the ownership check below. (The store rejects such keys too.)
 	// Validate after decoding, so %2e%2e (and a double-encoded %252e%252e) is caught too.
 	if !safeKeySegment(id) || !safeArtifactPath(raw) || !safeArtifactPath(path) {
 		http.Error(w, "invalid artifact path", http.StatusBadRequest)
@@ -357,7 +357,7 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// safeKeySegment reports whether s can stand as one object-store key segment: non-empty, no
+// safeKeySegment reports whether s can stand as one artifact-store key segment: non-empty, no
 // slash or backslash, and not a dot segment.
 func safeKeySegment(s string) bool {
 	return s != "" && s != "." && s != ".." && !strings.ContainsAny(s, "/\\")

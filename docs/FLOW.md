@@ -83,9 +83,6 @@ sequenceDiagram
     R->>R: expand env_json -> export
     R->>R: git clone --depth 50 repo@ref (build/agent only)
     R->>R: run_with_timeout $T bash -eo pipefail script.sh
-    opt kind == build
-        R->>R: upload ./artifacts/** via mc to MinIO
-    end
     R-->>VM: exit code
 
     U->>API: GET /api/v1/jobs/j-8f2/logs?follow=1&sinceOffset=N

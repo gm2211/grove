@@ -60,9 +60,8 @@ const defaultLogStreamGracePeriod = 2 * time.Second
 
 // Options configures a dispatch Service.
 type Options struct {
-	// ArtifactsBase optionally names the artifact bucket/base clients should assume artifact
-	// paths (artifact_prefix) are relative to. Purely informational for now — the running job
-	// is the one that actually uploads to it.
+	// Deprecated: ArtifactsBase named the S3 bucket artifact paths were relative to, back when
+	// artifacts lived in one. Nothing reads it; the store is the directory Artifacts is rooted at.
 	ArtifactsBase string
 	// Artifacts, when non-nil, is used to populate Job.Artifacts once a job reaches a terminal
 	// status. Nil means "no artifact store configured" — Job.Artifacts is just never populated.
@@ -533,7 +532,7 @@ func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {
 	rec.Job = updated
 	if isTerminal(updated.Status) && len(rec.Job.Artifacts) == 0 && s.artifacts != nil {
 		if objs, aerr := s.artifacts.List(ctx, artifactPrefix(rec.ID)); aerr != nil {
-			// Artifact listing is best-effort — a bucket hiccup shouldn't fail the whole
+			// Artifact listing is best-effort — a store hiccup shouldn't fail the whole
 			// reconcile, since the running job itself already succeeded or failed on its own.
 			slog.Warn("dispatch: listing artifacts failed", "id", rec.ID, "err", aerr)
 		} else if len(objs) > 0 {

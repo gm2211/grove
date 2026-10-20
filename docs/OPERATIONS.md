@@ -192,8 +192,8 @@ but on the control plane, whose own Nomad agent is also a client for exactly the
    in the checkout, the script and the job's environment (minus `GH_TOKEN`/`GIT_TOKEN`, which only
    served the clone);
 4. starts it, streams its output into the job's log, and polls it every 15 seconds;
-5. when it exits, copies a build's `./artifacts/**` out and uploads them to the artifact store,
-   then removes the container.
+5. when it exits, copies a build's `./artifacts/**` out into the artifact store (a directory on
+   the control plane, see "Artifacts" below), then removes the container.
 
 A job whose VM stops answering for a minute is reported **lost**, and its timeout (124) and
 cancellation work as for any other job. The job's log names the VM it ran in.
@@ -263,7 +263,6 @@ and after step 5:
 | Orchard worker | `~/Library/Logs/grove/orchard-worker.log` (+`.err.log`) | n/a (worker is macOS-only) |
 | Orchard controller | `~/Library/Logs/grove/orchard-controller.log` | `journalctl --user -u grove-orchard-controller` |
 | Nomad server | `~/Library/Logs/grove/nomad.log` | `journalctl --user -u grove-nomad` |
-| MinIO | `~/Library/Logs/grove/minio.log` | `journalctl --user -u grove-minio` |
 | grove server | `~/Library/Logs/grove/server.log` | `journalctl --user -u grove-server` |
 
 Job logs themselves (build/agent/shell) come from Nomad — `grove dispatch`'s status/logs
@@ -274,20 +273,40 @@ subcommands, or `GET /api/v1/jobs/{id}/logs?follow=1`.
 - **grove CLI**: re-run `scripts/install.sh` (or `brew upgrade grove` on macOS), then re-run
   `grove install --role <role>` to pick up any new config/unit templates — it's idempotent, so
   already-correct steps are skipped.
-- **Orchard / Nomad / MinIO**: `grove install` re-checks each binary; bump the version pin (and
+- **Orchard / Nomad**: `grove install` re-checks each binary; bump the version pin (and
   every per-platform SHA-256 beside it, in `internal/install/download.go`) in this
   repo's install steps and re-run to pick up the change (Homebrew formulae upgrade in place;
   Linux downloads re-fetch the pinned version).
 - **A Homebrew upgrade adds the third-party-tap trust gate**: `brew update && brew upgrade` on a Mac
-  that already has `tart`/`nomad`/`minio` installed can pick up a Homebrew version that now refuses
+  that already has `tart`/`nomad` installed can pick up a Homebrew version that now refuses
   to load formulae from an untrusted tap (`Error: Refusing to load formula … from untrusted tap …`)
   even though nothing about grove's own config changed. Re-running `grove install --role <role>`
-  fixes it — it re-trusts `openai/tools`/`cirruslabs/cli`/`hashicorp/tap`/`minio/stable` as needed
+  fixes it — it re-trusts `openai/tools`/`cirruslabs/cli`/`hashicorp/tap` as needed
   before touching anything that installs from them — or run `grove doctor` first to see exactly
   which tap it is and the `brew trust <tap>` command to run by hand.
 - **Restart a supervised service** after a config change: macOS —
   `launchctl kickstart -k gui/$(id -u)/com.grove.<name>`; Linux —
   `systemctl --user restart grove-<name>`.
+
+## Artifacts
+
+Build artifacts live in a plain directory on the control plane: `artifacts.dir` in `config.yaml`,
+`~/.local/state/grove/artifacts` unless you changed it, laid out as `jobs/<job id>/<path>`
+(directories 0700, files 0600). Nothing else serves or holds them: `grove serve` lists them,
+streams them through `GET /api/v1/jobs/{id}/artifacts/{path}` and deletes them once their
+retention runs out (docs/JOBS.md "Artifact retention"); `grove sandbox run` writes the ones it
+copies out of sealed VMs. Only sealed pools' builds produce artifacts today.
+
+- **Disk use**: at most 2 GiB per job, gone 15 min / 1 h after the job ends. `du -sh
+  ~/.local/state/grove/artifacts` shows what's there now.
+- **Moving it**: stop `grove serve`, move the directory, `grove config set artifacts.dir <new>`,
+  start `grove serve` again. Jobs running at that moment lose their artifacts.
+- **Upgrading from MinIO**: re-run `grove install --role control-plane`. It stops and removes the
+  old `com.grove.minio` / `grove-minio` service and drops the S3 keys from `config.yaml`. Then
+  delete what MinIO left behind yourself: `rm -rf ~/.config/grove/minio` (its data, root
+  credential and policy file), plus `~/.local/bin/minio` and `~/.local/bin/grove-mc` on Linux, or
+  `brew uninstall minio/stable/minio && brew untap minio/stable` on macOS. Artifacts stored in
+  MinIO are not migrated; they were due to expire within the hour anyway.
 
 ## Re-checking health
 

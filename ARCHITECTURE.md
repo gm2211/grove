@@ -50,7 +50,7 @@ inside it packs many jobs per VM. One VM per job would cap macOS at 2 concurrent
 
 | Role | Runs | Where |
 |---|---|---|
-| `control-plane` | Orchard controller, Nomad server, grove server (API + UI), MinIO (artifacts) | the always-on Linux box, or one Mac |
+| `control-plane` | Orchard controller, Nomad server, grove server (API + UI), the artifact store (a local directory) | the always-on Linux box, or one Mac |
 | `worker` | Orchard worker (+ tart), launchd-supervised | every Mac |
 | `client` | just the `grove` CLI / MCP server pointed at the control plane | your laptop |
 
@@ -173,7 +173,11 @@ never nanoseconds; see `docs/JOBS.md` "JobRequest.timeout wire format"). grove m
 **parameterized Nomad job** (`nomad job dispatch`)
 constrained to `meta.pool`. Kinds:
 
-- `build` — clone `repo@ref`, run `script`, upload `./artifacts/**` to MinIO, exit code = job status.
+- `build` — clone `repo@ref`, run `script`, exit code = job status. On a sealed pool the control
+  plane also copies `./artifacts/**` out of the VM into the artifact store: a directory on the
+  control plane's disk (`artifacts.dir`, default `~/.local/state/grove/artifacts`) that only
+  `grove serve` and `grove sandbox run` touch — no service, port or credential. Shared pools don't
+  collect artifacts (their VMs have no way to write to that directory).
 - `agent` — long-running Claude Code / Codex session against a checkout; reconnectable logs.
 - `shell` — run an arbitrary command (what `grove exec` and the MCP `grove_run` tool use).
 
@@ -196,7 +200,7 @@ All under `/api/v1`, `Authorization: Bearer <token>`, bind to the tailnet addres
 | GET | `/jobs` · `/jobs/{id}` | list / status. An operator sees every job; any other credential sees only the jobs it submitted (403 on someone else's). `request.env` keeps its keys but every value reads `[redacted]`, for every caller |
 | POST | `/jobs` | JobRequest → `{id}`; JobRequest.idempotencyKey replays the existing job (no re-dispatch) instead of creating a new one; JobRequest.timeout is a duration string ("30m", "2h") or a number of *seconds* (never nanoseconds) — see `docs/JOBS.md` |
 | GET | `/jobs/{id}/logs?follow=1` | same ownership rule as `/jobs/{id}`. SSE / chunked log stream; `Accept: application/x-ndjson` + `&sinceOffset=N` streams `{offset,ts,stream,line}` objects, resumable by offset |
-| GET | `/jobs/{id}/artifacts/{path}` | streams one uploaded artifact from the bucket via the server's own credentials; same ownership rule as `/jobs/{id}`. A path with a `.`/`..`/empty segment or a leading `/` (checked after URL-decoding) is a 400. Always served `Content-Disposition: attachment` + `X-Content-Type-Options: nosniff`, so a browser downloads it rather than rendering job output on grove's origin |
+| GET | `/jobs/{id}/artifacts/{path}` | streams one artifact from the control plane's artifact store; same ownership rule as `/jobs/{id}`. A path with a `.`/`..`/empty segment or a leading `/` (checked after URL-decoding) is a 400. Always served `Content-Disposition: attachment` + `X-Content-Type-Options: nosniff`, so a browser downloads it rather than rendering job output on grove's origin |
 | DELETE | `/jobs/{id}` · POST `/jobs/{id}/cancel` | cancel (same operation, two spellings) |
 | GET · POST · DELETE | `/access/devices` · `/access/devices/{id}` | operator-only: list device credentials / mint one (`{name, scopes}` → `{token, device}`; the raw token is returned only here, once) / revoke one |
 | GET | `/healthz` | `{ok, version, orchard, nomad, serverTime}`; orchard/nomad are "up" or "down" |

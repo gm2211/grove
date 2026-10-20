@@ -138,9 +138,9 @@ Once a `build` job reaches a terminal status, `Job.artifacts[]` is populated:
 ```
 
 `url` is already a full API path (`/api/v1/jobs/{id}/artifacts/{urlencoded path}`) — the executor
-`GET`s it directly with the same bearer token used for everything else. grove proxies the
-download from its own MinIO/artifact-store credentials, so the executor never needs separate
-bucket credentials or a second auth scheme.
+`GET`s it directly with the same bearer token used for everything else. grove serves the
+download from the control plane's own artifact store, so the executor never needs storage
+credentials or a second auth scheme.
 
 ## Curl walkthrough
 

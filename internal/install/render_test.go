@@ -159,26 +159,6 @@ func TestRenderNomadServerConfig(t *testing.T) {
 	}
 }
 
-func TestRenderMinIOEnv(t *testing.T) {
-	got, err := RenderMinIOEnv(MinIOEnvSpec{
-		RootUser:     "abc123",
-		RootPassword: "secretsecret",
-		DataDir:      "/home/bob/.config/grove/minio/data",
-		Address:      "100.64.0.5:9000",
-	})
-	if err != nil {
-		t.Fatalf("RenderMinIOEnv: %v", err)
-	}
-	want := "# Managed by grove install. Re-run `grove install --role control-plane` to regenerate.\n" +
-		"MINIO_ROOT_USER=abc123\n" +
-		"MINIO_ROOT_PASSWORD=secretsecret\n" +
-		"MINIO_VOLUMES=/home/bob/.config/grove/minio/data\n" +
-		"MINIO_ADDRESS=100.64.0.5:9000\n"
-	if got != want {
-		t.Errorf("minio env mismatch:\n--- got ---\n%s\n--- want ---\n%s", got, want)
-	}
-}
-
 func TestRenderOrchardControllerEnv(t *testing.T) {
 	got, err := RenderOrchardControllerEnv(OrchardControllerEnvSpec{
 		Home:    "/home/bob/.config/grove/orchard-controller/data",

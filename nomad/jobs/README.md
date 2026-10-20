@@ -79,9 +79,7 @@ Every rendered job:
      failed, and otherwise `cd`s into the checkout it left in the alloc dir (see docs/JOBS.md
      "Private repositories").
   3. Runs `script.sh` under `timeout ${NOMAD_META_timeout_seconds:-3600}`.
-  4. (build only) uploads `./artifacts/**` to the artifact store with `mc`, prefixed by
-     `NOMAD_META_artifact_prefix` (falls back to the Nomad alloc ID).
-  5. Exits with `script.sh`'s exit code — the task's (and therefore the Nomad allocation's, and
+  4. Exits with `script.sh`'s exit code — the task's (and therefore the Nomad allocation's, and
      therefore the `Job.ExitCode` grove reports) exit status.
 - Driver: `raw_exec` for the `macos` pool (no container runtime on macOS guests), `docker` for
   every other pool. `fleet.yaml`'s optional `pools[].runnerImage` selects that pool's fixed outer
@@ -103,7 +101,7 @@ ships the docker CLI (no daemon) specifically for this. The `macos`/`raw_exec` p
 
 | Kind    | Clone repo@ref | Artifact upload | `kill_timeout` |
 |---------|:---:|:---:|---|
-| `build` | yes | yes | default (5s) |
+| `build` | yes | sealed pools only (by `grove sandbox run`, from the control plane) | default (5s) |
 | `agent` | yes | no  | `10m` — give a long-running coding-agent session time to shut down cleanly on cancel |
 | `shell` | no  | no  | default (5s) |
 

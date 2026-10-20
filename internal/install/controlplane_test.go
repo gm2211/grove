@@ -75,9 +75,6 @@ func TestControlPlanePlan_DarwinRendersConfigAndLaunchAgents(t *testing.T) {
 	if !r.CalledWith("brew install hashicorp/tap/nomad") {
 		t.Error("expected nomad to be installed via brew on darwin")
 	}
-	if !r.CalledWith("brew install minio/stable/minio") {
-		t.Error("expected minio to be installed via brew on darwin")
-	}
 
 	cfgDir := filepath.Join(home, ".config", "grove")
 	for _, rel := range []string{
@@ -85,14 +82,13 @@ func TestControlPlanePlan_DarwinRendersConfigAndLaunchAgents(t *testing.T) {
 		"fleet.yaml",
 		filepath.Join("orchard-controller", "env"),
 		filepath.Join("nomad", "server.hcl"),
-		filepath.Join("minio", "env"),
 	} {
 		if _, err := os.Stat(filepath.Join(cfgDir, rel)); err != nil {
 			t.Errorf("expected %s to be rendered: %v", rel, err)
 		}
 	}
 
-	for _, label := range []string{"orchard-controller", "nomad", "minio", "server"} {
+	for _, label := range []string{"orchard-controller", "nomad", "server"} {
 		p := filepath.Join(home, "Library", "LaunchAgents", "com.grove."+label+".plist")
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("expected launch agent for %s: %v", label, err)
@@ -106,8 +102,12 @@ func TestControlPlanePlan_DarwinRendersConfigAndLaunchAgents(t *testing.T) {
 	if cfg.Server.Token == "" {
 		t.Error("expected a generated server token")
 	}
-	if cfg.Artifacts.AccessKey == "" || cfg.Artifacts.SecretKey == "" {
-		t.Error("expected generated MinIO credentials in config.yaml")
+	wantArtifacts := filepath.Join(home, ".local", "state", "grove", "artifacts")
+	if cfg.Artifacts.Dir != wantArtifacts {
+		t.Errorf("cfg.Artifacts.Dir = %q, want %q", cfg.Artifacts.Dir, wantArtifacts)
+	}
+	if info, err := os.Stat(wantArtifacts); err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Errorf("expected artifact store dir %s with mode 0700: %v %v", wantArtifacts, info, err)
 	}
 	if cfg.Orchard.Token == "" {
 		t.Error("expected a grove-generated orchard service-account token")
@@ -163,17 +163,15 @@ func TestControlPlanePlan_DarwinRendersConfigAndLaunchAgents(t *testing.T) {
 	}
 }
 
-// TestControlPlanePlan_TrustsHashicorpAndMinIOTapsBeforeInstalling covers the fix for the observed
-// defect on the control-plane role: recent Homebrew refuses `brew install hashicorp/tap/nomad` and
-// `brew install minio/stable/minio` from an untrusted tap, so both must be tapped+trusted, in
-// order, before their respective install runs.
-func TestControlPlanePlan_TrustsHashicorpAndMinIOTapsBeforeInstalling(t *testing.T) {
+// TestControlPlanePlan_TrustsHashicorpTapBeforeInstalling covers the fix for the observed defect on
+// the control-plane role: recent Homebrew refuses `brew install hashicorp/tap/nomad` from an
+// untrusted tap, so it must be tapped+trusted, in order, before the install runs.
+func TestControlPlanePlan_TrustsHashicorpTapBeforeInstalling(t *testing.T) {
 	home := t.TempDir()
 	r := NewFakeRunner()
 	scriptWorkerEnrollmentToken(r, home)
 	scriptTailscaleUp(r)
 	scriptTapInfo(r, "hashicorp/tap", false, false)
-	scriptTapInfo(r, "minio/stable", false, false)
 	opts := testControlPlaneOptions(home, "darwin")
 	scriptPinnedDownloads(r, opts)
 
@@ -206,11 +204,10 @@ func TestControlPlanePlan_TrustsHashicorpAndMinIOTapsBeforeInstalling(t *testing
 		}
 	}
 	assertOrdered("brew tap hashicorp/tap", "brew trust hashicorp/tap", "brew install hashicorp/tap/nomad")
-	assertOrdered("brew tap minio/stable", "brew trust minio/stable", "brew install minio/stable/minio")
 }
 
 // TestControlPlanePlan_SkipsTrustWhenTapsAlreadyTrusted mirrors the worker-role idempotency test:
-// once tap-info reports both taps installed and trusted, neither `brew tap` nor `brew trust` should
+// once tap-info reports the tap installed and trusted, neither `brew tap` nor `brew trust` should
 // run again, though the installs themselves still do (their own Check gates that).
 func TestControlPlanePlan_SkipsTrustWhenTapsAlreadyTrusted(t *testing.T) {
 	home := t.TempDir()
@@ -218,7 +215,6 @@ func TestControlPlanePlan_SkipsTrustWhenTapsAlreadyTrusted(t *testing.T) {
 	scriptWorkerEnrollmentToken(r, home)
 	scriptTailscaleUp(r)
 	scriptTapInfo(r, "hashicorp/tap", true, true)
-	scriptTapInfo(r, "minio/stable", true, true)
 	opts := testControlPlaneOptions(home, "darwin")
 	scriptPinnedDownloads(r, opts)
 
@@ -232,19 +228,18 @@ func TestControlPlanePlan_SkipsTrustWhenTapsAlreadyTrusted(t *testing.T) {
 
 	for _, forbidden := range []string{
 		"brew tap hashicorp/tap", "brew trust hashicorp/tap",
-		"brew tap minio/stable", "brew trust minio/stable",
 	} {
 		if r.CalledWith(forbidden) {
 			t.Errorf("%q should not run when the tap is already installed and trusted", forbidden)
 		}
 	}
-	if !r.CalledWith("brew install hashicorp/tap/nomad") || !r.CalledWith("brew install minio/stable/minio") {
-		t.Error("expected nomad and minio to still be installed")
+	if !r.CalledWith("brew install hashicorp/tap/nomad") {
+		t.Error("expected nomad to still be installed")
 	}
 }
 
 // TestControlPlanePlan_LinuxDoesNotTrustTaps confirms the darwin-only trust steps aren't part of
-// the Linux plan at all (Linux has no Homebrew, and installs nomad/minio via direct download).
+// the Linux plan at all (Linux has no Homebrew, and installs nomad via direct download).
 func TestControlPlanePlan_LinuxDoesNotTrustTaps(t *testing.T) {
 	home := t.TempDir()
 	r := NewFakeRunner()
@@ -258,7 +253,7 @@ func TestControlPlanePlan_LinuxDoesNotTrustTaps(t *testing.T) {
 		t.Fatalf("BuildPlan: %v", err)
 	}
 	for _, s := range steps {
-		if s.Name == "brew-trust:hashicorp/tap" || s.Name == "brew-trust:minio/stable" {
+		if s.Name == "brew-trust:hashicorp/tap" {
 			t.Errorf("did not expect a brew-trust step in the Linux plan, got %q", s.Name)
 		}
 	}
@@ -286,14 +281,14 @@ func TestControlPlanePlan_LinuxRendersSystemdUnits(t *testing.T) {
 		t.Fatalf("RunPlan: %v", err)
 	}
 
-	for _, label := range []string{"orchard-controller", "nomad", "minio", "server"} {
+	for _, label := range []string{"orchard-controller", "nomad", "server"} {
 		p := filepath.Join(home, ".config", "systemd", "user", "grove-"+label+".service")
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("expected systemd unit for %s: %v", label, err)
 		}
 	}
 
-	// Linux has no brew: nomad/minio come from direct downloads instead.
+	// Linux has no brew: nomad comes from a direct download instead.
 	if r.CalledWith("brew install hashicorp/tap/nomad") {
 		t.Error("should not use brew on linux")
 	}
@@ -366,5 +361,117 @@ func TestControlPlanePlan_RestartsNomadOnlyWhenItsConfigChanges(t *testing.T) {
 	data, _ := os.ReadFile(conf)
 	if !strings.Contains(string(data), `grove_sandbox_host = "true"`) {
 		t.Errorf("server.hcl = %s, want the sandbox client", data)
+	}
+}
+
+// TestControlPlanePlan_ArtifactStoreIsLocalNotAService asserts the artifact store is a local directory: no plan step, unit
+// or command installs, configures or starts MinIO (or its client) on either OS.
+func TestControlPlanePlan_ArtifactStoreIsLocalNotAService(t *testing.T) {
+	for _, goos := range []string{"darwin", "linux"} {
+		t.Run(goos, func(t *testing.T) {
+			home := t.TempDir()
+			r := NewFakeRunner()
+			scriptWorkerEnrollmentToken(r, home)
+			scriptTailscaleUp(r)
+			opts := testControlPlaneOptions(home, goos)
+			scriptPinnedDownloads(r, opts)
+
+			steps, err := BuildPlan(r, opts, io.Discard)
+			if err != nil {
+				t.Fatalf("BuildPlan: %v", err)
+			}
+			for _, s := range steps {
+				if strings.Contains(strings.ToLower(s.Name), "minio") && s.Name != "legacy-minio:retire" {
+					t.Errorf("unexpected MinIO step %q", s.Name)
+				}
+			}
+			if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
+				t.Fatalf("RunPlan: %v", err)
+			}
+			for _, c := range r.Calls {
+				if strings.Contains(strings.ToLower(c.String()), "minio") || strings.Contains(c.String(), "grove-mc") {
+					t.Errorf("unexpected MinIO command: %s", c.String())
+				}
+			}
+			for _, p := range []string{
+				filepath.Join(home, "Library", "LaunchAgents", "com.grove.minio.plist"),
+				filepath.Join(home, ".config", "systemd", "user", "grove-minio.service"),
+				filepath.Join(home, ".config", "grove", "minio"),
+			} {
+				if _, err := os.Stat(p); !os.IsNotExist(err) {
+					t.Errorf("did not expect %s to exist (err=%v)", p, err)
+				}
+			}
+		})
+	}
+}
+
+// TestControlPlanePlan_RetiresLegacyObjectStore covers re-running install over an older control plane:
+// the MinIO service file is stopped and removed, MinIO's data is left alone, and config.yaml
+// loses its S3 keys (secret included) and gains artifacts.dir.
+func TestControlPlanePlan_RetiresLegacyObjectStore(t *testing.T) {
+	for _, goos := range []string{"darwin", "linux"} {
+		t.Run(goos, func(t *testing.T) {
+			home := t.TempDir()
+			cfgDir := filepath.Join(home, ".config", "grove")
+			legacy := &config.Config{Artifacts: config.ArtifactsConfig{
+				Endpoint: "http://100.64.0.1:9000", Bucket: "grove",
+				AccessKey: "grove-artifacts-abc", SecretKey: "legacy-secret",
+			}}
+			if err := config.Save(filepath.Join(cfgDir, "config.yaml"), legacy); err != nil {
+				t.Fatal(err)
+			}
+			dataFile := filepath.Join(cfgDir, "minio", "data", "grove", "obj")
+			serviceFile := filepath.Join(home, "Library", "LaunchAgents", "com.grove.minio.plist")
+			wantCall := "launchctl bootout gui/" + strconv.Itoa(os.Getuid()) + "/com.grove.minio"
+			if goos == "linux" {
+				serviceFile = filepath.Join(home, ".config", "systemd", "user", "grove-minio.service")
+				wantCall = "systemctl --user disable --now grove-minio.service"
+			}
+			for _, p := range []string{dataFile, serviceFile} {
+				if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			r := NewFakeRunner()
+			scriptWorkerEnrollmentToken(r, home)
+			scriptTailscaleUp(r)
+			opts := testControlPlaneOptions(home, goos)
+			scriptPinnedDownloads(r, opts)
+			steps, err := BuildPlan(r, opts, io.Discard)
+			if err != nil {
+				t.Fatalf("BuildPlan: %v", err)
+			}
+			if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
+				t.Fatalf("RunPlan: %v", err)
+			}
+			if !r.CalledWith(wantCall) {
+				t.Errorf("expected %q, calls: %v", wantCall, r.Calls)
+			}
+			if _, err := os.Stat(serviceFile); !os.IsNotExist(err) {
+				t.Errorf("expected %s removed, err=%v", serviceFile, err)
+			}
+			if _, err := os.Stat(dataFile); err != nil {
+				t.Errorf("MinIO data must be left for the operator: %v", err)
+			}
+			raw, err := os.ReadFile(filepath.Join(cfgDir, "config.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(raw), "legacy-secret") || strings.Contains(string(raw), "endpoint") {
+				t.Errorf("legacy S3 keys left in config.yaml:\n%s", raw)
+			}
+			cfg, err := config.LoadFrom(filepath.Join(cfgDir, "config.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Artifacts.Dir == "" {
+				t.Error("expected artifacts.dir to be recorded")
+			}
+		})
 	}
 }

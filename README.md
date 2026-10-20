@@ -106,8 +106,8 @@ can run on Linux or a Mac; the diagram separates roles for clarity.
 Solid arrows are same-host calls. Dashed arrows show network connection initiation:
 clients reach Grove's API, Orchard workers reach the controller, and Nomad clients inside
 VMs reach the Nomad server. `grove mcp` speaks stdio locally to its agent and HTTP to the
-remote Grove API. Ports show installer defaults, not a live deployment audit. MinIO is
-co-located on the control-plane host; artifact transfer paths are omitted.
+remote Grove API. Ports show installer defaults, not a live deployment audit. Build artifacts are kept in a
+directory on the control-plane host; artifact transfer paths are omitted.
 
 See [docs/FLOW.md](docs/FLOW.md) for the full layering diagram plus a sequence diagram for one
 job end to end and the VM recycling loop.
@@ -158,7 +158,7 @@ See [CHANGELOG.md](CHANGELOG.md) for what shipped in each release.
 | **Homebrew** | grove is its own tap; on recent Homebrew you may need `brew trust openai/tools` before Tart will install |
 | **Registry access** | grove's worker images on `ghcr.io` are private by default — make the GitHub packages public, or `grove install --role worker --registry-token …` (see [docs/INSTALL.md](docs/INSTALL.md)) |
 
-grove installs everything else itself (Tart, Nomad, MinIO, Orchard).
+grove installs everything else itself (Tart, Nomad, Orchard).
 
 ## Docs
 

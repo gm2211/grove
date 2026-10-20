@@ -10,7 +10,7 @@ meant to run as a grove job (CI builds, agent sessions, `grove exec`).
 
 | `JobRequest.Kind` | Nomad job | Clones `repo@ref`? | Uploads artifacts? | Notes |
 |---|---|:---:|:---:|---|
-| `build` | `grove-build-<pool>` | yes | yes, `./artifacts/**` | CI-style: run a script, keep what it produced. |
+| `build` | `grove-build-<pool>` | yes | sealed pools: `./artifacts/**` (see below) | CI-style: run a script, keep what it produced. On a shared pool artifacts are not collected yet: the VM has no way to write to the control plane's artifact store. |
 | `agent` | `grove-agent-<pool>` | yes | no | Long-running Claude Code / Codex session; `kill_timeout = "10m"` so a cancel lets it shut down cleanly instead of SIGKILL. |
 | `shell` | `grove-shell-<pool>` | no | no | Arbitrary command against whatever's already on disk — what `grove exec` and the MCP `grove_run` tool use. |
 
@@ -207,8 +207,6 @@ With no TTL it stays armed until `grove github disable`.
    - (build/agent) `cd`s into the checkout,
    - runs `script.sh` under `run_with_timeout $T` (see "Portable timeout" below), where
      `T="${timeout_seconds:-3600}"`,
-   - (build) uploads `./artifacts/**` via `mc` to `$ARTIFACT_ENDPOINT/$ARTIFACT_BUCKET/<artifact_prefix>/`
-     using `ARTIFACT_ACCESS_KEY`/`ARTIFACT_SECRET_KEY` from the environment,
    - exits with `script.sh`'s exit code, which becomes the Nomad task's (and therefore the
      allocation's, and therefore `Job.ExitCode`'s) exit status.
 
@@ -233,8 +231,10 @@ unchanged; what differs is where each step happens:
 - the task exits with the container's exit code; 124 on a timeout; 125 when the VM stopped
   answering for a minute, which `internal/dispatch` reports as `lost` for a sealed pool (a script's
   own 125 is reported as 1);
-- (build) `./artifacts/**` are copied out and uploaded by the control plane under
-  `<artifact_prefix>/`, since the VM can't reach the artifact store.
+- (build) `./artifacts/**` are copied out by the control plane and stored under
+  `<artifact_prefix>/` in its artifact store, a directory on its own disk (`artifacts.dir` in
+  `config.yaml`, default `~/.local/state/grove/artifacts`; files 0600, written by atomic rename).
+  Only regular files are taken, at paths that stay inside `artifacts/`; at most 2 GiB per job.
 
 A sealed **macOS** pool (`--os darwin`) has no container runtime, so the same steps run as plain
 processes, through `sudo` over the same Orchard exec:
@@ -260,19 +260,24 @@ Exit codes are the same as on a Linux sealed pool (124, 125 → lost, a script's
 
 ### Artifact retention
 
-Artifacts are kept briefly, so the bucket never grows without bound: `grove serve` deletes a
+Artifacts are kept briefly, so the artifact store never grows without bound: `grove serve` deletes a
 job's `<artifact_prefix>/` **15 minutes** after the job succeeded and **1 hour** after any other end
-(failed, canceled, lost), counting from the later of the job's finish and its last upload. Objects
+(failed, canceled, lost), counting from the later of the job's finish and its last upload. Files
 under `jobs/` that belong to no job grove knows about expire 1 hour after their last write. Once
 deleted, the job's `artifacts` list is empty and `artifactsExpiredAt` says when. Both durations
 are set in `config.yaml`:
 
 ```yaml
 artifacts:
+  dir: /home/you/.local/state/grove/artifacts   # where the store lives (set by grove install)
   retention:
     success: 15m
     failure: 1h
 ```
+
+Older `config.yaml` files may still carry `endpoint`, `bucket`, `accessKey` and `secretKey` from
+when artifacts lived in MinIO; they still load, are ignored (`grove serve` logs a warning), and
+re-running `grove install --role control-plane` removes them.
 
 The sweep runs with the job reconciler (every 30 seconds), so a deletion can land up to that much
 after its deadline. Download what you need to keep.
@@ -323,8 +328,8 @@ directly:
 - Either path installs a `trap ... TERM INT` that forwards a signal Nomad sends the task (e.g. on
   `kill_timeout` during a cancel) to the child process, since the fallback path no longer `exec`s
   into `timeout` and therefore keeps `run.sh`'s own bash process as the one Nomad signals.
-- `build.nomad.hcl`'s `run.sh` (which already captures `code=$?` under `set +e` to run the artifact
-  upload afterward, rather than `exec`ing into the last command) calls `run_with_timeout` the same
+- `build.nomad.hcl`'s `run.sh` (which captures `code=$?` under `set +e` and exits with it, rather
+  than `exec`ing into the last command) calls `run_with_timeout` the same
   way; `shell.nomad.hcl`/`agent.nomad.hcl` call it followed by an explicit `exit $?`, since neither
   had anything left to do after the script previously.
 

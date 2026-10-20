@@ -14,7 +14,7 @@ modes that come up on real Macs.
 - Go 1.21+ only if you expect `grove install` to fall back to building the Orchard fork from
   source (it tries a prebuilt release asset first).
 
-grove itself installs everything else (Homebrew, Tart, Nomad, MinIO, Orchard) — including trusting
+grove itself installs everything else (Homebrew, Tart, Nomad, Orchard) — including trusting
 the third-party Homebrew taps those come from, which recent Homebrew otherwise refuses to load from
 (see [Failure modes](#failure-modes)).
 
@@ -47,12 +47,10 @@ match; a mismatch deletes the download and fails the step.
 | What | Pinned version | Where |
 |---|---|---|
 | Nomad (Linux control plane) | 2.0.7 | `releases.hashicorp.com` zip |
-| MinIO server (Linux control plane) | `RELEASE.2025-09-06T17-38-46Z` | `dl.min.io` archive |
-| MinIO client `mc` → `~/.local/bin/grove-mc` (control plane) | `RELEASE.2025-08-13T08-35-41Z` | `dl.min.io` archive |
 | Homebrew installer (worker, when `brew` is missing) | `Homebrew/install@35da6871c4be` | `raw.githubusercontent.com` |
 
-On macOS, Nomad and MinIO still come from their Homebrew taps (`hashicorp/tap`, `minio/stable`);
-Homebrew verifies each formula's own pinned sha256. The Homebrew installer, once verified, clones
+On macOS, Nomad still comes from its Homebrew tap (`hashicorp/tap`); Homebrew verifies the
+formula's own pinned sha256. The Homebrew installer, once verified, clones
 Homebrew itself from git as it always does. Bumping a pin means changing the version and every
 per-platform hash together — the file's header says where each upstream digest comes from.
 
@@ -132,18 +130,22 @@ web UI. A worker that can't authenticate to a private registry fails to pull the
 grove install --role control-plane
 ```
 
-Renders and starts Orchard controller, Nomad server, MinIO, and `grove serve`, all supervised
-(launchd on macOS, `systemd --user` on Linux), plus `~/.config/grove/config.yaml` and a starter
-`fleet.yaml`. No privileged steps — everything here runs as your own user.
+Renders and starts Orchard controller, Nomad server and `grove serve`, all supervised (launchd on
+macOS, `systemd --user` on Linux), plus `~/.config/grove/config.yaml` and a starter `fleet.yaml`.
+No privileged steps — everything here runs as your own user.
 
-MinIO's root credential lives only in `~/.config/grove/minio/env` (0600) and is used solely to
-administer MinIO. Once MinIO is up, the installer uses it (over stdin, via the pinned
-`~/.local/bin/grove-mc`) to create the `grove` bucket, a `grove-artifacts` policy allowing object
-read/write/list on that bucket only, and a `grove-artifacts-<random>` user with that policy. That
-user's key — never the root one — is what goes into `config.yaml`'s `artifacts` section and so to
-`grove serve`. Use the same credential for any job/worker `ARTIFACT_ACCESS_KEY`/`ARTIFACT_SECRET_KEY`.
-Re-running `grove install --role control-plane` on an older install, whose `config.yaml` still holds
-the root credential, mints the scoped user and replaces it (then reloads `grove serve`).
+Build artifacts are kept in a plain directory on this machine, `~/.local/state/grove/artifacts`
+(0700, next to the job history in `jobs.json`), recorded in `config.yaml` as `artifacts.dir`. There
+is no artifact service, port or credential: only the control plane reads and writes it (`grove
+serve` serves and expires artifacts, `grove sandbox run` stores the ones it copies out of sealed
+VMs). To keep them elsewhere, `grove config set artifacts.dir /path` and restart `grove serve`.
+
+Upgrading from a release that ran MinIO: re-running `grove install --role control-plane` stops and
+removes the `com.grove.minio` LaunchAgent / `grove-minio` systemd unit, drops the old
+`artifacts.endpoint`/`bucket`/`accessKey`/`secretKey` keys from `config.yaml` (an older
+`config.yaml` still loads before that; `grove serve` logs that it ignores them) and sets
+`artifacts.dir`. It leaves `~/.config/grove/minio` (MinIO's data and root credential) for you to
+delete — artifacts there are past their retention anyway; see docs/OPERATIONS.md.
 
 ### Client (your laptop, or any machine that just talks to the fleet)
 
@@ -184,8 +186,8 @@ grove doctor
 Prints a ✓/✗ table: Tailscale up, Orchard controller reachable, Nomad reachable, grove server
 `/api/v1/healthz`, launchd/systemd units present, Tart installed, macOS VM slot usage (max 2 per
 Apple's Virtualization.framework), disk free under `~/.tart`, and — for any third-party Homebrew tap
-that's actually tapped on this machine (`openai/tools`, `cirruslabs/cli`, `hashicorp/tap`,
-`minio/stable`) — whether it's trusted, with the exact `brew trust <tap>` remediation if not. Non-
+that's actually tapped on this machine (`openai/tools`, `cirruslabs/cli`, `hashicorp/tap`) —
+whether it's trusted, with the exact `brew trust <tap>` remediation if not. Non-
 zero exit if anything's red.
 
 If `fleet.yaml` has any pool pulling a `ghcr.io` image and this machine has no recorded `tart login
@@ -242,11 +244,11 @@ ghcr.io` (see "Registry access for private worker images" above), doctor also wa
   ```
 
   `grove install` handles this itself: before installing from `openai/tools` (Tart; falls back to
-  `cirruslabs/cli` if that tap doesn't have it), `hashicorp/tap` (Nomad, control-plane role only) or
-  `minio/stable` (MinIO, control-plane role only), it runs `brew tap <tap>` (if not already tapped)
+  `cirruslabs/cli` if that tap doesn't have it) or `hashicorp/tap` (Nomad, control-plane role
+  only), it runs `brew tap <tap>` (if not already tapped)
   then `brew trust <tap>`, printing why before it does. If you still hit this error — e.g. you ran
   `brew install` yourself outside of `grove install` — the fix is the command Homebrew already
-  printed: `brew trust openai/tools` (or `hashicorp/tap` / `minio/stable`, matching whichever tap
+  printed: `brew trust openai/tools` (or `hashicorp/tap`, matching whichever tap
   the error names). `grove doctor` also reports any required tap that's tapped but not trusted,
   with this exact remediation command. On a Homebrew old enough to not have `brew trust` at all,
   grove treats that as nothing to do — there's no trust gate to satisfy.

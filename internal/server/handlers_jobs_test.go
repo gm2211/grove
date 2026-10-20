@@ -7,6 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -586,6 +589,45 @@ func TestGetArtifact_StreamsFromArtifactStore(t *testing.T) {
 	}
 	if ct := rec.Header().Get("Content-Type"); ct != "application/octet-stream" {
 		t.Errorf("content-type = %q", ct)
+	}
+}
+
+// TestGetArtifact_FromFSStore serves from the real on-disk store: the bytes, the type derived from
+// the extension, and a 404 (never a file outside the store) for a symlink a job could have left.
+func TestGetArtifact_FromFSStore(t *testing.T) {
+	store, err := artifacts.NewFS(filepath.Join(t.TempDir(), "artifacts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"coverage":91}`
+	if err := store.Put(context.Background(), "jobs/job-1/reports/cov.json", strings.NewReader(body), int64(len(body)), ""); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(store.Dir(), "jobs", "job-1", "link")); err != nil {
+		t.Fatal(err)
+	}
+	srv := New(&fakeOrchard{}, &fakeNomad{}, &fakeDispatch{jobs: map[string]*dispatch.Job{}}, store, Options{})
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-1/artifacts/reports/cov.json", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != body {
+		t.Fatalf("status = %d, body=%q", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("content-type = %q", ct)
+	}
+	if cl := rec.Header().Get("Content-Length"); cl != strconv.Itoa(len(body)) {
+		t.Errorf("content-length = %q", cl)
+	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-1/artifacts/link", nil))
+	if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "secret") {
+		t.Errorf("symlink: status = %d, body=%q; want 404", rec.Code, rec.Body.String())
 	}
 }
 

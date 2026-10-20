@@ -44,17 +44,12 @@ var (
 		Name:   "hashicorp/tap",
 		Reason: "Nomad, HashiCorp's official tap",
 	}
-	// tapMinIOStable serves the MinIO server binary.
-	tapMinIOStable = thirdPartyTap{
-		Name:   "minio/stable",
-		Reason: "MinIO, the official minio/stable tap",
-	}
 )
 
 // requiredTaps is every third-party tap grove might install from, across all roles. Used by
 // `grove doctor` to audit trust status; each build*Steps planner only wires up the subset it
 // actually installs from.
-var requiredTaps = []thirdPartyTap{tapOpenAITools, tapCirruslabsCLI, tapHashicorp, tapMinIOStable}
+var requiredTaps = []thirdPartyTap{tapOpenAITools, tapCirruslabsCLI, tapHashicorp}
 
 // tapInfo is the subset of `brew tap-info --json=v1 <tap>`'s per-tap object grove cares about.
 // Unlike `brew trust --list` (which doesn't exist — see `brew trust --help`; the closest is bare

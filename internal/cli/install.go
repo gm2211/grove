@@ -27,7 +27,7 @@ var installCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Bootstrap this machine into one of grove's roles (worker, control-plane, client).",
 	Long: `grove install renders an idempotent plan for the given --role and applies it: Homebrew/
-Tart/Orchard/Nomad/MinIO dependencies, launchd agents or systemd --user units, and ~/.config/grove/
+Tart/Orchard/Nomad dependencies, launchd agents or systemd --user units, and ~/.config/grove/
 config.yaml. Re-running it is safe — steps that are already satisfied are skipped.
 
 Steps that need sudo or touch system-wide settings (disabling sleep, the macOS 15+ local-network

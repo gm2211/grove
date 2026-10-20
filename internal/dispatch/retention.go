@@ -11,7 +11,7 @@ import (
 
 // expireArtifacts deletes the artifacts of every finished job whose retention has run out:
 // opts.ArtifactRetention.Success after a job succeeded, .Failure after any other end. It works
-// from the bucket's contents rather than the job history, so artifacts whose job grove no longer
+// from the store's contents rather than the job history, so artifacts whose job grove no longer
 // knows about (history removed, or uploaded by hand under jobs/) expire too, Failure after they
 // were last written. A failed listing or delete is logged and retried on the next sweep.
 func (s *service) expireArtifacts(ctx context.Context, now time.Time) {
@@ -70,7 +70,7 @@ func (s *service) expireArtifacts(ctx context.Context, now time.Time) {
 		if !known {
 			continue
 		}
-		// Re-read: the record may have changed while the bucket was being swept.
+		// Re-read: the record may have changed while the store was being swept.
 		if rec, ok := s.store.get(id); ok {
 			at := now
 			rec.Artifacts = nil

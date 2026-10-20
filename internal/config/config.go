@@ -25,8 +25,8 @@ type Config struct {
 	Nomad Endpoint `yaml:"nomad"`
 	// grove server (API + UI). Token is what clients (orchestrators, MCP, UI) present.
 	Server ServerConfig `yaml:"server"`
-	// Artifact store (S3-compatible, e.g. MinIO on the control plane).
-	Artifacts ArtifactsConfig `yaml:"artifacts"`
+	// Artifact store: a directory on the control plane's disk.
+	Artifacts ArtifactsConfig `yaml:"artifacts,omitempty"`
 	// Path to fleet.yaml. Relative paths resolve against the config file's directory.
 	Fleet string `yaml:"fleet"`
 	// Tailscale configures worker VMs to join the tailnet on boot (see fleet.BuildStartupScript).
@@ -93,14 +93,49 @@ func ResolveOperatorToken(cfg *Config) (string, error) {
 	return cfg.Server.Token, nil
 }
 
+// ArtifactsConfig configures the control plane's artifact store, a plain directory that only
+// `grove serve` and `grove sandbox run` (both on the control plane) read and write.
 type ArtifactsConfig struct {
-	Endpoint  string `yaml:"endpoint"`
-	Bucket    string `yaml:"bucket"`
-	AccessKey string `yaml:"accessKey,omitempty"`
-	SecretKey string `yaml:"secretKey,omitempty"`
-	// Retention bounds how long a finished job's artifacts stay in the bucket. Zero values take
+	// Dir is the store's root directory. Empty means the default, $XDG_STATE_HOME/grove/artifacts
+	// (~/.local/state/grove/artifacts), next to the job history. A relative path resolves against
+	// the config file's directory.
+	Dir string `yaml:"dir,omitempty"`
+	// Retention bounds how long a finished job's artifacts stay in the store. Zero values take
 	// the defaults (DefaultArtifactRetentionSuccess/Failure).
 	Retention ArtifactRetention `yaml:"retention,omitempty"`
+
+	// Deprecated: grove used to keep artifacts in an S3-compatible bucket (MinIO on the control
+	// plane). These keys still parse, so an older config.yaml loads, but nothing reads them; see
+	// LegacyKeys. `grove install --role control-plane` clears them.
+	Endpoint string `yaml:"endpoint,omitempty"`
+	// Deprecated: see Endpoint.
+	Bucket string `yaml:"bucket,omitempty"`
+	// Deprecated: see Endpoint.
+	AccessKey string `yaml:"accessKey,omitempty"`
+	// Deprecated: see Endpoint.
+	SecretKey string `yaml:"secretKey,omitempty"`
+}
+
+// LegacyKeys names the deprecated S3/MinIO keys set in c ("artifacts.endpoint", …), so callers
+// can warn that they are ignored. Nil when there are none.
+func (c ArtifactsConfig) LegacyKeys() []string {
+	var keys []string
+	for _, kv := range []struct{ key, value string }{
+		{"artifacts.endpoint", c.Endpoint},
+		{"artifacts.bucket", c.Bucket},
+		{"artifacts.accessKey", c.AccessKey},
+		{"artifacts.secretKey", c.SecretKey},
+	} {
+		if kv.value != "" {
+			keys = append(keys, kv.key)
+		}
+	}
+	return keys
+}
+
+// ClearLegacy drops the deprecated S3/MinIO keys (including the old secret key) from c.
+func (c *ArtifactsConfig) ClearLegacy() {
+	c.Endpoint, c.Bucket, c.AccessKey, c.SecretKey = "", "", "", ""
 }
 
 // ArtifactRetention is how long `grove serve` keeps a job's artifacts after the job finishes:
@@ -111,7 +146,7 @@ type ArtifactRetention struct {
 	Failure time.Duration `yaml:"failure,omitempty"`
 }
 
-// Default artifact retention: short on purpose, so the bucket never grows without bound.
+// Default artifact retention: short on purpose, so the store never grows without bound.
 const (
 	DefaultArtifactRetentionSuccess = 15 * time.Minute
 	DefaultArtifactRetentionFailure = time.Hour
@@ -168,6 +203,9 @@ func LoadFrom(path string) (*Config, error) {
 	}
 	if cfg.Fleet != "" && !filepath.IsAbs(cfg.Fleet) {
 		cfg.Fleet = filepath.Join(filepath.Dir(path), cfg.Fleet)
+	}
+	if cfg.Artifacts.Dir != "" && !filepath.IsAbs(cfg.Artifacts.Dir) {
+		cfg.Artifacts.Dir = filepath.Join(filepath.Dir(path), cfg.Artifacts.Dir)
 	}
 	return &cfg, nil
 }

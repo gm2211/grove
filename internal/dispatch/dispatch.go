@@ -122,7 +122,7 @@ type Placement struct {
 	WorkerID string `json:"workerId,omitempty"`
 }
 
-// Artifact is a file a job produced, stored in the artifact bucket.
+// Artifact is a file a job produced, stored in the control plane's artifact store.
 type Artifact struct {
 	Path        string `json:"path"`
 	URL         string `json:"url"`
