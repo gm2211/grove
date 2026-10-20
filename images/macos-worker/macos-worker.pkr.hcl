@@ -1,7 +1,7 @@
-// grove macOS worker image: Tart VM running a Nomad client (macos node_class) plus the toolchain
-// build/agent jobs expect. Tailscale is installed but NOT joined here — the fleet startup script
-// (internal/fleet) joins the tailnet with an ephemeral auth key at VM creation time. See
-// docs/IMAGES.md for the full contract between this image and the fleet reconciler.
+// grove macOS worker image: a sealed Tart VM with the toolchain build/agent jobs expect. It runs
+// no scheduler agent and joins no network of its own: grove serve drives each job from the
+// control plane through Orchard (internal/sandbox), and Softnet keeps the VM off the LAN and
+// tailnet. See docs/IMAGES.md for the full contract between this image and the fleet reconciler.
 
 packer {
   required_plugins {
@@ -37,7 +37,7 @@ variable "memory_gb" {
 variable "disk_size_gb" {
   type = number
   # The upstream vanilla template uses 50 GB. Keep 10 GB of
-  # headroom for Grove's Nomad/Tailscale and general worker tools.
+  # headroom for general worker tools.
   default = 60
 }
 
@@ -130,90 +130,6 @@ build {
       "export HOMEBREW_NO_INSTALL_CLEANUP=1",
       "echo '==> installing git, gh, jq, node, python'",
       "brew install git gh jq node python@3.12",
-      # Tailscale: install the standalone (non-App-Store) build via the `tailscale` brew FORMULA,
-      # not the `tailscale-app` CASK. The cask is the sandboxed Mac-App-Store-equivalent GUI build
-      # that only starts once a user is logged into the GUI session; the formula ships a plain
-      # tailscaled LaunchDaemon that behaves like the Linux daemon and starts headless before
-      # login, which is what a worker VM needs (see ARCHITECTURE.md: 'Tailscale standalone variant
-      # (not App Store — that one doesn't start before login)'). Verified against Tailscale's own
-      # 'Three ways to run Tailscale on macOS' docs and formulae.brew.sh/formula/tailscale.
-      "echo '==> installing tailscale (brew formula, not cask)'",
-      "brew install tailscale",
-      "sudo /opt/homebrew/bin/brew services start tailscale || true", # tailscaled itself; `tailscale up` (join) is done by the fleet startup script with an ephemeral auth key.
-    ]
-  }
-
-  # Native ARM64 Nomad with the pinned VM topology fix. Built once on the image builder;
-  # compiler/source/module caches never enter the worker image.
-  provisioner "file" {
-    source      = "artifacts/nomad"
-    destination = "/tmp/grove-nomad"
-  }
-  provisioner "file" {
-    source      = "artifacts/metadata.json"
-    destination = "/tmp/grove-nomad-metadata.json"
-  }
-  provisioner "file" {
-    source      = "artifacts/NOMAD-LICENSE.txt"
-    destination = "/tmp/grove-nomad-LICENSE.txt"
-  }
-  provisioner "shell" {
-    inline = [
-      "set -eu",
-      "export PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-      "test \"$(shasum -a 256 /tmp/grove-nomad | awk '{print $1}')\" = \"$(jq -r .binary_sha256 /tmp/grove-nomad-metadata.json)\"",
-      "sudo mkdir -p /usr/local/bin /usr/local/share/grove",
-      "sudo install -o root -g wheel -m 0755 /tmp/grove-nomad /usr/local/bin/nomad",
-      "sudo install -o root -g wheel -m 0644 /tmp/grove-nomad-metadata.json /usr/local/share/grove/nomad-build.json",
-      "sudo install -o root -g wheel -m 0644 /tmp/grove-nomad-LICENSE.txt /usr/local/share/grove/NOMAD-LICENSE.txt",
-      "rm /tmp/grove-nomad /tmp/grove-nomad-metadata.json /tmp/grove-nomad-LICENSE.txt",
-      "/usr/local/bin/nomad version",
-    ]
-  }
-
-  # --- Nomad client config: static half only ----------------------------------------------------
-  # client.hcl carries everything that does NOT change per-boot. The dynamic half (`servers`,
-  # the pool/host meta) is written by the fleet startup script into grove-meta.hcl right before
-  # `nomad agent` starts, and gets replaced on every VM recreation. See docs/IMAGES.md.
-  provisioner "shell" {
-    inline = [
-      "set -eu",
-      "sudo mkdir -p /usr/local/etc/nomad.d",
-      "sudo mkdir -p /opt/nomad/data",
-    ]
-  }
-
-  provisioner "file" {
-    source      = "files/client.hcl"
-    destination = "/tmp/client.hcl"
-  }
-  provisioner "shell" {
-    inline = ["sudo mv /tmp/client.hcl /usr/local/etc/nomad.d/client.hcl"]
-  }
-
-  # Empty placeholder so `nomad agent -config /usr/local/etc/nomad.d` has something to merge with
-  # before the fleet startup script overwrites it with real servers/meta on first boot.
-  provisioner "file" {
-    source      = "files/grove-meta.hcl.placeholder"
-    destination = "/tmp/grove-meta.hcl"
-  }
-  provisioner "shell" {
-    inline = ["sudo mv /tmp/grove-meta.hcl /usr/local/etc/nomad.d/grove-meta.hcl"]
-  }
-
-  provisioner "file" {
-    source      = "files/com.grove.nomad.plist"
-    destination = "/tmp/com.grove.nomad.plist"
-  }
-  provisioner "shell" {
-    inline = [
-      "set -eu",
-      "sudo mv /tmp/com.grove.nomad.plist /Library/LaunchDaemons/com.grove.nomad.plist",
-      "sudo chown root:wheel /Library/LaunchDaemons/com.grove.nomad.plist",
-      "sudo chmod 644 /Library/LaunchDaemons/com.grove.nomad.plist",
-      # Do NOT bootstrap/kickstart here: nomad has no server to join to yet during the image
-      # build, and would just crash-loop into KeepAlive. `launchctl load` happens on first real
-      # boot (RunAtLoad=true in the plist takes care of it once servers are configured).
     ]
   }
 
@@ -244,11 +160,6 @@ build {
         "sudo xcodebuild -runFirstLaunch",
       ]
     }
-  }
-
-  # Never publish an image whose Nomad agent only appears loaded but cannot schedule work.
-  provisioner "shell" {
-    script = "scripts/verify-nomad.sh"
   }
 
   # --- cleanup ---------------------------------------------------------------------------------

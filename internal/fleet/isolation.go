@@ -8,7 +8,9 @@ import (
 	"github.com/gm2211/grove/internal/orchard"
 )
 
-// Network modes for Pool.Network.
+// Network modes for Pool.Network. Every pool is isolated: NetworkShared is still accepted in
+// fleet.yaml, so an older spec loads, but Spec.Validate turns it into NetworkIsolated with a
+// warning.
 const (
 	NetworkShared   = "shared"
 	NetworkIsolated = "isolated"
@@ -25,8 +27,10 @@ const softnetBlockHost = "out @host"
 // unreachable once softnetBlockHost applies.
 var isolatedDNSServers = []string{"1.1.1.1", "8.8.8.8"}
 
-// Isolated reports whether p asks for network isolation (Pool.Network "isolated").
-func (p Pool) Isolated() bool { return p.Network == NetworkIsolated }
+// Isolated reports whether p's VMs are sealed. Always true: grove has no other kind of pool.
+//
+// Deprecated: kept for callers written when pools could share their host's network.
+func (p Pool) Isolated() bool { return true }
 
 // isolationProblem explains why grove can't build VMs for pool, or returns "" when it can. Every
 // pool can be sealed today: a Linux VM's jobs run in containers, a macOS VM's as plain processes
@@ -42,9 +46,8 @@ func IsolatedVM(vm orchard.VM) bool {
 	return vm.Softnet && slices.Contains(vm.SoftnetBlock, softnetBlockHost)
 }
 
-// sealedStartupScript renders the generated part of a network: isolated (sealed) guest's startup
-// script, which replaces the shared pools' Nomad and Tailscale setup entirely. The macos pool gets
-// sealedMacOSStartupScript.
+// sealedStartupScript renders the generated part of a (sealed) guest's startup script. The macos
+// pool gets sealedMacOSStartupScript.
 func sealedStartupScript(pool Pool) string {
 	if pool.MacOS() {
 		return sealedMacOSStartupScript()
@@ -158,11 +161,10 @@ while [ "$(date +%s)" -lt "$grove_deadline" ]; do
 done
 `
 
-// sealedMacOSStartupScriptTemplate is the macOS counterpart of sealedStartupScriptTemplate. The
-// guest's services are launchd jobs: the image's Nomad client (com.grove.nomad, see
-// nomadRestartScript) and Tailscale's daemon (homebrew.mxcl.tailscale, which `brew services`
-// installed). Each is disabled, so launchd doesn't load it again at the next boot, and booted out,
-// which stops it now; either may be absent.
+// sealedMacOSStartupScriptTemplate is the macOS counterpart of sealedStartupScriptTemplate. Images
+// built before grove dropped Nomad carry a Nomad client (launchd job com.grove.nomad) and
+// Tailscale's daemon (homebrew.mxcl.tailscale); each is disabled, so launchd doesn't load it again
+// at the next boot, and booted out, which stops it now. Current images have neither.
 const sealedMacOSStartupScriptTemplate = `# --- network: isolated (sealed, macOS) ---
 # Softnet keeps this guest off its host Mac, the LAN and the tailnet: it reaches only public
 # addresses, and home reaches it only through Orchard. It runs no Nomad client and holds no

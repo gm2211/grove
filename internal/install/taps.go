@@ -14,7 +14,7 @@ import (
 //	Error: Refusing to load formula openai/tools/softnet from untrusted tap openai/tools.
 //	Run `brew trust --formula openai/tools/softnet` or `brew trust openai/tools` to trust it.
 //
-// grove installs from three such taps. thirdPartyTap + trustTapStep/trustTap below make trusting
+// grove installs from two such taps. thirdPartyTap + trustTapStep/trustTap below make trusting
 // each one an idempotent, Runner-mediated step so `grove install` doesn't hit this gate on any
 // recent Homebrew, and so --dry-run/tests can see it happen without ever shelling out for real.
 type thirdPartyTap struct {
@@ -39,17 +39,12 @@ var (
 		Name:   "cirruslabs/cli",
 		Reason: "Tart, legacy Cirrus Labs tap kept as a fallback",
 	}
-	// tapHashicorp serves Nomad (and Packer, if grove ever installs that too).
-	tapHashicorp = thirdPartyTap{
-		Name:   "hashicorp/tap",
-		Reason: "Nomad, HashiCorp's official tap",
-	}
 )
 
 // requiredTaps is every third-party tap grove might install from, across all roles. Used by
 // `grove doctor` to audit trust status; each build*Steps planner only wires up the subset it
 // actually installs from.
-var requiredTaps = []thirdPartyTap{tapOpenAITools, tapCirruslabsCLI, tapHashicorp}
+var requiredTaps = []thirdPartyTap{tapOpenAITools, tapCirruslabsCLI}
 
 // tapInfo is the subset of `brew tap-info --json=v1 <tap>`'s per-tap object grove cares about.
 // Unlike `brew trust --list` (which doesn't exist — see `brew trust --help`; the closest is bare

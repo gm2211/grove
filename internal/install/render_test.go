@@ -85,77 +85,32 @@ func TestRenderLaunchAgent(t *testing.T) {
 
 func TestRenderSystemdUnit(t *testing.T) {
 	got, err := RenderSystemdUnit(SystemdUnitSpec{
-		Description: "Nomad server",
-		Program:     "nomad",
-		Args:        []string{"agent", "-config", "/home/bob/.config/grove/nomad/server.hcl"},
-		WorkingDir:  "/home/bob/.config/grove/nomad/data",
-		Env:         map[string]string{"NOMAD_ADDR": "http://100.64.0.5:4646"},
+		Description: "Orchard controller",
+		Program:     "/home/bob/.local/bin/orchard",
+		Args:        []string{"controller", "run"},
+		WorkingDir:  "/home/bob/.config/grove/orchard-controller",
+		Env:         map[string]string{"ORCHARD_HOME": "/home/bob/.config/grove/orchard-controller"},
 	})
 	if err != nil {
 		t.Fatalf("RenderSystemdUnit: %v", err)
 	}
 	want := "# Managed by grove install. Re-run `grove install` to regenerate; do not edit by hand.\n" +
 		"[Unit]\n" +
-		"Description=Nomad server\n" +
+		"Description=Orchard controller\n" +
 		"After=network-online.target\n" +
 		"Wants=network-online.target\n" +
 		"\n" +
 		"[Service]\n" +
-		"ExecStart=nomad agent -config /home/bob/.config/grove/nomad/server.hcl\n" +
+		"ExecStart=/home/bob/.local/bin/orchard controller run\n" +
 		"Restart=always\n" +
 		"RestartSec=5\n" +
-		"WorkingDirectory=/home/bob/.config/grove/nomad/data\n" +
-		"Environment=NOMAD_ADDR=http://100.64.0.5:4646\n" +
+		"WorkingDirectory=/home/bob/.config/grove/orchard-controller\n" +
+		"Environment=ORCHARD_HOME=/home/bob/.config/grove/orchard-controller\n" +
 		"\n" +
 		"[Install]\n" +
 		"WantedBy=default.target\n"
 	if got != want {
 		t.Errorf("systemd unit mismatch:\n--- got ---\n%s\n--- want ---\n%s", got, want)
-	}
-}
-
-func TestRenderNomadServerConfig(t *testing.T) {
-	got, err := RenderNomadServerConfig(NomadServerConfigSpec{
-		DataDir:  "/home/bob/.config/grove/nomad/data",
-		BindAddr: "100.64.0.5",
-	})
-	if err != nil {
-		t.Fatalf("RenderNomadServerConfig: %v", err)
-	}
-	want := "# Managed by grove install. Re-run `grove install --role control-plane` to regenerate.\n" +
-		`data_dir  = "/home/bob/.config/grove/nomad/data"` + "\n" +
-		`bind_addr = "100.64.0.5"` + "\n" +
-		"\n" +
-		"server {\n" +
-		"  enabled          = true\n" +
-		"  bootstrap_expect = 1\n" +
-		"}\n" +
-		"\n" +
-		"# The control plane is also a Nomad client for one kind of job only: `grove sandbox run`, which\n" +
-		"# drives a sealed pool's job in its VM from here (nomad/jobs/sandbox.nomad.hcl), since a sealed\n" +
-		"# VM can't reach Nomad. This node advertises grove_sandbox_host and no pool, so no other grove\n" +
-		"# job is ever placed on it.\n" +
-		"client {\n" +
-		"  enabled = true\n" +
-		"  meta {\n" +
-		"    grove_sandbox_host = \"true\"\n" +
-		"  }\n" +
-		"}\n" +
-		"\n" +
-		"plugin \"raw_exec\" {\n" +
-		"  config {\n" +
-		"    enabled = true\n" +
-		"  }\n" +
-		"}\n" +
-		"\n" +
-		"acl {\n" +
-		"  # On: anything on the tailnet (or inside a VM) that reaches this API without a token gets\n" +
-		"  # nothing. grove holds the management token (config.yaml nomad.token); each VM gets its own\n" +
-		"  # node-only token to drain itself on recycle.\n" +
-		"  enabled = true\n" +
-		"}\n"
-	if got != want {
-		t.Errorf("nomad config mismatch:\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
 }
 

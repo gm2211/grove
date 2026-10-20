@@ -111,9 +111,9 @@ func (c *Client) FleetReconcile(ctx context.Context) (*server.FleetReconcileResp
 	return &out, nil
 }
 
-// RecycleVM starts a drain-then-delete cycle for the named VM. The server does the actual delete
-// asynchronously once the underlying Nomad node is drained (or the deadline passes); this just
-// reports whether the drain was accepted.
+// RecycleVM recycles the named VM: the server deletes it asynchronously (its shutdown script lets
+// the jobs in it finish) and the fleet reconciler recreates it; this just reports whether that
+// was accepted.
 func (c *Client) RecycleVM(ctx context.Context, name string) (bool, error) {
 	var out struct {
 		DrainStarted bool `json:"drainStarted"`
@@ -231,13 +231,13 @@ const (
 // JobLogs streams a job's combined stdout+stderr as plain text; follow keeps the connection open
 // until the job ends.
 //
-// A job with no Nomad allocation yet is not an error server-side (see
+// A job still waiting in its pool's queue is not an error server-side (see
 // internal/server/handlers_jobs.go): the server responds 200 with an empty body and
 // X-Grove-Job-Status: pending rather than failing the request. With follow=true, the server itself
-// already waits (polling for an allocation up to its own bounded deadline) before responding, so
+// already waits (waiting for the job to start, up to its own bounded deadline) before responding, so
 // by the time a response comes back there's nothing left for the client to retry. With
 // follow=false (a one-shot `grove logs <id>`), the server does a single check and returns
-// "pending" immediately if there's still no allocation — that's normal for a job that was just
+// "pending" immediately if the job hasn't started — that's normal for a job that was just
 // submitted, so JobLogs retries a few times with a short backoff before giving up and handing back
 // the (still empty) pending response, rather than making every caller reimplement this.
 func (c *Client) JobLogs(ctx context.Context, id string, follow bool) (io.ReadCloser, error) {
@@ -326,8 +326,8 @@ func (c *Client) JobLogsNDJSON(ctx context.Context, id string, follow bool, sinc
 	return resp.Body, resp.Header.Get("X-Grove-Job-Status"), nil
 }
 
-// Healthz reports control-plane health: {ok, version, orchard, nomad, serverTime}, orchard/nomad
-// each "up" or "down".
+// Healthz reports control-plane health: {ok, version, orchard, serverTime}, orchard "up" or
+// "down".
 func (c *Client) Healthz(ctx context.Context) (*server.HealthzResponse, error) {
 	var out server.HealthzResponse
 	if err := c.doJSON(ctx, http.MethodGet, "/healthz", nil, &out); err != nil {

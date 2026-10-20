@@ -1,8 +1,8 @@
 # grove
 
 grove turns your Apple Silicon Macs into a private cloud for CI
-builds, deploys, and coding-agent sessions — VM-isolated, packed tightly with a real job
-scheduler, and reachable only over your Tailscale tailnet. The control-plane runs on Linux or macOS.
+builds, deploys, and coding-agent sessions — every job in a sealed VM that can reach the public
+internet but nothing at home, and the control plane reachable only over your Tailscale tailnet. The control-plane runs on Linux or macOS.
 
 ## Why
 
@@ -11,10 +11,11 @@ rate, there is no macOS container runtime (every "Mac as a k8s node" story is a 
 virtual-kubelet), and Apple's Virtualization.framework allows only two VMs per Mac — so the
 usual one-VM-per-job setup caps each machine at two concurrent jobs.
 
-grove runs jobs on Macs you already own, with no per-minute bill. Each Mac runs **Tart** VMs,
-and each VM runs a **Nomad** client that packs many jobs inside it: the VM is the isolation
-boundary, Nomad is the scheduler within it. Every job — CI or agent — runs inside a VM, not
-next to your other work on the bare host.
+grove runs jobs on Macs you already own, with no per-minute bill. Each Mac runs **Tart** VMs
+through **Orchard**, and `grove serve` on the control plane queues each pool's jobs and drives
+them into those VMs from outside: a Linux VM packs several jobs as containers, a macOS VM runs
+one job and is recycled. Every VM is sealed (Softnet, host blocked) — every job, CI or agent,
+runs inside one, not next to your other work on the bare host.
 
 ## Fleet at a glance
 
@@ -104,21 +105,21 @@ isolation. The outer green outline is the private Tailscale network. A control-p
 can run on Linux or a Mac; the diagram separates roles for clarity.
 
 Solid arrows are same-host calls. Dashed arrows show network connection initiation:
-clients reach Grove's API, Orchard workers reach the controller, and Nomad clients inside
-VMs reach the Nomad server. `grove mcp` speaks stdio locally to its agent and HTTP to the
+clients reach Grove's API and Orchard workers reach the controller; VMs reach nothing at home
+(grove drives them through Orchard). The diagram predates that change and still draws an in-VM
+scheduler client and its connection home; ARCHITECTURE.md's layering is current. `grove mcp` speaks stdio locally to its agent and HTTP to the
 remote Grove API. Ports show installer defaults, not a live deployment audit. Build artifacts are kept in a
 directory on the control-plane host; artifact transfer paths are omitted.
 
 See [docs/FLOW.md](docs/FLOW.md) for the full layering diagram plus a sequence diagram for one
 job end to end and the VM recycling loop.
 
-Three separate systems, deliberate seams:
+Two systems, a deliberate seam:
 
 | Layer | Owns | Never knows about |
 |---|---|---|
-| **Orchard** (our fork) | VM lifecycle: create, place, restart, TTL, delete | jobs, Nomad |
-| **Nomad** | job scheduling *inside* VMs: placement, packing, queueing, retries, logs | VMs, Tart, Orchard |
-| **grove** | desired fleet state, job submission API, UI, install | — it's the only layer that sees both |
+| **Orchard** (our fork) | VM lifecycle: create, place, restart, TTL, delete; exec into a guest | jobs |
+| **grove** | desired fleet state, the per-pool job queue and runner, logs, artifacts, API, UI, install | — it's the only layer that sees both |
 
 Full design, fleet spec, job model, and HTTP API reference: [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -127,8 +128,9 @@ Full design, fleet spec, job model, and HTTP API reference: [ARCHITECTURE.md](AR
 - fleet reconciler that keeps Orchard VMs matching `fleet.yaml`, including per-VM TTL and
   shutdown hooks, plus a background reconcile loop in `grove serve`
   (`--fleet-reconcile-interval`, `--no-fleet-reconcile`)
-- parameterized Nomad jobs for `build` / `agent` / `shell`, dispatched and tracked end to end,
-  with resumable NDJSON log streaming and stuck/orphaned-job detection (`lost` status)
+- `build` / `agent` / `shell` jobs queued per pool and run in sealed VMs by `grove serve`
+  itself, tracked end to end, with resumable NDJSON log streaming and lost-VM detection
+  (`lost` status)
 - HTTP API (`/api/v1/...`) + embedded control-plane UI (fleet view, job list, job detail with
   live logs, dispatch form, settings)
 - MCP server for orchestrators (Claude Code, Codex, your own agent runner) to dispatch and follow
@@ -158,7 +160,7 @@ See [CHANGELOG.md](CHANGELOG.md) for what shipped in each release.
 | **Homebrew** | grove is its own tap; on recent Homebrew you may need `brew trust openai/tools` before Tart will install |
 | **Registry access** | grove's worker images on `ghcr.io` are private by default — make the GitHub packages public, or `grove install --role worker --registry-token …` (see [docs/INSTALL.md](docs/INSTALL.md)) |
 
-grove installs everything else itself (Tart, Nomad, Orchard).
+grove installs everything else itself (Tart, Softnet, Orchard).
 
 ## Docs
 
@@ -168,7 +170,7 @@ grove installs everything else itself (Tart, Nomad, Orchard).
 | [docs/FLOW.md](docs/FLOW.md) | Mermaid diagrams: layering, one job end to end, the recycling loop |
 | [docs/INSTALL.md](docs/INSTALL.md) | Role-by-role install walkthrough and failure modes |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Day-2 ops: recycling, image rollouts, pausing a Mac, logs, upgrading |
-| [docs/JOBS.md](docs/JOBS.md) | The `JobRequest` ↔ Nomad job contract |
+| [docs/JOBS.md](docs/JOBS.md) | The `JobRequest` contract and how a job runs |
 | [docs/MCP.md](docs/MCP.md) | The MCP server: tools, resources, client registration |
 | [docs/ORCHESTRATOR.md](docs/ORCHESTRATOR.md) | The agent-orchestrator executor contract |
 | [docs/IMAGES.md](docs/IMAGES.md) | Building and pushing the Tart/container images |

@@ -1,9 +1,6 @@
 # grove-runner: default container image for linux "build"/"agent"/"shell" jobs dispatched to the
-# linux pool. Docker CLI (not just the daemon) is included deliberately: the Nomad docker driver
-# cannot interpolate its `image` config field from dispatch-time meta (hashicorp/nomad#6247), so a
-# per-job image override (`meta_optional` field "image" in the parameterized job contract, see
-# nomad/jobs/README.md) is honored by nesting a `docker run` against the host's docker socket
-# rather than by changing this container's own image at schedule time.
+# linux pool. grove serve runs each job in a fresh container of this image (or the job's own
+# image) inside a sealed Linux VM; see internal/sandbox.
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -50,7 +47,8 @@ RUN set -eu; \
     && rm /tmp/go.tgz
 ENV PATH="/usr/local/go/bin:${PATH}"
 
-# Docker CLI only (no daemon) — used for nested `docker run` against the mounted host socket.
+# Docker CLI only (no daemon). Sealed pools mount no Docker socket, so it is inert unless a job
+# brings its own daemon; kept so existing runner images and derived images keep building.
 RUN mkdir -p -m 0755 /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
     && chmod a+r /etc/apt/keyrings/docker.asc \

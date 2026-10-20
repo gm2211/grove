@@ -142,7 +142,7 @@ export const api = {
   },
 
   async getHealth(): Promise<HealthResponse> {
-    if (isMock) return delay({ ok: true, orchard: true, nomad: true, version: "mock" });
+    if (isMock) return delay({ ok: true, orchard: true, version: "mock" });
     return request<HealthResponse>("/api/v1/healthz");
   },
 };
@@ -173,7 +173,7 @@ const RECONNECT_DELAY_MS = 1500;
  * stream is done for good (job terminal and server closed, or unsubscribed).
  *
  * Reconnects with `sinceOffset` set to the last processed offset whenever the server closes the
- * stream (or fails to connect, e.g. the job has no Nomad allocation yet) and the job is not yet
+ * stream (or fails to connect, e.g. the job has not started yet) and the job is not yet
  * terminal, per `isTerminal`.
  */
 export function streamJobLogs(jobId: string, handlers: StreamJobLogsHandlers): () => void {

@@ -19,8 +19,7 @@ and the fleet reconciler / startup-shutdown scripts (`internal/fleet`).
 Tart only runs on Apple Silicon Macs (it's built on `Virtualization.framework`), so both worker
 images can only be built locally on a Mac, never in GitHub-hosted CI. See `.github/workflows/images.yml`
 for what *is* automated (the `images/runner` container) and the `make images` target below for the
-manual path. The native Nomad build currently requires Go 1.27.1 and an Xcode-selected build
-host; the tested host used Xcode 27.0. These build tools are not copied into the worker.
+manual path.
 
 ```console
 $ brew install openai/tools/tart
@@ -31,7 +30,7 @@ $ cd images/linux-worker && packer init . && packer validate . && packer build .
 ```
 
 `make images` builds lean macOS and Linux workers. `make images-macos` builds only lean macOS.
-`make images-validate` checks all macOS profiles without pulling or starting a VM. It first builds (or verifies a cached copy of) the pinned native Nomad artifact on the build host.
+`make images-validate` checks all macOS profiles without pulling or starting a VM.
 
 For iOS/macOS app builds that need full Xcode and Apple SDKs:
 
@@ -97,7 +96,7 @@ workers use it; drain those workers before replacing or updating the host app.
 
 The guest selects `/Volumes/My Shared Files/grove-xcode.app/Contents/Developer`. Startup checks
 the pinned build and Xcode's minimum macOS version, then performs guest first-launch setup
-before starting Nomad. Missing shares, changed builds, incompatible guest OS versions, or failed
+before the VM takes a job. Missing shares, changed builds, incompatible guest OS versions, or failed
 Xcode setup stop startup. For example, an Xcode build requiring macOS 26.6 cannot run in the
 Sequoia guest. Override the base image if the Tahoe profile does not meet your selected Xcode's
 minimum version.
@@ -124,8 +123,7 @@ Use immutable profile tags in `fleet.yaml`'s `pools[].image`, then deliberately 
 Existing macOS fleets using `:latest` may depend on Xcode: do not overwrite that tag with a lean
 image as part of this migration. Select an `xcode-<git-sha>` tag for those fleets; use a
 `base-<git-sha>` tag only where jobs do not require full Xcode. Both profiles retain the `macos`
-pool and Nomad `raw_exec` contract; this change does not add automatic toolchain routing or a
-new pool name. Prefer the existing Linux pool for jobs that do not require macOS.
+pool contract; this change does not add automatic toolchain routing or a new pool name. Prefer the existing Linux pool for jobs that do not require macOS.
 
 ### Packages are private by default — workers need access too
 
@@ -163,26 +161,15 @@ doctor` runs on.
 | `linux-worker` | `ghcr.io/cirruslabs/ubuntu:latest` (arm64) | Cirrus Labs' maintained arm64 Ubuntu Tart image; matches the arm64 host architecture (Apple Silicon), so no CPU emulation for the guest OS itself — only for the *containers it runs* (see Rosetta below). |
 | `runner` | `ubuntu:24.04` | Plain container, not a Tart VM — this is what actually executes `build`/`agent`/`shell` job scripts on the linux pool (see docs/JOBS.md). Built for both `linux/amd64` and `linux/arm64` by CI. |
 
-## Native Nomad dependency and release acceptance
+## Release acceptance
 
-The official Nomad 2.0.7 ARM64 binary panics in Tart guests exposing only one CPU performance
-level: the missing efficiency-core count becomes -1. Grove carries a narrow Darwin topology
-patch against the exact upstream source revision. `make images-nomad` builds
-`2.0.7+grove.1` on the host with pinned source/toolchain inputs and runs the scanner regression
-checks. The worker contains only the binary and `/usr/local/share/grove/nomad-build.json`, not
-the Go compiler, source or build caches. Do not replace it with an unverified Homebrew upgrade.
-Remove the patch once an official ARM64 release passes the same guest tests.
-
-Every Packer profile now boots an isolated local Nomad server/client and requires a completed
-`raw_exec` allocation before the image build succeeds. Temporary server state is removed.
-Fleet startup also checks local Nomad API readiness, so a crash-looping launchd service is not
-reported as a successfully started worker. These checks complement the Grove dispatch matrix;
-they do not establish simulator or signing support.
-
-Build and publish a new immutable image tag, canary it, then drain/recycle affected workers.
-The image build remains a local Apple Silicon workflow; CI does not automatically publish Tart
-VMs. Review OS/tool updates and re-run acceptance before rebuilding. A pinned source checksum
-and build manifest are provenance controls, not a vulnerability scan or signed release.
+Images carry no scheduler agent: `grove serve` drives each job through Orchard exec, so an image
+only needs the toolchain, Docker (Linux), the Tart guest agent and, on macOS, a working `sudo` for
+the admin account. Build and publish a new immutable image tag, canary it (dispatch a `shell` and
+a `build` job to a pool using it), then recycle affected workers. The image build remains a local
+Apple Silicon workflow; CI does not automatically publish Tart VMs. Review OS/tool updates before
+rebuilding. A pinned base digest is a provenance control, not a vulnerability scan or signed
+release.
 
 ## Size expectations
 
@@ -193,7 +180,7 @@ and slow to transfer:
   and job data; measure the finished image rather than treating capacity as allocated space.
 - `grove-macos-xcode-worker`: 150 GB virtual capacity. Full macOS/Xcode images can occupy tens
   of GiB before any Grove job runs. Keep this profile only on hosts that need Apple builds.
-- `grove-linux-worker`: ~8-15 GiB (Ubuntu + Docker + build-essential + Nomad).
+- `grove-linux-worker`: ~8-15 GiB (Ubuntu + Docker + build-essential).
 - `grove-runner` (container, not a Tart VM): a few hundred MiB, layered/cached normally via GHCR.
 
 Use `tart list` and `du -sh ~/.tart/vms/<vm_name>` to inspect local usage. Cached bases and APFS
@@ -202,64 +189,22 @@ After builds, `tart prune --entries caches --older-than 7` removes old downloada
 without deleting local workers. Live workers still need the fleet's normal drain/recycle flow;
 never delete their disk files directly. Template changes affect newly built images only.
 
-## The two-file Nomad client config contract
+## What the fleet scripts expect from an image
 
-Both worker images bake in a Nomad client config split across two files, because the parts that
-never change (data dir, driver plugins, `node_class`) are baked into the image, while the parts
-that are only known at boot (which control-plane to dial, which pool/host this particular VM is)
-are written by the fleet's VM **startup script** (see `internal/fleet`, `Pool.StartupScript` in
-ARCHITECTURE.md's fleet spec) every time a VM starts:
-
-| | macOS (`images/macos-worker`) | Linux (`images/linux-worker`) |
-|---|---|---|
-| Nomad config dir | `/usr/local/etc/nomad.d` | `/etc/nomad.d` |
-| Static file (baked into image) | `client.hcl` — `data_dir`, `client { enabled = true, node_class = "macos" }`, `raw_exec` plugin enabled | `client.hcl` — `data_dir`, `client { enabled = true, node_class = "linux" }`, `docker` (with `volumes.enabled = true`) + `raw_exec` plugins enabled |
-| Dynamic file (overwritten by the startup script every boot) | `grove-meta.hcl` — `client { servers = [...] meta { pool = "macos" host = "<worker>" } cpu_total_compute = <ncpu*2000> }` | same shape, `pool = "linux"`, no `cpu_total_compute` override |
-| Supervisor | `launchd` — `/Library/LaunchDaemons/com.grove.nomad.plist` (`KeepAlive`, runs `nomad agent -config /usr/local/etc/nomad.d`) | `systemd` — `nomad.service` (`Restart=on-failure`, `nomad agent -config /etc/nomad.d`) |
-
-**macOS-only: `cpu_total_compute`.** Nomad's stock CPU fingerprinter badly under-reports on Apple
-Silicon — a real M5 Max worker fingerprinted `cpu.totalcompute=24` (`cpu.frequency=4`,
-`cpu.numcores=18`; it's effectively treating GHz as MHz-per-core instead of deriving a usable
-total). Since every job's `resources.cpu` is specified in MHz (see docs/JOBS.md), a node
-fingerprinting single-digit MHz fails placement for *any* real job with `DimensionExhausted cpu` —
-see docs/OPERATIONS.md's troubleshooting entry. Because `images/macos-worker` is one generic image
-run on whatever Mac model a given worker happens to be, this can't be a fixed value baked into the
-static `client.hcl` — it's computed per boot instead, in the startup script
-(`internal/fleet/scripts.go`'s `nomadMetaScript`, only on the `Darwin` branch) as
-`$(sysctl -n hw.ncpu) * 2000` MHz/core, and written into the dynamic `grove-meta.hcl`'s `client {}`
-block alongside `meta`. `grove doctor` also checks for this (see docs/OPERATIONS.md) by listing
-Nomad nodes and warning when a `macos`-class node's fingerprinted CPU is implausibly low.
-
-`nomad agent -config <dir>` merges every `*.hcl` file in the directory, so shipping the static half
-in the image and letting the startup script drop in the dynamic half means: (a) the image never
-has to know the control-plane's address at build time, and (b) a VM recreated on a different host,
-or with a fleet.yaml pointing at a new control-plane address, picks up the right config on its
-very next boot with zero image changes — see ARCHITECTURE.md's "Recycling / hygiene" section for
-why VMs get recreated in the first place (TTL expiry → `ShutdownScript` drains Nomad → Orchard
-deletes → reconciler recreates from the image).
+Every VM is sealed (Softnet, host blocked). The fleet's **startup script** (`internal/fleet`,
+generated per pool) runs as the image's `admin` user with passwordless `sudo` and, on Linux, sets
+public DNS, installs the job-container egress fence (run before every Docker start) and clears
+any draining marker; on macOS it sets public
+DNS on every network service, prepares the unprivileged `_grovejob` user and, with `hostXcode`,
+checks the shared Xcode. It also switches off any Nomad client or Tailscale an image built by an
+older grove still carries, so those images keep working sealed.
 
 The **shutdown script** (also fleet-owned, runs inside the guest before Orchard deletes the VM)
-is what actually calls `nomad node drain -self -enable -deadline 2h` — the image itself doesn't
-need to do anything special to support draining; it only needs a Nomad client that's already
-correctly configured, which is exactly what these two files guarantee.
+marks the VM draining and waits for its running jobs (Linux: grove's job containers; macOS: the
+job user's processes) to finish. The image needs nothing special for either.
 
-## Tailscale
-
-Both images install the **standalone** (non–App-Store) Tailscale build:
-
-- macOS: `brew install tailscale` — the plain formula, which ships `tailscaled` as a LaunchDaemon
-  that behaves like the Linux daemon and starts headless before any user logs in. The Homebrew
-  *cask* (`tailscale-app`) is the sandboxed Mac-App-Store-equivalent GUI build, which only starts
-  once someone is logged into a GUI session — unusable for a worker VM that reboots unattended.
-  See ARCHITECTURE.md: "Tailscale standalone variant (not App Store — that one doesn't start
-  before login)".
-- Linux: the official `tailscale.com/install.sh` script (adds HashiCorp-adjacent apt repo,
-  installs the same standalone daemon).
-
-Neither image joins the tailnet (`tailscale up`) — that's the fleet startup script's job, using an
-**ephemeral tagged auth key** per VM (see ARCHITECTURE.md: "Tailscale inside guests uses ephemeral
-tagged auth keys, so recycled VMs vanish from the tailnet"). Baking a real auth key into an image
-would mean every VM cloned from it shares one identity and one key that never expires.
+Neither image installs Tailscale or joins any network of its own: a sealed VM reaches the public
+internet only.
 
 ## Rosetta (linux-worker only)
 
@@ -273,15 +218,12 @@ the kernel's `binfmt_misc`, so an `amd64` container's ELF binaries transparently
 Rosetta instead of failing or falling back to slow QEMU emulation. This is best-effort: if the VM
 wasn't started with `--rosetta rosetta`, the script logs and exits 0 rather than failing the boot.
 
-## Why the default `build`/`agent`/`shell` container isn't dynamically chosen
+## The runner image
 
-See docs/JOBS.md's "Why the image isn't just `image = "${NOMAD_META_image}"`" section — the short
-version is that Nomad's docker driver can't interpolate its `image` field from dispatch-time meta,
-so `images/runner` ships the Docker CLI specifically so a job that wants a different image gets it
-via a nested `docker run` against the mounted host socket, rather than by changing the outer
-container. That mechanism is now gated behind `fleet.yaml`'s `pools[].allowDockerSocket` (default
-`false`) — see docs/JOBS.md's "The socket mount is opt-in per pool, off by default" for why it
-defaults off and what happens on each side of the flag.
+Linux jobs run in a fresh container of the pool's `runnerImage` (default
+`ghcr.io/gm2211/grove-runner:latest`, built from `images/runner`). A per-job `image` override is
+ignored and no job gets the VM's Docker socket — see docs/JOBS.md "Inside the sealed VM". Set
+`pools[].runnerImage` in `fleet.yaml` to use a prebuilt runner with your toolchain.
 
 ## Rebuilding after a base image update
 

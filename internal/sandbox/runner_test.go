@@ -371,3 +371,28 @@ func TestUploadTarIntoFSStore(t *testing.T) {
 		t.Errorf("stored %v", got)
 	}
 }
+
+// The control plane's armed clone credential is for the clone grove runs here; nothing of it may
+// reach the VM — no pushed file, no command, no output.
+func TestRun_CloneTokenNeverEntersTheVM(t *testing.T) {
+	h := newHarness(t)
+	req := shellRequest()
+	req.Kind = KindBuild
+	req.CloneToken = "ghp_armed_secret"
+	if code := h.runner.Run(context.Background(), req); code != 0 {
+		t.Fatalf("Run = %d; stderr:\n%s", code, h.stderr.String())
+	}
+	for name, body := range h.vm.pushed {
+		if strings.Contains(body, "ghp_armed_secret") {
+			t.Errorf("pushed %s carries the clone credential", name)
+		}
+	}
+	for _, c := range h.vm.commands {
+		if strings.Contains(c, "ghp_armed_secret") {
+			t.Errorf("VM command carries the clone credential: %s", c)
+		}
+	}
+	if strings.Contains(h.stdout.String()+h.stderr.String(), "ghp_armed_secret") {
+		t.Error("the clone credential reached the job's output")
+	}
+}

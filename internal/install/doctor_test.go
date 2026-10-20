@@ -3,7 +3,6 @@ package install
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -63,8 +62,7 @@ func TestRunDoctor_HTTPChecksAgainstHTTPTestServers(t *testing.T) {
 
 	cfg := &config.Config{
 		Orchard: config.Endpoint{URL: healthy.URL, Token: "tok"},
-		Nomad:   config.Endpoint{URL: unhealthy.URL},
-		Server:  config.ServerConfig{URL: "http://127.0.0.1:1", Token: "tok"}, // nothing listening: connection refused
+		Server:  config.ServerConfig{URL: unhealthy.URL, Token: "tok"},
 	}
 	opts := Options{Home: t.TempDir(), GOOS: "darwin", LookPath: alwaysFailLookPath, Exists: alwaysFalseExists}
 
@@ -73,18 +71,19 @@ func TestRunDoctor_HTTPChecksAgainstHTTPTestServers(t *testing.T) {
 	if r := findResult(t, results, "orchard-controller"); !r.OK {
 		t.Errorf("expected orchard-controller check to pass against a 200 server, got %+v", r)
 	}
-	if r := findResult(t, results, "nomad"); r.OK {
-		t.Errorf("expected nomad check to fail against a 503 server, got %+v", r)
-	}
 	if r := findResult(t, results, "grove-server"); r.OK {
-		t.Errorf("expected grove-server check to fail against an unreachable address, got %+v", r)
+		t.Errorf("expected grove-server check to fail against a 503 server, got %+v", r)
+	}
+	for _, r := range results {
+		if r.Name == "nomad" || r.Name == "sandbox-host" || r.Name == "macos-cpu-fingerprint" {
+			t.Errorf("doctor still runs the Nomad check %q", r.Name)
+		}
 	}
 }
 
 func TestRunDoctor_UsesAuthenticatedServiceClients(t *testing.T) {
 	const orchardToken = "orchard-secret"
-	const nomadToken = "nomad-secret"
-	var orchardAuth, nomadAuth string
+	var orchardAuth string
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -95,15 +94,6 @@ func TestRunDoctor_UsesAuthenticatedServiceClients(t *testing.T) {
 				return
 			}
 			w.WriteHeader(http.StatusOK)
-		case "/v1/status/leader":
-			nomadAuth = r.Header.Get("X-Nomad-Token")
-			if nomadAuth != nomadToken {
-				w.WriteHeader(http.StatusForbidden)
-				return
-			}
-			_, _ = w.Write([]byte(`"127.0.0.1:4647"`))
-		case "/v1/nodes":
-			_, _ = w.Write([]byte("[]"))
 		case "/api/v1/healthz":
 			w.WriteHeader(http.StatusOK)
 		default:
@@ -114,21 +104,18 @@ func TestRunDoctor_UsesAuthenticatedServiceClients(t *testing.T) {
 
 	cfg := &config.Config{
 		Orchard: config.Endpoint{URL: srv.URL, Token: "svc:" + orchardToken},
-		Nomad:   config.Endpoint{URL: srv.URL, Token: nomadToken},
 		Server:  config.ServerConfig{URL: srv.URL},
 	}
 	opts := Options{Home: t.TempDir(), GOOS: "darwin", LookPath: alwaysFailLookPath, Exists: alwaysFalseExists}
 	results := RunDoctor(context.Background(), NewFakeRunner(), opts, cfg)
 
-	for _, name := range []string{"orchard-controller", "nomad"} {
-		if r := findResult(t, results, name); !r.OK {
-			t.Fatalf("expected authenticated %s check to pass, got %+v", name, r)
-		} else if strings.Contains(r.Detail, orchardToken) || strings.Contains(r.Detail, nomadToken) {
-			t.Errorf("%s detail leaked a token: %q", name, r.Detail)
-		}
+	if r := findResult(t, results, "orchard-controller"); !r.OK {
+		t.Fatalf("expected the authenticated orchard check to pass, got %+v", r)
+	} else if strings.Contains(r.Detail, orchardToken) {
+		t.Errorf("detail leaked a token: %q", r.Detail)
 	}
-	if orchardAuth == "" || nomadAuth == "" {
-		t.Fatalf("expected both authenticated probes; orchard=%q nomad=%q", orchardAuth, nomadAuth)
+	if orchardAuth == "" {
+		t.Fatal("expected an authenticated orchard probe")
 	}
 }
 
@@ -168,107 +155,6 @@ func TestRunDoctor_NeverHangs(t *testing.T) {
 	}
 }
 
-// fakeNomadNode is the minimal shape checkMacOSCPUFingerprint cares about, from both the
-// /v1/nodes list-stub and /v1/node/<id> full-node responses (internal/nomad.Client.ListNodes
-// calls both per node, plus /v1/node/<id>/allocations).
-type fakeNomadNode struct {
-	ID        string
-	Name      string
-	NodeClass string
-	cpuMHz    int64
-	Status    string
-	Meta      map[string]string
-}
-
-// newFakeNomadServer serves just enough of the Nomad HTTP API (/v1/nodes, /v1/node/<id>,
-// /v1/node/<id>/allocations) for internal/nomad.Client.ListNodes to work against it, so
-// checkMacOSCPUFingerprint can be tested without a real Nomad cluster.
-func newFakeNomadServer(t *testing.T, nodes []fakeNomadNode) *httptest.Server {
-	t.Helper()
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/nodes", func(w http.ResponseWriter, r *http.Request) {
-		stubs := make([]map[string]any, 0, len(nodes))
-		for _, n := range nodes {
-			stubs = append(stubs, map[string]any{"ID": n.ID, "Name": n.Name, "NodeClass": n.NodeClass})
-		}
-		_ = json.NewEncoder(w).Encode(stubs)
-	})
-	for _, n := range nodes {
-		n := n
-		mux.HandleFunc("/v1/node/"+n.ID, func(w http.ResponseWriter, r *http.Request) {
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"ID":        n.ID,
-				"Name":      n.Name,
-				"NodeClass": n.NodeClass,
-				"Status":    n.Status,
-				"Meta":      n.Meta,
-				"NodeResources": map[string]any{
-					"Cpu":    map[string]any{"CpuShares": n.cpuMHz},
-					"Memory": map[string]any{"MemoryMB": 8192},
-				},
-			})
-		})
-		mux.HandleFunc("/v1/node/"+n.ID+"/allocations", func(w http.ResponseWriter, r *http.Request) {
-			_ = json.NewEncoder(w).Encode([]any{})
-		})
-	}
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	return srv
-}
-
-func TestCheckMacOSCPUFingerprint_WarnsOnLowCompute(t *testing.T) {
-	srv := newFakeNomadServer(t, []fakeNomadNode{
-		{ID: "n1", Name: "macos-mac1-0", NodeClass: "macos", cpuMHz: 24}, // the real observed defect
-		{ID: "n2", Name: "linux-worker1-0", NodeClass: "linux", cpuMHz: 24},
-	})
-	cfg := &config.Config{Nomad: config.Endpoint{URL: srv.URL}}
-
-	r := checkMacOSCPUFingerprint(context.Background(), cfg)
-	if r.OK {
-		t.Fatalf("expected the check to fail on a 24 MHz macOS fingerprint, got %+v", r)
-	}
-	if !strings.Contains(r.Detail, "macos-mac1-0") {
-		t.Errorf("detail = %q, want it to name the offending node", r.Detail)
-	}
-	if strings.Contains(r.Detail, "linux-worker1-0") {
-		t.Errorf("detail = %q, should not flag a non-macos node even with a low fingerprint", r.Detail)
-	}
-}
-
-func TestCheckMacOSCPUFingerprint_OKWhenHealthy(t *testing.T) {
-	srv := newFakeNomadServer(t, []fakeNomadNode{
-		{ID: "n1", Name: "macos-mac1-0", NodeClass: "macos", cpuMHz: 36000},
-	})
-	cfg := &config.Config{Nomad: config.Endpoint{URL: srv.URL}}
-
-	r := checkMacOSCPUFingerprint(context.Background(), cfg)
-	if !r.OK {
-		t.Errorf("expected OK for a healthy 36000 MHz fingerprint, got %+v", r)
-	}
-}
-
-func TestCheckMacOSCPUFingerprint_SkippedWithoutNomadConfig(t *testing.T) {
-	r := checkMacOSCPUFingerprint(context.Background(), &config.Config{})
-	if !r.OK {
-		t.Errorf("expected the check to skip (OK) when nomad isn't configured, got %+v", r)
-	}
-}
-
-func TestRunDoctor_IncludesMacOSCPUFingerprintCheck(t *testing.T) {
-	srv := newFakeNomadServer(t, []fakeNomadNode{
-		{ID: "n1", Name: "macos-mac1-0", NodeClass: "macos", cpuMHz: 24},
-	})
-	cfg := &config.Config{Nomad: config.Endpoint{URL: srv.URL}}
-	opts := Options{Home: t.TempDir(), GOOS: "darwin", LookPath: alwaysFailLookPath, Exists: alwaysFalseExists}
-
-	results := RunDoctor(context.Background(), NewFakeRunner(), opts, cfg)
-	r := findResult(t, results, "macos-cpu-fingerprint")
-	if r.OK {
-		t.Errorf("expected macos-cpu-fingerprint to fail against the fake low-compute node, got %+v", r)
-	}
-}
-
 // TestRunDoctor_ReportsUntrustedRequiredTapWithRemediation covers the doctor half of the brew-trust
 // fix: a tap that's tapped on this machine but not trusted (e.g. after a Homebrew upgrade adds the
 // trust gate under an already-tapped openai/tools) must show up as a failing check with the exact
@@ -278,7 +164,6 @@ func TestRunDoctor_ReportsUntrustedRequiredTapWithRemediation(t *testing.T) {
 	r := NewFakeRunner()
 	scriptTapInfo(r, "openai/tools", true, false)
 	scriptTapInfo(r, "cirruslabs/cli", false, false)
-	scriptTapInfo(r, "hashicorp/tap", false, false)
 	opts := Options{Home: t.TempDir(), GOOS: "darwin", LookPath: alwaysFailLookPath, Exists: alwaysFalseExists}
 
 	results := RunDoctor(context.Background(), r, opts, nil)
@@ -291,7 +176,7 @@ func TestRunDoctor_ReportsUntrustedRequiredTapWithRemediation(t *testing.T) {
 	}
 
 	for _, r := range results {
-		if r.Name == "brew-trust:cirruslabs/cli" || r.Name == "brew-trust:hashicorp/tap" {
+		if r.Name == "brew-trust:cirruslabs/cli" {
 			t.Errorf("a tap that was never tapped on this machine should not be reported, got %+v", r)
 		}
 	}
@@ -397,34 +282,5 @@ func TestCountRunningMacOSVMs(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("countRunningMacOSVMs = %d, want 1", n)
-	}
-}
-
-func TestCheckSandboxHost(t *testing.T) {
-	fleetPath := filepath.Join(t.TempDir(), "fleet.yaml")
-	writeFleet := func(network string) {
-		t.Helper()
-		spec := "pools:\n  - name: linux\n    image: img\n    perWorker: 1\n    network: " + network + "\n"
-		if err := os.WriteFile(fleetPath, []byte(spec), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	controlPlane := fakeNomadNode{ID: "cp", Name: "cp-1", Status: "ready", Meta: map[string]string{"grove_sandbox_host": "true"}}
-	worker := fakeNomadNode{ID: "w", Name: "linux-mac1-0", Status: "ready", Meta: map[string]string{"pool": "linux"}}
-
-	writeFleet("shared")
-	cfg := &config.Config{Fleet: fleetPath, Nomad: config.Endpoint{URL: newFakeNomadServer(t, []fakeNomadNode{worker}).URL}}
-	if r := checkSandboxHost(context.Background(), cfg); !r.OK || r.Detail != "no sealed pools" {
-		t.Errorf("no sealed pools: %+v", r)
-	}
-
-	writeFleet("isolated")
-	if r := checkSandboxHost(context.Background(), cfg); r.OK || !strings.Contains(r.Detail, "jobs for linux stay pending") || r.Remediation == "" {
-		t.Errorf("sealed pool, no sandbox host: %+v", r)
-	}
-
-	cfg.Nomad.URL = newFakeNomadServer(t, []fakeNomadNode{worker, controlPlane}).URL
-	if r := checkSandboxHost(context.Background(), cfg); !r.OK || !strings.Contains(r.Detail, "cp-1 runs sealed pools' jobs (linux)") {
-		t.Errorf("sealed pool with the sandbox host: %+v", r)
 	}
 }

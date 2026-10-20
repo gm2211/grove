@@ -6,9 +6,10 @@
 // token from config.yaml or the environment: the only way a job's clone gets credentials is an
 // armed Store, and disarming it (or letting its TTL lapse) wipes the token from disk.
 //
-// The Store is the seam internal/dispatch consumes at submit time — see dispatch.Options.RepoAuth
-// — so the token is injected into the dispatched Nomad job's environment and never stored on the
-// Job record, returned by the API, or handled by the submitting client.
+// The Store is the seam internal/dispatch consumes when a job starts — see dispatch.Options.RepoAuth
+// — so the token is used only by the clone grove serve runs on the control plane, and never
+// reaches the job's environment or VM, is never stored on the Job record or in its log, returned
+// by the API, or handled by the submitting client.
 package gitauth
 
 import (

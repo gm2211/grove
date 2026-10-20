@@ -114,55 +114,6 @@ func RenderSystemdUnit(spec SystemdUnitSpec) (string, error) {
 	return buf.String(), nil
 }
 
-// NomadServerConfigSpec is what grove needs to render a single-node Nomad server config.
-type NomadServerConfigSpec struct {
-	DataDir  string
-	BindAddr string
-}
-
-var nomadServerConfigTemplate = template.Must(template.New("nomad").Parse(`# Managed by grove install. Re-run ` + "`grove install --role control-plane`" + ` to regenerate.
-data_dir  = "{{.DataDir}}"
-bind_addr = "{{.BindAddr}}"
-
-server {
-  enabled          = true
-  bootstrap_expect = 1
-}
-
-# The control plane is also a Nomad client for one kind of job only: ` + "`grove sandbox run`" + `, which
-# drives a sealed pool's job in its VM from here (nomad/jobs/sandbox.nomad.hcl), since a sealed
-# VM can't reach Nomad. This node advertises grove_sandbox_host and no pool, so no other grove
-# job is ever placed on it.
-client {
-  enabled = true
-  meta {
-    grove_sandbox_host = "true"
-  }
-}
-
-plugin "raw_exec" {
-  config {
-    enabled = true
-  }
-}
-
-acl {
-  # On: anything on the tailnet (or inside a VM) that reaches this API without a token gets
-  # nothing. grove holds the management token (config.yaml nomad.token); each VM gets its own
-  # node-only token to drain itself on recycle.
-  enabled = true
-}
-`))
-
-// RenderNomadServerConfig renders nomad's server.hcl. Deterministic: safe for golden tests.
-func RenderNomadServerConfig(spec NomadServerConfigSpec) (string, error) {
-	var buf bytes.Buffer
-	if err := nomadServerConfigTemplate.Execute(&buf, spec); err != nil {
-		return "", fmt.Errorf("render nomad server config: %w", err)
-	}
-	return buf.String(), nil
-}
-
 // OrchardControllerEnvSpec is the env file for the Orchard controller process.
 type OrchardControllerEnvSpec struct {
 	Home    string

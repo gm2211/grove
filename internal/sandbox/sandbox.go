@@ -1,11 +1,11 @@
 // Package sandbox runs grove jobs inside sealed VMs: VMs of a fleet.yaml pool with
-// `network: isolated`, which can reach the public internet and nothing at home (not the host Mac,
-// the LAN, the tailnet, Nomad, Orchard or the artifact store).
+// `network: isolated` (every pool is), which can reach the public internet and nothing at home (not
+// the host Mac, the LAN, the tailnet, Orchard or the artifact store).
 //
-// Because such a VM can't reach home, it runs no Nomad client and holds no credential that works
-// against home. Instead every exchange is opened from home: a `grove sandbox run` process (one per
-// job, placed by Nomad on the control plane's own client, see nomad/jobs/sandbox.nomad.hcl) fetches
-// the repository on the control plane, picks a sealed VM with a free slot, pushes the repository
+// Because such a VM can't reach home, it runs no agent of grove's and holds no credential that
+// works against home. Instead every exchange is opened from home: `grove serve`'s dispatch service
+// runs a Runner per job (internal/dispatch SandboxExecutor), which fetches the repository on the
+// control plane, picks a sealed VM with a free slot, pushes the repository
 // and script into a fresh container there through Orchard's exec channel, starts it (the container
 // checks out the job's ref itself), follows its logs, polls it for liveness, and pulls its
 // artifacts and exit status back out.
@@ -15,7 +15,7 @@
 // (see macos.go), and every such VM is used for one job only: the runner deletes it through
 // Orchard once the job is over, and the fleet reconciler recreates it from the image.
 //
-// The clone token and the artifact store's keys stay on the control plane; the job sees the
+// The clone token and the artifact store stay on the control plane; the job sees the
 // checkout, its script and the caller's environment (minus GH_TOKEN/GIT_TOKEN, which only ever
 // served the clone).
 package sandbox
@@ -36,10 +36,10 @@ const (
 
 // Exit codes Run returns besides the job's own.
 const (
-	// ExitTimedOut matches the regular job templates: internal/dispatch maps 124 to Job.TimedOut.
+	// ExitTimedOut is timeout(1)'s code: internal/dispatch maps 124 to Job.TimedOut.
 	ExitTimedOut = 124
 	// ExitLost means the job's sealed VM stopped answering (deleted, recycled under it, or its
-	// worker went away); internal/dispatch reports it as StatusLost for sealed pools. A job script
+	// worker went away); internal/dispatch reports it as StatusLost. A job script
 	// that itself exits 125 is reported as 1, so the code stays unambiguous.
 	ExitLost = 125
 	// ExitSetup means grove couldn't start the job: a bad request, or the container couldn't be
@@ -54,28 +54,29 @@ const (
 	OSDarwin = "darwin"
 )
 
-// DefaultTimeout applies when a job sets none, matching the regular templates'
-// `${NOMAD_META_timeout_seconds:-3600}`.
+// DefaultTimeout applies when a job sets none.
 const DefaultTimeout = time.Hour
 
-// Request is one job for Runner.Run, assembled by `grove sandbox run` from the Nomad dispatch.
+// Request is one job for Runner.Run, assembled by internal/dispatch's SandboxExecutor.
 type Request struct {
-	Kind    string
-	Pool    string
+	Kind string
+	Pool string
+	// AllocID is the job's id: it names the job's container (or run directory) in the VM.
 	AllocID string
 	// OS is the pool's guest OS: OSLinux (or "") or OSDarwin.
 	OS string
 	// Image is the container image the job runs in (the pool's runner image). A macOS job runs in
 	// no container; its Image is only validated.
 	Image string
-	// CPU (MHz) and Memory (MiB) size the job's container, like the regular templates' resources
-	// block. Zero leaves it unlimited. A macOS job has its VM to itself and ignores them.
+	// CPU (MHz, 2000 per core) and Memory (MiB) size the job's container. Zero leaves it
+	// unlimited. A macOS job has its VM to itself and ignores them.
 	CPU    int
 	Memory int
 
 	Repo string
 	Ref  string
-	// CloneToken is the control plane's armed private-repo credential, from the dispatch payload.
+	// CloneToken is the control plane's armed private-repo credential (see internal/gitauth). It
+	// is used only for the clone on the control plane and never enters the VM.
 	CloneToken string
 	Env        map[string]string
 	Script     string
@@ -125,28 +126,12 @@ func (r Request) timeout() time.Duration {
 	return DefaultTimeout
 }
 
-// containerName is unique per Nomad allocation, so a job never collides with another one in the
-// same VM.
+// containerName is unique per job, so a job never collides with another one in the same VM.
 func (r Request) containerName() string { return "grove-" + r.AllocID }
 
-// cloneCredentialEnv lists the env variables grove treats as clone credentials (see the regular
-// templates' source task). In a sealed pool they serve the control plane's clone and never enter
-// the VM.
+// cloneCredentialEnv lists the env variables grove treats as clone credentials. They serve the
+// control plane's clone and never enter the VM.
 var cloneCredentialEnv = []string{"GH_TOKEN", "GIT_TOKEN"}
-
-// ParsePayload splits a Nomad dispatch payload into the clone token and the caller's script. A
-// build or agent payload is "grove-payload/1", the token (or an empty line), then the script; a
-// shell job's payload is the script itself (see internal/dispatch encodePayload).
-func ParsePayload(kind string, payload []byte) (token, script string) {
-	const header = "grove-payload/1\n"
-	s := string(payload)
-	if kind == KindShell || !strings.HasPrefix(s, header) {
-		return "", s
-	}
-	rest := strings.TrimPrefix(s, header)
-	token, script, _ = strings.Cut(rest, "\n")
-	return strings.TrimSuffix(token, "\r"), script
-}
 
 // shQuote wraps s in single quotes for a POSIX shell.
 func shQuote(s string) string {

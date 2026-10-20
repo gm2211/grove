@@ -9,15 +9,14 @@ import (
 	"strings"
 )
 
-// Clone exit codes, the same ones the regular templates' source task exits with. A failed checkout
-// (1) is reported by the job's run.sh, which does the checkout.
+// Clone exit codes. A failed checkout (1) is reported by the job's run.sh, which does the checkout.
 const (
 	cloneRefused = 2
 	cloneFailed  = 128
 )
 
-// cloneToken picks the clone credential: the control plane's armed token from the payload, else a
-// GH_TOKEN/GIT_TOKEN the caller put in its own env (the regular templates' precedence).
+// cloneToken picks the clone credential: the control plane's armed token, else a GH_TOKEN/GIT_TOKEN
+// the caller put in its own env (internal/dispatch only arms a job without one of those).
 func cloneToken(req Request) string {
 	if req.CloneToken != "" {
 		return req.CloneToken
@@ -30,13 +29,13 @@ func cloneToken(req Request) string {
 	return ""
 }
 
-// Clone fetches repo into dir on the control plane, the way the regular templates' source task
-// does inside the job (https only, a shallow clone), but without checking out any file: dir ends
+// Clone fetches repo into dir on the control plane (https only, a shallow clone), without
+// checking out any file: dir ends
 // up holding only .git. The job's run.sh checks out ref inside its container, so no file of the
 // repository is ever written on the control plane, where a hostile one (a symlink pointing out of
 // the checkout, names that collide on a case-insensitive Mac disk) could do harm or come out
-// wrong. ref is only vetted here. It returns 0 on success, otherwise the code the source task
-// would exit with: 2 for a refused repo or ref, 128 when the clone fails. Git's output, and why a
+// wrong. ref is only vetted here. It returns 0 on success, otherwise 2 for a refused repo or ref,
+// 128 when the clone fails. Git's output, and why a
 // request was refused, go to log.
 //
 // The token reaches git only through its environment and an inline credential helper, never its
@@ -70,7 +69,7 @@ func Clone(ctx context.Context, git, repo, ref, token, dir string, log io.Writer
 	return 0
 }
 
-// gitBinary finds git for Clone. Nomad's raw_exec tasks inherit the control plane agent's PATH,
+// gitBinary finds git for Clone. `grove serve` inherits its service manager's PATH,
 // which under launchd is only the system directories, so fall back to /usr/bin/git.
 func gitBinary() string {
 	if path, err := exec.LookPath("git"); err == nil {

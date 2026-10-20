@@ -17,8 +17,8 @@ import (
 	"github.com/gm2211/grove/internal/dispatch"
 )
 
-// defaultAllocationWait bounds how long a follow=true /logs request waits for a job to get a
-// Nomad allocation before giving up (see dispatch.Service.Logs/LogLines and
+// defaultAllocationWait bounds how long a follow=true /logs request waits for a queued job to
+// start before giving up (see dispatch.Service.Logs/LogLines and
 // dispatch.ErrNoAllocationYet). Overridable per-request via the `?wait=` query
 // (time.ParseDuration syntax, e.g. "30s", "5m").
 const defaultAllocationWait = 10 * time.Minute
@@ -245,9 +245,9 @@ func (s *Server) handleJobLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleJobLogsNDJSON streams one JSON object per log line: {offset, ts, stream, line}. offset is
-// a purely request-local running byte counter (each request replays the full log from Nomad's own
-// retained start, offset 0), so sinceOffset=N skips every line whose offset is below N to support
-// simple polling-based resumption without grove needing its own offset-indexed log storage.
+// a running byte counter over the job's whole log (each request replays the log file from its
+// start, offset 0), so sinceOffset=N skips every line whose offset is below N, which is how a
+// client resumes a dropped stream.
 func (s *Server) handleJobLogsNDJSON(w http.ResponseWriter, r *http.Request, id string, follow bool) {
 	sinceOffset, _ := strconv.ParseInt(r.URL.Query().Get("sinceOffset"), 10, 64)
 

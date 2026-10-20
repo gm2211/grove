@@ -227,7 +227,7 @@ func TestIssueDeviceEndpoint_OperatorOnlyAndTokenWorks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := newTestServer(nil, nil, nil, Options{Token: "operator", AccessStore: store})
+	srv := newTestServer(nil, nil, Options{Token: "operator", AccessStore: store})
 	issue := func(token, body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/access/devices", strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+token)

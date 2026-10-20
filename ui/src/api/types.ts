@@ -1,4 +1,4 @@
-// Mirrors the Go JSON wire types in internal/dispatch, internal/orchard, internal/nomad.
+// Mirrors the Go JSON wire types in internal/dispatch, internal/orchard and internal/server.
 // Keep in sync with ARCHITECTURE.md's "grove HTTP API (v1)" table.
 
 export type JobKind = "build" | "agent" | "shell";
@@ -53,8 +53,8 @@ export interface Job {
   finishedAt?: string | null;
   artifacts?: Artifact[];
   meta?: Record<string, string>;
-  // Set only while status is "pending": why Nomad hasn't placed this job yet (constraint
-  // filtered / resources exhausted / no nodes available), derived from its blocked evaluation.
+  // Set only while status is "pending": why grove serve hasn't started this job yet (waiting for
+  // a free slot in one of its pool's sealed VMs, or queued behind other jobs of that pool).
   pendingReason?: string;
 }
 
@@ -87,12 +87,14 @@ export interface FleetEntry {
 export interface FleetResponse {
   workers: FleetEntry[];
   vms: FleetEntry[];
+  /** @deprecated grove no longer uses Nomad; always empty. */
   nodes: FleetEntry[];
 }
 
 export interface HealthResponse {
   ok: boolean;
   orchard?: boolean;
+  /** @deprecated grove no longer uses Nomad; older servers still send it. */
   nomad?: boolean;
   version?: string;
   [key: string]: unknown;

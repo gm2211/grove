@@ -11,7 +11,6 @@ type HealthzResponse struct {
 	OK         bool   `json:"ok"`
 	Version    string `json:"version"`
 	Orchard    string `json:"orchard"` // "up" | "down"
-	Nomad      string `json:"nomad"`   // "up" | "down"
 	ServerTime string `json:"serverTime"`
 }
 
@@ -26,13 +25,6 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		resp.OK = false
 	} else {
 		resp.Orchard = "up"
-	}
-
-	if err := s.nomad.Ping(ctx); err != nil {
-		resp.Nomad = "down"
-		resp.OK = false
-	} else {
-		resp.Nomad = "up"
 	}
 
 	status := http.StatusOK

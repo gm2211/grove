@@ -1,6 +1,7 @@
-// grove Linux worker image: Tart VM (arm64 guest, Ubuntu) running a Nomad client (linux node_class)
-// with Docker, plus Rosetta 2 binfmt registration so amd64 containers still run. See
-// docs/IMAGES.md for the two-file Nomad config contract shared with images/macos-worker.
+// grove Linux worker image: a sealed Tart VM (arm64 guest, Ubuntu) with Docker, plus Rosetta 2
+// binfmt registration so amd64 containers still run. It runs no scheduler agent and joins no
+// network of its own: grove serve drives each job's container from the control plane through
+// Orchard (internal/sandbox). See docs/IMAGES.md.
 
 packer {
   required_plugins {
@@ -72,7 +73,7 @@ build {
     inline = [
       "set -eu",
       "sudo apt-get update -y",
-      "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl gnupg lsb-release git jq build-essential",
+      "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl gnupg lsb-release git jq build-essential gh",
       "sudo install -m 0755 -d /etc/apt/keyrings",
     ]
   }
@@ -87,62 +88,6 @@ build {
       "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin",
       "sudo usermod -aG docker admin",
       "sudo systemctl enable docker",
-    ]
-  }
-
-  # --- Nomad (HashiCorp apt repo) ----------------------------------------------------------------
-  provisioner "shell" {
-    inline = [
-      "set -eu",
-      "curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/hashicorp.gpg",
-      "echo \"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/hashicorp.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main\" | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null",
-      "sudo apt-get update -y",
-      "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nomad gh",
-    ]
-  }
-
-  # --- Tailscale (standalone daemon; joining the tailnet happens at boot via the fleet startup
-  # script with an ephemeral auth key, not here — see images/macos-worker for the parallel rule) --
-  provisioner "shell" {
-    inline = [
-      "set -eu",
-      "curl -fsSL https://tailscale.com/install.sh | sudo sh",
-      "sudo systemctl enable tailscaled",
-    ]
-  }
-
-  # --- Nomad client config: static half only ------------------------------------------------------
-  provisioner "shell" {
-    inline = [
-      "set -eu",
-      "sudo mkdir -p /etc/nomad.d /opt/nomad/data",
-    ]
-  }
-  provisioner "file" {
-    source      = "files/client.hcl"
-    destination = "/tmp/client.hcl"
-  }
-  provisioner "shell" {
-    inline = ["sudo mv /tmp/client.hcl /etc/nomad.d/client.hcl"]
-  }
-  provisioner "file" {
-    source      = "files/grove-meta.hcl.placeholder"
-    destination = "/tmp/grove-meta.hcl"
-  }
-  provisioner "shell" {
-    inline = ["sudo mv /tmp/grove-meta.hcl /etc/nomad.d/grove-meta.hcl"]
-  }
-  provisioner "file" {
-    source      = "files/nomad.service"
-    destination = "/tmp/nomad.service"
-  }
-  provisioner "shell" {
-    inline = [
-      "set -eu",
-      "sudo mv /tmp/nomad.service /etc/systemd/system/nomad.service",
-      "sudo systemctl daemon-reload",
-      "sudo systemctl enable nomad",
-      # Do not `systemctl start` here: no servers configured yet during image build.
     ]
   }
 

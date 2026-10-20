@@ -5,92 +5,25 @@ import (
 	"fmt"
 	"net/http"
 	"time"
-
-	"github.com/gm2211/grove/internal/fleet"
 )
 
-const recycleDrainDeadline = 2 * time.Hour
-
-// handleRecycleVM finds the Nomad node running vm (matched by meta.vm), drains it, and returns
-// 202 immediately. A background goroutine deletes the VM via Orchard once the node has 0 running
-// allocations, or once the drain deadline passes (whichever comes first). A sealed VM has no node:
-// it is deleted right away, and its own shutdown script does the draining.
+// handleRecycleVM deletes vm through Orchard and returns 202 right away. Deleting a sealed VM runs
+// its shutdown script, which stops new jobs landing in it and waits for the running ones to finish
+// (see internal/fleet's sealed shutdown script); the fleet reconciler then recreates it from its
+// image.
 func (s *Server) handleRecycleVM(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if name == "" {
 		http.Error(w, "vm name required", http.StatusBadRequest)
 		return
 	}
-
-	ctx := r.Context()
-	nodes, err := s.nomad.ListNodes(ctx)
-	if err != nil {
-		s.writeError(w, http.StatusBadGateway, err)
+	vm, err := s.orchard.GetVM(r.Context(), name)
+	if err != nil || vm == nil {
+		http.Error(w, fmt.Sprintf("no vm %q", name), http.StatusNotFound)
 		return
 	}
-	var nodeID string
-	found := false
-	for _, n := range nodes {
-		if n.Meta["vm"] == name {
-			nodeID = n.ID
-			found = true
-			break
-		}
-	}
-	if !found {
-		// A sealed VM (network: isolated) runs no Nomad client to drain. Deleting it runs its
-		// shutdown script instead, which stops new jobs landing in it and waits for the running
-		// ones to finish (see internal/fleet's sealed shutdown script).
-		if vm, verr := s.orchard.GetVM(ctx, name); verr == nil && vm != nil && fleet.IsolatedVM(*vm) {
-			go s.deleteVM(name)
-			s.writeJSON(w, http.StatusAccepted, map[string]any{"drainStarted": true})
-			return
-		}
-		http.Error(w, fmt.Sprintf("no nomad node found for vm %q", name), http.StatusNotFound)
-		return
-	}
-
-	if err := s.nomad.DrainNode(ctx, nodeID, true, recycleDrainDeadline); err != nil {
-		s.writeError(w, http.StatusBadGateway, err)
-		return
-	}
-
-	go s.finishRecycle(name, nodeID)
-
+	go s.deleteVM(name)
 	s.writeJSON(w, http.StatusAccepted, map[string]any{"drainStarted": true})
-}
-
-func (s *Server) finishRecycle(vmName, nodeID string) {
-	ctx, cancel := context.WithTimeout(context.Background(), recycleDrainDeadline)
-	defer cancel()
-
-	ticker := time.NewTicker(s.opts.RecyclePollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			s.log.Warn("recycle: drain deadline reached, deleting vm anyway", "vm", vmName, "node", nodeID)
-			s.deleteVM(vmName)
-			return
-		case <-ticker.C:
-			nodes, err := s.nomad.ListNodes(ctx)
-			if err != nil {
-				s.log.Warn("recycle: list nodes failed", "vm", vmName, "err", err)
-				continue
-			}
-			for _, n := range nodes {
-				if n.ID != nodeID {
-					continue
-				}
-				if n.RunningAllocs == 0 {
-					s.deleteVM(vmName)
-					return
-				}
-				break
-			}
-		}
-	}
 }
 
 func (s *Server) deleteVM(name string) {

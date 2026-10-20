@@ -20,7 +20,7 @@ func TestAccessIssue_PrintsTokenOnceOnStdout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(server.New(nil, nil, nil, nil, server.Options{Token: "op-token", AccessStore: store}))
+	srv := httptest.NewServer(server.New(nil, nil, nil, server.Options{Token: "op-token", AccessStore: store}))
 	defer srv.Close()
 
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")

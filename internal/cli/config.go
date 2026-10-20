@@ -76,7 +76,7 @@ var configSetCmd = &cobra.Command{
 	Short: "Set a single configuration key (dotted path, e.g. orchard.url) and save.",
 	Long: "Set a single configuration key (dotted path, e.g. orchard.url) and save.\n\n" +
 		"A value of - reads the value from standard input instead, so a secret such as\n" +
-		"tailscale.authKey never appears in the process list or shell history.",
+		"server.token never appears in the process list or shell history.",
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path, err := config.DefaultPath()
@@ -120,10 +120,8 @@ func setConfigKey(cfg *config.Config, key, value string) error {
 		cfg.Orchard.URL = value
 	case "orchard.token":
 		cfg.Orchard.Token = value
-	case "nomad.url":
-		cfg.Nomad.URL = value
-	case "nomad.token":
-		cfg.Nomad.Token = value
+	case "nomad.url", "nomad.token":
+		return fmt.Errorf("config key %q is no longer used: grove runs jobs itself, without Nomad", key)
 	case "server.listen":
 		cfg.Server.Listen = value
 	case "server.url":
@@ -137,7 +135,7 @@ func setConfigKey(cfg *config.Config, key, value string) error {
 	case "fleet":
 		cfg.Fleet = value
 	case "tailscale.authKey":
-		cfg.Tailscale.AuthKey = value
+		return fmt.Errorf("config key %q is no longer used: every pool is sealed, and no VM joins the tailnet", key)
 	default:
 		return fmt.Errorf("unknown config key %q", key)
 	}

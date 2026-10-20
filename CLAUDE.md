@@ -11,21 +11,20 @@ cmd/grove/                 main.go — cobra entrypoint, calls cli.Execute()
 internal/cli/               one file per command; each registers itself on cli.Root via init()
 internal/config/             ~/.config/grove/config.yaml (CONTRACT — see below)
 internal/orchard/            Orchard client interface + impl (github.com/cirruslabs/orchard fork)
-internal/nomad/               Nomad client interface + impl (github.com/hashicorp/nomad/api)
-internal/fleet/               fleet.yaml spec → desired VMs; reconciler
-internal/dispatch/            JobRequest → parameterized Nomad job; status; logs
+internal/fleet/               fleet.yaml spec → desired (sealed) VMs; reconciler
+internal/dispatch/            JobRequest → per-pool queue + in-process runner in grove serve; status; logs
+internal/sandbox/             runs one job in a sealed VM through Orchard (clone, bundle, exec, artifacts)
 internal/server/              HTTP API (/api/v1/…) + embedded UI; token auth
 internal/gitauth/             operator-armed private-repo credential (see below)
 internal/mcp/                 MCP server (stdio)
 internal/install/             role bootstrap planner + doctor checks (see below)
 ui/                            Vite + React + TS SPA
 images/                         Packer templates
-nomad/jobs/                     parameterized Nomad job HCL
 scripts/install.sh              curl | sh → brew tap + grove install
-docs/                            INSTALL.md, OPERATIONS.md
+docs/                            INSTALL.md, OPERATIONS.md, JOBS.md
 ```
 
-**Contract packages** (`config`, `orchard`, `nomad`, `dispatch`, `fleet` *types*) define the Go
+**Contract packages** (`config`, `orchard`, `dispatch`, `fleet` *types*) define the Go
 interfaces every other package builds against. Implementations may change; extend interfaces
 additively — don't break the seam other in-flight work depends on.
 
@@ -64,9 +63,12 @@ calls, returns scripted results) is for tests. This is what makes `--dry-run` ac
   checklist.
 - `RunPlan` walks the list, never stopping early on a failed step, and returns the first error
   alongside the full per-step results.
-- Templates (launchd plists, systemd units, Nomad/Orchard config) live in `render.go` as
+- Templates (launchd plists, systemd units, Orchard config) live in `render.go` as
   `text/template`s over typed spec structs — keep them deterministic (no map iteration order
   surprises; Go's `text/template` sorts map keys, so that's safe) so golden tests stay meaningful.
+
+Retiring a service an older grove installed follows `legacy-minio:retire` / `legacy-nomad:retire`
+in `controlplane.go`: stop it and remove its plist/unit, leave its data for the operator.
 
 Adding a step: add it to the relevant `build<Role>Steps` function in `worker.go` /
 `controlplane.go` / `client.go`, keep `Check`/`Apply` going through `Runner`, and add a
@@ -83,13 +85,14 @@ for it, deliberately.
 - `gitauth.Store` persists the armed credential (mode 0600, atomic rename, next to `devices.json`)
   and answers `TokenFor(repoURL)`. It is the `dispatch.Options.RepoAuth` implementation.
 - `grove serve` builds ONE store and hands the same pointer to both the dispatch service and the
-  HTTP server, so arming/disarming takes effect on the next dispatch with no restart.
-- The token goes into the build/agent dispatch PAYLOAD (`grove-payload/1`, token line, script)
-  and nowhere else. Only the job's `source` prestart task receives the payload: it clones, then
-  deletes it, so the caller's script never sees the token in its env, argv or files. Never put it
-  in `env_json` or any dispatch meta (every task sees those), onto `Job.Request.Env`, into the
-  on-disk job history, or back out of the API (`Status` carries only a fingerprint). Keep it that
-  way — `internal/dispatch/repoauth_test.go`, `nomad/jobs/nomadjobs_test.go` and
+  HTTP server, so arming/disarming takes effect on the next job start with no restart.
+- The token is looked up when a job STARTS and goes only into `dispatch.Run.CloneToken`, which
+  the sandbox uses for the `git clone` it runs on the control plane (credential in git's env for
+  that one command, never argv). The clone is bundled into the sealed VM without it, so the
+  caller's script never sees the token in its env, argv or files. Never put it onto
+  `Job.Request.Env`, into the on-disk job history or queue spool, into the job's log, or back out
+  of the API (`Status` carries only a fingerprint). Keep it that way —
+  `internal/dispatch/repoauth_test.go`, `internal/sandbox` clone tests and
   `internal/server/handlers_github_test.go` assert it.
 - Arming always names repositories (`--repo owner/name` or `owner/*`); an empty scope covers
   nothing.

@@ -21,7 +21,7 @@ npm run dev:mock
 ```
 
 Sets `VITE_MOCK=1`, which swaps every API call (`src/api/client.ts`) for the in-memory fixtures in
-`src/mock/data.ts`: a handful of hosts with Orchard workers, VMs and matching Nomad nodes, ~25 jobs
+`src/mock/data.ts`: a handful of hosts with Orchard workers and VMs, ~25 jobs
 in various states, and a simulated job lifecycle (dispatch → pending → running → success/failed)
 plus a fake streaming log. A `MOCK` badge appears in the header so it's never confused with a real
 connection.
@@ -54,7 +54,7 @@ not built, run `make ui`" page until you build the UI for real.
 ## Pages
 
 - **Fleet** — hosts grouped card-by-card: Orchard worker (online/cordoned, slots used/total),
-  its VMs (pool, status, TTL remaining, running jobs, recycle), matching Nomad nodes. Polls every
+  its VMs (pool, status, TTL remaining, running jobs, recycle). Polls every
   5s.
 - **Jobs** — table of all jobs, filterable by status/pool. Polls every 3s.
 - **Job detail** — request, status timeline, live log via `EventSource` (auto-scroll with pause),

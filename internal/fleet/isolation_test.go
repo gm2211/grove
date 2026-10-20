@@ -25,46 +25,48 @@ func isolatedMacOSPool() Pool {
 	return pool
 }
 
-func isolatedOptions() Options {
-	return Options{TailscaleAuthKey: "tskey-auth-abc", NomadRPCAddress: "100.64.0.10:4647"}
-}
+func isolatedOptions() Options { return Options{} }
 
 func TestSpecValidate_Network(t *testing.T) {
 	for _, tt := range []struct {
-		name    string
-		pool    Pool
-		wantErr string
+		name     string
+		pool     Pool
+		wantErr  string
+		wantWarn string
 	}{
-		{name: "unset", pool: Pool{Name: "linux", Image: "image", PerWorker: 1}},
-		{name: "shared", pool: Pool{Name: "linux", Image: "image", PerWorker: 1, Network: "shared"}},
+		{name: "unset means isolated", pool: Pool{Name: "linux", Image: "image", PerWorker: 1}},
+		{name: "shared is sealed with a warning", pool: Pool{Name: "linux", Image: "image", PerWorker: 1, Network: "shared"}, wantWarn: `network "shared" is no longer supported`},
 		{name: "isolated", pool: Pool{Name: "linux", Image: "image", PerWorker: 1, Network: "isolated"}},
 		{
 			name:    "unknown mode",
 			pool:    Pool{Name: "linux", Image: "image", PerWorker: 1, Network: "softnet"},
-			wantErr: `network must be "shared" or "isolated"`,
+			wantErr: `network must be "isolated"`,
 		},
 		{name: "isolated macos pool", pool: Pool{Name: "macos", Image: "image", PerWorker: 1, Network: "isolated"}},
 		{
-			name:    "isolated macos with docker socket",
-			pool:    Pool{Name: "macos", Image: "image", PerWorker: 1, Network: "isolated", AllowDockerSocket: true},
-			wantErr: "allowDockerSocket can't be combined",
-		},
-		{
-			name:    "isolated with docker socket",
-			pool:    Pool{Name: "linux", Image: "image", PerWorker: 1, Network: "isolated", AllowDockerSocket: true},
-			wantErr: "allowDockerSocket can't be combined",
+			name:     "docker socket is switched off with a warning",
+			pool:     Pool{Name: "linux", Image: "image", PerWorker: 1, Network: "shared", AllowDockerSocket: true},
+			wantWarn: "allowDockerSocket is ignored",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			err := (&Spec{Pools: []Pool{tt.pool}}).Validate()
-			if tt.wantErr == "" {
-				if err != nil {
-					t.Fatalf("Validate() = %v, want nil", err)
+			spec := &Spec{Pools: []Pool{tt.pool}}
+			err := spec.Validate()
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Validate() = %v, want error containing %q", err, tt.wantErr)
 				}
 				return
 			}
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("Validate() = %v, want error containing %q", err, tt.wantErr)
+			if err != nil {
+				t.Fatalf("Validate() = %v, want nil", err)
+			}
+			if spec.Pools[0].Network != NetworkIsolated || spec.Pools[0].AllowDockerSocket {
+				t.Fatalf("pool after Validate = network %q dockerSocket %v, want sealed", spec.Pools[0].Network, spec.Pools[0].AllowDockerSocket)
+			}
+			warnings := strings.Join(spec.Warnings, "\n")
+			if (tt.wantWarn == "") != (warnings == "") || !strings.Contains(warnings, tt.wantWarn) {
+				t.Fatalf("warnings = %q, want %q", warnings, tt.wantWarn)
 			}
 		})
 	}
@@ -109,38 +111,30 @@ func TestPlan_IsolatedPool_CreatesSoftnetVMWithHostBlocked(t *testing.T) {
 	if !strings.Contains(spec.StartupScript, "# --- network: isolated (sealed) ---") {
 		t.Fatalf("isolated VM is missing the sealed startup section:\n%s", spec.StartupScript)
 	}
-	// Nothing in a sealed VM may reach home, so nothing that would gets set up there, even with
-	// a tailnet key and a Nomad address configured for the shared pools.
-	for _, unwanted := range []string{"tskey-auth-abc", "tailscale up", "grove-meta.hcl", "100.64.0.10", "systemctl restart nomad"} {
+	// Nothing in a sealed VM may reach home, so nothing that would gets set up there.
+	for _, unwanted := range []string{"tailscale up", "grove-meta.hcl", "systemctl restart nomad"} {
 		if strings.Contains(spec.StartupScript, unwanted) {
 			t.Errorf("sealed VM startup script contains %q:\n%s", unwanted, spec.StartupScript)
 		}
 	}
-	for _, unwanted := range []string{"nomad node drain", nodeTokenSecretPlaceholder} {
+	for _, unwanted := range []string{"nomad node drain", "NOMAD_TOKEN"} {
 		if strings.Contains(spec.ShutdownScript, unwanted) {
 			t.Errorf("sealed VM shutdown script contains %q:\n%s", unwanted, spec.ShutdownScript)
 		}
 	}
 }
 
-func TestPlan_SharedPool_NoSoftnet(t *testing.T) {
+// Every pool is sealed: a pool that doesn't say (or says "shared", in an older fleet.yaml) gets
+// exactly the same VM as an isolated one.
+func TestPlan_EveryPoolIsSealed(t *testing.T) {
+	want := (&Reconciler{}).vmSpec(isolatedPool(), "mac1", "linux-mac1-0")
 	for _, network := range []string{"", NetworkShared} {
 		pool := basePool()
 		pool.Network = network
-		spec := (&Reconciler{Options: isolatedOptions()}).vmSpec(pool, "mac1", "linux-mac1-0")
-		if spec.Softnet || len(spec.SoftnetBlock) != 0 {
-			t.Fatalf("network %q: shared pool must keep Tart's default NAT, got Softnet=%v SoftnetBlock=%q", network, spec.Softnet, spec.SoftnetBlock)
+		spec := (&Reconciler{}).vmSpec(pool, "mac1", "linux-mac1-0")
+		if !spec.Softnet || !slices.Equal(spec.SoftnetBlock, []string{"out @host"}) || spec.StartupScript != want.StartupScript {
+			t.Fatalf("network %q: got Softnet=%v SoftnetBlock=%q, want the sealed VM", network, spec.Softnet, spec.SoftnetBlock)
 		}
-		if strings.Contains(spec.StartupScript, "network: isolated") {
-			t.Fatalf("network %q: shared pool got the isolated startup section", network)
-		}
-	}
-
-	// Writing `network: shared` explicitly must not recreate VMs built before the field existed.
-	explicit := basePool()
-	explicit.Network = NetworkShared
-	if a, b := (&Reconciler{}).vmSpec(basePool(), "mac1", "linux-mac1-0"), (&Reconciler{}).vmSpec(explicit, "mac1", "linux-mac1-0"); a.StartupScript != b.StartupScript {
-		t.Fatal(`network: shared changed the startup script relative to an unset network`)
 	}
 }
 
@@ -166,8 +160,10 @@ func TestIsolationProblem_EveryPoolCanBeSealed(t *testing.T) {
 	}
 }
 
-func TestPlan_SwitchingPoolToIsolated_RecreatesVM(t *testing.T) {
+// A VM built while its pool shared its host's network (no Softnet) is replaced by a sealed one.
+func TestPlan_FormerlySharedVM_IsRecreatedSealed(t *testing.T) {
 	existingSpec := (&Reconciler{}).vmSpec(basePool(), "mac1", "linux-mac1-0")
+	existingSpec.Softnet, existingSpec.SoftnetBlock = false, nil
 	client := &fakeOrchardClient{
 		workers: []orchard.Worker{onlineWorker("mac1")},
 		vms: []orchard.VM{{
@@ -229,7 +225,7 @@ func TestSpecDrifted_Softnet(t *testing.T) {
 }
 
 func TestBuildStartupScript_Isolated(t *testing.T) {
-	script := buildStartupScript(isolatedPool(), "mac1", "linux-mac1-0", isolatedOptions())
+	script := BuildStartupScript(isolatedPool(), "mac1", "linux-mac1-0")
 
 	// Nomad and Tailscale go off first, then DNS, then the fence, and only then Docker, so no job
 	// container ever runs unfenced.
@@ -263,7 +259,7 @@ func TestBuildStartupScript_Isolated(t *testing.T) {
 
 	pool := isolatedPool()
 	pool.StartupScript = "echo custom"
-	if script := buildStartupScript(pool, "mac1", "linux-mac1-0", Options{}); !strings.HasSuffix(script, "# --- pool.startupScript ---\necho custom\n") {
+	if script := BuildStartupScript(pool, "mac1", "linux-mac1-0"); !strings.HasSuffix(script, "# --- pool.startupScript ---\necho custom\n") {
 		t.Errorf("the pool's own startup script must run last:\n%s", script)
 	}
 }
@@ -302,7 +298,7 @@ if [ "$1" = "tee" ]; then
 fi
 `)
 
-	script := buildStartupScript(isolatedPool(), "mac1", "linux-mac1-0", isolatedOptions())
+	script := BuildStartupScript(isolatedPool(), "mac1", "linux-mac1-0")
 	cmd := exec.Command("/bin/sh", "-c", script)
 	cmd.Env = append(os.Environ(),
 		"PATH="+fakeBin+":"+os.Getenv("PATH"),
@@ -446,7 +442,7 @@ func TestBuildShutdownScript_SealedWaitsForJobs(t *testing.T) {
 		}
 	}
 
-	script, timeout := buildShutdownScript(isolatedPool(), true)
+	script, timeout := BuildShutdownScript(isolatedPool())
 	if timeout != defaultShutdownTimeout {
 		t.Errorf("timeout = %s", timeout)
 	}
@@ -460,7 +456,7 @@ func TestBuildShutdownScript_SealedWaitsForJobs(t *testing.T) {
 	if string(log) != want {
 		t.Fatalf("privileged steps:\n%s\nwant:\n%s", log, want)
 	}
-	if strings.Contains(script, "nomad") || strings.Contains(script, nodeTokenSecretPlaceholder) {
+	if strings.Contains(script, "nomad") {
 		t.Errorf("sealed shutdown script mentions Nomad:\n%s", script)
 	}
 }
@@ -484,30 +480,19 @@ func TestPlan_IsolatedMacOSPool_CreatesSealedVM(t *testing.T) {
 	if !strings.Contains(spec.StartupScript, "# --- network: isolated (sealed, macOS) ---") {
 		t.Fatalf("missing the sealed macOS section:\n%s", spec.StartupScript)
 	}
-	// No secret and nothing that reaches home, even with a tailnet key and a Nomad address
-	// configured for the shared pools.
-	for _, unwanted := range []string{"tskey-auth-abc", "tailscale up", "--authkey", "grove-meta.hcl", "grove-rpc.hcl",
-		"100.64.0.10", "launchctl kickstart", "launchctl bootstrap", "systemctl", "docker", "egress-fence"} {
+	// Nothing that reaches home.
+	for _, unwanted := range []string{"tailscale up", "--authkey", "grove-meta.hcl", "grove-rpc.hcl",
+		"launchctl kickstart", "launchctl bootstrap", "systemctl", "docker", "egress-fence"} {
 		if strings.Contains(spec.StartupScript, unwanted) {
 			t.Errorf("sealed macOS startup script contains %q:\n%s", unwanted, spec.StartupScript)
 		}
 	}
-	for _, unwanted := range []string{"nomad", "NOMAD_TOKEN", nodeTokenSecretPlaceholder, nodeTokenAccessorPlaceholder, "docker", "tskey"} {
+	for _, unwanted := range []string{"nomad", "NOMAD_TOKEN", "docker", "tskey"} {
 		if strings.Contains(spec.ShutdownScript, unwanted) {
 			t.Errorf("sealed macOS shutdown script contains %q:\n%s", unwanted, spec.ShutdownScript)
 		}
 	}
 
-	// With Nomad ACLs on, a shared VM's scripts carry node-token blocks; a sealed one never does.
-	r.Options.NodeTokens = &fakeNodeTokens{}
-	plan, err = r.Plan(context.Background())
-	if err != nil {
-		t.Fatalf("Plan with node tokens: %v", err)
-	}
-	spec = plan.Creates[0].Spec
-	if strings.Contains(spec.StartupScript+spec.ShutdownScript, "grove:node-token") || strings.Contains(spec.StartupScript, "grove:client-acl") {
-		t.Errorf("sealed macOS VM got a Nomad token block:\n%s\n%s", spec.StartupScript, spec.ShutdownScript)
-	}
 }
 
 // TestPlan_SealedMacOSVMDeletedAfterItsJob_IsRecreated: the job runner deletes a sealed macOS VM
@@ -545,7 +530,7 @@ func TestPlan_SealedMacOSVMDeletedAfterItsJob_IsRecreated(t *testing.T) {
 }
 
 func TestBuildStartupScript_IsolatedMacOS(t *testing.T) {
-	script := buildStartupScript(isolatedMacOSPool(), "mac1", "macos-mac1-0", isolatedOptions())
+	script := BuildStartupScript(isolatedMacOSPool(), "mac1", "macos-mac1-0")
 
 	// Nomad and Tailscale go off first; then DNS, then the job user.
 	last := -1
@@ -574,9 +559,9 @@ func TestBuildStartupScript_IsolatedMacOS(t *testing.T) {
 	pool := isolatedMacOSPool()
 	pool.HostXcode = &HostXcodeConfig{Path: "/Applications/Xcode.app", BuildVersion: "27A266a"}
 	pool.StartupScript = "echo custom"
-	script = buildStartupScript(pool, "mac1", "macos-mac1-0", Options{})
-	if !strings.Contains(script, "xcrun --sdk macosx --show-sdk-path") || strings.Contains(script, "launchctl bootstrap") {
-		t.Errorf("a sealed pool with hostXcode checks Xcode but never brings Nomad back:\n%s", script)
+	script = BuildStartupScript(pool, "mac1", "macos-mac1-0")
+	if !strings.Contains(script, "xcrun --sdk macosx --show-sdk-path") || strings.Contains(script, "launchctl bootstrap") || strings.Contains(script, "com.grove.nomad;") {
+		t.Errorf("a sealed pool with hostXcode checks Xcode and never touches a Nomad client:\n%s", script)
 	}
 	if !strings.HasSuffix(script, "# --- pool.startupScript ---\necho custom\n") {
 		t.Errorf("the pool's own startup script must run last:\n%s", script)
@@ -603,7 +588,7 @@ func TestBuildStartupScript_IsolatedMacOSRunsThroughFakeSudo(t *testing.T) {
 		}
 	}
 
-	script := buildStartupScript(isolatedMacOSPool(), "mac1", "macos-mac1-0", isolatedOptions())
+	script := BuildStartupScript(isolatedMacOSPool(), "mac1", "macos-mac1-0")
 	cmd := exec.Command("/bin/sh", "-c", script)
 	cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_SUDO_LOG="+logPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
@@ -662,7 +647,7 @@ func TestBuildShutdownScript_SealedMacOSWaitsForJobs(t *testing.T) {
 		}
 	}
 
-	script, timeout := buildShutdownScript(isolatedMacOSPool(), true)
+	script, timeout := BuildShutdownScript(isolatedMacOSPool())
 	if timeout != defaultShutdownTimeout {
 		t.Errorf("timeout = %s", timeout)
 	}
@@ -679,7 +664,7 @@ func TestBuildShutdownScript_SealedMacOSWaitsForJobs(t *testing.T) {
 	if string(log) != want {
 		t.Fatalf("steps:\n%s\nwant:\n%s", log, want)
 	}
-	if strings.Contains(script, "nomad") || strings.Contains(script, nodeTokenSecretPlaceholder) {
+	if strings.Contains(script, "nomad") {
 		t.Errorf("sealed macOS shutdown script mentions Nomad:\n%s", script)
 	}
 }

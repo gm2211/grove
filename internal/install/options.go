@@ -22,7 +22,6 @@ const (
 type Options struct {
 	Role       Role
 	Controller string // Orchard controller URL, e.g. https://grove-cp.tailnet.ts.net:6120
-	NomadAddr  string // Nomad HTTP API URL
 	ServerURL  string // grove server URL (client role, and recorded on control-plane/worker too)
 	Token      string // bootstrap / server token, meaning depends on Role
 
@@ -35,9 +34,8 @@ type Options struct {
 	RegistryUser  string
 	RegistryToken string
 
-	// Softnet adds Softnet to a worker's plan: the VM network filter fleet.yaml pools with
-	// network: isolated run on, plus the one-time step that lets it become root. Off by default,
-	// so a Mac that never runs an isolated pool doesn't get a root-capable binary.
+	// Softnet adds Softnet to a worker's plan: the VM network filter every fleet.yaml pool runs
+	// on (all pools are sealed), plus the one-time step that lets it become root.
 	Softnet bool
 
 	Hostname string // test override; defaults to os.Hostname()

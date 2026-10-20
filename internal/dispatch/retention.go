@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -78,9 +79,66 @@ func (s *service) expireArtifacts(ctx context.Context, now time.Time) {
 			if err := s.store.put(rec); err != nil {
 				slog.Warn("dispatch: recording artifact expiry failed", "id", id, "err", err)
 			}
-			s.mu.Lock()
-			delete(s.cache, id)
-			s.mu.Unlock()
 		}
+	}
+}
+
+// expireLogs deletes the log file of every finished job whose retention has run out, under the
+// same policy as artifacts: opts.ArtifactRetention.Success after a job succeeded, .Failure after
+// any other end, counted from when it finished. A log file grove has no job for expires Failure
+// after it was last written.
+func (s *service) expireLogs(now time.Time) {
+	entries, err := os.ReadDir(s.logDir)
+	if err != nil {
+		slog.Warn("dispatch: listing job logs for expiry failed", "err", err)
+		return
+	}
+	retention := s.opts.ArtifactRetention.WithDefaults()
+	for _, e := range entries {
+		id, ok := strings.CutSuffix(e.Name(), ".log")
+		if !ok || e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		rec, known := s.store.get(id)
+		var deadline time.Time
+		switch {
+		case !known:
+			deadline = info.ModTime().Add(retention.Failure)
+		case !isTerminal(rec.Status):
+			continue
+		default:
+			finished := info.ModTime()
+			if rec.FinishedAt != nil && rec.FinishedAt.After(finished) {
+				finished = *rec.FinishedAt
+			}
+			keep := retention.Failure
+			if rec.Status == StatusSuccess {
+				keep = retention.Success
+			}
+			deadline = finished.Add(keep)
+		}
+		if now.Before(deadline) {
+			continue
+		}
+		if err := os.Remove(s.logPath(id)); err != nil && !os.IsNotExist(err) {
+			slog.Warn("dispatch: expiring a job log failed", "id", id, "err", err)
+			continue
+		}
+		if !known {
+			continue
+		}
+		s.mu.Lock()
+		if rec, ok := s.store.get(id); ok {
+			at := now
+			rec.LogsExpiredAt = &at
+			if err := s.store.put(rec); err != nil {
+				slog.Warn("dispatch: recording log expiry failed", "id", id, "err", err)
+			}
+		}
+		s.mu.Unlock()
 	}
 }

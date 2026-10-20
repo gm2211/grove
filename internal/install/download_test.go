@@ -11,48 +11,21 @@ import (
 // scriptPinnedDownloads makes every pinned download's hash command report the expected digest,
 // i.e. simulates untampered downloads for opts' platform.
 func scriptPinnedDownloads(r *FakeRunner, opts Options) {
-	ds := []pinnedDownload{homebrewInstallerDownload()}
-	for _, f := range []func(Options) (pinnedDownload, error){nomadDownload} {
-		if d, err := f(opts); err == nil {
-			ds = append(ds, d)
-		}
-	}
-	for _, d := range ds {
+	for _, d := range []pinnedDownload{homebrewInstallerDownload()} {
 		name, args := sha256Command(opts, filepath.Join(downloadDir(opts), d.File))
 		r.Script(Call{Name: name, Args: args}.String(), FakeResult{Stdout: d.SHA256 + "  " + d.File + "\n"})
 	}
 }
 
-func TestPinnedChecksumsCoverEverySupportedPlatform(t *testing.T) {
-	for _, table := range []map[string]string{nomadZipSHA256} {
-		for _, key := range []string{"darwin/amd64", "darwin/arm64", "linux/amd64", "linux/arm64"} {
-			if sum := table[key]; len(sum) != 64 || strings.ToLower(sum) != sum {
-				t.Errorf("%s: pinned sha256 %q is not 64 lower-case hex chars", key, sum)
-			}
-		}
-	}
-	if len(HomebrewInstallSHA256) != 64 || len(HomebrewInstallCommit) != 40 {
-		t.Error("Homebrew installer pin must be a full commit and sha256")
-	}
-}
-
-func TestPinnedNomadDownloadIsVersionedNotLatest(t *testing.T) {
-	d, err := nomadDownload(Options{GOOS: "linux", GOARCH: "amd64"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := "https://releases.hashicorp.com/nomad/" + NomadVersion + "/nomad_" + NomadVersion + "_linux_amd64.zip"
-	if d.URL != want || strings.Contains(d.URL, "latest") {
-		t.Fatalf("nomad URL = %q, want %q", d.URL, want)
-	}
-	if _, err := nomadDownload(Options{GOOS: "linux", GOARCH: "riscv64"}); err == nil {
-		t.Fatal("expected an unpinned platform to be refused, not downloaded unverified")
+func TestHomebrewInstallerPinIsComplete(t *testing.T) {
+	if len(HomebrewInstallSHA256) != 64 || strings.ToLower(HomebrewInstallSHA256) != HomebrewInstallSHA256 || len(HomebrewInstallCommit) != 40 {
+		t.Error("Homebrew installer pin must be a full commit and a lower-case sha256")
 	}
 }
 
 func TestFetchVerifiedFailsClosedOnMismatch(t *testing.T) {
 	opts := Options{Home: t.TempDir(), GOOS: "linux", GOARCH: "arm64"}
-	d, _ := nomadDownload(opts)
+	d := homebrewInstallerDownload()
 	staged := filepath.Join(downloadDir(opts), d.File)
 	r := NewFakeRunner()
 	r.Script("sha256sum "+staged, FakeResult{Stdout: strings.Repeat("0", 64) + "  " + staged + "\n"})
@@ -71,7 +44,9 @@ func TestFetchVerifiedFailsClosedOnMismatch(t *testing.T) {
 	}
 }
 
-func TestControlPlanePlan_LinuxVerifiesDownloadsBeforeInstalling(t *testing.T) {
+// The control plane no longer installs a scheduler: its plan downloads no Nomad, and nothing
+// unpinned.
+func TestControlPlanePlan_LinuxDownloadsNoNomad(t *testing.T) {
 	home := t.TempDir()
 	r := NewFakeRunner()
 	scriptWorkerEnrollmentToken(r, home)
@@ -86,37 +61,12 @@ func TestControlPlanePlan_LinuxVerifiesDownloadsBeforeInstalling(t *testing.T) {
 	if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
 		t.Fatalf("RunPlan: %v", err)
 	}
-	dl := downloadDir(opts)
-	nomadZip := filepath.Join(dl, "nomad_"+NomadVersion+"_linux_arm64.zip")
-	assertBefore(t, r, "sha256sum "+nomadZip, "unzip -o "+nomadZip+" nomad -d "+filepath.Join(dl, "nomad-"+NomadVersion))
 	for _, c := range r.Calls {
 		if c.Name == "curl" && strings.Contains(c.String(), "latest") {
 			t.Errorf("no unpinned 'latest' download allowed: %s", c.String())
 		}
-	}
-}
-
-func TestControlPlanePlan_LinuxNomadMismatchFailsStep(t *testing.T) {
-	home := t.TempDir()
-	r := NewFakeRunner()
-	scriptWorkerEnrollmentToken(r, home)
-	scriptTailscaleUp(r)
-	opts := testControlPlaneOptions(home, "linux")
-	scriptPinnedDownloads(r, opts)
-	nomadZip := filepath.Join(downloadDir(opts), "nomad_"+NomadVersion+"_linux_arm64.zip")
-	r.Script("sha256sum "+nomadZip, FakeResult{Stdout: strings.Repeat("f", 64) + "  x\n"})
-
-	steps, err := BuildPlan(r, opts, io.Discard)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard})
-	if err == nil || !strings.Contains(err.Error(), "nomad-binary") || !strings.Contains(err.Error(), "checksum mismatch") {
-		t.Fatalf("expected nomad-binary to fail on checksum mismatch, got %v", err)
-	}
-	for _, c := range r.Calls {
-		if c.Name == "unzip" {
-			t.Fatalf("tampered nomad zip must not be unpacked: %s", c.String())
+		if strings.Contains(c.String(), "nomad") && !strings.Contains(c.String(), "grove-nomad.service") {
+			t.Errorf("the control-plane plan still touches Nomad: %s", c.String())
 		}
 	}
 }

@@ -4,6 +4,38 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Nomad is gone: `grove serve` runs every job itself, and every pool is sealed.** Each pool has a
+  FIFO queue in `grove serve`; a job starts when one of the pool's sealed VMs has a free slot
+  (Linux: as many as fit the VM at the pool's `jobCPU`/`jobMemory`; macOS: one) and runs in-process
+  through Orchard exec, with the same exit codes as before (124 timeout, 125 lost, 143 canceled; a
+  job a draining VM refuses is retried on another VM). Job output goes to one file per job on the
+  control plane (`~/.local/state/grove/logs/<id>.log`, 0600), served by the same logs API with
+  follow, and expires with the job's artifacts (15 min after success, 1 h otherwise;
+  `logsExpiredAt`). The HTTP API, MCP tools and CLI are unchanged, except: `/healthz` no longer has
+  a `nomad` field, `/fleet`'s `nodes` is always empty, a job's `placement` no longer carries
+  `allocId`/`nodeId`, and submitting to a pool `grove serve` doesn't know is a 400.
+  - **Restarts:** restarting `grove serve` marks its running jobs `lost` (their VMs are recycled)
+    and keeps queued ones in order. Jobs Nomad was still running when you upgrade show as `lost`.
+  - **Private repos:** the armed clone token is resolved when a job starts and used only by the
+    clone on the control plane; it never enters the VM, the job's env, its log or the history.
+  - **Sealed only:** `network: shared` (or no `network:`) in `fleet.yaml` now means `isolated`, with
+    a warning for an explicit `shared`; `allowDockerSocket` is switched off with a warning. The
+    reconciler recreates any VM that isn't sealed. Worker Macs need Softnet able to become root:
+    `grove setup` / `grove install --role worker` now install it by default (`--softnet` defaults
+    on). Shared-pool startup scripts (Nomad meta and ACL tokens, `tailscale up` with an auth key)
+    and the per-VM Nomad node tokens are removed.
+  - **Install:** the control plane no longer installs Nomad. Re-running `grove install --role
+    control-plane` runs `legacy-nomad:retire` (stops and removes the Nomad LaunchAgent / systemd
+    unit, leaves `~/.config/grove/nomad` for you to delete) and drops `nomad.url`, `nomad.token`
+    and `tailscale.authKey` from `config.yaml`; until then `grove serve` ignores them with a
+    warning, and `grove config set` refuses them. `grove install --nomad` is a deprecated no-op.
+    `grove doctor` no longer checks Nomad.
+  - **Images:** the macOS and Linux worker images no longer install Nomad or Tailscale; images
+    built by older releases keep working (the startup script keeps both switched off).
+  - Removed: `internal/nomad`, `nomad/jobs`, `grove sandbox run`, `make images-nomad` and the
+    patched Nomad build, and the `github.com/hashicorp/nomad` dependency. See docs/OPERATIONS.md
+    "Upgrading from a Nomad-based grove".
+
 - **MinIO is gone: build artifacts are kept in a plain directory on the control plane**
   (`artifacts.dir` in `config.yaml`, default `~/.local/state/grove/artifacts`, next to `jobs.json`).
   Only the control plane ever read or wrote artifacts, so there is no longer an artifact service,

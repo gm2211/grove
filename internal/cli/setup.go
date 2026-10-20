@@ -94,7 +94,7 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	opts := install.Options{
 		Role: install.RoleWorker, Controller: result.ControllerURL, ServerURL: result.ServerURL,
 		Token: result.BootstrapToken, RegistryUser: setupRegistryUser,
-		RegistryToken: os.Getenv("GROVE_REGISTRY_TOKEN"),
+		RegistryToken: os.Getenv("GROVE_REGISTRY_TOKEN"), Softnet: true,
 	}
 	if err := applyInstall(cmd, opts, false, false); err != nil {
 		return err
@@ -132,10 +132,9 @@ func probeGrove(ctx context.Context, base string) bool {
 	var body struct {
 		Version string `json:"version"`
 		Orchard string `json:"orchard"`
-		Nomad   string `json:"nomad"`
 	}
 	err = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&body)
-	return err == nil && (body.Orchard != "" || body.Nomad != "")
+	return err == nil && body.Orchard != ""
 }
 
 // discoverGrove probes every online tailnet peer (and this machine) on :6130 and returns all that

@@ -331,6 +331,8 @@ func TestPlan_UpToDate_Empty(t *testing.T) {
 		StartupScript:   desired.StartupScript,
 		ShutdownScript:  desired.ShutdownScript,
 		ShutdownTimeout: desired.ShutdownTimeout,
+		Softnet:         desired.Softnet,
+		SoftnetBlock:    desired.SoftnetBlock,
 		Labels:          map[string]string{LabelWorkerPin: "mac1"},
 	}
 
@@ -371,6 +373,8 @@ func TestPlan_TTLChangeAlone_IsDrift(t *testing.T) {
 		StartupScript:   desired.StartupScript,
 		ShutdownScript:  desired.ShutdownScript,
 		ShutdownTimeout: desired.ShutdownTimeout,
+		Softnet:         desired.Softnet,
+		SoftnetBlock:    desired.SoftnetBlock,
 		TTL:             time.Hour, // stale — desired is 2h
 		Labels:          map[string]string{LabelWorkerPin: "mac1"},
 	}
@@ -410,6 +414,8 @@ func TestPlan_UpToDate_TTLMatches_Empty(t *testing.T) {
 		StartupScript:   desired.StartupScript,
 		ShutdownScript:  desired.ShutdownScript,
 		ShutdownTimeout: desired.ShutdownTimeout,
+		Softnet:         desired.Softnet,
+		SoftnetBlock:    desired.SoftnetBlock,
 		TTL:             desired.TTL,
 		Labels:          map[string]string{LabelWorkerPin: "mac1"},
 	}
@@ -524,6 +530,8 @@ func TestSpecDrifted_FieldByField(t *testing.T) {
 				StartupScript:   base.StartupScript,
 				ShutdownScript:  base.ShutdownScript,
 				ShutdownTimeout: base.ShutdownTimeout,
+				Softnet:         base.Softnet,
+				SoftnetBlock:    base.SoftnetBlock,
 				TTL:             base.TTL,
 			}
 			existing = c.mutate(existing)

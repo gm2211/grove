@@ -14,7 +14,7 @@ modes that come up on real Macs.
 - Go 1.21+ only if you expect `grove install` to fall back to building the Orchard fork from
   source (it tries a prebuilt release asset first).
 
-grove itself installs everything else (Homebrew, Tart, Nomad, Orchard) — including trusting
+grove itself installs everything else (Homebrew, Tart, Softnet, Orchard) — including trusting
 the third-party Homebrew taps those come from, which recent Homebrew otherwise refuses to load from
 (see [Failure modes](#failure-modes)).
 
@@ -46,11 +46,10 @@ match; a mismatch deletes the download and fails the step.
 
 | What | Pinned version | Where |
 |---|---|---|
-| Nomad (Linux control plane) | 2.0.7 | `releases.hashicorp.com` zip |
 | Homebrew installer (worker, when `brew` is missing) | `Homebrew/install@35da6871c4be` | `raw.githubusercontent.com` |
 
-On macOS, Nomad still comes from its Homebrew tap (`hashicorp/tap`); Homebrew verifies the
-formula's own pinned sha256. The Homebrew installer, once verified, clones
+Tart and Softnet come from their Homebrew taps; Homebrew verifies each formula's own pinned
+sha256. The Homebrew installer, once verified, clones
 Homebrew itself from git as it always does. Bumping a pin means changing the version and every
 per-platform hash together — the file's header says where each upstream digest comes from.
 
@@ -93,7 +92,10 @@ grove setup
   identity. The LaunchAgent is loaded automatically. When the worker first connects to a Tart VM
   on macOS 15+, approve the one-time **Local Network** alert for **Grove Orchard Worker**. That
   approval belongs to this user and worker app, and covers later worker restarts and VMs.
-- The remaining **privileged checklist** contains only `sudo pmset` to prevent worker sleep. Grove
+- Every grove VM is sealed on Softnet, so setup also installs Softnet and prints its one-time
+  root step (an admin password, once per Mac; redo it after `brew upgrade softnet`).
+- The remaining **privileged checklist** contains `sudo pmset` to prevent worker sleep and that
+  Softnet step. Grove
   does not add system-wide private-network allowlists and does not run Orchard or a companion as
   root.
 
@@ -130,15 +132,16 @@ web UI. A worker that can't authenticate to a private registry fails to pull the
 grove install --role control-plane
 ```
 
-Renders and starts Orchard controller, Nomad server and `grove serve`, all supervised (launchd on
-macOS, `systemd --user` on Linux), plus `~/.config/grove/config.yaml` and a starter `fleet.yaml`.
-No privileged steps — everything here runs as your own user.
+Renders and starts the Orchard controller and `grove serve`, both supervised (launchd on macOS,
+`systemd --user` on Linux), plus `~/.config/grove/config.yaml` and a starter `fleet.yaml`. No
+privileged steps — everything here runs as your own user. There is no separate job scheduler:
+`grove serve` queues jobs per pool and runs them in the sealed VMs itself, keeping the job history
+(`jobs.json`), each job's log (`logs/`) and the artifacts under `~/.local/state/grove`.
 
 Build artifacts are kept in a plain directory on this machine, `~/.local/state/grove/artifacts`
 (0700, next to the job history in `jobs.json`), recorded in `config.yaml` as `artifacts.dir`. There
 is no artifact service, port or credential: only the control plane reads and writes it (`grove
-serve` serves and expires artifacts, `grove sandbox run` stores the ones it copies out of sealed
-VMs). To keep them elsewhere, `grove config set artifacts.dir /path` and restart `grove serve`.
+serve` stores the ones it copies out of sealed VMs, serves them and expires them). To keep them elsewhere, `grove config set artifacts.dir /path` and restart `grove serve`.
 
 Upgrading from a release that ran MinIO: re-running `grove install --role control-plane` stops and
 removes the `com.grove.minio` LaunchAgent / `grove-minio` systemd unit, drops the old
@@ -146,6 +149,14 @@ removes the `com.grove.minio` LaunchAgent / `grove-minio` systemd unit, drops th
 `config.yaml` still loads before that; `grove serve` logs that it ignores them) and sets
 `artifacts.dir`. It leaves `~/.config/grove/minio` (MinIO's data and root credential) for you to
 delete — artifacts there are past their retention anyway; see docs/OPERATIONS.md.
+
+Upgrading from a release that ran Nomad: re-running `grove install --role control-plane` runs a
+`legacy-nomad:retire` step that stops and removes the `com.grove.nomad` LaunchAgent /
+`grove-nomad` systemd unit, and drops `nomad.url`, `nomad.token` and `tailscale.authKey` from
+`config.yaml` (until then `grove serve` loads it and logs that it ignores them). It leaves
+`~/.config/grove/nomad` (Nomad's config and data) for you to delete. Jobs that were still running
+under Nomad when you upgraded show as `lost`. Worker VMs are recreated sealed by the reconciler;
+see docs/OPERATIONS.md "Upgrading from a Nomad-based grove".
 
 ### Client (your laptop, or any machine that just talks to the fleet)
 
@@ -161,13 +172,13 @@ manually provisioned environments.
 |---|---|
 | `--role` | `worker` \| `control-plane` \| `client` (required) |
 | `--controller` | Orchard controller URL |
-| `--nomad` | Nomad HTTP API URL |
+| `--nomad` | deprecated, ignored: grove no longer uses Nomad |
 | `--server` | grove server URL |
 | `--token` | bootstrap/server token (meaning depends on `--role`) |
 | `--registry` | container registry a worker authenticates to (worker role; default `ghcr.io`) |
 | `--registry-user` | registry username for `tart login` (worker role) |
 | `--registry-token` | registry password/PAT for `tart login` (worker role); also read from `$GROVE_REGISTRY_TOKEN` |
-| `--softnet` | also install Softnet and print its one-time root step (worker role; only for Macs that run `network: isolated` pools, see [OPERATIONS.md](OPERATIONS.md#isolating-a-pools-network)) |
+| `--softnet` | install Softnet and print its one-time root step (worker role; default on, since every pool is sealed — see [OPERATIONS.md](OPERATIONS.md#sealed-pools)) |
 | `--yes` | apply privileged steps too, **only takes effect when also running as root** |
 | `--dry-run` | print the whole plan, change nothing |
 
@@ -183,10 +194,10 @@ grove install --role worker --controller https://... --dry-run
 grove doctor
 ```
 
-Prints a ✓/✗ table: Tailscale up, Orchard controller reachable, Nomad reachable, grove server
+Prints a ✓/✗ table: Tailscale up, Orchard controller reachable, grove server
 `/api/v1/healthz`, launchd/systemd units present, Tart installed, macOS VM slot usage (max 2 per
 Apple's Virtualization.framework), disk free under `~/.tart`, and — for any third-party Homebrew tap
-that's actually tapped on this machine (`openai/tools`, `cirruslabs/cli`, `hashicorp/tap`) —
+that's actually tapped on this machine (`openai/tools`, `cirruslabs/cli`) —
 whether it's trusted, with the exact `brew trust <tap>` remediation if not. Non-
 zero exit if anything's red.
 
@@ -243,12 +254,11 @@ ghcr.io` (see "Registry access for private worker images" above), doctor also wa
   Run `brew trust --formula openai/tools/softnet` or `brew trust openai/tools` to trust it.
   ```
 
-  `grove install` handles this itself: before installing from `openai/tools` (Tart; falls back to
-  `cirruslabs/cli` if that tap doesn't have it) or `hashicorp/tap` (Nomad, control-plane role
-  only), it runs `brew tap <tap>` (if not already tapped)
+  `grove install` handles this itself: before installing from `openai/tools` (Tart and Softnet; falls
+  back to `cirruslabs/cli` if that tap doesn't have them), it runs `brew tap <tap>` (if not already tapped)
   then `brew trust <tap>`, printing why before it does. If you still hit this error — e.g. you ran
   `brew install` yourself outside of `grove install` — the fix is the command Homebrew already
-  printed: `brew trust openai/tools` (or `hashicorp/tap`, matching whichever tap
+  printed: `brew trust openai/tools` (or `cirruslabs/cli`, matching whichever tap
   the error names). `grove doctor` also reports any required tap that's tapped but not trusted,
   with this exact remediation command. On a Homebrew old enough to not have `brew trust` at all,
   grove treats that as nothing to do — there's no trust gate to satisfy.

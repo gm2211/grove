@@ -8,21 +8,18 @@ import (
 	"github.com/gm2211/grove/internal/dispatch"
 )
 
-func newTestServer(oc *fakeOrchard, nc *fakeNomad, ds *fakeDispatch, opts Options) *Server {
+func newTestServer(oc *fakeOrchard, ds *fakeDispatch, opts Options) *Server {
 	if oc == nil {
 		oc = &fakeOrchard{}
-	}
-	if nc == nil {
-		nc = &fakeNomad{}
 	}
 	if ds == nil {
 		ds = &fakeDispatch{jobs: map[string]*dispatch.Job{}}
 	}
-	return New(oc, nc, ds, nil, opts)
+	return New(oc, ds, nil, opts)
 }
 
 func TestAuth_TokenRequired(t *testing.T) {
-	srv := newTestServer(nil, nil, nil, Options{Token: "secret"})
+	srv := newTestServer(nil, nil, Options{Token: "secret"})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -32,7 +29,7 @@ func TestAuth_TokenRequired(t *testing.T) {
 }
 
 func TestAuth_WrongToken(t *testing.T) {
-	srv := newTestServer(nil, nil, nil, Options{Token: "secret"})
+	srv := newTestServer(nil, nil, Options{Token: "secret"})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs", nil)
 	req.Header.Set("Authorization", "Bearer wrong")
 	rec := httptest.NewRecorder()
@@ -43,7 +40,7 @@ func TestAuth_WrongToken(t *testing.T) {
 }
 
 func TestAuth_CorrectToken(t *testing.T) {
-	srv := newTestServer(nil, nil, nil, Options{Token: "secret"})
+	srv := newTestServer(nil, nil, Options{Token: "secret"})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
@@ -66,7 +63,7 @@ func TestAuth_DeviceScopes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := newTestServer(nil, nil, nil, Options{Token: "operator", AccessStore: store})
+	srv := newTestServer(nil, nil, Options{Token: "operator", AccessStore: store})
 
 	request := func(method, path, token string) int {
 		req := httptest.NewRequest(method, path, nil)
@@ -90,7 +87,7 @@ func TestAuth_DeviceScopes(t *testing.T) {
 }
 
 func TestAuth_NoTokenConfiguredAllowsAll(t *testing.T) {
-	srv := newTestServer(nil, nil, nil, Options{})
+	srv := newTestServer(nil, nil, Options{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -100,7 +97,7 @@ func TestAuth_NoTokenConfiguredAllowsAll(t *testing.T) {
 }
 
 func TestAuth_HealthzBypassesAuth(t *testing.T) {
-	srv := newTestServer(nil, nil, nil, Options{Token: "secret"})
+	srv := newTestServer(nil, nil, Options{Token: "secret"})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/healthz", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -110,7 +107,7 @@ func TestAuth_HealthzBypassesAuth(t *testing.T) {
 }
 
 func TestCORS_SameOriginReflected(t *testing.T) {
-	srv := newTestServer(nil, nil, nil, Options{})
+	srv := newTestServer(nil, nil, Options{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs", nil)
 	req.Host = "grove.example.com"
 	req.Header.Set("Origin", "http://grove.example.com")
@@ -122,7 +119,7 @@ func TestCORS_SameOriginReflected(t *testing.T) {
 }
 
 func TestCORS_CrossOriginNotReflected(t *testing.T) {
-	srv := newTestServer(nil, nil, nil, Options{})
+	srv := newTestServer(nil, nil, Options{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs", nil)
 	req.Host = "grove.example.com"
 	req.Header.Set("Origin", "http://evil.example.com")
@@ -134,7 +131,7 @@ func TestCORS_CrossOriginNotReflected(t *testing.T) {
 }
 
 func TestUIFallback_MountedAtRoot(t *testing.T) {
-	srv := newTestServer(nil, nil, nil, Options{})
+	srv := newTestServer(nil, nil, Options{})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)

@@ -28,9 +28,6 @@ func scriptWorkerEnrollmentToken(r *FakeRunner, home string) {
 	orchard := filepath.Join(home, ".local", "bin", "orchard")
 	r.Script(orchard+" get service-account grove/token", FakeResult{Stdout: "grove-account-secret\n"})
 	r.Script(orchard+" get service-account grove-enroller/token", FakeResult{Stdout: "enroller-account-secret\n"})
-	for _, host := range []string{"test-cp", "100.64.0.1"} {
-		r.Script("nomad acl bootstrap -address=http://"+host+":4646 -json", FakeResult{Stdout: `{"AccessorID":"acc","SecretID":"nomad-mgmt-secret"}`})
-	}
 }
 
 func TestControlPlaneOrchardHomePreservesExistingLayouts(t *testing.T) {
@@ -72,8 +69,10 @@ func TestControlPlanePlan_DarwinRendersConfigAndLaunchAgents(t *testing.T) {
 		t.Fatalf("RunPlan: %v", err)
 	}
 
-	if !r.CalledWith("brew install hashicorp/tap/nomad") {
-		t.Error("expected nomad to be installed via brew on darwin")
+	for _, c := range r.Calls {
+		if strings.Contains(c.String(), "nomad") || strings.Contains(c.String(), "hashicorp") {
+			t.Errorf("a fresh control plane must not touch Nomad: %s", c.String())
+		}
 	}
 
 	cfgDir := filepath.Join(home, ".config", "grove")
@@ -81,18 +80,20 @@ func TestControlPlanePlan_DarwinRendersConfigAndLaunchAgents(t *testing.T) {
 		"config.yaml",
 		"fleet.yaml",
 		filepath.Join("orchard-controller", "env"),
-		filepath.Join("nomad", "server.hcl"),
 	} {
 		if _, err := os.Stat(filepath.Join(cfgDir, rel)); err != nil {
 			t.Errorf("expected %s to be rendered: %v", rel, err)
 		}
 	}
 
-	for _, label := range []string{"orchard-controller", "nomad", "server"} {
+	for _, label := range []string{"orchard-controller", "server"} {
 		p := filepath.Join(home, "Library", "LaunchAgents", "com.grove."+label+".plist")
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("expected launch agent for %s: %v", label, err)
 		}
+	}
+	if _, err := os.Stat(filepath.Join(cfgDir, "nomad")); !os.IsNotExist(err) {
+		t.Errorf("a fresh control plane must not get a Nomad config dir (err=%v)", err)
 	}
 
 	cfg, err := config.LoadFrom(filepath.Join(cfgDir, "config.yaml"))
@@ -163,83 +164,8 @@ func TestControlPlanePlan_DarwinRendersConfigAndLaunchAgents(t *testing.T) {
 	}
 }
 
-// TestControlPlanePlan_TrustsHashicorpTapBeforeInstalling covers the fix for the observed defect on
-// the control-plane role: recent Homebrew refuses `brew install hashicorp/tap/nomad` from an
-// untrusted tap, so it must be tapped+trusted, in order, before the install runs.
-func TestControlPlanePlan_TrustsHashicorpTapBeforeInstalling(t *testing.T) {
-	home := t.TempDir()
-	r := NewFakeRunner()
-	scriptWorkerEnrollmentToken(r, home)
-	scriptTailscaleUp(r)
-	scriptTapInfo(r, "hashicorp/tap", false, false)
-	opts := testControlPlaneOptions(home, "darwin")
-	scriptPinnedDownloads(r, opts)
-
-	steps, err := BuildPlan(r, opts, io.Discard)
-	if err != nil {
-		t.Fatalf("BuildPlan: %v", err)
-	}
-	if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
-		t.Fatalf("RunPlan: %v", err)
-	}
-
-	assertOrdered := func(tapCmd, trustCmd, installCmd string) {
-		t.Helper()
-		tapIdx, trustIdx, installIdx := -1, -1, -1
-		for i, c := range r.Calls {
-			switch c.String() {
-			case tapCmd:
-				tapIdx = i
-			case trustCmd:
-				trustIdx = i
-			case installCmd:
-				installIdx = i
-			}
-		}
-		if tapIdx == -1 || trustIdx == -1 || installIdx == -1 {
-			t.Fatalf("expected %q, %q and %q to all run, calls: %v", tapCmd, trustCmd, installCmd, r.Calls)
-		}
-		if !(tapIdx < trustIdx && trustIdx < installIdx) {
-			t.Errorf("expected tap(%d) < trust(%d) < install(%d) ordering for %q", tapIdx, trustIdx, installIdx, installCmd)
-		}
-	}
-	assertOrdered("brew tap hashicorp/tap", "brew trust hashicorp/tap", "brew install hashicorp/tap/nomad")
-}
-
-// TestControlPlanePlan_SkipsTrustWhenTapsAlreadyTrusted mirrors the worker-role idempotency test:
-// once tap-info reports the tap installed and trusted, neither `brew tap` nor `brew trust` should
-// run again, though the installs themselves still do (their own Check gates that).
-func TestControlPlanePlan_SkipsTrustWhenTapsAlreadyTrusted(t *testing.T) {
-	home := t.TempDir()
-	r := NewFakeRunner()
-	scriptWorkerEnrollmentToken(r, home)
-	scriptTailscaleUp(r)
-	scriptTapInfo(r, "hashicorp/tap", true, true)
-	opts := testControlPlaneOptions(home, "darwin")
-	scriptPinnedDownloads(r, opts)
-
-	steps, err := BuildPlan(r, opts, io.Discard)
-	if err != nil {
-		t.Fatalf("BuildPlan: %v", err)
-	}
-	if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
-		t.Fatalf("RunPlan: %v", err)
-	}
-
-	for _, forbidden := range []string{
-		"brew tap hashicorp/tap", "brew trust hashicorp/tap",
-	} {
-		if r.CalledWith(forbidden) {
-			t.Errorf("%q should not run when the tap is already installed and trusted", forbidden)
-		}
-	}
-	if !r.CalledWith("brew install hashicorp/tap/nomad") {
-		t.Error("expected nomad to still be installed")
-	}
-}
-
 // TestControlPlanePlan_LinuxDoesNotTrustTaps confirms the darwin-only trust steps aren't part of
-// the Linux plan at all (Linux has no Homebrew, and installs nomad via direct download).
+// the Linux plan at all (Linux has no Homebrew).
 func TestControlPlanePlan_LinuxDoesNotTrustTaps(t *testing.T) {
 	home := t.TempDir()
 	r := NewFakeRunner()
@@ -253,15 +179,17 @@ func TestControlPlanePlan_LinuxDoesNotTrustTaps(t *testing.T) {
 		t.Fatalf("BuildPlan: %v", err)
 	}
 	for _, s := range steps {
-		if s.Name == "brew-trust:hashicorp/tap" {
+		if strings.HasPrefix(s.Name, "brew-trust:") {
 			t.Errorf("did not expect a brew-trust step in the Linux plan, got %q", s.Name)
 		}
 	}
 	if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
 		t.Fatalf("RunPlan: %v", err)
 	}
-	if r.CalledWith("brew tap-info --json=v1 hashicorp/tap") {
-		t.Error("no brew command should run at all on Linux")
+	for _, c := range r.Calls {
+		if c.Name == "brew" {
+			t.Errorf("no brew command should run at all on Linux: %s", c.String())
+		}
 	}
 }
 
@@ -281,16 +209,14 @@ func TestControlPlanePlan_LinuxRendersSystemdUnits(t *testing.T) {
 		t.Fatalf("RunPlan: %v", err)
 	}
 
-	for _, label := range []string{"orchard-controller", "nomad", "server"} {
+	for _, label := range []string{"orchard-controller", "server"} {
 		p := filepath.Join(home, ".config", "systemd", "user", "grove-"+label+".service")
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("expected systemd unit for %s: %v", label, err)
 		}
 	}
-
-	// Linux has no brew: nomad comes from a direct download instead.
-	if r.CalledWith("brew install hashicorp/tap/nomad") {
-		t.Error("should not use brew on linux")
+	if _, err := os.Stat(filepath.Join(home, ".config", "systemd", "user", "grove-nomad.service")); !os.IsNotExist(err) {
+		t.Errorf("did not expect a Nomad unit (err=%v)", err)
 	}
 }
 
@@ -317,50 +243,96 @@ func TestControlPlanePlan_DryRunAppliesNothing(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, ".config", "grove", "config.yaml")); !os.IsNotExist(err) {
 		t.Errorf("expected no config.yaml written during --dry-run, stat err = %v", err)
 	}
-	if r.CalledWith("brew install hashicorp/tap/nomad") {
-		t.Error("no install command should run during --dry-run")
+	for _, c := range r.Calls {
+		if c.Name == "brew" && len(c.Args) > 0 && c.Args[0] == "install" {
+			t.Errorf("no install command should run during --dry-run: %s", c.String())
+		}
 	}
 }
 
-// TestControlPlanePlan_RestartsNomadOnlyWhenItsConfigChanges: re-running the install on a control
-// plane whose server.hcl predates the sandbox client must restart the running agent, or the new
-// config never takes effect; with the config already current, the agent is left alone.
-func TestControlPlanePlan_RestartsNomadOnlyWhenItsConfigChanges(t *testing.T) {
-	home := t.TempDir()
-	domain := "gui/" + strconv.Itoa(os.Getuid())
-	run := func() *FakeRunner {
-		t.Helper()
-		r := NewFakeRunner()
-		scriptWorkerEnrollmentToken(r, home)
-		scriptTailscaleUp(r)
-		opts := testControlPlaneOptions(home, "darwin")
-		scriptPinnedDownloads(r, opts)
-		steps, err := BuildPlan(r, opts, io.Discard)
-		if err != nil {
-			t.Fatalf("BuildPlan: %v", err)
-		}
-		if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
-			t.Fatalf("RunPlan: %v", err)
-		}
-		return r
-	}
-	restart := "launchctl bootout " + domain + "/com.grove.nomad"
+// TestControlPlanePlan_RetiresLegacyNomad covers re-running install over a control plane an older
+// grove set up with Nomad: the Nomad service is stopped and its service file removed, Nomad's
+// config and data are left for the operator, and config.yaml loses its nomad/tailscale keys
+// (tokens included) without the rest of the config changing.
+func TestControlPlanePlan_RetiresLegacyNomad(t *testing.T) {
+	for _, goos := range []string{"darwin", "linux"} {
+		t.Run(goos, func(t *testing.T) {
+			home := t.TempDir()
+			cfgDir := filepath.Join(home, ".config", "grove")
+			legacy := &config.Config{
+				Nomad:     config.Endpoint{URL: "http://100.64.0.1:4646", Token: "nomad-mgmt-secret"},
+				Tailscale: config.TailscaleConfig{AuthKey: "tskey-legacy-secret"},
+				Server:    config.ServerConfig{Token: "keep-me"},
+			}
+			if err := config.Save(filepath.Join(cfgDir, "config.yaml"), legacy); err != nil {
+				t.Fatal(err)
+			}
+			dataFile := filepath.Join(cfgDir, "nomad", "data", "server", "raft.db")
+			serviceFile := filepath.Join(home, "Library", "LaunchAgents", "com.grove.nomad.plist")
+			wantCall := "launchctl bootout gui/" + strconv.Itoa(os.Getuid()) + "/com.grove.nomad"
+			if goos == "linux" {
+				serviceFile = filepath.Join(home, ".config", "systemd", "user", "grove-nomad.service")
+				wantCall = "systemctl --user disable --now grove-nomad.service"
+			}
+			for _, p := range []string{dataFile, serviceFile} {
+				if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
 
-	run() // fresh install
-	if r := run(); r.CalledWith(restart) {
-		t.Error("a re-run with an unchanged Nomad config restarted Nomad")
-	}
+			r := NewFakeRunner()
+			scriptWorkerEnrollmentToken(r, home)
+			scriptTailscaleUp(r)
+			opts := testControlPlaneOptions(home, goos)
+			scriptPinnedDownloads(r, opts)
+			steps, err := BuildPlan(r, opts, io.Discard)
+			if err != nil {
+				t.Fatalf("BuildPlan: %v", err)
+			}
+			if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
+				t.Fatalf("RunPlan: %v", err)
+			}
+			if !r.CalledWith(wantCall) {
+				t.Errorf("expected %q, calls: %v", wantCall, r.Calls)
+			}
+			if _, err := os.Stat(serviceFile); !os.IsNotExist(err) {
+				t.Errorf("expected %s removed, err=%v", serviceFile, err)
+			}
+			if _, err := os.Stat(dataFile); err != nil {
+				t.Errorf("Nomad data must be left for the operator: %v", err)
+			}
+			raw, err := os.ReadFile(filepath.Join(cfgDir, "config.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, leaked := range []string{"nomad", "tailscale", "nomad-mgmt-secret", "tskey-legacy-secret"} {
+				if strings.Contains(string(raw), leaked) {
+					t.Errorf("legacy %q left in config.yaml:\n%s", leaked, raw)
+				}
+			}
+			cfg, err := config.LoadFrom(filepath.Join(cfgDir, "config.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Server.Token != "keep-me" {
+				t.Errorf("server.token = %q, want it kept", cfg.Server.Token)
+			}
 
-	conf := filepath.Join(home, ".config", "grove", "nomad", "server.hcl")
-	if err := os.WriteFile(conf, []byte("server { enabled = true }\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if r := run(); !r.CalledWith(restart) || !r.CalledWith("launchctl bootstrap "+domain+" "+filepath.Join(home, "Library", "LaunchAgents", "com.grove.nomad.plist")) {
-		t.Error("a re-run that rewrote the Nomad config did not restart Nomad")
-	}
-	data, _ := os.ReadFile(conf)
-	if !strings.Contains(string(data), `grove_sandbox_host = "true"`) {
-		t.Errorf("server.hcl = %s, want the sandbox client", data)
+			// A second run finds nothing left to retire.
+			r2 := NewFakeRunner()
+			scriptWorkerEnrollmentToken(r2, home)
+			scriptTailscaleUp(r2)
+			steps, _ = BuildPlan(r2, opts, io.Discard)
+			if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
+				t.Fatalf("second RunPlan: %v", err)
+			}
+			if r2.CalledWith(wantCall) {
+				t.Error("legacy-nomad:retire re-ran with no Nomad service left")
+			}
+		})
 	}
 }
 
