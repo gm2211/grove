@@ -7,7 +7,6 @@ import (
 
 	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/fleet"
-	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
 )
 
@@ -18,10 +17,10 @@ type Capacity struct {
 	VMSlots   int    `json:"vmSlots,omitempty"`
 }
 
-// FleetEntry is one normalised row of GET /fleet, whichever of the three sources it came from.
+// FleetEntry is one normalised row of GET /fleet, a worker or a VM.
 type FleetEntry struct {
 	Name string `json:"name"`
-	Kind string `json:"kind"` // worker | vm | node
+	Kind string `json:"kind"` // worker | vm
 	Host string `json:"host,omitempty"`
 	// Pool is set for vm entries: which fleet.yaml pool the VM belongs to, derived from its name
 	// (orchard.VM no longer carries a usable "pool" label — see internal/fleet.PoolAndHost and
@@ -39,8 +38,10 @@ type FleetEntry struct {
 
 // FleetResponse is the body of GET /fleet.
 type FleetResponse struct {
-	Workers   []FleetEntry          `json:"workers"`
-	VMs       []FleetEntry          `json:"vms"`
+	Workers []FleetEntry `json:"workers"`
+	VMs     []FleetEntry `json:"vms"`
+	// Deprecated: Nodes listed Nomad nodes. grove no longer uses Nomad; it is always empty, and
+	// kept so clients reading it don't break.
 	Nodes     []FleetEntry          `json:"nodes"`
 	FetchedAt time.Time             `json:"fetchedAt"`
 	Totals    FleetTotals           `json:"totals"`
@@ -53,28 +54,27 @@ type FleetTotals struct {
 	WorkersOnline   int `json:"workersOnline"`
 	WorkersCordoned int `json:"workersCordoned"`
 	VMsRunning      int `json:"vmsRunning"`
-	NodesReady      int `json:"nodesReady"`
-	NodesDraining   int `json:"nodesDraining"`
-	JobsRunning     int `json:"jobsRunning"`
-	JobsPending     int `json:"jobsPending"`
+	// Deprecated: NodesReady and NodesDraining counted Nomad nodes; always 0.
+	NodesReady    int `json:"nodesReady"`
+	NodesDraining int `json:"nodesDraining"`
+	JobsRunning   int `json:"jobsRunning"`
+	JobsPending   int `json:"jobsPending"`
 }
 
 func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	var (
-		workers          []orchard.Worker
-		vms              []orchard.VM
-		nodes            []nomad.Node
-		jobs             []dispatch.Job
-		wErr, vErr, nErr error
-		jErr             error
+		workers    []orchard.Worker
+		vms        []orchard.VM
+		jobs       []dispatch.Job
+		wErr, vErr error
+		jErr       error
 	)
 	var wg sync.WaitGroup
-	wg.Add(4)
+	wg.Add(3)
 	go func() { defer wg.Done(); workers, wErr = s.orchard.ListWorkers(ctx) }()
 	go func() { defer wg.Done(); vms, vErr = s.orchard.ListVMs(ctx) }()
-	go func() { defer wg.Done(); nodes, nErr = s.nomad.ListNodes(ctx) }()
 	go func() { defer wg.Done(); jobs, jErr = s.dispatch.List(ctx) }()
 	wg.Wait()
 
@@ -86,12 +86,8 @@ func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadGateway, vErr)
 		return
 	}
-	if nErr != nil {
-		s.writeError(w, http.StatusBadGateway, nErr)
-		return
-	}
 	if jErr != nil {
-		// Jobs are supplementary to /fleet's core payload (workers/vms/nodes) — don't fail the
+		// Jobs are supplementary to /fleet's core payload (workers/vms) — don't fail the
 		// whole response over it, just leave the jobs-derived totals at zero.
 		s.log.Warn("fleet: listing jobs for totals failed", "err", jErr)
 		jobs = nil
@@ -107,16 +103,13 @@ func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
 	resp := FleetResponse{
 		Workers: make([]FleetEntry, 0, len(workers)),
 		VMs:     make([]FleetEntry, 0, len(vms)),
-		Nodes:   make([]FleetEntry, 0, len(nodes)),
+		Nodes:   []FleetEntry{},
 	}
 	for _, wrk := range workers {
 		resp.Workers = append(resp.Workers, normalizeWorker(wrk, runningByWorker[wrk.Name]))
 	}
 	for _, v := range vms {
 		resp.VMs = append(resp.VMs, normalizeVM(v))
-	}
-	for _, n := range nodes {
-		resp.Nodes = append(resp.Nodes, normalizeNode(n))
 	}
 
 	resp.FetchedAt = time.Now().UTC()
@@ -131,14 +124,6 @@ func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
 	for _, v := range vms {
 		if v.Status == "running" {
 			resp.Totals.VMsRunning++
-		}
-	}
-	for _, n := range nodes {
-		if n.Status == "ready" {
-			resp.Totals.NodesReady++
-		}
-		if n.Drain {
-			resp.Totals.NodesDraining++
 		}
 	}
 	for _, j := range jobs {
@@ -190,8 +175,8 @@ func normalizeVM(v orchard.VM) FleetEntry {
 
 	pool, host := fleet.PoolAndHost(v)
 
-	// The guest startup script embeds secrets — an isolated pool's Tailscale auth key, a pool's
-	// own setup commands — and GET /fleet is read scope. Nothing outside the reconciler (which
+	// The guest startup script embeds a pool's own setup commands, which may hold secrets, and
+	// GET /fleet is read scope. Nothing outside the reconciler (which
 	// reads orchard.VM directly, never this API) needs either script, so drop both from Raw for
 	// every caller, operator included.
 	v.StartupScript = ""
@@ -211,23 +196,5 @@ func normalizeVM(v orchard.VM) FleetEntry {
 		Running: running,
 		Labels:  v.Labels,
 		Raw:     v,
-	}
-}
-
-func normalizeNode(n nomad.Node) FleetEntry {
-	return FleetEntry{
-		Name:     n.Name,
-		Kind:     "node",
-		Host:     n.Meta["host"],
-		Arch:     n.Attributes["cpu.arch"],
-		Online:   n.Status == "ready",
-		Cordoned: n.Drain || n.Eligibility == "ineligible",
-		Status:   n.Status,
-		Capacity: Capacity{
-			MemoryMiB: uint64(n.MemoryMiB),
-		},
-		Running: n.RunningAllocs,
-		Labels:  n.Meta,
-		Raw:     n,
 	}
 }

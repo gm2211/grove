@@ -12,7 +12,7 @@ var Version = "dev"
 // Root is the `grove` command.
 var Root = &cobra.Command{
 	Use:   "grove",
-	Short: "Your Macs as a private build/agent cloud: Tart VMs via Orchard, jobs via Nomad.",
+	Short: "Your Macs as a private build/agent cloud: jobs in sealed Tart VMs via Orchard.",
 	Long: `grove turns the Macs (and Linux boxes) you already own into a private cloud for CI builds,
 deploys and coding-agent sessions, reachable only over your Tailscale tailnet.
 

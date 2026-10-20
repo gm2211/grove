@@ -8,16 +8,15 @@ import (
 	"sync"
 )
 
-// record is what's persisted for one submitted job. It wraps the public Job (returned to API
-// callers) with the bookkeeping needed to talk to Nomad: the actual dispatched Nomad job id.
-//
-// Job.ID is the id grove hands out to callers. It's minted before Dispatch is called (so it can
-// be baked into the artifact_prefix meta the running task sees), so it is *not* literally Nomad's
-// own dispatched-job id — that value is kept separately as NomadJobID and used for all
-// ListAllocations/GetAllocation/StopJob calls.
+// record is what's persisted for one submitted job: the public Job (returned to API callers) plus
+// bookkeeping that never leaves the control plane.
 type record struct {
 	Job
-	NomadJobID string `json:"nomadJobId"`
+	// LegacyNomadJobID is set on history written while grove dispatched jobs to Nomad. A
+	// non-terminal job carrying one is marked lost at startup: nothing runs it any more.
+	LegacyNomadJobID string `json:"nomadJobId,omitempty"`
+	// TempFailRetries counts how often the job went back to its queue after ExitTempFail.
+	TempFailRetries int `json:"tempFailRetries,omitempty"`
 }
 
 // store is a thread-safe in-memory job store, persisted as JSON so history survives restarts.
@@ -129,4 +128,55 @@ func (s *store) persistLocked() error {
 		return err
 	}
 	return os.Rename(tmp, s.path)
+}
+
+// queueEntry is what the queue spool keeps for a job that hasn't started yet: the request's real
+// env values, which the job history never holds (it keeps only the keys). With it a queued job
+// survives a `grove serve` restart; it is deleted as soon as the job starts or ends. Never the
+// private-repo credential, which is resolved only when the job starts.
+type queueEntry struct {
+	Env map[string]string `json:"env,omitempty"`
+}
+
+// spool is the on-disk queue: one 0600 file per queued job in a 0700 directory. A zero spool
+// (empty dir) keeps nothing, for a service with no persistent store.
+type spool struct{ dir string }
+
+func (q spool) path(id string) string { return filepath.Join(q.dir, id+".json") }
+
+func (q spool) put(id string, e queueEntry) error {
+	if q.dir == "" {
+		return nil
+	}
+	if err := os.MkdirAll(q.dir, 0o700); err != nil {
+		return err
+	}
+	data, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
+	tmp := q.path(id) + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, q.path(id))
+}
+
+// get returns id's entry and whether there is one.
+func (q spool) get(id string) (queueEntry, bool) {
+	var e queueEntry
+	if q.dir == "" {
+		return e, false
+	}
+	data, err := os.ReadFile(q.path(id))
+	if err != nil || json.Unmarshal(data, &e) != nil {
+		return e, false
+	}
+	return e, true
+}
+
+func (q spool) remove(id string) {
+	if q.dir != "" {
+		_ = os.Remove(q.path(id))
+	}
 }

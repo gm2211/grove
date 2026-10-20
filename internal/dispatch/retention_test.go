@@ -59,15 +59,11 @@ func TestExpireArtifacts(t *testing.T) {
 		"jobs/ok-late-upload/a":   now.Add(-1 * time.Minute),
 		"elsewhere/not-a-job.txt": now.Add(-48 * time.Hour),
 	}}
-	svc, err := New(&fakeNomad{}, Options{
+	s := newTestServiceWith(t, newFakeExec(), Options{
 		StorePath:         filepath.Join(t.TempDir(), "jobs.json"),
 		Artifacts:         store,
 		ArtifactRetention: config.ArtifactRetention{}, // defaults: 15m success, 1h failure
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := svc.(*service)
 	for _, r := range []record{
 		{Job: Job{ID: "ok-old", Status: StatusSuccess, FinishedAt: ago(20 * time.Minute), Artifacts: []Artifact{{Path: "a.txt"}}}},
 		{Job: Job{ID: "ok-new", Status: StatusSuccess, FinishedAt: ago(5 * time.Minute)}},
@@ -114,15 +110,11 @@ func TestExpireArtifactsCustomRetention(t *testing.T) {
 	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
 	finished := now.Add(-20 * time.Minute)
 	store := &storeFake{objects: map[string]time.Time{"jobs/j/a": finished}}
-	svc, err := New(&fakeNomad{}, Options{
+	s := newTestServiceWith(t, newFakeExec(), Options{
 		StorePath:         filepath.Join(t.TempDir(), "jobs.json"),
 		Artifacts:         store,
 		ArtifactRetention: config.ArtifactRetention{Success: time.Hour},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := svc.(*service)
 	if err := s.store.put(&record{Job: Job{ID: "j", Status: StatusSuccess, FinishedAt: &finished}}); err != nil {
 		t.Fatal(err)
 	}
@@ -133,14 +125,11 @@ func TestExpireArtifactsCustomRetention(t *testing.T) {
 }
 
 func TestExpireArtifactsWithoutDeleterIsNoop(t *testing.T) {
-	svc, err := New(&fakeNomad{}, Options{
+	s := newTestServiceWith(t, newFakeExec(), Options{
 		StorePath: filepath.Join(t.TempDir(), "jobs.json"),
 		Artifacts: &fakeArtifacts{},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	svc.(*service).expireArtifacts(context.Background(), time.Now())
+	s.expireArtifacts(context.Background(), time.Now())
 }
 
 // TestExpireArtifactsAgainstFSStore runs the same sweep against the real on-disk store: retention
@@ -170,14 +159,10 @@ func TestExpireArtifactsAgainstFSStore(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	svc, err := New(&fakeNomad{}, Options{
+	s := newTestServiceWith(t, newFakeExec(), Options{
 		StorePath: filepath.Join(t.TempDir(), "jobs.json"),
 		Artifacts: fsStore,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := svc.(*service)
 	for _, r := range []record{
 		{Job: Job{ID: "ok-old", Status: StatusSuccess, FinishedAt: ago(20 * time.Minute)}},
 		{Job: Job{ID: "ok-new", Status: StatusSuccess, FinishedAt: ago(5 * time.Minute)}},

@@ -18,7 +18,7 @@ func newGitAuthServer(t *testing.T, opts Options) (*Server, *gitauth.Store) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	opts.GitAuth = store
-	return newTestServer(nil, nil, nil, opts), store
+	return newTestServer(nil, nil, opts), store
 }
 
 func do(t *testing.T, srv *Server, method, path, body, token string) *httptest.ResponseRecorder {
@@ -143,7 +143,7 @@ func TestGitHubSourcing_RequiresOperatorScope(t *testing.T) {
 }
 
 func TestGitHubSourcing_UnavailableWithoutAStore(t *testing.T) {
-	srv := newTestServer(nil, nil, nil, Options{})
+	srv := newTestServer(nil, nil, Options{})
 	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
 		rec := do(t, srv, method, "/api/v1/github/sourcing", `{"token":"ghp_secret"}`, "")
 		if rec.Code != http.StatusServiceUnavailable {

@@ -23,7 +23,7 @@ func TestPostJobs_DispatchesAndReturnsID(t *testing.T) {
 		jobs:      map[string]*dispatch.Job{},
 		submitJob: &dispatch.Job{ID: "abc123", Status: dispatch.StatusPending},
 	}
-	srv := newTestServer(nil, nil, ds, Options{})
+	srv := newTestServer(nil, ds, Options{})
 
 	body := `{"kind":"shell","pool":"linux","script":"echo hi"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(body))
@@ -61,7 +61,7 @@ func TestEnrolledDeviceDispatchIsLimitedToBuildAndAgentWithoutSecrets(t *testing
 		t.Fatal(err)
 	}
 	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{}}
-	srv := newTestServer(nil, nil, ds, Options{Token: "operator", AccessStore: store})
+	srv := newTestServer(nil, ds, Options{Token: "operator", AccessStore: store})
 
 	submit := func(body string) int {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(body))
@@ -91,7 +91,7 @@ func TestPostJobs_IdempotentReplayReturns200(t *testing.T) {
 		submitJob: &dispatch.Job{ID: "abc123", Status: dispatch.StatusRunning},
 		created:   &notCreated,
 	}
-	srv := newTestServer(nil, nil, ds, Options{})
+	srv := newTestServer(nil, ds, Options{})
 
 	body := `{"kind":"shell","pool":"linux","script":"echo hi","idempotencyKey":"orch:t1:r1"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(body))
@@ -114,7 +114,7 @@ func TestPostJobs_IdempotentReplayReturns200(t *testing.T) {
 
 func TestPostJobs_InvalidJSON(t *testing.T) {
 	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{}}
-	srv := newTestServer(nil, nil, ds, Options{})
+	srv := newTestServer(nil, ds, Options{})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader("not json"))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -125,7 +125,7 @@ func TestPostJobs_InvalidJSON(t *testing.T) {
 
 func TestPostJobs_SubmitValidationErrorIs400(t *testing.T) {
 	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{}, submitErr: dispatch.ErrNotFound}
-	srv := newTestServer(nil, nil, ds, Options{})
+	srv := newTestServer(nil, ds, Options{})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(`{"kind":"shell","pool":"linux","script":"x"}`))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -137,7 +137,7 @@ func TestPostJobs_SubmitValidationErrorIs400(t *testing.T) {
 func TestGetJob(t *testing.T) {
 	job := &dispatch.Job{ID: "job-1", Status: dispatch.StatusRunning}
 	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{"job-1": job}}
-	srv := newTestServer(nil, nil, ds, Options{})
+	srv := newTestServer(nil, ds, Options{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-1", nil)
 	rec := httptest.NewRecorder()
@@ -157,7 +157,7 @@ func TestGetJob(t *testing.T) {
 
 func TestGetJob_NotFound(t *testing.T) {
 	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{}}
-	srv := newTestServer(nil, nil, ds, Options{})
+	srv := newTestServer(nil, ds, Options{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/nope", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -171,7 +171,7 @@ func TestListJobs(t *testing.T) {
 		"a": {ID: "a", Status: dispatch.StatusPending},
 		"b": {ID: "b", Status: dispatch.StatusRunning},
 	}}
-	srv := newTestServer(nil, nil, ds, Options{})
+	srv := newTestServer(nil, ds, Options{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -189,7 +189,7 @@ func TestListJobs(t *testing.T) {
 
 func TestCancelJob(t *testing.T) {
 	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{"job-1": {ID: "job-1"}}}
-	srv := newTestServer(nil, nil, ds, Options{})
+	srv := newTestServer(nil, ds, Options{})
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/jobs/job-1", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -215,7 +215,7 @@ func TestDispatcherCanCancelOnlyOwnJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{"job-1": {ID: "job-1", Request: dispatch.JobRequest{SubmittedBy: owner.ID}}}}
-	srv := newTestServer(nil, nil, ds, Options{Token: "operator", AccessStore: store})
+	srv := newTestServer(nil, ds, Options{Token: "operator", AccessStore: store})
 
 	cancel := func(token string) int {
 		req := httptest.NewRequest(http.MethodDelete, "/api/v1/jobs/job-1", nil)
@@ -237,7 +237,7 @@ func TestDispatcherCanCancelOnlyOwnJob(t *testing.T) {
 
 func TestCancelJob_PostAlias(t *testing.T) {
 	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{"job-1": {ID: "job-1"}}}
-	srv := newTestServer(nil, nil, ds, Options{})
+	srv := newTestServer(nil, ds, Options{})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs/job-1/cancel", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -251,7 +251,7 @@ func TestCancelJob_PostAlias(t *testing.T) {
 
 func TestCancelJob_PostAlias_NotFound(t *testing.T) {
 	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{}}
-	srv := newTestServer(nil, nil, ds, Options{})
+	srv := newTestServer(nil, ds, Options{})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs/nope/cancel", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -262,7 +262,7 @@ func TestCancelJob_PostAlias_NotFound(t *testing.T) {
 
 func TestCancelJob_NotFound(t *testing.T) {
 	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{}}
-	srv := newTestServer(nil, nil, ds, Options{})
+	srv := newTestServer(nil, ds, Options{})
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/jobs/nope", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -278,7 +278,7 @@ func TestJobLogs_ChunkedByDefault(t *testing.T) {
 			return io.NopCloser(strings.NewReader("hello logs\n")), nil
 		},
 	}
-	srv := newTestServer(nil, nil, ds, Options{})
+	srv := newTestServer(nil, ds, Options{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-1/logs", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -300,7 +300,7 @@ func TestJobLogs_SSEWhenRequested(t *testing.T) {
 			return io.NopCloser(strings.NewReader("line-one\n")), nil
 		},
 	}
-	srv := newTestServer(nil, nil, ds, Options{})
+	srv := newTestServer(nil, ds, Options{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-1/logs", nil)
 	req.Header.Set("Accept", "text/event-stream")
 	rec := httptest.NewRecorder()
@@ -318,7 +318,7 @@ func TestJobLogs_SSEWhenRequested(t *testing.T) {
 
 func TestJobLogs_NotFound(t *testing.T) {
 	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{}}
-	srv := newTestServer(nil, nil, ds, Options{})
+	srv := newTestServer(nil, ds, Options{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/nope/logs", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -338,7 +338,7 @@ func TestJobLogs_NoAllocationYet_NonFollow_Returns200Pending(t *testing.T) {
 			return nil, dispatch.ErrNoAllocationYet
 		},
 	}
-	srv := newTestServer(nil, nil, ds, Options{})
+	srv := newTestServer(nil, ds, Options{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-1/logs", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -363,7 +363,7 @@ func TestJobLogs_NoAllocationYet_NDJSON_Returns200Pending(t *testing.T) {
 			return nil, dispatch.ErrNoAllocationYet
 		},
 	}
-	srv := newTestServer(nil, nil, ds, Options{})
+	srv := newTestServer(nil, ds, Options{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-1/logs", nil)
 	req.Header.Set("Accept", "application/x-ndjson")
 	rec := httptest.NewRecorder()
@@ -393,7 +393,7 @@ func TestJobLogs_Follow_BoundsContextWithWaitDeadline(t *testing.T) {
 			return io.NopCloser(strings.NewReader("")), nil
 		},
 	}
-	srv := newTestServer(nil, nil, ds, Options{})
+	srv := newTestServer(nil, ds, Options{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-1/logs?follow=1&wait=45s", nil)
 	rec := httptest.NewRecorder()
 	before := time.Now()
@@ -422,7 +422,7 @@ func TestJobLogs_NoFollow_ContextHasNoDeadline(t *testing.T) {
 			return io.NopCloser(strings.NewReader("")), nil
 		},
 	}
-	srv := newTestServer(nil, nil, ds, Options{})
+	srv := newTestServer(nil, ds, Options{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-1/logs", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -454,7 +454,7 @@ func TestJobLogs_NDJSON(t *testing.T) {
 			), nil
 		},
 	}
-	srv := newTestServer(nil, nil, ds, Options{})
+	srv := newTestServer(nil, ds, Options{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-1/logs", nil)
 	req.Header.Set("Accept", "application/x-ndjson")
 	rec := httptest.NewRecorder()
@@ -515,7 +515,7 @@ func TestJobLogs_NDJSON_SinceOffsetSkipsEarlierLines(t *testing.T) {
 			), nil
 		},
 	}
-	srv := newTestServer(nil, nil, ds, Options{})
+	srv := newTestServer(nil, ds, Options{})
 
 	// First, discover the offset of "line-two" from an unfiltered request.
 	req0 := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-1/logs", nil)
@@ -575,7 +575,7 @@ func TestGetArtifact_StreamsFromArtifactStore(t *testing.T) {
 			},
 		},
 	}
-	srv := New(&fakeOrchard{}, &fakeNomad{}, &fakeDispatch{jobs: map[string]*dispatch.Job{}}, fa, Options{})
+	srv := New(&fakeOrchard{}, &fakeDispatch{jobs: map[string]*dispatch.Job{}}, fa, Options{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-1/artifacts/out.bin", nil)
 	rec := httptest.NewRecorder()
@@ -610,7 +610,7 @@ func TestGetArtifact_FromFSStore(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(store.Dir(), "jobs", "job-1", "link")); err != nil {
 		t.Fatal(err)
 	}
-	srv := New(&fakeOrchard{}, &fakeNomad{}, &fakeDispatch{jobs: map[string]*dispatch.Job{}}, store, Options{})
+	srv := New(&fakeOrchard{}, &fakeDispatch{jobs: map[string]*dispatch.Job{}}, store, Options{})
 
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-1/artifacts/reports/cov.json", nil))
@@ -636,7 +636,7 @@ func TestGetArtifact_NotFound(t *testing.T) {
 		data []byte
 		obj  artifacts.Object
 	}{}}
-	srv := New(&fakeOrchard{}, &fakeNomad{}, &fakeDispatch{jobs: map[string]*dispatch.Job{}}, fa, Options{})
+	srv := New(&fakeOrchard{}, &fakeDispatch{jobs: map[string]*dispatch.Job{}}, fa, Options{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-1/artifacts/missing.bin", nil)
 	rec := httptest.NewRecorder()
@@ -648,7 +648,7 @@ func TestGetArtifact_NotFound(t *testing.T) {
 }
 
 func TestGetArtifact_NilClientYields404(t *testing.T) {
-	srv := newTestServer(nil, nil, nil, Options{})
+	srv := newTestServer(nil, nil, Options{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-1/artifacts/out.bin", nil)
 	rec := httptest.NewRecorder()
@@ -695,7 +695,7 @@ func jobReadFixture(t *testing.T) (srv *Server, ownerToken, otherToken string) {
 		"jobs/job-1/out.html": obj("jobs/job-1/out.html"),
 		"jobs/job-2/out.html": obj("jobs/job-2/out.html"),
 	}}
-	return New(&fakeOrchard{}, &fakeNomad{}, ds, fa, Options{Token: "operator", AccessStore: store}), ownerToken, otherToken
+	return New(&fakeOrchard{}, ds, fa, Options{Token: "operator", AccessStore: store}), ownerToken, otherToken
 }
 
 func getAs(srv *Server, token, path string) *httptest.ResponseRecorder {
@@ -816,7 +816,7 @@ func TestDispatchScopeCannotRunShellWithoutShellScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{}}
-	srv := newTestServer(nil, nil, ds, Options{Token: "operator", AccessStore: store})
+	srv := newTestServer(nil, ds, Options{Token: "operator", AccessStore: store})
 	submit := func(token, kind string) int {
 		body := `{"kind":"` + kind + `","pool":"linux","script":"id"}`
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(body))

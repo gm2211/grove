@@ -29,7 +29,7 @@ func (dockerBackend) create(ctx context.Context, j *job) int {
 		"--label", "grove.kind=" + j.req.Kind,
 		"--workdir", "/workspace", "--entrypoint", "/bin/bash"}
 	if j.req.CPU > 0 {
-		// The regular templates size jobs in Nomad MHz at 2000 MHz per core.
+		// Job CPU is in MHz at 2000 MHz per core.
 		args = append(args, "--cpus", strconv.FormatFloat(float64(j.req.CPU)/2000, 'f', 2, 64))
 	}
 	if j.req.Memory > 0 {

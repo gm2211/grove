@@ -8,7 +8,7 @@ import (
 
 func TestWorkerPauseResume(t *testing.T) {
 	oc := &fakeOrchard{}
-	srv := newTestServer(oc, nil, nil, Options{})
+	srv := newTestServer(oc, nil, Options{})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workers/mac1/pause", nil)
 	rec := httptest.NewRecorder()

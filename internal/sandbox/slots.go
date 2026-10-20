@@ -7,10 +7,11 @@ import (
 	"slices"
 )
 
-// Slots caps how many jobs run at once in each sealed VM. Nomad can't do it, since the VMs run no
-// Nomad client: every `grove sandbox run` on the control plane instead holds an exclusive lock on
-// one of a VM's slot files for as long as its job runs. The kernel drops a lock when its process
-// exits, however it exits, so a crashed runner never strands a slot.
+// Slots caps how many jobs run at once in each sealed VM: every Runner on the control plane holds
+// an exclusive lock on one of a VM's slot files for as long as its job runs. (flock locks belong
+// to the open file, so two jobs in the same `grove serve` process exclude each other too.) The
+// kernel drops a lock when its process exits, however it exits, so a crashed `grove serve` never
+// strands a slot.
 type Slots struct {
 	// Dir holds the lock files, one per VM and slot (<vm>.<n>.lock).
 	Dir string

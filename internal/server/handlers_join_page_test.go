@@ -21,7 +21,7 @@ func getPage(t *testing.T, srv *Server, path string) *httptest.ResponseRecorder 
 func TestJoinPageIsReadableWithoutACredential(t *testing.T) {
 	// A token IS configured: a Mac that has never met this grove still has to be able to read
 	// the page, because reading it is how it learns what to run to get a credential at all.
-	srv := newTestServer(nil, nil, nil, Options{Token: "operator-secret", ServerURL: "http://100.64.0.1:6130"})
+	srv := newTestServer(nil, nil, Options{Token: "operator-secret", ServerURL: "http://100.64.0.1:6130"})
 
 	page := getPage(t, srv, joinPagePath)
 	if page.Code != http.StatusOK {
@@ -55,7 +55,7 @@ func TestJoinPageIsReadableWithoutACredential(t *testing.T) {
 // transcription is exact: every dark module and no others. A QR that is one run off does not
 // degrade, it simply does not scan, and nothing else in the build would notice.
 func TestJoinQRDrawsExactlyTheEncodedBitmap(t *testing.T) {
-	srv := newTestServer(nil, nil, nil, Options{ServerURL: "http://100.64.0.1:6130"})
+	srv := newTestServer(nil, nil, Options{ServerURL: "http://100.64.0.1:6130"})
 	svg := getPage(t, srv, joinPagePath+"/qr.svg").Body.String()
 
 	expected, err := qrcode.New("http://100.64.0.1:6130"+joinPagePath, qrcode.Medium)
@@ -100,7 +100,7 @@ func TestJoinQRDrawsExactlyTheEncodedBitmap(t *testing.T) {
 // A control plane started without a --server-url still has to hand out an address that works,
 // and the only one it can be sure of is the one the reader already reached it on.
 func TestJoinPageFallsBackToTheHostTheReaderUsed(t *testing.T) {
-	srv := newTestServer(nil, nil, nil, Options{})
+	srv := newTestServer(nil, nil, Options{})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, joinPagePath, nil)
 	req.Host = "grove.tailnet.ts.net:6130"

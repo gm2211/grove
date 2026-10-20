@@ -113,14 +113,11 @@ func TestPoolConfigs_SealedMacOSPool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("poolConfigs: %v", err)
 	}
-	if len(pools) != 1 || !pools[0].Isolated || pools[0].Slots != 1 || pools[0].OS != "darwin" {
-		t.Fatalf("pools = %+v, want one isolated darwin pool with 1 slot", pools)
+	if len(pools) != 1 || pools[0].Slots != 1 || pools[0].OS != "darwin" {
+		t.Fatalf("pools = %+v, want one darwin pool with 1 slot", pools)
 	}
 	if got := sealedVMSlots(fleet.Pool{Name: "macos", Network: fleet.NetworkIsolated, CPU: 16, Memory: 65536}); got != 1 {
 		t.Errorf("a big sealed macOS VM gets %d slots, want 1", got)
-	}
-	if got := sealedVMSlots(fleet.Pool{Name: "macos", CPU: 16, Memory: 65536}); got != 0 {
-		t.Errorf("a shared macOS pool gets %d slots, want 0 (Nomad counts its jobs)", got)
 	}
 }
 
@@ -131,14 +128,14 @@ func TestPoolConfigs_SealedPoolSlots(t *testing.T) {
 		t.Fatalf("poolConfigs: %v", err)
 	}
 	// Default job sizing is 500 MHz / 1024 MiB: 16 by CPU, (8192-512)/1024 = 7 by memory.
-	if len(pools) != 1 || !pools[0].Isolated || pools[0].Slots != 7 || pools[0].OS != "linux" {
-		t.Fatalf("pools = %+v, want one isolated linux pool with 7 slots", pools)
+	if len(pools) != 1 || pools[0].Slots != 7 || pools[0].OS != "linux" {
+		t.Fatalf("pools = %+v, want one linux pool with 7 slots", pools)
 	}
 	if got := sealedVMSlots(fleet.Pool{Network: fleet.NetworkIsolated, CPU: 1, Memory: 256}); got != 1 {
 		t.Errorf("a tiny sealed VM gets %d slots, want at least 1", got)
 	}
-	if got := sealedVMSlots(fleet.Pool{CPU: 4, Memory: 8192}); got != 0 {
-		t.Errorf("a shared pool gets %d slots, want 0 (Nomad counts its jobs)", got)
+	if got := sealedVMSlots(fleet.Pool{CPU: 4, Memory: 8192}); got != 7 {
+		t.Errorf("a pool without network set gets %d slots, want 7: every pool is sealed", got)
 	}
 }
 

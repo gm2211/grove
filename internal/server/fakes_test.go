@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/gm2211/grove/internal/artifacts"
 	"github.com/gm2211/grove/internal/dispatch"
-	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
 )
 
@@ -112,66 +110,6 @@ func (f *fakeOrchard) Exec(ctx context.Context, vm string, command []string, opt
 }
 
 func (f *fakeOrchard) Ping(ctx context.Context) error { return f.pingErr }
-
-// fakeNomad is a minimal in-memory nomad.Client for server tests.
-type fakeNomad struct {
-	mu sync.Mutex
-
-	nodes []nomad.Node
-
-	nodesByID  map[string]nomad.Node
-	getNodeErr error
-
-	drainCalls []drainCall
-	drainErr   error
-
-	pingErr error
-}
-
-type drainCall struct {
-	nodeID   string
-	enable   bool
-	deadline time.Duration
-}
-
-func (f *fakeNomad) ListNodes(ctx context.Context) ([]nomad.Node, error) { return f.nodes, nil }
-
-func (f *fakeNomad) GetNode(ctx context.Context, id string) (*nomad.Node, error) {
-	if f.getNodeErr != nil {
-		return nil, f.getNodeErr
-	}
-	if n, ok := f.nodesByID[id]; ok {
-		cp := n
-		return &cp, nil
-	}
-	return nil, fmt.Errorf("fakeNomad: node %s not found", id)
-}
-
-func (f *fakeNomad) DrainNode(ctx context.Context, nodeID string, enable bool, deadline time.Duration) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.drainCalls = append(f.drainCalls, drainCall{nodeID: nodeID, enable: enable, deadline: deadline})
-	return f.drainErr
-}
-
-func (f *fakeNomad) Dispatch(ctx context.Context, parentJobID string, meta map[string]string, payload []byte) (*nomad.DispatchResult, error) {
-	return nil, nil
-}
-func (f *fakeNomad) ListAllocations(ctx context.Context, jobID string) ([]nomad.Allocation, error) {
-	return nil, nil
-}
-func (f *fakeNomad) GetAllocation(ctx context.Context, allocID string) (*nomad.Allocation, error) {
-	return nil, nil
-}
-func (f *fakeNomad) JobEvaluations(ctx context.Context, jobID string) ([]nomad.Evaluation, error) {
-	return nil, nil
-}
-func (f *fakeNomad) Logs(ctx context.Context, allocID, task, stream string, follow bool) (io.ReadCloser, error) {
-	return nil, nil
-}
-func (f *fakeNomad) StopJob(ctx context.Context, jobID string, purge bool) error { return nil }
-func (f *fakeNomad) RegisterJobFile(ctx context.Context, hcl string) error       { return nil }
-func (f *fakeNomad) Ping(ctx context.Context) error                              { return f.pingErr }
 
 // fakeDispatch is a minimal in-memory dispatch.Service for server tests.
 type fakeDispatch struct {

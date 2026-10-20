@@ -38,8 +38,7 @@ const (
 	macRunsDir = fleet.MacOSJobHome + "/runs"
 	// macControlDir holds grove's per-job control directories, root's alone.
 	macControlDir = "/private/var/grove-sandbox"
-	// macPath is the job's PATH: the same one the image's Nomad client gives a shared macOS
-	// pool's jobs (images/macos-worker/files/com.grove.nomad.plist).
+	// macPath is the job's PATH: Homebrew's directories, then the system's.
 	macPath = "/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin"
 	// macNoArtifacts is how the artifacts command says the job made none.
 	macNoArtifacts = "grove: no artifacts"
@@ -86,7 +85,7 @@ func asJobUser(script string) string {
 
 // create checks the VM isn't shutting down and has never had a job, then makes the job's fresh
 // control and run directories. A VM that already holds another job's control directory was left
-// behind by a runner that died before it could delete it (Nomad killed it, say): it is marked
+// behind by a runner that died before it could delete it (grove serve restarted under it, say): it is marked
 // draining and deleted here instead.
 func (macBackend) create(ctx context.Context, j *job) int {
 	c, r := controlDir(j), runDir(j)

@@ -36,9 +36,8 @@ func runScript(timeout time.Duration, ref string, checkout bool) string {
 }
 
 // runScriptAt is the job's entrypoint: for a job with a repository, the checkout of ref from the
-// .git the control plane fetched (exit 1 if that fails, as with the regular templates); then the
-// job's environment, then its script in the workspace under the same timeout the regular templates
-// apply (124 on expiry). Runner keeps its own timer too, for guests without timeout(1) (macOS).
+// .git the control plane fetched (exit 1 if that fails); then the job's environment, then its
+// script in the workspace under the job's timeout (124 on expiry). Runner keeps its own timer too, for guests without timeout(1) (macOS).
 func runScriptAt(p jobPaths, timeout time.Duration, ref string, checkout bool) string {
 	secs := int64(timeout / time.Second)
 	if secs < 1 {
@@ -71,7 +70,7 @@ exec bash -eo pipefail %[2]s/script.sh
 }
 
 // envScript renders the caller's environment as `export` lines, sorted so the bundle is
-// deterministic. Keys a shell can't export are skipped, as in the regular templates, and so are
+// deterministic. Keys a shell can't export are skipped, and so are
 // the clone credentials, which served the control plane's clone and never enter a sealed VM.
 func envScript(env map[string]string) (script string, dropped []string) {
 	keys := make([]string, 0, len(env))

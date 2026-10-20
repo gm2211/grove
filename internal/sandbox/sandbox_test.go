@@ -12,21 +12,6 @@ import (
 	"time"
 )
 
-func TestParsePayload(t *testing.T) {
-	token, script := ParsePayload(KindBuild, []byte("grove-payload/1\ntok\necho a\necho b\n"))
-	if token != "tok" || script != "echo a\necho b\n" {
-		t.Fatalf("build payload = %q, %q", token, script)
-	}
-	token, script = ParsePayload(KindAgent, []byte("grove-payload/1\n\nrun\n"))
-	if token != "" || script != "run\n" {
-		t.Fatalf("agent payload without token = %q, %q", token, script)
-	}
-	token, script = ParsePayload(KindShell, []byte("grove-payload/1\ntok\nx"))
-	if token != "" || script != "grove-payload/1\ntok\nx" {
-		t.Fatalf("a shell payload is all script: %q, %q", token, script)
-	}
-}
-
 func TestLogStream_DedupesReattachAndKeepsPartialLines(t *testing.T) {
 	var out bytes.Buffer
 	l := newLogStream(&out)

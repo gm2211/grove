@@ -132,10 +132,9 @@ func probeGrove(ctx context.Context, base string) bool {
 	var body struct {
 		Version string `json:"version"`
 		Orchard string `json:"orchard"`
-		Nomad   string `json:"nomad"`
 	}
 	err = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&body)
-	return err == nil && (body.Orchard != "" || body.Nomad != "")
+	return err == nil && body.Orchard != ""
 }
 
 // discoverGrove probes every online tailnet peer (and this machine) on :6130 and returns all that

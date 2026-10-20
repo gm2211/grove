@@ -7,12 +7,10 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"github.com/gm2211/grove/internal/artifacts"
 	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/gitauth"
-	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
 )
 
@@ -31,9 +29,6 @@ type Options struct {
 	GitAuth *gitauth.Store
 	// Logger receives structured request/lifecycle logs. Defaults to slog.Default().
 	Logger *slog.Logger
-	// RecyclePollInterval controls how often POST /vms/{name}/recycle polls Nomad while waiting
-	// for the drained node's allocations to reach zero. Defaults to 5s; tests shrink this.
-	RecyclePollInterval time.Duration
 	// Version is a caller-supplied build version string reported by GET /healthz. Empty is fine.
 	Version              string
 	ControllerURL        string
@@ -44,7 +39,6 @@ type Options struct {
 // Server implements http.Handler for grove's HTTP API + embedded UI.
 type Server struct {
 	orchard   orchard.Client
-	nomad     nomad.Client
 	dispatch  dispatch.Service
 	artifacts artifacts.Client
 	opts      Options
@@ -69,10 +63,10 @@ func (s *Server) FleetReconcile() *FleetReconcileStatus {
 	return s.fleetReconcile
 }
 
-// New builds a Server wired to the given Orchard/Nomad clients, dispatch service and artifact
-// store client. ac may be nil — GET /jobs/{id}/artifacts/{path} then returns 404, and
+// New builds a Server wired to the given Orchard client, dispatch service and artifact store
+// client. ac may be nil — GET /jobs/{id}/artifacts/{path} then returns 404, and
 // dispatch.Job.Artifacts is simply never populated (see dispatch.Options.Artifacts).
-func New(oc orchard.Client, nc nomad.Client, ds dispatch.Service, ac artifacts.Client, opts Options) *Server {
+func New(oc orchard.Client, ds dispatch.Service, ac artifacts.Client, opts Options) *Server {
 	log := opts.Logger
 	if log == nil {
 		log = slog.Default()
@@ -80,12 +74,8 @@ func New(oc orchard.Client, nc nomad.Client, ds dispatch.Service, ac artifacts.C
 	if opts.Token == "" && opts.AccessStore == nil {
 		log.Warn("grove server: no auth token configured — /api/v1 is UNAUTHENTICATED; set server.token in config.yaml")
 	}
-	if opts.RecyclePollInterval <= 0 {
-		opts.RecyclePollInterval = 5 * time.Second
-	}
 	s := &Server{
 		orchard:        oc,
-		nomad:          nc,
 		dispatch:       ds,
 		artifacts:      ac,
 		opts:           opts,

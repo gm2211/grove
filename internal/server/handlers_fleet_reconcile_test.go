@@ -13,7 +13,7 @@ import (
 )
 
 func TestHandleFleetReconcile_Disabled(t *testing.T) {
-	srv := newTestServer(nil, nil, nil, Options{})
+	srv := newTestServer(nil, nil, Options{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/fleet/reconcile", nil)
 	rec := httptest.NewRecorder()
@@ -35,7 +35,7 @@ func TestHandleFleetReconcile_Disabled(t *testing.T) {
 }
 
 func TestHandleFleetReconcile_ReportsLatestTick(t *testing.T) {
-	srv := newTestServer(nil, nil, nil, Options{})
+	srv := newTestServer(nil, nil, Options{})
 
 	srv.FleetReconcile().SetEnabled(true, 30*time.Second)
 	at := time.Now().UTC().Truncate(time.Second)
@@ -77,7 +77,7 @@ func TestHandleFleetReconcile_ReportsLatestTick(t *testing.T) {
 }
 
 func TestHandleFleetReconcile_ReportsLastError(t *testing.T) {
-	srv := newTestServer(nil, nil, nil, Options{})
+	srv := newTestServer(nil, nil, Options{})
 
 	srv.FleetReconcile().SetEnabled(true, 30*time.Second)
 	srv.FleetReconcile().Report(fleet.Plan{}, errors.New("read fleet.yaml: no such file"), time.Now())
@@ -97,7 +97,7 @@ func TestHandleFleetReconcile_ReportsLastError(t *testing.T) {
 
 func TestHandleFleet_IncludesReconcileSummary(t *testing.T) {
 	oc := &fakeOrchard{}
-	srv := newTestServer(oc, nil, nil, Options{})
+	srv := newTestServer(oc, nil, Options{})
 
 	at := time.Now().UTC().Truncate(time.Second)
 	srv.FleetReconcile().SetEnabled(true, 30*time.Second)

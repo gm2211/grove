@@ -25,7 +25,7 @@ func TestConfigSet_ReadsValueFromStdin(t *testing.T) {
 	path := t.TempDir() + "/config.yaml"
 	t.Setenv("GROVE_CONFIG", path)
 
-	configSetCmd.SetIn(strings.NewReader("tskey-auth-secret\n"))
+	configSetCmd.SetIn(strings.NewReader("op-token-secret\n"))
 	var out strings.Builder
 	configSetCmd.SetOut(&out)
 	t.Cleanup(func() {
@@ -33,10 +33,10 @@ func TestConfigSet_ReadsValueFromStdin(t *testing.T) {
 		configSetCmd.SetOut(nil)
 	})
 
-	if err := configSetCmd.RunE(configSetCmd, []string{"tailscale.authKey", "-"}); err != nil {
+	if err := configSetCmd.RunE(configSetCmd, []string{"server.token", "-"}); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out.String(), "tskey-auth-secret") {
+	if strings.Contains(out.String(), "op-token-secret") {
 		t.Fatalf("config set echoed the secret: %q", out.String())
 	}
 
@@ -44,8 +44,8 @@ func TestConfigSet_ReadsValueFromStdin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Tailscale.AuthKey != "tskey-auth-secret" {
-		t.Fatalf("Tailscale.AuthKey = %q, want the value read from stdin", cfg.Tailscale.AuthKey)
+	if cfg.Server.Token != "op-token-secret" {
+		t.Fatalf("Server.Token = %q, want the value read from stdin", cfg.Server.Token)
 	}
 }
 
@@ -64,6 +64,19 @@ func TestSetConfigKey_ArtifactsDirAndRetiredS3Keys(t *testing.T) {
 		}
 	}
 	if len(cfg.Artifacts.LegacyKeys()) != 0 {
+		t.Error("retired keys must not be written")
+	}
+}
+
+func TestSetConfigKey_RetiredNomadAndTailscaleKeys(t *testing.T) {
+	cfg := &config.Config{}
+	for _, key := range []string{"nomad.url", "nomad.token", "tailscale.authKey"} {
+		err := setConfigKey(cfg, key, "x")
+		if err == nil || !strings.Contains(err.Error(), "no longer used") {
+			t.Errorf("setConfigKey(%s) err = %v, want a retired-key error", key, err)
+		}
+	}
+	if len(cfg.LegacyKeys()) != 0 {
 		t.Error("retired keys must not be written")
 	}
 }

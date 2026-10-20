@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/gm2211/grove/internal/dispatch"
-	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
 )
 
@@ -30,12 +29,7 @@ func TestHandleFleet_Normalizes(t *testing.T) {
 			{Name: "linux-mac1-0", Worker: "mac1", Status: "running", CPU: 4, Memory: 8192, Labels: map[string]string{"org.cirruslabs.orchard.worker-name": "mac1"}},
 		},
 	}
-	nc := &fakeNomad{
-		nodes: []nomad.Node{
-			{ID: "node-1", Name: "linux-mac1-0", Status: "ready", Meta: map[string]string{"pool": "linux", "vm": "linux-mac1-0", "host": "mac1"}, MemoryMiB: 8192, RunningAllocs: 1},
-		},
-	}
-	srv := newTestServer(oc, nc, nil, Options{})
+	srv := newTestServer(oc, nil, Options{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/fleet", nil)
 	rec := httptest.NewRecorder()
@@ -72,11 +66,9 @@ func TestHandleFleet_Normalizes(t *testing.T) {
 		t.Errorf("vm pool = %q, want linux (derived from the VM name, not a label)", resp.VMs[0].Pool)
 	}
 
-	if len(resp.Nodes) != 1 || resp.Nodes[0].Kind != "node" || !resp.Nodes[0].Online {
-		t.Fatalf("nodes = %+v", resp.Nodes)
-	}
-	if resp.Nodes[0].Running != 1 {
-		t.Errorf("node running = %d, want 1", resp.Nodes[0].Running)
+	// No Nomad any more: nodes stays an empty list for clients that still read it.
+	if resp.Nodes == nil || len(resp.Nodes) != 0 || !strings.Contains(rec.Body.String(), `"nodes":[]`) {
+		t.Fatalf("nodes = %+v, want an empty list", resp.Nodes)
 	}
 }
 
@@ -92,20 +84,13 @@ func TestHandleFleet_Totals(t *testing.T) {
 			{Name: "linux-mac1-1", Worker: "mac1", Status: "stopped"},
 		},
 	}
-	nc := &fakeNomad{
-		nodes: []nomad.Node{
-			{ID: "node-1", Name: "n1", Status: "ready", Drain: false},
-			{ID: "node-2", Name: "n2", Status: "ready", Drain: true},
-			{ID: "node-3", Name: "n3", Status: "down", Drain: false},
-		},
-	}
 	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{
 		"j1": {ID: "j1", Status: dispatch.StatusRunning},
 		"j2": {ID: "j2", Status: dispatch.StatusRunning},
 		"j3": {ID: "j3", Status: dispatch.StatusPending},
 		"j4": {ID: "j4", Status: dispatch.StatusSuccess},
 	}}
-	srv := newTestServer(oc, nc, ds, Options{})
+	srv := newTestServer(oc, ds, Options{})
 
 	before := time.Now().UTC()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/fleet", nil)
@@ -129,8 +114,6 @@ func TestHandleFleet_Totals(t *testing.T) {
 		WorkersOnline:   2,
 		WorkersCordoned: 1,
 		VMsRunning:      1,
-		NodesReady:      2,
-		NodesDraining:   1,
 		JobsRunning:     2,
 		JobsPending:     1,
 	}
@@ -141,7 +124,7 @@ func TestHandleFleet_Totals(t *testing.T) {
 
 func TestHandleFleet_UpstreamErrorBecomesBadGateway(t *testing.T) {
 	oc := &fakeOrchard{listErr: errors.New("boom")}
-	srv := newTestServer(oc, nil, nil, Options{})
+	srv := newTestServer(oc, nil, Options{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/fleet", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -158,7 +141,7 @@ func TestHandleFleet_StripsVMScripts(t *testing.T) {
 		StartupScript:  "tailscale up --auth-key=tskey-client-SECRET",
 		ShutdownScript: "echo shutdown-SECRET",
 	}}}
-	srv := newTestServer(oc, nil, nil, Options{})
+	srv := newTestServer(oc, nil, Options{})
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/fleet", nil))
 	if rec.Code != http.StatusOK {

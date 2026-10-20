@@ -34,7 +34,7 @@ func TestJoinRequiresOperatorApprovalAndDeliversCredentialOnce(t *testing.T) {
 		t.Fatalf("credential %s missing", id)
 		return false
 	}
-	srv := newTestServer(oc, nil, nil, Options{Token: "operator-secret", AccessStore: access, ControllerURL: "http://100.64.0.1:6120", ServerURL: "http://100.64.0.1:6130", IssueWorkerBootstrap: func(context.Context, string) (string, error) { return "worker-bootstrap", nil }})
+	srv := newTestServer(oc, nil, Options{Token: "operator-secret", AccessStore: access, ControllerURL: "http://100.64.0.1:6120", ServerURL: "http://100.64.0.1:6130", IssueWorkerBootstrap: func(context.Context, string) (string, error) { return "worker-bootstrap", nil }})
 	create := httptest.NewRequest(http.MethodPost, "/api/v1/join/requests", bytes.NewBufferString(`{"name":"new-mac","tailnetIp":"192.0.2.1"}`))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, create)
@@ -109,7 +109,7 @@ func TestJoinRequiresOperatorApprovalAndDeliversCredentialOnce(t *testing.T) {
 }
 
 func TestJoinRejectsSpoofedTailnetIP(t *testing.T) {
-	srv := newTestServer(nil, nil, nil, Options{})
+	srv := newTestServer(nil, nil, Options{})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/join/requests", bytes.NewBufferString(`{"name":"fake","tailnetIp":"100.64.0.99"}`))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -119,7 +119,7 @@ func TestJoinRejectsSpoofedTailnetIP(t *testing.T) {
 }
 
 func TestJoinApprovalRequiresOperatorToken(t *testing.T) {
-	srv := newTestServer(nil, nil, nil, Options{Token: "operator-secret"})
+	srv := newTestServer(nil, nil, Options{Token: "operator-secret"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/join/approve/ABCDEFGH", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -133,7 +133,7 @@ func TestPendingJoinsAreOperatorOnlyAndClearOnApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := newTestServer(&fakeOrchard{}, nil, nil, Options{Token: "operator-secret", AccessStore: access, ControllerURL: "http://100.64.0.1:6120", ServerURL: "http://100.64.0.1:6130", IssueWorkerBootstrap: func(context.Context, string) (string, error) { return "worker-bootstrap", nil }})
+	srv := newTestServer(&fakeOrchard{}, nil, Options{Token: "operator-secret", AccessStore: access, ControllerURL: "http://100.64.0.1:6120", ServerURL: "http://100.64.0.1:6130", IssueWorkerBootstrap: func(context.Context, string) (string, error) { return "worker-bootstrap", nil }})
 
 	create := func(name, ip string) string {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/join/requests", bytes.NewBufferString(`{"name":"`+name+`","tailnetIp":"`+ip+`"}`))

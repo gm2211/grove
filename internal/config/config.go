@@ -21,16 +21,17 @@ import (
 type Config struct {
 	// Orchard controller.
 	Orchard Endpoint `yaml:"orchard"`
-	// Nomad server.
-	Nomad Endpoint `yaml:"nomad"`
+	// Deprecated: Nomad was the job scheduler before grove ran jobs itself. The key still parses,
+	// so an older config.yaml loads, but nothing reads it; see LegacyKeys.
+	Nomad Endpoint `yaml:"nomad,omitempty"`
 	// grove server (API + UI). Token is what clients (orchestrators, MCP, UI) present.
 	Server ServerConfig `yaml:"server"`
 	// Artifact store: a directory on the control plane's disk.
 	Artifacts ArtifactsConfig `yaml:"artifacts,omitempty"`
 	// Path to fleet.yaml. Relative paths resolve against the config file's directory.
 	Fleet string `yaml:"fleet"`
-	// Tailscale configures worker VMs to join the tailnet on boot (see fleet.BuildStartupScript).
-	// Additive: not required by any existing consumer of Config.
+	// Deprecated: Tailscale held the auth key shared-network worker VMs joined the tailnet with.
+	// Every pool is sealed now and no VM joins the tailnet; see LegacyKeys.
 	Tailscale  TailscaleConfig  `yaml:"tailscale,omitempty"`
 	Enrollment EnrollmentConfig `yaml:"enrollment,omitempty"`
 }
@@ -42,11 +43,33 @@ type EnrollmentConfig struct {
 	IssuerToken string `yaml:"issuerToken,omitempty"`
 }
 
+// Deprecated: see Config.Tailscale.
 type TailscaleConfig struct {
-	// AuthKey is an ephemeral, tagged Tailscale auth key used by shared-network worker VMs'
-	// StartupScript to join the tailnet (see ARCHITECTURE.md → "Recycling / hygiene"). VMs of an
-	// isolated pool (fleet.yaml network: isolated) never join the tailnet and never get it.
 	AuthKey string `yaml:"authKey,omitempty"`
+}
+
+// LegacyKeys names the deprecated top-level keys set in c ("nomad.url", "tailscale.authKey", …),
+// so callers can warn that they are ignored. Nil when there are none. See also
+// ArtifactsConfig.LegacyKeys.
+func (c Config) LegacyKeys() []string {
+	var keys []string
+	if c.Nomad.URL != "" {
+		keys = append(keys, "nomad.url")
+	}
+	if c.Nomad.Token != "" {
+		keys = append(keys, "nomad.token")
+	}
+	if c.Tailscale.AuthKey != "" {
+		keys = append(keys, "tailscale.authKey")
+	}
+	return keys
+}
+
+// ClearLegacy drops the deprecated top-level keys (including the old Nomad token and Tailscale
+// auth key) from c.
+func (c *Config) ClearLegacy() {
+	c.Nomad = Endpoint{}
+	c.Tailscale = TailscaleConfig{}
 }
 
 type Endpoint struct {
@@ -94,7 +117,7 @@ func ResolveOperatorToken(cfg *Config) (string, error) {
 }
 
 // ArtifactsConfig configures the control plane's artifact store, a plain directory that only
-// `grove serve` and `grove sandbox run` (both on the control plane) read and write.
+// `grove serve` on the control plane reads and writes.
 type ArtifactsConfig struct {
 	// Dir is the store's root directory. Empty means the default, $XDG_STATE_HOME/grove/artifacts
 	// (~/.local/state/grove/artifacts), next to the job history. A relative path resolves against

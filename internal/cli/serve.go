@@ -66,11 +66,9 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 	if err != nil {
 		return fmt.Errorf("orchard client: %w", err)
 	}
-	nc, err := wire.NewNomadClient(cfg.Nomad)
-	if err != nil {
-		return fmt.Errorf("nomad client: %w", err)
+	if legacy := cfg.LegacyKeys(); len(legacy) > 0 {
+		slog.Warn("serve: ignoring settings for Nomad and in-VM Tailscale, which grove no longer uses (re-run `grove install --role control-plane` to remove them)", "keys", legacy)
 	}
-
 	if legacy := cfg.Artifacts.LegacyKeys(); len(legacy) > 0 {
 		slog.Warn("serve: ignoring legacy S3/MinIO artifact settings; artifacts are kept on this machine's disk now (re-run `grove install --role control-plane` to remove them)", "keys", legacy)
 	}
@@ -86,9 +84,9 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 
 	pools, perr := poolConfigs(cfg)
 	if perr != nil {
-		slog.Warn("serve: could not determine pools for EnsureJobs; skipping job registration", "config", cfgPath, "err", perr)
+		slog.Warn("serve: could not read the pools from the fleet spec; every job will be refused", "config", cfgPath, "err", perr)
 	} else if len(pools) == 0 {
-		slog.Warn("serve: no pools found in fleet spec; no parameterized jobs registered", "fleet", cfg.Fleet)
+		slog.Warn("serve: no pools found in the fleet spec; every job will be refused", "fleet", cfg.Fleet)
 	}
 
 	// The private-repo credential store is shared by value-of-pointer between dispatch (which
@@ -100,22 +98,22 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 		return fmt.Errorf("private-repo credential store: %w", err)
 	}
 
-	ds, err := dispatch.New(nc, dispatch.Options{Artifacts: ac, ArtifactRetention: cfg.Artifacts.Retention, Pools: pools, RepoAuth: gitAuthStore})
+	// Jobs run inside this process: dispatch queues them per pool (persisted next to the job
+	// history, so a queued job survives a restart) and drives each one in a sealed VM of its pool
+	// through Orchard (internal/sandbox). A job that was running when this process last stopped is
+	// marked lost on startup and its VM recycled — see dispatch.New.
+	var uploader artifacts.Uploader
+	if ac != nil {
+		uploader, _ = ac.(artifacts.Uploader)
+	}
+	executor := &dispatch.SandboxExecutor{Orchard: oc, Uploader: uploader, SlotDir: sandboxSlotDir()}
+	ds, err := dispatch.New(executor, dispatch.Options{Artifacts: ac, ArtifactRetention: cfg.Artifacts.Retention, Pools: pools, RepoAuth: gitAuthStore})
 	if err != nil {
 		return fmt.Errorf("dispatch service: %w", err)
 	}
 
-	if len(pools) > 0 {
-		if err := dispatch.EnsureJobs(ctx, nc, pools); err != nil {
-			slog.Warn("serve: EnsureJobs failed; continuing to serve anyway", "err", err)
-		}
-	}
-
-	// Periodically reconcile every non-terminal job's status against Nomad, so an orphaned job
-	// (its dispatched Nomad job 404s — e.g. a dev Nomad agent restarted with its data dir wiped) or
-	// one stuck pending past dispatch.Options.PendingTimeout gets marked lost even if nothing polls
-	// it via Get/List in the meantime. Runs for the life of the process; a failed tick is logged by
-	// RunReconciler itself and doesn't stop the sweep.
+	// Housekeeping for the life of the process: expires finished jobs' artifacts and log files.
+	// A failed tick is logged by RunReconciler itself and doesn't stop the sweep.
 	go func() {
 		if err := ds.RunReconciler(ctx, dispatch.DefaultReconcileInterval); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("serve: job reconciler sweep stopped", "err", err)
@@ -145,7 +143,7 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 			return errors.New("enrollment issuer does not support worker credential creation")
 		}
 	}
-	srv := server.New(oc, nc, ds, ac, serverOpts)
+	srv := server.New(oc, ds, ac, serverOpts)
 
 	// Recreate TTL-recycled VMs: ARCHITECTURE.md's "Recycling / hygiene" step 3 says grove's fleet
 	// reconciler notices a deleted VM and recreates it, but until now `grove serve` never actually
@@ -286,9 +284,8 @@ func planSummary(plan fleet.Plan) string {
 	return strings.Join(parts, " / ")
 }
 
-// poolConfigs reads cfg.Fleet (fleet.yaml) and returns the configured pools' EnsureJobs config, so
-// `grove serve` can register grove-<kind>-<pool> jobs for each of them at startup. Returns (nil,
-// nil) if no fleet spec is configured.
+// poolConfigs reads cfg.Fleet (fleet.yaml) and returns the configured pools as the dispatch
+// service runs their jobs. Returns (nil, nil) if no fleet spec is configured.
 func poolConfigs(cfg *config.Config) ([]dispatch.PoolConfig, error) {
 	if cfg.Fleet == "" {
 		return nil, nil
@@ -308,21 +305,19 @@ func poolConfigs(cfg *config.Config) ([]dispatch.PoolConfig, error) {
 			return nil, fmt.Errorf("pool %q runnerImage: %w", p.Name, err)
 		}
 		pools = append(pools, dispatch.PoolConfig{
-			Name:              p.Name,
-			RunnerImage:       runnerImage,
-			CPU:               int(p.JobCPUOrDefault()),
-			Memory:            int(p.JobMemoryOrDefault()),
-			AllowDockerSocket: p.AllowDockerSocket,
-			Isolated:          p.Isolated(),
-			Slots:             sealedVMSlots(p),
-			OS:                poolOS(p),
+			Name:        p.Name,
+			RunnerImage: runnerImage,
+			CPU:         int(p.JobCPUOrDefault()),
+			Memory:      int(p.JobMemoryOrDefault()),
+			Slots:       sealedVMSlots(p),
+			OS:          poolOS(p),
 		})
 	}
 	return pools, nil
 }
 
-// poolOS is the guest OS of p's VMs, as `grove sandbox run --os` takes it: sandbox.OSDarwin for
-// the macos pool, sandbox.OSLinux for every other.
+// poolOS is the guest OS of p's VMs, as sandbox.Request.OS takes it: sandbox.OSDarwin for the
+// macos pool, sandbox.OSLinux for every other.
 func poolOS(p fleet.Pool) string {
 	if p.MacOS() {
 		return sandbox.OSDarwin
@@ -334,14 +329,10 @@ func poolOS(p fleet.Pool) string {
 // sealedVMSlots works out how many jobs fit.
 const sealedVMGuestReserveMiB = 512
 
-// sealedVMSlots is how many jobs one VM of a sealed pool runs at once: as many as fit its CPU (at
-// Nomad's 2000 MHz per core) and memory at the pool's per-job sizing, and at least one. Nomad
-// does this sum for a shared pool's VMs; a sealed VM runs no Nomad client. A sealed macOS VM runs
-// exactly one job, and is then deleted and recreated (see internal/sandbox).
+// sealedVMSlots is how many jobs one of a pool's (sealed) VMs runs at once: as many as fit its CPU
+// (at 2000 MHz per core) and memory at the pool's per-job sizing, and at least one. A macOS VM
+// runs exactly one job, and is then deleted and recreated (see internal/sandbox).
 func sealedVMSlots(p fleet.Pool) int {
-	if !p.Isolated() {
-		return 0
-	}
 	if p.MacOS() {
 		return 1
 	}
@@ -351,4 +342,15 @@ func sealedVMSlots(p fleet.Pool) int {
 		byMemory = int(p.Memory-sealedVMGuestReserveMiB) / int(p.JobMemoryOrDefault())
 	}
 	return max(1, min(byCPU, byMemory))
+}
+
+// sandboxSlotDir holds the per-VM slot lock files the dispatch service's sandbox runners share.
+func sandboxSlotDir() string {
+	if base := os.Getenv("XDG_STATE_HOME"); base != "" {
+		return filepath.Join(base, "grove", "sandbox-slots")
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".local", "state", "grove", "sandbox-slots")
+	}
+	return filepath.Join(os.TempDir(), "grove-sandbox-slots")
 }

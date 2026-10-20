@@ -21,7 +21,7 @@ import (
 	"github.com/gm2211/grove/internal/orchard"
 )
 
-// ExitCanceled is what Run returns when its context ends (Nomad stopping the job): 128+SIGTERM.
+// ExitCanceled is what Run returns when its context ends (the job was canceled): 128+SIGTERM.
 const ExitCanceled = 143
 
 // drainingMarker is the file a sealed Linux VM's shutdown script creates (internal/fleet) to stop
@@ -83,6 +83,10 @@ type Runner struct {
 	TimeoutSlack time.Duration
 	// ArtifactLimit caps the bytes of artifacts collected from one job.
 	ArtifactLimit int64
+	// OnStart, when set, is called with the VM's name once the job has its place there (after
+	// the VM accepted it, before its files are pushed in). Until then the job is still waiting for
+	// a slot. A VM that turns out to be draining refuses the job before this point.
+	OnStart func(vm string)
 
 	stderrMu sync.Mutex
 }
@@ -138,8 +142,8 @@ func (r *Runner) say(format string, args ...any) {
 	fmt.Fprintf(r.stderr(), "grove: "+format+"\n", args...)
 }
 
-// Run runs req in a sealed VM of req.Pool and returns the exit code the job's Nomad task should
-// exit with: the job's own, or ExitTimedOut, ExitLost, ExitSetup or ExitCanceled.
+// Run runs req in a sealed VM of req.Pool and returns the job's exit code: the job's own, or
+// ExitTimedOut, ExitLost, ExitSetup or ExitCanceled.
 func (r *Runner) Run(ctx context.Context, req Request) int {
 	r.defaults()
 	if err := req.validate(); err != nil {
@@ -291,7 +295,7 @@ func (j *job) exec(ctx context.Context, timeout time.Duration, cmd string, stdin
 }
 
 func (j *job) run(ctx context.Context, checkout string) int {
-	// A step that failed because Nomad is stopping the job reports that, not the failure.
+	// A step that failed because the job is being canceled reports that, not the failure.
 	failed := func(code int) int {
 		if ctx.Err() != nil {
 			return ExitCanceled
@@ -307,6 +311,9 @@ func (j *job) run(ctx context.Context, checkout string) int {
 		return failed(code)
 	}
 	j.r.say("running in sealed VM %s (pool %s)", j.vm, j.req.Pool)
+	if j.r.OnStart != nil {
+		j.r.OnStart(j.vm)
+	}
 	if code := j.push(ctx, checkout); code != 0 {
 		return failed(code)
 	}
