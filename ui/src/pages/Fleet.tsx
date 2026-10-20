@@ -38,10 +38,9 @@ export function FleetPage() {
 
       {/* Summary strip: the fleet totals that used to sit in the header corner live here now,
           alongside the fleet-wide slot meter, so they're never shown in two places at once. */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
         <StatTile label="Workers" value={data.workers.length} />
         <StatTile label="VMs" value={data.vms.length} />
-        <StatTile label="Nomad nodes" value={data.nodes.length} />
         <StatTile
           label="Slots used"
           value={`${usedSlots}/${totalSlots}`}
