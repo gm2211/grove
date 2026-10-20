@@ -137,7 +137,7 @@ func TestCheckSoftnet(t *testing.T) {
 		wantOK     bool
 		wantDetail string
 	}{
-		{name: "missing, not needed", wantOK: true, wantDetail: "only needed for fleet.yaml pools with network: isolated"},
+		{name: "missing, not needed", wantOK: true, wantDetail: "needed on every Mac that runs grove VMs"},
 		{name: "missing, needed", isolated: true, wantOK: false, wantDetail: "not installed"},
 		{name: "SUID root", installed: true, stat: FakeResult{Stdout: "0 104755\n"}, isolated: true, wantOK: true, wantDetail: "SUID root"},
 		{name: "sudo rule", installed: true, stat: notSUID, isolated: true, wantOK: true, wantDetail: "passwordless sudo"},

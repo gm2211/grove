@@ -17,14 +17,14 @@ import (
 const softnetRootCommand = `sudo chown root:wheel "$(realpath "$(command -v softnet)")" && ` +
 	`sudo chmod u+s "$(realpath "$(command -v softnet)")"`
 
-// softnetSteps install Softnet, the VM network filter fleet.yaml pools with network: isolated run
+// softnetSteps install Softnet, the VM network filter every fleet.yaml pool runs
 // on, and let it start as root. Orchard's worker starts it through Tart with no terminal to ask
-// for a password, so without the second step every isolated VM on this Mac fails to boot.
+// for a password, so without the second step every VM on this Mac fails to boot.
 func softnetSteps(r Runner, lookPath func(string) (string, error), out io.Writer) []Step {
 	return []Step{
 		{
 			Name:        "softnet",
-			Description: "Install Softnet (`brew install openai/tools/softnet`, falling back to `brew install cirruslabs/cli/softnet`), the VM network filter that fleet.yaml pools with network: isolated run on.",
+			Description: "Install Softnet (`brew install openai/tools/softnet`, falling back to `brew install cirruslabs/cli/softnet`), the VM network filter every (sealed) fleet.yaml pool runs on.",
 			Check: func(ctx context.Context) (bool, error) {
 				_, err := lookPath("softnet")
 				return err == nil, nil
@@ -43,7 +43,7 @@ func softnetSteps(r Runner, lookPath func(string) (string, error), out io.Writer
 		{
 			Name:        "softnet-root",
 			Privileged:  true,
-			Description: softnetRootCommand + "   # isolated pools: Orchard starts Softnet with no terminal, so it must become root by itself; redo after `brew upgrade softnet`",
+			Description: softnetRootCommand + "   # sealed pools: Orchard starts Softnet with no terminal, so it must become root by itself; redo after `brew upgrade softnet`",
 			// Only the SUID bit this step sets counts here: probing sudo belongs to `grove doctor`,
 			// and the planner runs no sudo at all unless it is root with --yes.
 			Check: func(ctx context.Context) (bool, error) {
@@ -104,16 +104,16 @@ func suidRoot(statOutput string) bool {
 	return err == nil && mode&0o4000 != 0
 }
 
-// checkSoftnet reports whether this worker can start VMs for fleet.yaml pools with network:
-// isolated. It only fails when this machine's fleet.yaml actually has such a pool; otherwise it's
+// checkSoftnet reports whether this worker can start grove's VMs, all of which are sealed on
+// Softnet. It only fails when this machine's fleet.yaml actually has a pool; otherwise it's
 // informational, since a worker Mac usually has no fleet.yaml of its own to tell.
 func checkSoftnet(ctx context.Context, r Runner, opts Options, cfg *config.Config) CheckResult {
 	ready, detail := softnetReady(ctx, r, opts.lookPath())
-	required := fleetHasIsolatedPool(cfg)
+	required := fleetHasPool(cfg)
 
 	result := CheckResult{Name: "softnet", OK: ready || !required, Detail: detail}
 	if !ready && !required {
-		result.Detail += " (only needed for fleet.yaml pools with network: isolated)"
+		result.Detail += " (needed on every Mac that runs grove VMs)"
 	}
 	if !ready {
 		result.Remediation = "run `grove install --role worker --softnet` and do its printed softnet-root step " +
@@ -122,7 +122,7 @@ func checkSoftnet(ctx context.Context, r Runner, opts Options, cfg *config.Confi
 	return result
 }
 
-func fleetHasIsolatedPool(cfg *config.Config) bool {
+func fleetHasPool(cfg *config.Config) bool {
 	if cfg == nil || cfg.Fleet == "" {
 		return false
 	}
@@ -130,10 +130,5 @@ func fleetHasIsolatedPool(cfg *config.Config) bool {
 	if err != nil {
 		return false
 	}
-	for _, pool := range spec.Pools {
-		if pool.Isolated() {
-			return true
-		}
-	}
-	return false
+	return len(spec.Pools) > 0
 }

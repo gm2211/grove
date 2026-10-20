@@ -175,8 +175,9 @@ func TestTrustTapStep_CheckNotSatisfiedWhenTapInfoFails(t *testing.T) {
 func TestCheckTrustedTaps_FlagsInstalledButUntrusted(t *testing.T) {
 	r := NewFakeRunner()
 	scriptTapInfo(r, "openai/tools", true, false)
-	scriptTapInfo(r, "cirruslabs/cli", false, false)
-	scriptTapInfo(r, "hashicorp/tap", true, true)
+	scriptTapInfo(r, "cirruslabs/cli", true, true)
+	// grove no longer installs Nomad: even tapped and untrusted, hashicorp/tap isn't audited.
+	scriptTapInfo(r, "hashicorp/tap", true, false)
 	// grove no longer installs MinIO: even tapped and untrusted, minio/stable isn't audited.
 	scriptTapInfo(r, "minio/stable", true, false)
 
@@ -199,19 +200,20 @@ func TestCheckTrustedTaps_FlagsInstalledButUntrusted(t *testing.T) {
 		t.Errorf("Remediation = %q, want the exact `brew trust openai/tools` command", openai.Remediation)
 	}
 
-	if _, ok := byName["brew-trust:cirruslabs/cli"]; ok {
-		t.Error("a tap that was never tapped should not be reported (it isn't required yet)")
-	}
 	if _, ok := byName["brew-trust:minio/stable"]; ok {
 		t.Error("minio/stable is no longer a grove dependency and should not be audited")
 	}
 
-	hashicorp, ok := byName["brew-trust:hashicorp/tap"]
-	if !ok {
-		t.Fatal("expected a result for the installed-and-trusted hashicorp/tap")
+	if _, ok := byName["brew-trust:hashicorp/tap"]; ok {
+		t.Error("hashicorp/tap is no longer a grove dependency and should not be audited")
 	}
-	if !hashicorp.OK {
-		t.Error("expected hashicorp/tap to report OK since it's already trusted")
+
+	cirrus, ok := byName["brew-trust:cirruslabs/cli"]
+	if !ok {
+		t.Fatal("expected a result for the installed-and-trusted cirruslabs/cli")
+	}
+	if !cirrus.OK {
+		t.Error("expected cirruslabs/cli to report OK since it's already trusted")
 	}
 }
 

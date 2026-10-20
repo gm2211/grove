@@ -94,7 +94,7 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	opts := install.Options{
 		Role: install.RoleWorker, Controller: result.ControllerURL, ServerURL: result.ServerURL,
 		Token: result.BootstrapToken, RegistryUser: setupRegistryUser,
-		RegistryToken: os.Getenv("GROVE_REGISTRY_TOKEN"),
+		RegistryToken: os.Getenv("GROVE_REGISTRY_TOKEN"), Softnet: true,
 	}
 	if err := applyInstall(cmd, opts, false, false); err != nil {
 		return err

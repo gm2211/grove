@@ -27,7 +27,7 @@ var installCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Bootstrap this machine into one of grove's roles (worker, control-plane, client).",
 	Long: `grove install renders an idempotent plan for the given --role and applies it: Homebrew/
-Tart/Orchard/Nomad dependencies, launchd agents or systemd --user units, and ~/.config/grove/
+Tart/Orchard/Softnet dependencies, launchd agents or systemd --user units, and ~/.config/grove/
 config.yaml. Re-running it is safe — steps that are already satisfied are skipped.
 
 Steps that need sudo or touch system-wide settings (disabling sleep, the macOS 15+ local-network
@@ -39,13 +39,14 @@ for a human (or Claude Code) to run. Use --dry-run to see the whole plan without
 func init() {
 	installCmd.Flags().StringVar(&installFlags.role, "role", "", "worker | control-plane | client (required)")
 	installCmd.Flags().StringVar(&installFlags.controller, "controller", "", "Orchard controller URL")
-	installCmd.Flags().StringVar(&installFlags.nomad, "nomad", "", "Nomad HTTP API URL")
+	installCmd.Flags().StringVar(&installFlags.nomad, "nomad", "", "no longer used: grove serve runs jobs itself")
+	_ = installCmd.Flags().MarkDeprecated("nomad", "grove no longer uses Nomad; the flag is ignored")
 	installCmd.Flags().StringVar(&installFlags.server, "server", "", "grove server URL")
 	installCmd.Flags().StringVar(&installFlags.token, "token", "", "bootstrap/server token (meaning depends on --role)")
 	installCmd.Flags().StringVar(&installFlags.registry, "registry", "ghcr.io", "container registry a worker authenticates to for private image pulls (worker role; see docs/INSTALL.md)")
 	installCmd.Flags().StringVar(&installFlags.registryUser, "registry-user", "", "registry username for `tart login` (worker role)")
 	installCmd.Flags().StringVar(&installFlags.registryToken, "registry-token", "", "registry password/PAT for `tart login` (worker role); also read from $GROVE_REGISTRY_TOKEN so it needn't be in shell history")
-	installCmd.Flags().BoolVar(&installFlags.softnet, "softnet", false, "also install Softnet and print its one-time root step (worker role; needed on Macs that run fleet.yaml pools with network: isolated)")
+	installCmd.Flags().BoolVar(&installFlags.softnet, "softnet", true, "install Softnet and print its one-time root step (worker role; every fleet.yaml pool runs sealed on Softnet)")
 	installCmd.Flags().BoolVar(&installFlags.yes, "yes", false, "apply privileged steps too, when running as root")
 	installCmd.Flags().BoolVar(&installFlags.dryRun, "dry-run", false, "print the plan; change nothing")
 	_ = installCmd.MarkFlagRequired("role")
@@ -71,7 +72,6 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	opts := install.Options{
 		Role:          role,
 		Controller:    installFlags.controller,
-		NomadAddr:     installFlags.nomad,
 		ServerURL:     installFlags.server,
 		Token:         installFlags.token,
 		Registry:      installFlags.registry,

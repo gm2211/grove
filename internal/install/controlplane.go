@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -20,11 +19,10 @@ import (
 )
 
 // Default ports for the services grove renders on a control-plane host. Only used to fill in a
-// bind address when the corresponding --controller/--nomad/--server flag wasn't given (on this
-// role those flags describe the service being stood up here, not one to dial out to).
+// bind address when the corresponding --controller/--server flag wasn't given (on this role those
+// flags describe the service being stood up here, not one to dial out to).
 const (
 	defaultOrchardControllerPort = "6120"
-	defaultNomadPort             = "4646"
 	defaultGroveServerPort       = "6130"
 )
 
@@ -34,15 +32,11 @@ func buildControlPlaneSteps(r Runner, opts Options, out io.Writer) []Step {
 	destOrchard := filepath.Join(orchardBinDir(opts), orchardBinName)
 	isDarwin := opts.goos() == "darwin"
 
-	// Set when the Nomad config on disk differs from what this plan renders, so the Nomad start
-	// step restarts an already-running agent onto the new config.
-	nomadConfigChanged := new(bool)
-
 	var steps []Step
-	steps = append(steps, controlPlaneDependencySteps(r, opts, out, destOrchard, isDarwin)...)
-	steps = append(steps, controlPlaneConfigSteps(r, opts, cfgDir, destOrchard, nomadConfigChanged)...)
+	steps = append(steps, controlPlaneDependencySteps(r, opts, destOrchard)...)
+	steps = append(steps, controlPlaneConfigSteps(r, opts, cfgDir)...)
 	steps = append(steps, controlPlaneServiceSteps(r, opts, cfgDir, destOrchard, isDarwin)...)
-	steps = append(steps, controlPlaneStartStep(r, opts, "orchard-controller", isDarwin, nil))
+	steps = append(steps, controlPlaneStartStep(r, opts, "orchard-controller", isDarwin))
 	steps = append(steps, Step{
 		Name:        "orchard-service-account",
 		Description: "Create Orchard `grove` service account (compute:read, compute:write, compute:connect); retrieve its generated token without placing it in argv.",
@@ -103,27 +97,19 @@ func buildControlPlaneSteps(r Runner, opts Options, out io.Writer) []Step {
 			return updateConfig(cfgDir, func(cfg *config.Config) { cfg.Enrollment.IssuerToken = name + ":" + token })
 		},
 	})
-	steps = append(steps, controlPlaneFinalizationSteps(r, opts, isDarwin, nomadConfigChanged)...)
+	steps = append(steps, controlPlaneFinalizationSteps(r, opts, isDarwin)...)
 	return steps
 }
 
-// controlPlaneStartStep starts service if it isn't running. With restart set (its config just
-// changed), it restarts a running one too, so the new config takes effect.
-func controlPlaneStartStep(r Runner, opts Options, service string, isDarwin bool, restart *bool) Step {
+// controlPlaneStartStep starts service if it isn't running.
+func controlPlaneStartStep(r Runner, opts Options, service string, isDarwin bool) Step {
 	description := "Start " + service + " as current user."
-	if restart != nil {
-		description = "Start " + service + " as current user (restarting it if its config changed)."
-	}
-	mustRestart := func() bool { return restart != nil && *restart }
 	if isDarwin {
 		label := "com.grove." + service
 		plist := filepath.Join(opts.LaunchAgentsDir(), label+".plist")
 		domain := fmt.Sprintf("gui/%d", os.Getuid())
 		return Step{Name: "service-start:" + service, Description: description,
 			Check: func(ctx context.Context) (bool, error) {
-				if mustRestart() {
-					return false, nil
-				}
 				_, _, err := r.Run(ctx, "launchctl", "print", domain+"/"+label)
 				return err == nil, nil
 			},
@@ -136,35 +122,20 @@ func controlPlaneStartStep(r Runner, opts Options, service string, isDarwin bool
 	unit := "grove-" + service + ".service"
 	return Step{Name: "service-start:" + service, Description: description,
 		Check: func(ctx context.Context) (bool, error) {
-			if mustRestart() {
-				return false, nil
-			}
 			_, _, err := r.Run(ctx, "systemctl", "--user", "is-active", "--quiet", unit)
 			return err == nil, nil
 		},
 		Apply: func(ctx context.Context) error {
 			_, _, _ = r.Run(ctx, "systemctl", "--user", "daemon-reload")
 			_, _, err := r.Run(ctx, "systemctl", "--user", "enable", "--now", unit)
-			if err == nil && mustRestart() {
-				_, _, err = r.Run(ctx, "systemctl", "--user", "restart", unit)
-			}
 			return err
 		}}
 }
 
-func controlPlaneFinalizationSteps(r Runner, opts Options, isDarwin bool, nomadConfigChanged *bool) []Step {
-	services := []string{"orchard-controller", "nomad"}
-	steps := make([]Step, 0, len(services))
-	for _, service := range services {
-		var restart *bool
-		if service == "nomad" {
-			restart = nomadConfigChanged
-		}
-		steps = append(steps, controlPlaneStartStep(r, opts, service, isDarwin, restart))
-	}
-	// Nomad is running by now; bootstrap its ACLs before grove serve reloads so the server comes
-	// back up holding the management token.
-	steps = append(steps, nomadACLBootstrapStep(r, opts, isDarwin))
+func controlPlaneFinalizationSteps(r Runner, opts Options, isDarwin bool) []Step {
+	steps := []Step{controlPlaneStartStep(r, opts, "orchard-controller", isDarwin)}
+	// Older installs ran Nomad as the job scheduler; grove serve now runs jobs itself.
+	steps = append(steps, retireLegacyNomadStep(r, opts, isDarwin))
 	// Older installs ran MinIO as the artifact store; artifacts now live on this machine's disk.
 	steps = append(steps, retireLegacyMinIOStep(r, opts, isDarwin))
 	steps = append(steps, controlPlaneReloadServerStep(r, opts, isDarwin))
@@ -192,25 +163,10 @@ func controlPlaneReloadServerStep(r Runner, opts Options, isDarwin bool) Step {
 	}}
 }
 
-func controlPlaneDependencySteps(r Runner, opts Options, out io.Writer, destOrchard string, isDarwin bool) []Step {
+func controlPlaneDependencySteps(r Runner, opts Options, destOrchard string) []Step {
 	lookPath := opts.lookPath()
-	var steps []Step
-	if isDarwin {
-		steps = append(steps, trustTapStep(r, tapHashicorp, out))
-	}
-	steps = append(steps,
-		Step{
-			Name:        "nomad-binary",
-			Description: nomadInstallDescription(isDarwin),
-			Check: func(ctx context.Context) (bool, error) {
-				_, err := lookPath("nomad")
-				return err == nil, nil
-			},
-			Apply: func(ctx context.Context) error {
-				return installNomad(ctx, r, opts, isDarwin)
-			},
-		},
-		Step{
+	return []Step{
+		{
 			Name:        "orchard-binary",
 			Description: fmt.Sprintf("Install the Orchard fork binary with narrow worker-credential issuance to %s (release asset if available, else build from source).", destOrchard),
 			Check: func(ctx context.Context) (bool, error) {
@@ -228,58 +184,17 @@ func controlPlaneDependencySteps(r Runner, opts Options, out io.Writer, destOrch
 				return ensureOrchardBinary(ctx, r, opts, destOrchard, io.Discard)
 			},
 		},
-	)
-	return steps
-}
-
-func nomadInstallDescription(isDarwin bool) string {
-	if isDarwin {
-		return "Install Nomad (`brew install hashicorp/tap/nomad`; Homebrew verifies the formula's sha256)."
 	}
-	return fmt.Sprintf("Install Nomad %s to ~/.local/bin from releases.hashicorp.com, verifying the zip against grove's pinned SHA-256 before unpacking.", NomadVersion)
-}
-
-func installNomad(ctx context.Context, r Runner, opts Options, isDarwin bool) error {
-	if isDarwin {
-		_, _, err := r.Run(ctx, "brew", "install", "hashicorp/tap/nomad")
-		return err
-	}
-	return installPinnedNomad(ctx, r, opts)
-}
-
-// installPinnedNomad fetches the pinned Nomad release zip for this GOOS/GOARCH, verifies it, and
-// unzips the single binary into ~/.local/bin. Used for Nomad on Linux (macOS uses brew).
-func installPinnedNomad(ctx context.Context, r Runner, opts Options) error {
-	d, err := nomadDownload(opts)
-	if err != nil {
-		return err
-	}
-	zipPath, err := fetchVerified(ctx, r, opts, d)
-	if err != nil {
-		return err
-	}
-	unpacked := filepath.Join(downloadDir(opts), "nomad-"+NomadVersion)
-	if _, _, err := r.Run(ctx, "unzip", "-o", zipPath, "nomad", "-d", unpacked); err != nil {
-		return fmt.Errorf("unpack %s: %w", zipPath, err)
-	}
-	destDir := orchardBinDir(opts)
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		return err
-	}
-	_, _, err = r.Run(ctx, "install", "-m", "0755", filepath.Join(unpacked, "nomad"), filepath.Join(destDir, "nomad"))
-	return err
 }
 
 // controlPlaneConfigSteps render the files under ~/.config/grove/ that the supervised processes
 // and the grove CLI itself read.
-func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string, nomadConfigChanged *bool) []Step {
+func controlPlaneConfigSteps(r Runner, opts Options, cfgDir string) []Step {
 	tailnetHost := resolvedTailnetHost(r, opts)
 	orchardAddr := hostPortOrDefault(opts.Controller, tailnetHost, defaultOrchardControllerPort)
-	nomadAddr := hostPortOrDefault(opts.NomadAddr, tailnetHost, defaultNomadPort)
 	serverAddr := hostPortOrDefault(opts.ServerURL, tailnetHost, defaultGroveServerPort)
 
 	orchardEnvPath := filepath.Join(cfgDir, "orchard-controller", "env")
-	nomadConfPath := filepath.Join(cfgDir, "nomad", "server.hcl")
 	artifactDir := artifactStoreDir(opts)
 	fleetPath := filepath.Join(cfgDir, "fleet.yaml")
 	orchardHome := controlPlaneOrchardHome(cfgDir)
@@ -298,28 +213,6 @@ func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string,
 				return RenderOrchardControllerEnv(OrchardControllerEnvSpec{
 					Home:    orchardHome,
 					Address: orchardAddr,
-				})
-			}),
-		},
-		{
-			Name:        "config:nomad-server",
-			Description: fmt.Sprintf("Render %s (single-node server, bootstrap_expect=1, ACLs on, bind %s; also the client that runs sealed pools' jobs).", nomadConfPath, nomadAddr),
-			Check: func(ctx context.Context) (bool, error) {
-				ok, err := fileHasContent(nomadConfPath, func() (string, error) {
-					return RenderNomadServerConfig(NomadServerConfigSpec{
-						DataDir:  filepath.Join(cfgDir, "nomad", "data"),
-						BindAddr: hostOnly(nomadAddr),
-					})
-				})(ctx)
-				if err == nil && !ok {
-					*nomadConfigChanged = true
-				}
-				return ok, err
-			},
-			Apply: writeRenderedFile(nomadConfPath, func() (string, error) {
-				return RenderNomadServerConfig(NomadServerConfigSpec{
-					DataDir:  filepath.Join(cfgDir, "nomad", "data"),
-					BindAddr: hostOnly(nomadAddr),
 				})
 			}),
 		},
@@ -360,18 +253,18 @@ func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string,
 		},
 		{
 			Name:        "config:grove-config-yaml",
-			Description: fmt.Sprintf("Write %s/config.yaml (orchard/nomad/server endpoints, generated server token).", cfgDir),
+			Description: fmt.Sprintf("Write %s/config.yaml (orchard/server endpoints, generated server token); drop the retired nomad/tailscale keys.", cfgDir),
 			Check: func(ctx context.Context) (bool, error) {
 				cfg, err := loadOrInitConfig(cfgDir)
 				if err != nil {
 					return false, err
 				}
-				return cfg.Server.Token != "" && cfg.Orchard.URL != "" && cfg.Nomad.URL != "", nil
+				return cfg.Server.Token != "" && cfg.Orchard.URL != "" && len(cfg.LegacyKeys()) == 0, nil
 			},
 			Apply: func(ctx context.Context) error {
 				return updateConfig(cfgDir, func(cfg *config.Config) {
+					cfg.ClearLegacy()
 					cfg.Orchard.URL = "http://" + orchardAddr
-					cfg.Nomad.URL = "http://" + nomadAddr
 					cfg.Server.Listen = serverAddr
 					cfg.Server.URL = "http://" + serverAddr
 					if cfg.Server.Token == "" {
@@ -401,11 +294,9 @@ func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string,
 }
 
 // controlPlaneServiceSteps render the process supervisors (launchd on macOS, systemd --user on
-// Linux) for orchard controller, nomad and `grove serve`.
+// Linux) for the Orchard controller and `grove serve`.
 func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string, isDarwin bool) []Step {
 	groveBin := "grove" // resolved via PATH at runtime by the supervisor
-	nomadConf := filepath.Join(cfgDir, "nomad", "server.hcl")
-	nomadDataDir := filepath.Join(cfgDir, "nomad", "data")
 	orchardHome := controlPlaneOrchardHome(cfgDir)
 
 	units := []struct {
@@ -424,14 +315,6 @@ func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string
 			program:     destOrchard,
 			args:        []string{"controller", "run"},
 			env:         map[string]string{"ORCHARD_HOME": orchardHome},
-		},
-		{
-			name:        "nomad",
-			label:       "com.grove.nomad",
-			description: "Nomad server",
-			program:     "nomad",
-			args:        []string{"agent", "-config", nomadConf},
-			workingDir:  nomadDataDir,
 		},
 		{
 			name:        "server",
@@ -514,6 +397,43 @@ func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string
 // them.
 func artifactStoreDir(opts Options) string {
 	return filepath.Join(opts.homeDir(), ".local", "state", "grove", "artifacts")
+}
+
+// retireLegacyNomadStep stops and removes the Nomad service an older `grove install --role
+// control-plane` set up, now that grove serve runs jobs itself. Like retireLegacyMinIOStep it
+// removes only the launchd plist / systemd unit; Nomad's config and data under
+// ~/.config/grove/nomad are left for the operator to delete (docs/OPERATIONS.md). Satisfied when
+// no such service file exists.
+func retireLegacyNomadStep(r Runner, opts Options, isDarwin bool) Step {
+	if isDarwin {
+		label := "com.grove.nomad"
+		plist := filepath.Join(opts.LaunchAgentsDir(), label+".plist")
+		domain := fmt.Sprintf("gui/%d", os.Getuid())
+		return Step{
+			Name:        "legacy-nomad:retire",
+			Description: fmt.Sprintf("Stop and remove the Nomad LaunchAgent (%s) an older grove installed; grove serve now runs jobs itself.", plist),
+			Check:       fileAbsent(plist),
+			Apply: func(ctx context.Context) error {
+				_, _, _ = r.Run(ctx, "launchctl", "bootout", domain+"/"+label)
+				return removeIfExists(plist)
+			},
+		}
+	}
+	unit := "grove-nomad.service"
+	unitPath := filepath.Join(opts.SystemdUserDir(), unit)
+	return Step{
+		Name:        "legacy-nomad:retire",
+		Description: fmt.Sprintf("Stop and remove the Nomad systemd --user unit (%s) an older grove installed; grove serve now runs jobs itself.", unitPath),
+		Check:       fileAbsent(unitPath),
+		Apply: func(ctx context.Context) error {
+			_, _, _ = r.Run(ctx, "systemctl", "--user", "disable", "--now", unit)
+			if err := removeIfExists(unitPath); err != nil {
+				return err
+			}
+			_, _, err := r.Run(ctx, "systemctl", "--user", "daemon-reload")
+			return err
+		},
+	}
 }
 
 // retireLegacyMinIOStep stops and removes the MinIO service an older `grove install --role
@@ -723,13 +643,6 @@ func hostPortOrDefault(raw, fallbackHost, defaultPort string) string {
 		}
 	}
 	return fallbackHost + ":" + defaultPort
-}
-
-func hostOnly(hostPort string) string {
-	if h, _, err := net.SplitHostPort(hostPort); err == nil {
-		return h
-	}
-	return hostPort
 }
 
 const hour = time.Hour
