@@ -36,9 +36,12 @@ func Load(path string) (*Spec, error) {
 	return &spec, nil
 }
 
-// Validate checks Spec invariants: unique pool names, perWorker >= 1, image set.
+// Validate checks Spec invariants: unique pool names, perWorker >= 1, image set. It also
+// normalizes what older specs could say: an empty or "shared" network becomes "isolated", and
+// allowDockerSocket is switched off, each "shared"/allowDockerSocket with a note in s.Warnings.
 func (s *Spec) Validate() error {
 	seen := make(map[string]bool, len(s.Pools))
+	s.Warnings = nil
 
 	for i, p := range s.Pools {
 		if p.Name == "" {
@@ -76,15 +79,19 @@ func (s *Spec) Validate() error {
 		}
 
 		switch p.Network {
-		case "", NetworkShared:
 		case NetworkIsolated:
-			// The docker socket gives every job root on the guest, past the in-guest fence that
-			// keeps jobs off the guest's tailnet login.
-			if p.AllowDockerSocket {
-				return fmt.Errorf("pool %q: allowDockerSocket can't be combined with network %q", p.Name, NetworkIsolated)
-			}
+		case "":
+			s.Pools[i].Network = NetworkIsolated
+		case NetworkShared:
+			s.Pools[i].Network = NetworkIsolated
+			s.Warnings = append(s.Warnings, fmt.Sprintf("pool %q: network %q is no longer supported; its VMs are sealed (network %q) like every pool's", p.Name, NetworkShared, NetworkIsolated))
 		default:
-			return fmt.Errorf("pool %q: network must be %q or %q, got %q", p.Name, NetworkShared, NetworkIsolated, p.Network)
+			return fmt.Errorf("pool %q: network must be %q, got %q", p.Name, NetworkIsolated, p.Network)
+		}
+		// The docker socket would give every job root on the guest, past the in-guest fence.
+		if p.AllowDockerSocket {
+			s.Pools[i].AllowDockerSocket = false
+			s.Warnings = append(s.Warnings, fmt.Sprintf("pool %q: allowDockerSocket is ignored: every pool is sealed, and a job never gets the VM's docker socket", p.Name))
 		}
 	}
 

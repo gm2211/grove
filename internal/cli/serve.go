@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 
 	"github.com/gm2211/grove/internal/artifacts"
 	"github.com/gm2211/grove/internal/config"
@@ -184,6 +183,8 @@ type fleetReconcileLoop struct {
 	warnedInvalid bool
 	// warnedBlocked is the blocked-pool message last logged, for the same once-per-streak logging.
 	warnedBlocked string
+	// warnedSpec is the fleet.yaml warnings last logged, logged again only when they change.
+	warnedSpec string
 }
 
 func newFleetReconcileLoop(cfg *config.Config, client orchard.Client, status *server.FleetReconcileStatus) *fleetReconcileLoop {
@@ -223,18 +224,14 @@ func (l *fleetReconcileLoop) tick(ctx context.Context) {
 		return
 	}
 	l.warnedInvalid = false
-	options, err := fleetOptions(l.cfg)
-	if err != nil {
-		slog.Warn("serve: fleet reconciler: invalid Nomad endpoint; skipping", "err", err)
-		l.status.Report(fleet.Plan{}, err, time.Now())
-		return
+	if warnings := strings.Join(spec.Warnings, "; "); warnings != l.warnedSpec {
+		if warnings != "" {
+			slog.Warn("serve: fleet reconciler: "+warnings, "fleet", l.cfg.Fleet)
+		}
+		l.warnedSpec = warnings
 	}
 
-	r := &fleet.Reconciler{
-		Client:  l.client,
-		Spec:    spec,
-		Options: options,
-	}
+	r := &fleet.Reconciler{Client: l.client, Spec: spec}
 
 	plan, err := r.Plan(ctx)
 	if err != nil {
@@ -251,12 +248,6 @@ func (l *fleetReconcileLoop) tick(ctx context.Context) {
 			return
 		}
 	}
-	// Every tick, not only when the plan changed something: a deleted VM's token is revoked
-	// once Orchard has actually removed the VM, usually ticks after the delete.
-	if err := r.SweepNodeTokens(ctx); err != nil {
-		slog.Warn("serve: fleet reconciler: node token sweep failed", "err", err)
-	}
-
 	// A blocked pool is a configuration problem, not a failed tick: the rest of the plan still
 	// applied, but the operator has to see why that pool has no VMs.
 	blockedErr := plan.BlockedError()
@@ -290,13 +281,9 @@ func poolConfigs(cfg *config.Config) ([]dispatch.PoolConfig, error) {
 	if cfg.Fleet == "" {
 		return nil, nil
 	}
-	data, err := os.ReadFile(cfg.Fleet)
+	spec, err := fleet.Load(cfg.Fleet)
 	if err != nil {
-		return nil, fmt.Errorf("read fleet spec %s: %w", cfg.Fleet, err)
-	}
-	var spec fleet.Spec
-	if err := yaml.Unmarshal(data, &spec); err != nil {
-		return nil, fmt.Errorf("parse fleet spec %s: %w", cfg.Fleet, err)
+		return nil, err
 	}
 	pools := make([]dispatch.PoolConfig, 0, len(spec.Pools))
 	for _, p := range spec.Pools {

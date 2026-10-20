@@ -16,40 +16,6 @@ import (
 	"github.com/gm2211/grove/internal/server"
 )
 
-func TestFleetOptionsCarryConfiguredNomadRPCAddress(t *testing.T) {
-	options, err := fleetOptions(&config.Config{
-		Nomad:     config.Endpoint{URL: "https://nomad.cp.example:4646"},
-		Tailscale: config.TailscaleConfig{AuthKey: "tskey-test"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if options.NomadRPCAddress != "nomad.cp.example:4647" {
-		t.Errorf("NomadRPCAddress = %q, want nomad.cp.example:4647", options.NomadRPCAddress)
-	}
-	if options.TailscaleAuthKey != "tskey-test" {
-		t.Errorf("TailscaleAuthKey = %q, want to preserve configured auth key", options.TailscaleAuthKey)
-	}
-}
-
-func TestFleetOptionsNodeTokensOnlyWithNomadToken(t *testing.T) {
-	options, err := fleetOptions(&config.Config{Nomad: config.Endpoint{URL: "http://127.0.0.1:4646"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if options.NodeTokens != nil {
-		t.Error("NodeTokens set without a nomad.token; ACLs are off, so VMs must not get node tokens")
-	}
-
-	options, err = fleetOptions(&config.Config{Nomad: config.Endpoint{URL: "http://127.0.0.1:4646", Token: "mgmt"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if options.NodeTokens == nil {
-		t.Error("NodeTokens nil with a nomad.token; VMs could not drain themselves under ACLs")
-	}
-}
-
 func writeIsolatedFleet(t *testing.T, pool string) string {
 	t.Helper()
 	fleetPath := filepath.Join(t.TempDir(), "fleet.yaml")
@@ -68,12 +34,11 @@ pools:
 	return fleetPath
 }
 
-// A sealed pool needs nothing from the tailnet: no auth key, and no tailnet address for Nomad.
+// A sealed pool needs nothing from the tailnet.
 func TestFleetReconcileLoop_IsolatedPool_CreatesOnceThenNoOp(t *testing.T) {
 	oc := &fakeReconcileOrchard{workers: []orchard.Worker{{Name: "mac1"}}}
 	cfg := &config.Config{
 		Fleet: writeIsolatedFleet(t, "linux"),
-		Nomad: config.Endpoint{URL: "http://cp.local:4646"},
 	}
 	loop := newFleetReconcileLoop(cfg, oc, &server.FleetReconcileStatus{})
 
@@ -94,15 +59,12 @@ func TestFleetReconcileLoop_IsolatedPool_CreatesOnceThenNoOp(t *testing.T) {
 // A sealed macOS pool gets a Softnet VM with the host blocked, like a Linux one.
 func TestFleetReconcileLoop_IsolatedMacOSPool_GetsSealedVM(t *testing.T) {
 	oc := &fakeReconcileOrchard{workers: []orchard.Worker{{Name: "mac1"}}}
-	cfg := &config.Config{Fleet: writeIsolatedFleet(t, "macos"), Nomad: config.Endpoint{URL: "http://100.64.0.10:4646"}}
+	cfg := &config.Config{Fleet: writeIsolatedFleet(t, "macos")}
 	loop := newFleetReconcileLoop(cfg, oc, &server.FleetReconcileStatus{})
 
 	loop.tick(context.Background())
 	if oc.createCalls != 1 || !oc.vms[0].Softnet || loop.warnedBlocked != "" {
 		t.Fatalf("an isolated macOS pool should get one sealed VM, got creates=%d vms=%+v blocked=%q", oc.createCalls, oc.vms, loop.warnedBlocked)
-	}
-	if strings.Contains(oc.vms[0].StartupScript, "100.64.0.10") {
-		t.Fatalf("sealed macOS VM was pointed at Nomad:\n%s", oc.vms[0].StartupScript)
 	}
 }
 
@@ -316,7 +278,7 @@ pools:
 	}
 
 	oc := &fakeReconcileOrchard{workers: []orchard.Worker{{Name: "mac1"}}}
-	cfg := &config.Config{Fleet: fleetPath, Nomad: config.Endpoint{URL: "http://100.101.229.60:4646"}}
+	cfg := &config.Config{Fleet: fleetPath}
 	status := &server.FleetReconcileStatus{}
 
 	loop := newFleetReconcileLoop(cfg, oc, status)
@@ -328,8 +290,9 @@ pools:
 	if oc.deleteCalls != 0 {
 		t.Fatalf("after first tick: deleteCalls = %d, want 0", oc.deleteCalls)
 	}
-	if !strings.Contains(oc.vms[0].StartupScript, `servers = ["100.101.229.60:4647"]`) {
-		t.Fatalf("serve reconciler did not write the configured Nomad RPC endpoint to the macOS client:\n%s", oc.vms[0].StartupScript)
+	// A pool that doesn't say is sealed like every other.
+	if !oc.vms[0].Softnet || !strings.Contains(oc.vms[0].StartupScript, "network: isolated (sealed, macOS)") {
+		t.Fatalf("serve reconciler did not seal the VM:\n%s", oc.vms[0].StartupScript)
 	}
 
 	loop.tick(context.Background())

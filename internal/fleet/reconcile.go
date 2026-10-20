@@ -5,15 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
-	"net/url"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
 )
 
@@ -27,17 +23,6 @@ const LabelWorkerPin = "org.cirruslabs.orchard.worker-name"
 
 // Options tunes the Reconciler's behaviour. The zero value is usable.
 type Options struct {
-	// TailscaleAuthKey, when set, makes generated StartupScripts join the tailnet (see
-	// scripts.go). Typically config.Config.Tailscale.AuthKey.
-	TailscaleAuthKey string
-	// NomadRPCAddress, when set, points macOS worker clients at the Nomad RPC listener. It is
-	// derived from the configured Nomad HTTP URL by the CLI.
-	NomadRPCAddress string
-	// NodeTokens, when set, gives every VM it creates its own node-scoped Nomad ACL token (in the
-	// shutdown script only, so the VM can drain itself) and turns on ACL enforcement in the VM's
-	// Nomad client. Set it when the control plane's Nomad runs with ACLs on, i.e. config.yaml has
-	// a nomad.token. Nil leaves both out.
-	NodeTokens nomad.NodeTokens
 	// Now returns the current time; defaults to time.Now. Overridable for tests.
 	Now func() time.Time
 	// Logger receives Run's per-tick errors without stopping the loop. Defaults to log.Default().
@@ -239,86 +224,12 @@ func (r *Reconciler) Apply(ctx context.Context, plan Plan) error {
 	}
 
 	for _, c := range plan.Creates {
-		spec, err := r.withNodeToken(ctx, c.Spec)
-		if err != nil {
-			return fmt.Errorf("create vm %s: %w", c.Spec.Name, err)
-		}
-		if _, err := r.Client.CreateVM(ctx, spec); err != nil {
+		if _, err := r.Client.CreateVM(ctx, c.Spec); err != nil {
 			return fmt.Errorf("create vm %s: %w", c.Spec.Name, err)
 		}
 	}
 
 	return nil
-}
-
-// withNodeToken fills a planned spec's node-token placeholders with a freshly minted per-VM token.
-// A spec without the block (Options.NodeTokens nil) is returned unchanged. If minting fails (e.g.
-// nomad.token isn't a management token) the VM is still created, without the block, so a token
-// problem never shrinks the fleet; its drain on recycle then fails as it did before node tokens. A
-// token minted for a VM whose CreateVM then fails is revoked by the next SweepNodeTokens.
-func (r *Reconciler) withNodeToken(ctx context.Context, spec orchard.VMSpec) (orchard.VMSpec, error) {
-	if !strings.Contains(spec.ShutdownScript, nodeTokenSecretPlaceholder) {
-		return spec, nil
-	}
-
-	var tok nomad.NodeToken
-	err := errors.New("no Nomad node token issuer configured")
-	if r.Options.NodeTokens != nil {
-		tok, err = r.Options.NodeTokens.CreateNodeToken(ctx, spec.Name)
-	}
-	if err != nil {
-		r.Options.logger().Printf("fleet: creating %s without a Nomad node token (it can't drain itself on recycle): %v", spec.Name, err)
-		spec.ShutdownScript = withoutNodeACL(spec.ShutdownScript)
-		return spec, nil
-	}
-
-	spec.ShutdownScript = strings.NewReplacer(
-		nodeTokenSecretPlaceholder, shQuote(tok.SecretID),
-		nodeTokenAccessorPlaceholder, tok.AccessorID,
-	).Replace(spec.ShutdownScript)
-	return spec, nil
-}
-
-// nodeTokenGrace is how old an unreferenced node token must be before SweepNodeTokens revokes it,
-// so a token minted for a VM that a concurrent `grove fleet apply` is about to create survives.
-const nodeTokenGrace = 15 * time.Minute
-
-var nodeTokenAccessorRE = regexp.MustCompile(`(?m)^# grove node token accessor ([0-9A-Za-z-]+) `)
-
-// SweepNodeTokens revokes every per-VM Nomad token (see Options.NodeTokens) that no VM in Orchard
-// still holds. A deleted VM keeps its token until Orchard has actually removed it, because its
-// shutdown script needs the token to drain. A no-op when Options.NodeTokens is nil.
-func (r *Reconciler) SweepNodeTokens(ctx context.Context) error {
-	if r.Options.NodeTokens == nil {
-		return nil
-	}
-
-	vms, err := r.Client.ListVMs(ctx)
-	if err != nil {
-		return fmt.Errorf("list vms: %w", err)
-	}
-	held := make(map[string]bool)
-	for _, vm := range vms {
-		for _, m := range nodeTokenAccessorRE.FindAllStringSubmatch(vm.ShutdownScript, -1) {
-			held[m[1]] = true
-		}
-	}
-
-	tokens, err := r.Options.NodeTokens.ListNodeTokens(ctx)
-	if err != nil {
-		return err
-	}
-	cutoff := r.Options.now().Add(-nodeTokenGrace)
-	var errs []error
-	for _, t := range tokens {
-		if held[t.AccessorID] || t.CreateTime.After(cutoff) {
-			continue
-		}
-		if err := r.Options.NodeTokens.RevokeNodeToken(ctx, t.AccessorID); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
 }
 
 // Run plans and applies on every tick of interval (and once immediately) until ctx is done.
@@ -347,10 +258,6 @@ func (r *Reconciler) Run(ctx context.Context, interval time.Duration) error {
 		if err := r.Apply(ctx, plan); err != nil {
 			logger.Printf("fleet: apply failed: %v", err)
 		}
-
-		if err := r.SweepNodeTokens(ctx); err != nil {
-			logger.Printf("fleet: node token sweep failed: %v", err)
-		}
 	}
 
 	tick()
@@ -373,8 +280,8 @@ func (r *Reconciler) Run(ctx context.Context, interval time.Duration) error {
 // the worker pin vmToV1 applies from Worker; pool/host bookkeeping lives in the VM's *name* and
 // in Worker, not in labels.
 func (r *Reconciler) vmSpec(pool Pool, worker, name string) orchard.VMSpec {
-	startup := buildStartupScript(pool, worker, name, r.Options)
-	shutdown, shutdownTimeout := buildShutdownScript(pool, r.Options.NodeTokens != nil)
+	startup := BuildStartupScript(pool, worker, name)
+	shutdown, shutdownTimeout := BuildShutdownScript(pool)
 
 	spec := orchard.VMSpec{
 		Name:            name,
@@ -393,32 +300,12 @@ func (r *Reconciler) vmSpec(pool Pool, worker, name string) orchard.VMSpec {
 		ShutdownTimeout: shutdownTimeout,
 		TTL:             pool.TTL.Std(),
 		HostDirs:        hostDirsForPool(pool),
-	}
-
-	if pool.Isolated() {
-		spec.Softnet = true
-		spec.SoftnetBlock = []string{softnetBlockHost}
+		// Sealed: Softnet with the host blocked (see isolation.go).
+		Softnet:      true,
+		SoftnetBlock: []string{softnetBlockHost},
 	}
 
 	return spec
-}
-
-// NomadRPCAddressFromHTTPURL derives the default Nomad RPC endpoint from the configured HTTP
-// API URL. This assumes a direct Nomad listener on the same host; Nomad's HTTP API and RPC
-// listener use ports 4646 and 4647 respectively. A proxy or custom RPC port needs its own
-// explicit configuration field.
-func NomadRPCAddressFromHTTPURL(raw string) (string, error) {
-	if raw == "" {
-		return "", nil
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return "", fmt.Errorf("parse Nomad HTTP URL: %w", err)
-	}
-	if (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
-		return "", fmt.Errorf("Nomad HTTP URL must include an http or https host")
-	}
-	return net.JoinHostPort(u.Hostname(), "4647"), nil
 }
 
 func hostDirsForPool(pool Pool) []orchard.HostDir {
@@ -458,8 +345,8 @@ func specDrifted(desired orchard.VMSpec, existing orchard.VM) bool {
 	if desired.Image != existing.Image ||
 		desired.DiskSize != existing.DiskSize ||
 		desired.RestartPolicy != existing.RestartPolicy ||
-		withoutNodeACL(desired.StartupScript) != withoutNodeACL(existing.StartupScript) ||
-		withoutNodeACL(desired.ShutdownScript) != withoutNodeACL(existing.ShutdownScript) ||
+		desired.StartupScript != existing.StartupScript ||
+		desired.ShutdownScript != existing.ShutdownScript ||
 		desired.ShutdownTimeout != existing.ShutdownTimeout ||
 		desired.TTL != existing.TTL ||
 		!slices.Equal(desired.HostDirs, existing.HostDirs) ||
@@ -479,15 +366,6 @@ func specDrifted(desired orchard.VMSpec, existing orchard.VM) bool {
 	}
 
 	return desired.CPU != existing.CPU || desired.Memory != existing.Memory
-}
-
-var nodeACLBlocksRE = regexp.MustCompile(`(?s)# grove:(node-token|client-acl) begin\n.*?# grove:(node-token|client-acl) end\n\n?`)
-
-// withoutNodeACL strips the node-token and client-acl blocks (see scripts.go) from a script before
-// drift comparison. Each VM's token differs, and turning Nomad ACLs on shouldn't recreate every
-// healthy VM at once: VMs made before it pick the blocks up on their next recycle.
-func withoutNodeACL(script string) string {
-	return nodeACLBlocksRE.ReplaceAllString(script, "")
 }
 
 // hostOf is a VM's best-known host: the controller-observed Worker once Orchard has actually

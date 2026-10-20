@@ -39,32 +39,28 @@ type Pool struct {
 	ShutdownTimeout Duration `yaml:"shutdownTimeout,omitempty" json:"shutdownTimeout,omitempty"`
 	Username        string   `yaml:"username,omitempty" json:"username,omitempty"`
 	Password        string   `yaml:"password,omitempty" json:"password,omitempty"`
-	// AllowDockerSocket opts this pool's build/agent/shell jobs into mounting the VM's docker
-	// socket, which lets a dispatched job request a different container image than the fixed
-	// grove-runner default (nested `docker run` — see docs/JOBS.md). Off by default: the socket
-	// gives any job on the VM root-equivalent host control and breaks job-to-job isolation within
-	// the pool, so this is a deliberate per-pool trade-off, not something grove enables silently.
+	// Deprecated: AllowDockerSocket used to mount the VM's docker socket into a shared pool's
+	// jobs. Every pool is sealed now, and a sealed pool's jobs never get it; Validate switches it
+	// off with a warning.
 	AllowDockerSocket bool `yaml:"allowDockerSocket,omitempty" json:"allowDockerSocket,omitempty"`
-	// Network chooses what this pool's VMs can reach. Empty or "shared" keeps Tart's default
-	// shared NAT, where a guest reaches everything its host Mac reaches: the LAN, the host's own
-	// services, and the whole tailnet through the host. "isolated" runs each VM on Softnet with
-	// the host blocked, so the guest reaches only public addresses, and gives it its own tagged
-	// tailnet login for the one control-plane port it needs (see isolation.go and
-	// docs/OPERATIONS.md "Isolating a pool's network").
+	// Network is what this pool's VMs can reach, and is always "isolated" (also what empty
+	// means): each VM runs on Softnet with the host blocked, so the guest reaches only public
+	// addresses and never the host Mac, the LAN or the tailnet (see isolation.go and
+	// docs/OPERATIONS.md "Sealed pools"). "shared" is accepted for older specs and treated as
+	// isolated, with a warning.
 	Network string `yaml:"network,omitempty" json:"network,omitempty"`
-	// RunnerImage selects the fixed outer container used by every Linux Nomad job in this pool.
-	// It is independent of the VM image above and opt-in per-dispatch nested Docker overrides.
+	// RunnerImage selects the container image every job of a Linux pool runs in. It is
+	// independent of the VM image above.
 	RunnerImage string `yaml:"runnerImage,omitempty" json:"runnerImage,omitempty"`
 	// HostXcode shares one host-installed Xcode application read-only with guests in this pool.
 	// It is intentionally limited to the macos pool and pinned to the host app's build version.
 	HostXcode *HostXcodeConfig `yaml:"hostXcode,omitempty" json:"hostXcode,omitempty"`
-	// JobCPU/JobMemory are this pool's per-JOB Nomad resource defaults (MHz / MiB) — they size the
-	// `resources` block of every build/agent/shell job dispatched against this pool (see
-	// dispatch.PoolConfig, threaded through by internal/cli/serve.go's poolConfigs). These are
-	// deliberately distinct from CPU/Memory above, which size the pool's Orchard VMs themselves
-	// (the VM the job then runs inside) — a job's resources request is a slice of that VM's
-	// capacity, not the same number. Zero means "use the built-in default" — see
-	// JobCPUOrDefault/JobMemoryOrDefault.
+	// JobCPU/JobMemory are this pool's per-JOB sizing (MHz at 2000 per core / MiB) — they size
+	// the container of every build/agent/shell job of this pool and decide how many jobs one VM
+	// runs at once (see dispatch.PoolConfig, threaded through by internal/cli/serve.go's
+	// poolConfigs). These are deliberately distinct from CPU/Memory above, which size the pool's
+	// Orchard VMs themselves (the VM the job then runs inside) — a job is a slice of that VM's
+	// capacity. Zero means "use the built-in default" — see JobCPUOrDefault/JobMemoryOrDefault.
 	JobCPU    uint64 `yaml:"jobCPU,omitempty" json:"jobCPU,omitempty"`
 	JobMemory uint64 `yaml:"jobMemory,omitempty" json:"jobMemory,omitempty"`
 }
@@ -82,7 +78,7 @@ type HostXcodeConfig struct {
 	BuildVersion string `yaml:"buildVersion" json:"buildVersion"`
 }
 
-// Built-in per-job Nomad resource defaults (MHz / MiB) used when a pool doesn't set
+// Built-in per-job sizing defaults (MHz / MiB) used when a pool doesn't set
 // jobCPU/jobMemory in fleet.yaml. Deliberately modest — enough for a typical CI/agent script
 // without reserving so much of a pool VM's capacity that few jobs can run concurrently on it.
 const (
@@ -109,6 +105,9 @@ func (p Pool) JobMemoryOrDefault() uint64 {
 // Spec is the whole fleet.yaml.
 type Spec struct {
 	Pools []Pool `yaml:"pools" json:"pools"`
+	// Warnings lists what Validate changed about an older spec (a "shared" network, an
+	// allowDockerSocket), for callers to show the operator. Not part of fleet.yaml.
+	Warnings []string `yaml:"-" json:"-"`
 }
 
 // Duration is a time.Duration that (un)marshals as "12h" in YAML/JSON.
