@@ -1,7 +1,7 @@
 [Unit]
 Description=Register Rosetta 2 binfmt_misc handler for amd64 containers (grove)
 After=local-fs.target
-Before=docker.service nomad.service
+Before=docker.service
 DefaultDependencies=no
 
 [Service]

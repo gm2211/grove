@@ -19,24 +19,19 @@ ui:
 images: images-macos
 	cd images/linux-worker && packer init . && packer validate . && packer build .
 
-images-macos: images-nomad
+images-macos:
 	cd images/macos-worker && packer init . && packer validate . && packer build .
 
-# Build the pinned native Nomad dependency outside the VM. Reuses a verified artifact.
-.PHONY: images-nomad
-images-nomad:
-	./scripts/build-worker-nomad.sh
-
 # Full Xcode is opt-in and produces a distinct local VM.
-images-macos-xcode: images-nomad
+images-macos-xcode:
 	cd images/macos-worker && packer init . && packer validate -var-file=xcode.pkrvars.hcl . && packer build -var-file=xcode.pkrvars.hcl .
 
 # Lean Tahoe guest for sharing a compatible host Xcode application at runtime.
-images-macos-host-xcode: images-nomad
+images-macos-host-xcode:
 	cd images/macos-worker && packer init . && packer validate -var-file=host-xcode.pkrvars.hcl . && packer build -var-file=host-xcode.pkrvars.hcl .
 
 # Validate all macOS profiles without downloading or starting a VM.
-images-validate: images-nomad
+images-validate:
 	packer fmt -check -recursive images/macos-worker
 	cd images/macos-worker && packer init . && packer validate . && packer validate -var-file=xcode.pkrvars.hcl . && packer validate -var-file=host-xcode.pkrvars.hcl .
 

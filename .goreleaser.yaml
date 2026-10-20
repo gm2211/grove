@@ -56,7 +56,7 @@ brews:
     directory: Formula
     commit_msg_template: "Formula: update grove to {{ .Tag }} [skip ci]"
     homepage: "https://github.com/gm2211/grove"
-    description: "Your Macs as a private build/agent cloud: Tart VMs via Orchard, jobs via Nomad."
+    description: "Your Macs as a private build/agent cloud: jobs in sealed Tart VMs via Orchard."
     license: "MIT"
     install: |
       bin.install "grove"
