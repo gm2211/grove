@@ -84,6 +84,13 @@ dispatch and follow its own jobs without shelling out to the CLI. Example prompt
 
 See [docs/MCP.md](docs/MCP.md) for Codex / Claude Desktop registration and the full tool list.
 
+## Run CI on every push and pull request
+
+Add a `.grove.yml` to a repository, name the repository under `ci:` in the control plane's
+config.yaml, and `grove serve` runs its jobs on each new commit, posting every result back to
+GitHub as a check on the commit and the pull request. grove polls GitHub, so nothing on the
+internet has to reach your machines. See [docs/CI.md](docs/CI.md).
+
 ## Use from an agent orchestrator
 
 An orchestrator's `grove` executor drives grove over the same HTTP API as everything else: `POST

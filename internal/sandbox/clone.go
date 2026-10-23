@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 )
 
@@ -67,7 +68,51 @@ func Clone(ctx context.Context, git, repo, ref, token, dir string, log io.Writer
 	if err := cmd.Run(); err != nil {
 		return cloneFailed
 	}
+	fetchRef(ctx, git, args, env, dir, ref, log)
 	return 0
+}
+
+// fullSHA is a whole commit id, which a server can be asked for directly.
+var fullSHA = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
+
+// fetchRef makes ref checkout-able in the clone at dir when the clone didn't bring it: a shallow
+// clone has only the default branch, so a pull request's commit or another branch needs one more
+// fetch. A commit id is fetched as itself; any other ref as the branch of that name, into a local
+// branch, since run.sh's `git checkout <ref> --` doesn't guess one from a remote-tracking ref. A ref the clone already has costs no
+// fetch, and one that can't be fetched is left for the checkout in the VM to report.
+func fetchRef(ctx context.Context, git string, args, env []string, dir, ref string, log io.Writer) {
+	if ref == "" || ref == "HEAD" {
+		return
+	}
+	verify := exec.CommandContext(ctx, git, "-C", dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	verify.Env = withoutCloneToken(env)
+	if verify.Run() == nil {
+		return
+	}
+	spec := ref
+	if !fullSHA.MatchString(ref) {
+		spec = "+refs/heads/" + ref + ":refs/heads/" + ref
+	}
+	cmd := exec.CommandContext(ctx, git, append(args, "-C", dir, "fetch", "--quiet", "--depth", "50", "origin", spec)...)
+	cmd.Env = env
+	cmd.Stdout = log
+	cmd.Stderr = log
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(log, "grove: could not fetch %s\n", ref)
+	}
+}
+
+// withoutCloneToken is env with the clone token blanked, for git commands that don't talk to the
+// server.
+func withoutCloneToken(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "GROVE_CLONE_TOKEN=") {
+			kv = "GROVE_CLONE_TOKEN="
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // gitBinary finds git for Clone. Nomad's raw_exec tasks inherit the control plane agent's PATH,
