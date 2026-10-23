@@ -141,6 +141,15 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         if ! git "$${auth[@]}" clone --depth 50 -- "$repo" "$work" >> "$log" 2>&1; then
           finish 128
         fi
+        # A shallow clone has only the default branch: fetch another branch, or a commit on no
+        # branch it has (a pull request's head), before checking it out.
+        if [ "$ref" != HEAD ] && ! git -C "$work" rev-parse --verify --quiet "$ref^{commit}" > /dev/null 2>&1; then
+          case "$ref" in
+            *[!0-9a-f]*) spec="+refs/heads/$ref:refs/heads/$ref" ;;
+            *) spec="$ref" ;;
+          esac
+          git "$${auth[@]}" -C "$work" fetch --quiet --depth 50 origin "$spec" >> "$log" 2>&1 || true
+        fi
         if ! git -C "$work" checkout "$ref" -- >> "$log" 2>&1; then
           finish 1
         fi

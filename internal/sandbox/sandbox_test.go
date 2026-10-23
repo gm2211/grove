@@ -105,8 +105,13 @@ func TestClone_TokenOnlyInEnvironment(t *testing.T) {
 	}
 	data, _ := os.ReadFile(record)
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) != 2 || lines[1] != "token=s3cret" {
-		t.Fatalf("calls = %q, want one git call with the token in its environment", data)
+	// The clone, with the token in its environment, then the local check that ref is there,
+	// without it.
+	if len(lines) != 4 || lines[1] != "token=s3cret" || lines[3] != "token=" {
+		t.Fatalf("calls = %q, want the clone with the token in its environment, then a local check without it", data)
+	}
+	if want := "-C " + filepath.Join(dir, "work") + " rev-parse --verify --quiet main^{commit}"; lines[2] != want {
+		t.Errorf("second call = %s, want %s", lines[2], want)
 	}
 	argv := lines[0]
 	if strings.Contains(argv, "s3cret") {
@@ -118,6 +123,52 @@ func TestClone_TokenOnlyInEnvironment(t *testing.T) {
 	// Nothing is checked out on the control plane: the job's container does that.
 	if !strings.HasSuffix(argv, "clone --no-checkout --depth 50 -- https://github.com/o/r "+filepath.Join(dir, "work")) {
 		t.Errorf("clone argv = %s", argv)
+	}
+}
+
+// TestFetchRef fetches what a shallow clone of the default branch leaves out: another branch, and a
+// commit that is on no branch the clone has (a pull request's head).
+func TestFetchRef(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git")
+	}
+	src := t.TempDir()
+	run := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command(git, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run(src, "init", "-q", "-b", "main")
+	run(src, "config", "uploadpack.allowAnySHA1InWant", "true")
+	os.WriteFile(filepath.Join(src, "a.txt"), []byte("main"), 0o644)
+	run(src, "add", ".")
+	run(src, "commit", "-q", "-m", "main")
+	run(src, "checkout", "-q", "-b", "feature")
+	os.WriteFile(filepath.Join(src, "a.txt"), []byte("feature"), 0o644)
+	run(src, "commit", "-q", "-am", "feature")
+	run(src, "checkout", "-q", "-b", "pr")
+	os.WriteFile(filepath.Join(src, "a.txt"), []byte("pr"), 0o644)
+	run(src, "commit", "-q", "-am", "pr")
+	prSHA := run(src, "rev-parse", "HEAD")
+	run(src, "checkout", "-q", "main")
+	run(src, "branch", "-q", "-D", "pr")
+
+	for _, tc := range []struct{ ref, want string }{{"main", "main"}, {"feature", "feature"}, {prSHA, "pr"}} {
+		work := filepath.Join(t.TempDir(), "work")
+		run("", "clone", "-q", "--no-checkout", "--depth", "50", "file://"+src, work)
+		var log bytes.Buffer
+		fetchRef(context.Background(), git, nil, os.Environ(), work, tc.ref, &log)
+		run(work, "checkout", "-q", "--force", tc.ref, "--")
+		if data, _ := os.ReadFile(filepath.Join(work, "a.txt")); string(data) != tc.want {
+			t.Errorf("ref %s: a.txt = %q, want %q (log %s)", tc.ref, data, tc.want, log.String())
+		}
 	}
 }
 

@@ -16,6 +16,7 @@ internal/fleet/               fleet.yaml spec → desired VMs; reconciler
 internal/dispatch/            JobRequest → parameterized Nomad job; status; logs
 internal/server/              HTTP API (/api/v1/…) + embedded UI; token auth
 internal/gitauth/             operator-armed private-repo credential (see below)
+internal/ci/                  GitHub CI watcher: .grove.yml jobs per new commit, commit statuses back
 internal/mcp/                 MCP server (stdio)
 internal/install/             role bootstrap planner + doctor checks (see below)
 ui/                            Vite + React + TS SPA
@@ -95,6 +96,10 @@ for it, deliberately.
   nothing.
 - Only `https://` repo URLs match: a token does nothing for an SSH remote, so handing one over
   there would be a leak with no upside.
+- The CI watcher (`internal/ci`, started by `grove serve` when config.yaml names `ci.repos`) is
+  the one other user: it calls GitHub's API from the control plane with the same store's token,
+  to read branch heads, pull requests and `.grove.yml`, and to post commit statuses. It never
+  puts the token into a job or into `ci.json`. See [docs/CI.md](docs/CI.md).
 
 ## Building / testing
 

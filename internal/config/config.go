@@ -33,7 +33,37 @@ type Config struct {
 	// Additive: not required by any existing consumer of Config.
 	Tailscale  TailscaleConfig  `yaml:"tailscale,omitempty"`
 	Enrollment EnrollmentConfig `yaml:"enrollment,omitempty"`
+	// CI names the repositories `grove serve` watches on GitHub, running each new commit's
+	// .grove.yml jobs and reporting their results back on the commit (see internal/ci).
+	CI CIConfig `yaml:"ci,omitempty"`
 }
+
+// CIConfig configures grove's GitHub CI watcher. It polls GitHub from the control plane, so
+// nothing on the internet ever has to reach grove. It holds no credential: the watcher uses the
+// private-repo token an operator armed with `grove github enable`, and a repository outside
+// that token's scope is skipped.
+type CIConfig struct {
+	// Interval is how often each repository is checked for new commits. Zero means
+	// DefaultCIInterval.
+	Interval time.Duration `yaml:"interval,omitempty"`
+	Repos    []CIRepo      `yaml:"repos,omitempty"`
+}
+
+// CIRepo is one watched repository.
+type CIRepo struct {
+	// Repo is "owner/name".
+	Repo string `yaml:"repo"`
+	// Host is the GitHub host; empty means github.com. Set it for GitHub Enterprise.
+	Host string `yaml:"host,omitempty"`
+	// Branches are the branches whose new commits run CI, like a push trigger. Empty means none.
+	Branches []string `yaml:"branches,omitempty"`
+	// PullRequests runs CI on every new head commit of an open pull request whose branch lives in
+	// this repository. Pull requests from forks never run: their .grove.yml is a stranger's code.
+	PullRequests bool `yaml:"pullRequests,omitempty"`
+}
+
+// DefaultCIInterval is how often the CI watcher checks each repository when ci.interval is unset.
+const DefaultCIInterval = 30 * time.Second
 
 type EnrollmentConfig struct {
 	// IssuerToken belongs to a control-plane-only Orchard account with the narrow

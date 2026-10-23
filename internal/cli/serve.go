@@ -15,6 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/gm2211/grove/internal/artifacts"
+	"github.com/gm2211/grove/internal/ci"
 	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/fleet"
@@ -121,6 +122,23 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 			slog.Warn("serve: job reconciler sweep stopped", "err", err)
 		}
 	}()
+
+	// Watch the repositories named under ci: in config.yaml: run each new commit's .grove.yml jobs
+	// and post their results back on the commit. It polls GitHub, so GitHub never has to reach
+	// this machine, and it uses the armed private-repo token (a repository it doesn't cover is
+	// skipped with a warning).
+	if len(cfg.CI.Repos) > 0 {
+		watcher := &ci.Watcher{
+			Repos: cfg.CI.Repos, GitHub: ci.NewHTTPGitHub(), Auth: gitAuthStore, Jobs: ds,
+			ServerURL: cfg.Server.URL,
+		}
+		go func() {
+			if err := watcher.Run(ctx, cfg.CI.Interval); err != nil && !errors.Is(err, context.Canceled) {
+				slog.Warn("serve: CI watcher stopped", "err", err)
+			}
+		}()
+		slog.Info("serve: CI watcher started", "repos", len(cfg.CI.Repos))
+	}
 
 	serverOpts := server.Options{
 		Token: cfg.Server.Token, Version: Version,
