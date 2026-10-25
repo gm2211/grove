@@ -87,6 +87,11 @@ type Options struct {
 	// Job.Request, so it never lands in the on-disk job history nor in any API response;
 	// Job.RepoCredentialUsed records that one was used.
 	RepoAuth RepoAuth
+	// Secrets resolves JobRequest.Secrets names to values at Submit time (internal/secrets.Store).
+	// Each value is exported to the job under its name, through env_json like Env, and never
+	// stored on the Job record. Who may name which secret is decided before Submit, by the API
+	// (internal/server); nil means a request naming any secret is rejected.
+	Secrets SecretResolver
 	// Pools, when set, is used only to validate JobRequest.Resources hints against each pool's
 	// configured job CPU/Memory defaults (Submit rejects a hint that exceeds them with a 400). It
 	// is unrelated to EnsureJobs, which takes its own []PoolConfig directly — callers that already
@@ -197,10 +202,20 @@ func validate(req JobRequest) error {
 	if strings.HasPrefix(req.Ref, "-") {
 		return fmt.Errorf("dispatch: ref must not start with '-'")
 	}
-	// Nothing resolves named secrets yet; accepting them would let a caller believe a secret
-	// reached the job when it silently didn't.
-	if len(req.Secrets) > 0 {
-		return fmt.Errorf("dispatch: named secrets are not supported; nothing would resolve them")
+	seen := make(map[string]struct{}, len(req.Secrets))
+	for _, name := range req.Secrets {
+		if !envKeyPattern.MatchString(name) {
+			return fmt.Errorf("dispatch: secret name %q is not a valid shell variable name", name)
+		}
+		if _, dup := seen[name]; dup {
+			return fmt.Errorf("dispatch: secret %q is named twice", name)
+		}
+		seen[name] = struct{}{}
+		// The secret is exported under its own name; an env entry of the same name would make
+		// which value the job sees an accident of ordering.
+		if _, clash := req.Env[name]; clash {
+			return fmt.Errorf("dispatch: %q is both an env key and a named secret", name)
+		}
 	}
 	for key := range req.Env {
 		if !envKeyPattern.MatchString(key) {
@@ -296,7 +311,11 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	// The armed private-repo credential (if any) goes into the payload only the job's source task
 	// reads, never env_json and never the record persisted below. See Options.RepoAuth.
 	cloneToken, repoCredentialUsed := s.repoCredential(req)
-	if env := req.Env; len(env) > 0 {
+	env, err := s.jobEnv(req)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(env) > 0 {
 		envJSON, err := json.Marshal(env)
 		if err != nil {
 			return nil, false, fmt.Errorf("dispatch: marshal env: %w", err)
@@ -380,6 +399,30 @@ func (s *service) repoCredential(req JobRequest) (string, bool) {
 		return "", false
 	}
 	return token, true
+}
+
+// jobEnv is the environment the job runs with: req.Env plus each named secret, resolved now so a
+// rotated secret reaches the next job with no re-registration. The merged map exists only for
+// this dispatch: the stored record keeps req (names only, env values redacted).
+func (s *service) jobEnv(req JobRequest) (map[string]string, error) {
+	if len(req.Secrets) == 0 {
+		return req.Env, nil
+	}
+	if s.opts.Secrets == nil {
+		return nil, fmt.Errorf("dispatch: named secrets are not configured on this control plane")
+	}
+	values, err := s.opts.Secrets.Resolve(req.Secrets)
+	if err != nil {
+		return nil, fmt.Errorf("dispatch: %w", err)
+	}
+	env := make(map[string]string, len(req.Env)+len(values))
+	for k, v := range req.Env {
+		env[k] = v
+	}
+	for _, name := range req.Secrets {
+		env[name] = values[name]
+	}
+	return env, nil
 }
 
 // payloadHeader starts every build/agent dispatch payload. Those jobs' "source" prestart task is

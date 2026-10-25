@@ -14,7 +14,9 @@ internal/orchard/            Orchard client interface + impl (github.com/cirrusl
 internal/nomad/               Nomad client interface + impl (github.com/hashicorp/nomad/api)
 internal/fleet/               fleet.yaml spec → desired VMs; reconciler
 internal/dispatch/            JobRequest → parameterized Nomad job; status; logs
-internal/server/              HTTP API (/api/v1/…) + embedded UI; token auth
+internal/server/              HTTP API (/api/v1/…) + embedded UI; token + Tailscale-identity auth
+internal/tsauth/              Tailscale identity (tailscale whois on the peer address) → scopes
+internal/secrets/             operator-set named job secrets (JobRequest.Secrets)
 internal/gitauth/             operator-armed private-repo credential (see below)
 internal/ci/                  GitHub CI watcher: .grove.yml jobs per new commit, commit statuses back
 internal/mcp/                 MCP server (stdio)
@@ -100,6 +102,16 @@ for it, deliberately.
   the one other user: it calls GitHub's API from the control plane with the same store's token,
   to read branch heads, pull requests and `.grove.yml`, and to post commit statuses. It never
   puts the token into a job or into `ci.json`. See [docs/CI.md](docs/CI.md).
+
+## `internal/secrets` — named job secrets
+
+Same discipline as the private-repo token: a value is set only by an operator (`grove secret set`,
+value from stdin or an env var, never argv), lives only in `secrets.json` (0600, atomic rename),
+and reaches a job only through that dispatch's `env_json`. Never on `Job.Request` (which keeps
+the names), never in the job history, never in an API response (`Secret` carries a fingerprint).
+Authorization (who may name which secret) is checked in `internal/server` where the principal is
+known; `internal/dispatch` only resolves. `internal/dispatch/secrets_test.go`,
+`internal/secrets/secrets_test.go` and `internal/server/tailscale_auth_test.go` assert it.
 
 ## Building / testing
 

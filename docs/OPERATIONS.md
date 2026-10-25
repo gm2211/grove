@@ -115,6 +115,72 @@ revokes the Mac's earlier setup credentials (same name, read/dispatch scopes onl
 are never revoked this way. Stale ones left from before this change go with the Mac's next
 `grove setup`, or `grove access revoke DEVICE_ID` by hand.
 
+## Tailscale identity instead of tokens
+
+A machine on the tailnet can call the API with no grove token at all: `grove serve` looks up who
+the caller is with `tailscale whois` on the connection's peer address (the address WireGuard
+already authenticated) and gives it the scopes you granted that identity. Nothing is minted,
+stored or rotated, and removing a node from the tailnet (or a tag from a node) removes its access
+within 30 seconds. Grant scopes in the tailnet policy file, next to the rest of your ACLs:
+
+```jsonc
+"grants": [
+  {
+    "src": ["tag:argos"],
+    "dst": ["tag:grove"],          // the control plane's tag
+    "ip":  ["tcp:6120"],
+    "app": {"github.com/gm2211/grove": [{"scopes": ["read", "dispatch"]}]}
+  }
+]
+```
+
+or, without touching the policy file, in the control plane's `config.yaml`:
+
+```yaml
+server:
+  tailscale:
+    grants:
+      - match: tag:argos              # a node tag
+        scopes: [read, dispatch]
+      - match: you@example.com        # a user login (untagged nodes only)
+        scopes: [operator]
+```
+
+The scopes are the same as for device credentials (below); unknown ones are ignored. Both sources
+add up. A peer that nothing grants gets a 401, as does a bad `Authorization` header from any peer
+(a token, when sent, is always the identity). To check what a machine gets, `curl` the
+control plane's `/api/v1/whoami` from it: a Tailscale principal's id is `tailscale:<node stable
+id>`, with the node's tags. It needs the `tailscale` CLI on the
+control plane, is on whenever one is found, and `server.tailscale.disabled: true` turns it off.
+Requests that reach grove through a local proxy (`tailscale serve`, nginx) come from loopback and
+are never authenticated this way.
+
+Bearer tokens keep working alongside it, so moving an orchestrator over is: grant its tag, stop
+sending the token, then `grove access revoke` its device credential.
+
+## Named secrets for jobs
+
+A job that needs a credential (a Claude or Codex sign-in, an API key) names it instead of carrying
+it: `"secrets": ["CLAUDE_CODE_OAUTH_TOKEN"]`. The value lives on the control plane
+(`secrets.json` next to `config.yaml`, mode 0600) and is exported into the job under that name at
+dispatch; the submitter never sends or sees it, and job history keeps only the name.
+
+```bash
+# on any machine with the operator credential; the value comes from stdin or an env var, never argv
+claude setup-token | grove secret set CLAUDE_CODE_OAUTH_TOKEN --allow tag:argos
+grove secret set CODEX_AUTH_JSON --allow tag:argos < ~/.codex/auth.json
+grove secret set OPENAI_API_KEY --from-env OPENAI_API_KEY --allow DEVICE_ID
+grove secret list                         # names, grants, fingerprints, last use — never values
+grove secret rm OPENAI_API_KEY
+```
+
+`--allow` takes a Tailscale tag (`tag:argos`), a Tailscale identity (`tailscale:<stable id>`) or a
+device credential id, and repeats; with none, only an operator can request the secret. Running
+`grove secret set` again rotates the value (the next dispatch gets it) and replaces the grants.
+Names are shell variable names; `PATH`, `HOME` and the like, and the `NOMAD_`/`GROVE_` prefixes,
+are refused. Values may be multi-line (up to 64 KiB). The same operations are
+`GET /api/v1/secrets` and `PUT`/`DELETE /api/v1/secrets/{name}`.
+
 ## Letting jobs clone private repos (and turning it back off)
 
 Grove has no GitHub credential until you give it one, so a job against a private repository fails

@@ -40,6 +40,9 @@ type Principal struct {
 	ID     string   `json:"id"`
 	Name   string   `json:"name"`
 	Scopes []string `json:"scopes"`
+	// Tags are the Tailscale node tags of a principal authenticated by Tailscale identity; empty
+	// for a token. A named secret may be granted to a tag (see internal/secrets).
+	Tags []string `json:"tags,omitempty"`
 }
 
 // DeviceCredential is the JSON-safe public record for an enrolled device.

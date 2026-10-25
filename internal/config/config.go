@@ -92,6 +92,26 @@ type ServerConfig struct {
 	Token string `yaml:"token,omitempty"`
 	// TokenKeychain names the macOS Keychain account holding a device-scoped client token.
 	TokenKeychain string `yaml:"tokenKeychain,omitempty"`
+	// Tailscale lets tailnet peers call the API with no token at all, authenticated by their
+	// Tailscale identity (see internal/tsauth). Bearer tokens keep working alongside it.
+	Tailscale ServerTailscaleConfig `yaml:"tailscale,omitempty"`
+}
+
+// ServerTailscaleConfig is server.tailscale. Identity auth is on whenever the control plane has a
+// tailscale CLI, but grants nothing by itself: a peer gets scopes only from the tailnet policy
+// file's "github.com/gm2211/grove" app capability or from Grants below.
+type ServerTailscaleConfig struct {
+	// Disabled turns Tailscale identity auth off; every caller then needs a bearer token.
+	Disabled bool `yaml:"disabled,omitempty"`
+	// Grants maps Tailscale identities to grove scopes, in addition to the policy file.
+	Grants []TailscaleGrant `yaml:"grants,omitempty"`
+}
+
+// TailscaleGrant gives Scopes to every tailnet peer Match names: "tag:argos" (a node tag), a
+// user login such as "alice@example.com" (untagged nodes only), or a node's stable id.
+type TailscaleGrant struct {
+	Match  string   `yaml:"match"`
+	Scopes []string `yaml:"scopes"`
 }
 
 const ServerTokenKeychainService = "com.gm2211.grove.server-client"

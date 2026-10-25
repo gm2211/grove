@@ -9,7 +9,14 @@ import (
 	"time"
 
 	"github.com/gm2211/grove/internal/dispatch"
+	"github.com/gm2211/grove/internal/tsauth"
 )
+
+// PeerAuthenticator authenticates a request by its TCP peer address; *tsauth.Authenticator is the
+// implementation.
+type PeerAuthenticator interface {
+	Authenticate(ctx context.Context, remoteAddr string) (tsauth.Result, bool)
+}
 
 type principalContextKey struct{}
 
@@ -65,7 +72,7 @@ func requiredScope(r *http.Request) string {
 	}
 	// /github/ is operator-only for reads too: its status names the repositories and the window
 	// the control plane is currently willing to clone privately.
-	if path == "/access" || strings.HasPrefix(path, "/access/") || strings.HasPrefix(path, "/join/approve/") ||
+	if path == "/access" || strings.HasPrefix(path, "/access/") || path == "/secrets" || strings.HasPrefix(path, "/secrets/") || strings.HasPrefix(path, "/join/approve/") ||
 		path == "/join/pending" ||
 		strings.HasPrefix(path, "/vms/") || strings.HasPrefix(path, "/workers/") ||
 		strings.HasPrefix(path, "/github/") {
@@ -85,9 +92,10 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 	return s.withLogging(s.withCORS(s.withAuth(next)))
 }
 
-// withAuth requires "Authorization: Bearer <token>" matching Options.Token, unless no token is
-// configured (allow-all, already warned about at startup) or the request is for /healthz, which
-// stays reachable to unauthenticated monitoring probes.
+// withAuth requires "Authorization: Bearer <token>" matching Options.Token or a device credential,
+// or — with no Authorization header at all — a tailnet peer whose Tailscale identity is granted
+// scopes (Options.Tailscale). Nothing configured means allow-all (already warned about at
+// startup). /healthz and the public join endpoints stay reachable unauthenticated.
 func (s *Server) withAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		publicJoin := r.Method == http.MethodPost && r.URL.Path == "/join/requests" ||
@@ -96,23 +104,26 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if s.opts.Token == "" && s.opts.AccessStore == nil {
+		if s.opts.Token == "" && s.opts.AccessStore == nil && s.opts.Tailscale == nil {
 			p := Principal{ID: "development", Name: "unauthenticated", Scopes: []string{ScopeOperator}}
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalContextKey{}, p)))
 			return
 		}
 		const prefix = "Bearer "
 		auth := r.Header.Get("Authorization")
-		if !strings.HasPrefix(auth, prefix) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		token := strings.TrimPrefix(auth, prefix)
 		var principal Principal
-		if s.opts.Token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.opts.Token)) == 1 {
-			principal = Principal{ID: "operator", Name: "control-plane operator", Scopes: []string{ScopeOperator}}
-		} else if s.opts.AccessStore != nil {
-			principal, _ = s.opts.AccessStore.Authenticate(token)
+		switch {
+		case strings.HasPrefix(auth, prefix):
+			// A presented token is always the identity, even from a tailnet peer: a bad one is a 401,
+			// never a silent fall-through to whatever the peer's Tailscale identity would grant.
+			token := strings.TrimPrefix(auth, prefix)
+			if s.opts.Token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.opts.Token)) == 1 {
+				principal = Principal{ID: "operator", Name: "control-plane operator", Scopes: []string{ScopeOperator}}
+			} else if s.opts.AccessStore != nil {
+				principal, _ = s.opts.AccessStore.Authenticate(token)
+			}
+		case auth == "" && s.opts.Tailscale != nil:
+			principal = s.tailscalePrincipal(r)
 		}
 		if principal.ID == "" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -124,6 +135,25 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalContextKey{}, principal)))
 	})
+}
+
+// tailscalePrincipal authenticates r by its TCP peer's Tailscale identity. Scopes grove doesn't
+// know are dropped, so a typo in the tailnet policy can't become a scope by accident.
+func (s *Server) tailscalePrincipal(r *http.Request) Principal {
+	res, ok := s.opts.Tailscale.Authenticate(r.Context(), r.RemoteAddr)
+	if !ok {
+		return Principal{}
+	}
+	scopes := make([]string, 0, len(res.Scopes))
+	for _, scope := range res.Scopes {
+		if _, known := validAccessScopes[scope]; known {
+			scopes = append(scopes, scope)
+		}
+	}
+	if len(scopes) == 0 {
+		return Principal{}
+	}
+	return Principal{ID: res.ID, Name: res.Name, Scopes: scopes, Tags: res.Tags}
 }
 
 // withCORS allows only same-origin requests: it reflects Origin back (so a browser-hosted UI on

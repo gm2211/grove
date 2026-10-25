@@ -20,9 +20,12 @@ import (
 	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/fleet"
 	"github.com/gm2211/grove/internal/gitauth"
+	"github.com/gm2211/grove/internal/install"
 	"github.com/gm2211/grove/internal/orchard"
 	"github.com/gm2211/grove/internal/sandbox"
+	"github.com/gm2211/grove/internal/secrets"
 	"github.com/gm2211/grove/internal/server"
+	"github.com/gm2211/grove/internal/tsauth"
 	"github.com/gm2211/grove/internal/wire"
 )
 
@@ -101,7 +104,15 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 		return fmt.Errorf("private-repo credential store: %w", err)
 	}
 
-	ds, err := dispatch.New(nc, dispatch.Options{Artifacts: ac, ArtifactRetention: cfg.Artifacts.Retention, Pools: pools, RepoAuth: gitAuthStore})
+	// Named job secrets: like the private-repo credential, one store shared by dispatch (which
+	// resolves names on submit) and the HTTP API (where the operator sets them and where each
+	// caller's right to name one is checked).
+	secretStore, err := secrets.NewStore(filepath.Join(filepath.Dir(cfgPath), "secrets.json"))
+	if err != nil {
+		return fmt.Errorf("named secret store: %w", err)
+	}
+
+	ds, err := dispatch.New(nc, dispatch.Options{Artifacts: ac, ArtifactRetention: cfg.Artifacts.Retention, Pools: pools, RepoAuth: gitAuthStore, Secrets: secretStore})
 	if err != nil {
 		return fmt.Errorf("dispatch service: %w", err)
 	}
@@ -143,7 +154,10 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 	serverOpts := server.Options{
 		Token: cfg.Server.Token, Version: Version,
 		ControllerURL: cfg.Orchard.URL, ServerURL: cfg.Server.URL,
-		GitAuth: gitAuthStore,
+		GitAuth: gitAuthStore, Secrets: secretStore,
+	}
+	if ts := tailscaleAuthenticator(cfg.Server.Tailscale); ts != nil {
+		serverOpts.Tailscale = ts
 	}
 	accessStore, err := server.NewAccessStore(filepath.Join(filepath.Dir(cfgPath), "devices.json"))
 	if err != nil {
@@ -369,4 +383,21 @@ func sealedVMSlots(p fleet.Pool) int {
 		byMemory = int(p.Memory-sealedVMGuestReserveMiB) / int(p.JobMemoryOrDefault())
 	}
 	return max(1, min(byCPU, byMemory))
+}
+
+// tailscaleAuthenticator builds the Tailscale identity authenticator for `grove serve`, or nil
+// when it is disabled or this machine has no tailscale CLI (tokens then remain the only way in).
+func tailscaleAuthenticator(cfg config.ServerTailscaleConfig) *tsauth.Authenticator {
+	if cfg.Disabled {
+		slog.Info("serve: Tailscale identity auth disabled by server.tailscale.disabled")
+		return nil
+	}
+	bin, err := install.FindTailscale(nil, nil)
+	if err != nil {
+		slog.Info("serve: Tailscale identity auth off: no usable tailscale CLI", "err", err)
+		return nil
+	}
+	slog.Info("serve: Tailscale identity auth on", "tailscale", bin, "configGrants", len(cfg.Grants),
+		"policyCapability", tsauth.CapabilityName)
+	return tsauth.New(tsauth.CLIWhoIs{Runner: install.ExecRunner{}, Bin: bin}, cfg.Grants)
 }

@@ -278,7 +278,7 @@ func TestSubmit_EnvValuesNeverPersisted(t *testing.T) {
 	}
 }
 
-func TestSubmit_RejectsNamedSecrets(t *testing.T) {
+func TestSubmit_RejectsNamedSecretsWithoutAResolver(t *testing.T) {
 	nc := &fakeNomad{}
 	svc := newTestService(t, nc)
 	if _, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true", Secrets: []string{"GH_TOKEN"}}); err == nil {

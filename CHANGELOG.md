@@ -4,6 +4,19 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Tailnet callers no longer need a grove token.** A request with no `Authorization` header from
+  a Tailscale address is authenticated by `tailscale whois` on its peer address and gets the scopes
+  the tailnet policy grants it through the `github.com/gm2211/grove` app capability, or that
+  `server.tailscale.grants` in `config.yaml` gives its tag or login. Bearer tokens and device
+  credentials keep working unchanged, and a token, when sent, always wins. Off with
+  `server.tailscale.disabled: true`. See docs/OPERATIONS.md "Tailscale identity instead of tokens".
+
+- **Named job secrets.** `JobRequest.secrets` was reserved and rejected; it now resolves names an
+  operator set with `grove secret set NAME --allow tag:argos` (or `PUT /api/v1/secrets/{name}`)
+  into the job's environment at dispatch. The submitter never handles the value and job history
+  keeps only names. A non-operator may name only secrets granted to its id or Tailscale tags. See
+  docs/OPERATIONS.md "Named secrets for jobs".
+
 - **MinIO is gone: build artifacts are kept in a plain directory on the control plane**
   (`artifacts.dir` in `config.yaml`, default `~/.local/state/grove/artifacts`, next to `jobs.json`).
   Only the control plane ever read or wrote artifacts, so there is no longer an artifact service,

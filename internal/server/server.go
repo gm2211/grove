@@ -14,6 +14,7 @@ import (
 	"github.com/gm2211/grove/internal/gitauth"
 	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
+	"github.com/gm2211/grove/internal/secrets"
 )
 
 // Options configures the grove HTTP server.
@@ -24,6 +25,12 @@ type Options struct {
 	// AccessStore authenticates revocable per-device credentials. Token remains the
 	// control-plane operator credential and always has full access.
 	AccessStore *AccessStore
+	// Tailscale, when non-nil, authenticates requests that carry no Authorization header by the
+	// caller's Tailscale identity (see internal/tsauth). Bearer tokens keep working beside it.
+	Tailscale PeerAuthenticator
+	// Secrets holds the operator-managed named secrets jobs may request (JobRequest.Secrets). The
+	// same store is the dispatch service's resolver. Nil means no job can request one.
+	Secrets *secrets.Store
 	// GitAuth holds the optional, operator-armed credential for cloning PRIVATE repositories.
 	// Nil (or armed-never) means jobs can only source public repos. The same store is handed to
 	// the dispatch service as its RepoAuth, so arming it here takes effect on the next dispatch
@@ -77,7 +84,7 @@ func New(oc orchard.Client, nc nomad.Client, ds dispatch.Service, ac artifacts.C
 	if log == nil {
 		log = slog.Default()
 	}
-	if opts.Token == "" && opts.AccessStore == nil {
+	if opts.Token == "" && opts.AccessStore == nil && opts.Tailscale == nil {
 		log.Warn("grove server: no auth token configured — /api/v1 is UNAUTHENTICATED; set server.token in config.yaml")
 	}
 	if opts.RecyclePollInterval <= 0 {
@@ -125,6 +132,9 @@ func (s *Server) routes() http.Handler {
 	api.HandleFunc("POST /access/devices", s.handleIssueDevice)
 	api.HandleFunc("DELETE /access/devices/{id}", s.handleRevokeDevice)
 	api.HandleFunc("GET /whoami", s.handleWhoAmI)
+	api.HandleFunc("GET /secrets", s.handleListSecrets)
+	api.HandleFunc("PUT /secrets/{name}", s.handlePutSecret)
+	api.HandleFunc("DELETE /secrets/{name}", s.handleDeleteSecret)
 	api.HandleFunc("GET /github/sourcing", s.handleGitHubSourcing)
 	api.HandleFunc("PUT /github/sourcing", s.handleEnableGitHubSourcing)
 	api.HandleFunc("DELETE /github/sourcing", s.handleDisableGitHubSourcing)
