@@ -4,6 +4,13 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Linux jobs fall back to macOS.** A job a shared Linux pool can't place moves to the shared
+  `macos` pool: after 20 seconds when the pool has no node at all, after 3 minutes when its nodes
+  are busy. The job keeps its id and gains `fallback: {from, to, at, reason}`. Jobs whose last 3
+  runs on macOS all failed (same kind, pool and repo) stop falling back for 7 days and wait for
+  Linux. Opt out per job with `pinPool: true`, per pool with fleet.yaml `fallback: none`. See
+  docs/JOBS.md "Falling back to macOS".
+
 - **A boot-looping VM is rebuilt too**, not only a failed one: a VM Orchard has restarted 3 or
   more times (`fleet.BootLoopRestarts`) is deleted and recreated, at most once per 10 minutes.
 

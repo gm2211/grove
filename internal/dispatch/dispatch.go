@@ -59,6 +59,10 @@ type JobRequest struct {
 	// machines). Nil means the default: build and shell jobs are rerun, agent jobs are not, since
 	// an agent may already have pushed or posted something a rerun would do twice.
 	RetryLost *bool `json:"retryLost,omitempty"`
+	// PinPool keeps the job in Pool even when it can't be placed there: no fallback to another
+	// pool (see PoolConfig.Fallback). For a job that needs the pool's OS, e.g. one that runs
+	// docker or apt-get.
+	PinPool bool `json:"pinPool,omitempty"`
 }
 
 // retryLost is req's effective RetryLost.
@@ -133,6 +137,9 @@ type Job struct {
 	// nodes available — see nomad.Client.JobEvaluations). Empty when the job isn't pending, or
 	// Nomad hasn't recorded a placement failure (yet).
 	PendingReason string `json:"pendingReason,omitempty"`
+	// Fallback is set when the job ran in another pool than Request.Pool because nothing there
+	// could place it (see PoolConfig.Fallback).
+	Fallback *Fallback `json:"fallback,omitempty"`
 }
 
 // Placement is where a job's allocation landed, resolved via the Nomad node's meta (see

@@ -67,6 +67,36 @@ type Pool struct {
 	// JobCPUOrDefault/JobMemoryOrDefault.
 	JobCPU    uint64 `yaml:"jobCPU,omitempty" json:"jobCPU,omitempty"`
 	JobMemory uint64 `yaml:"jobMemory,omitempty" json:"jobMemory,omitempty"`
+	// Fallback names the pool this pool's jobs move to when they can't be placed here (see
+	// Spec.FallbackFor and docs/JOBS.md "Falling back to macOS"). Empty means automatic: a shared
+	// Linux pool falls back to a shared macos pool, since most Linux build scripts run on macOS
+	// too. FallbackNone turns it off.
+	Fallback string `yaml:"fallback,omitempty" json:"fallback,omitempty"`
+}
+
+// FallbackNone is the Pool.Fallback value that keeps a pool's jobs in that pool.
+const FallbackNone = "none"
+
+// FallbackFor resolves p.Fallback against the spec: the pool p's unplaceable jobs move to, or ""
+// for none. Only a shared pool falls back, and only to another shared pool: a sealed pool's jobs
+// run under different isolation and on the control plane's own Nomad client.
+func (s *Spec) FallbackFor(p Pool) string {
+	if p.Isolated() || p.Fallback == FallbackNone {
+		return ""
+	}
+	target := p.Fallback
+	if target == "" {
+		if p.MacOS() {
+			return ""
+		}
+		target = MacOSPool
+	}
+	for _, q := range s.Pools {
+		if q.Name == target && q.Name != p.Name && !q.Isolated() {
+			return target
+		}
+	}
+	return ""
 }
 
 // MacOSPool is the name of the pool whose VMs are macOS guests; every other pool is Linux.
