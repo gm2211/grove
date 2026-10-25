@@ -19,7 +19,7 @@ and the fleet reconciler / startup-shutdown scripts (`internal/fleet`).
 Tart only runs on Apple Silicon Macs (it's built on `Virtualization.framework`), so both worker
 images can only be built locally on a Mac, never in GitHub-hosted CI. See `.github/workflows/images.yml`
 for what *is* automated (the `images/runner` container) and the `make images` target below for the
-manual path. The native Nomad build currently requires Go 1.27.1 and an Xcode-selected build
+manual path. The native Nomad build currently requires Go 1.27.3 and an Xcode-selected build
 host; the tested host used Xcode 27.0. These build tools are not copied into the worker.
 
 ```console

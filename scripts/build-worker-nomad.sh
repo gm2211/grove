@@ -5,7 +5,7 @@ readonly NOMAD_VERSION="2.0.7"
 readonly NOMAD_COMMIT="9dcbdc5e64ecc4ec63e42b225af729c87c87cf83"
 readonly NOMAD_SOURCE_SHA256="a250613ab718df0f848d4c982884d47f7c80cbb0860ee298475220eb587153a8"
 readonly PATCH_SHA256="f6ce70b2bbc77a69e9672491211f2c9a21b89d51266fba333b6b60950d646191"
-readonly GO_VERSION="go1.27.1"
+readonly GO_VERSION="go1.27.3"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
