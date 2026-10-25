@@ -238,3 +238,113 @@ const egressFenceDockerDropIn = `# Installed by grove's fleet startup script for
 [Service]
 ExecStartPre=/usr/local/sbin/grove-egress-fence
 `
+
+// homeFenceScript renders the part of a shared pool's startup script that keeps its jobs off home:
+// they reach the public internet, but not private, tailnet (CGNAT) or link-local addresses, so not
+// the LAN, the host Mac, the control plane or any tailnet device. It filters only job traffic: the
+// VM's own Nomad client and Tailscale are untouched. On Linux jobs are containers, fenced in
+// DOCKER-USER exactly as a sealed guest's are, except that DNS to the guest's own resolvers stays
+// open (a shared guest's resolver is often its host). On macOS jobs are processes of the job user,
+// fenced by a pf anchor matching that user.
+func homeFenceScript(pool Pool) string {
+	if pool.MacOS() {
+		return strings.NewReplacer(
+			"@PF_RULES@", strings.TrimSuffix(macosHomeFenceRules, "\n"),
+			"@PF_LOADER@", strings.TrimSuffix(macosHomeFenceLoader, "\n"),
+		).Replace(macosHomeFenceTemplate)
+	}
+	return strings.NewReplacer(
+		"@EGRESS_FENCE_SCRIPT@", strings.TrimSuffix(sharedEgressFenceScript(), "\n"),
+		"@EGRESS_FENCE_DROPIN@", strings.TrimSuffix(sharedEgressFenceDropIn, "\n"),
+	).Replace(linuxHomeFenceTemplate)
+}
+
+// homeFenceCIDRs are the destinations no job may reach.
+const homeFenceCIDRs = "10.0.0.0/8 100.64.0.0/10 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16"
+
+// sharedEgressFenceScript is egressFenceScript with DNS to the guest's resolvers let through ahead
+// of the rejects.
+func sharedEgressFenceScript() string {
+	const rejects = "for grove_cidr in 10.0.0.0/8 100.64.0.0/10 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16; do\n"
+	dns := `# A shared guest's resolver is usually its host Mac (or Tailscale's 100.100.100.100), which the
+# rejects below would cut off; containers may still ask it, on port 53 only.
+for grove_ns in $(awk '$1 == "nameserver" && $2 !~ /:/ { print $2 }' /etc/resolv.conf 2>/dev/null); do
+  iptables -w -A GROVE-EGRESS -d "$grove_ns" -p udp --dport 53 -j RETURN
+  iptables -w -A GROVE-EGRESS -d "$grove_ns" -p tcp --dport 53 -j RETURN
+done
+`
+	s := strings.Replace(egressFenceScript, rejects, dns+"for grove_cidr in "+homeFenceCIDRs+"; do\n", 1)
+	return strings.Replace(s, "for pools with network: isolated", "for shared pools", 1)
+}
+
+const sharedEgressFenceDropIn = `# Installed by grove's fleet startup script for shared pools.
+[Service]
+ExecStartPre=/usr/local/sbin/grove-egress-fence
+`
+
+const linuxHomeFenceTemplate = `# --- jobs reach the internet, not home ---
+# Job containers may not open connections to private, tailnet or link-local addresses; this VM's
+# own Nomad client and Tailscale are not affected. The fence runs before every Docker start
+# (Docker refuses to start if it fails), and right now for the Docker that is already running.
+grove_priv mkdir -p /usr/local/sbin /etc/systemd/system/docker.service.d
+grove_priv tee /usr/local/sbin/grove-egress-fence >/dev/null <<'GROVE_EGRESS_FENCE'
+@EGRESS_FENCE_SCRIPT@
+GROVE_EGRESS_FENCE
+grove_priv chmod 0755 /usr/local/sbin/grove-egress-fence
+grove_priv tee /etc/systemd/system/docker.service.d/grove-egress-fence.conf >/dev/null <<'GROVE_EGRESS_FENCE_DROPIN'
+@EGRESS_FENCE_DROPIN@
+GROVE_EGRESS_FENCE_DROPIN
+grove_priv systemctl daemon-reload
+grove_priv /bin/sh -s <<'GROVE_EGRESS_FENCE_NOW'
+@EGRESS_FENCE_SCRIPT@
+GROVE_EGRESS_FENCE_NOW
+`
+
+// macosHomeFenceRules is the pf anchor that fences the job user. pf can match a socket's owner
+// only for TCP and UDP, which is all a job can open without root. DNS (port 53) stays open, since
+// the guest's resolver is usually its host.
+const macosHomeFenceRules = `grove_home = "{ 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, fc00::/7, fe80::/10 }"
+pass out quick proto { tcp, udp } from any to $grove_home port 53 user ` + MacOSJobUser + `
+block return out quick proto { tcp, udp } from any to $grove_home user ` + MacOSJobUser + `
+`
+
+// macosHomeFenceLoader loads /etc/pf.conf (whose anchor "com.apple/*" is the hook grove's anchor
+// hangs from), then grove's anchor, then enables pf, and fails unless the anchor's rules are live.
+// The startup script runs it inline (so a failure stops the script before Nomad takes work), and a
+// LaunchDaemon reruns it at every boot.
+const macosHomeFenceLoader = `#!/bin/sh
+# Installed by grove's fleet startup script for the macos pool.
+set -eu
+pfctl -q -f /etc/pf.conf
+pfctl -q -a com.apple/grove-jobs -f /usr/local/etc/grove/pf-jobs.conf
+pfctl -q -E >/dev/null 2>&1 || pfctl -q -e >/dev/null 2>&1 || true
+pfctl -q -a com.apple/grove-jobs -s rules | grep -q 'user'
+pfctl -s info 2>/dev/null | grep -q 'Status: Enabled'
+`
+
+const macosHomeFenceTemplate = `# --- jobs reach the internet, not home ---
+# Processes of the job user may not open connections to private, tailnet or link-local addresses;
+# this VM's own Nomad client and Tailscale are not affected.
+grove_priv mkdir -p /usr/local/etc/grove /usr/local/sbin
+grove_priv tee /usr/local/etc/grove/pf-jobs.conf >/dev/null <<'GROVE_PF_JOBS'
+@PF_RULES@
+GROVE_PF_JOBS
+grove_priv tee /usr/local/sbin/grove-pf-jobs >/dev/null <<'GROVE_PF_LOADER'
+@PF_LOADER@
+GROVE_PF_LOADER
+grove_priv chmod 0755 /usr/local/sbin/grove-pf-jobs
+grove_priv tee /Library/LaunchDaemons/com.grove.pf-jobs.plist >/dev/null <<'GROVE_PF_PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.grove.pf-jobs</string>
+  <key>ProgramArguments</key><array><string>/usr/local/sbin/grove-pf-jobs</string></array>
+  <key>RunAtLoad</key><true/>
+</dict>
+</plist>
+GROVE_PF_PLIST
+grove_priv /bin/sh -s <<'GROVE_PF_LOADER_NOW'
+@PF_LOADER@
+GROVE_PF_LOADER_NOW
+`

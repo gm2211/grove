@@ -4,6 +4,12 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Jobs reach the internet, never home.** Every shared pool's guest now fences its jobs off
+  private, tailnet (CGNAT) and link-local addresses: Linux job containers in `DOCKER-USER` (the
+  sealed pools' fence, plus DNS to the guest's resolvers), macOS jobs with a pf anchor on the job
+  user, reloaded at boot. The guest's own Nomad client and Tailscale are unaffected. There is no
+  opt-out. The startup script changes, so every shared VM is recreated once on upgrade.
+
 - **Worker Macs no longer authenticate by Tailscale identity.** A shared pool's jobs reach the
   control plane through their host Mac's network, so they arrived as the Mac's identity, which
   could carry its owner's operator grant. grove now refuses Tailscale identity auth from any
