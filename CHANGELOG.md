@@ -4,6 +4,20 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **A boot-looping VM is rebuilt too**, not only a failed one: a VM Orchard has restarted 3 or
+  more times (`fleet.BootLoopRestarts`) is deleted and recreated, at most once per 10 minutes.
+
+- **A failed `tailscale up` no longer stops a shared-pool VM's startup script.** Under `set -eu` an
+  expired or revoked `tailscale.authKey` ended the script before Nomad restarted with the VM's
+  meta, so the VM's Nomad node had no `meta.pool`, took no job, and Orchard restarted the VM
+  forever (40,426 times on one Linux worker). The guest now logs the failure and carries on;
+  it reaches the control plane through its host's NAT anyway. This changes the generated Linux
+  startup script, so existing Linux VMs are recreated once.
+
+- **A job marked lost for never being placed now stops its Nomad job.** It used to stay queued in
+  Nomad and run, unwatched, as soon as a matching node joined. `grove serve` also stops the
+  leftover Nomad jobs of such lost jobs once at startup.
+
 - **A failed VM is rebuilt instead of holding its slot forever.** Orchard's restart policy never
   touches a VM whose start failed, and the reconciler treated it as up to date, so a pool's only
   VM could sit "failed" for weeks while every job for that pool ended "no allocation within 30m".

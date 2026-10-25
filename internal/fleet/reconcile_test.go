@@ -679,3 +679,31 @@ func TestPlan_FailedVM_RebuiltAfterRetryWait(t *testing.T) {
 		t.Errorf("delete reason = %q, want Orchard's failure message", plan.Deletes[0].Reason)
 	}
 }
+
+func TestPlan_BootLoopingVM_Rebuilt(t *testing.T) {
+	pool := basePool()
+	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	r := &Reconciler{Spec: &Spec{Pools: []Pool{pool}}, Options: Options{Now: func() time.Time { return now }}}
+	name := VMName(pool.Name, "mac1", 0)
+	vm := existingFrom(r.vmSpec(pool, "mac1", name))
+	vm.Status = "running"
+	vm.CreatedAt = now.Add(-691 * time.Hour)
+	client := &fakeOrchardClient{workers: []orchard.Worker{onlineWorker("mac1")}, vms: []orchard.VM{vm}}
+	r.Client = client
+
+	vm.RestartCount = BootLoopRestarts - 1
+	client.vms[0] = vm
+	if plan, err := r.Plan(context.Background()); err != nil || !plan.Empty() {
+		t.Fatalf("a VM restarted a couple of times is still healthy: plan=%+v err=%v", plan, err)
+	}
+
+	vm.RestartCount = 40426
+	client.vms[0] = vm
+	plan, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Deletes) != 1 || len(plan.Creates) != 1 || plan.Deletes[0].Reason != "boot loop: restarted 40426 times" {
+		t.Fatalf("want the boot-looping VM rebuilt, got %+v", plan)
+	}
+}

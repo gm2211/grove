@@ -56,7 +56,12 @@ func buildStartupScript(pool Pool, worker, vmName string, opts Options) string {
 	}
 
 	if opts.TailscaleAuthKey != "" {
-		fmt.Fprintf(&b, "tailscale up --authkey=%s --hostname=\"$grove_vm\" --ssh --accept-routes\n\n",
+		// Not fatal: a shared pool's guest already reaches the control plane through its host's
+		// NAT, and under `set -eu` an expired or revoked key used to end the script here, before
+		// Nomad was restarted with this VM's meta. Orchard then restarted the VM, again and again,
+		// while its meta-less Nomad node could take no job.
+		fmt.Fprintf(&b, "if ! tailscale up --authkey=%s --hostname=\"$grove_vm\" --ssh --accept-routes; then\n"+
+			"  echo \"grove: tailscale up failed (expired or revoked tailscale.authKey?); continuing without joining the tailnet\" >&2\nfi\n\n",
 			shQuote(opts.TailscaleAuthKey))
 	}
 
