@@ -190,6 +190,9 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 		if purger, ok := nomad.AsNodePurger(nc); ok {
 			loop.nodes = &fleet.NodeSweeper{Nodes: purger}
 		}
+		if loads, ok := nomad.AsNodeLoads(nc); ok {
+			loop.jobs, loop.vmLoads, loop.tracker = ds, loads, &fleet.LoadTracker{}
+		}
 		go loop.run(ctx, interval)
 	}
 
@@ -221,6 +224,52 @@ type fleetReconcileLoop struct {
 	// it (403): the token in config.yaml can't do it, so retrying every tick only floods the log.
 	tokenSweepPaused time.Time
 	nodeSweepPaused  time.Time
+
+	// jobs, vmLoads and tracker feed elastic pools' autoscaling (see fleet.JobLoad); nil leaves
+	// elastic pools at their current size.
+	jobs    dispatch.Service
+	vmLoads nomad.NodeLoads
+	tracker *fleet.LoadTracker
+}
+
+// scaleUpAfter is how long a job must wait unplaced before it counts as demand for more VMs, so
+// a job Nomad places within a scheduling pass or two doesn't start one.
+const scaleUpAfter = 30 * time.Second
+
+// jobLoad reads the jobs waiting per pool and which VMs are busy, for the autoscaler. It returns
+// nil, and elastic pools hold their size this tick, when either can't be read.
+func (l *fleetReconcileLoop) jobLoad(ctx context.Context, now time.Time) *fleet.JobLoad {
+	if l.jobs == nil || l.vmLoads == nil || l.tracker == nil {
+		return nil
+	}
+	jobs, err := l.jobs.List(ctx)
+	if err != nil {
+		slog.Warn("serve: fleet reconciler: can't list jobs; elastic pools hold their size", "err", err)
+		return nil
+	}
+	busy, err := l.vmLoads.VMLoads(ctx)
+	if err != nil {
+		slog.Warn("serve: fleet reconciler: can't read Nomad node load; elastic pools hold their size", "err", err)
+		return nil
+	}
+	return l.tracker.Observe(now, waitingByPool(jobs, now), busy)
+}
+
+// waitingByPool counts the jobs waiting unplaced for at least scaleUpAfter, per the pool they
+// wait in: the fallback pool for a job that moved there.
+func waitingByPool(jobs []dispatch.Job, now time.Time) map[string]int {
+	waiting := map[string]int{}
+	for _, j := range jobs {
+		if j.Status != dispatch.StatusPending || j.AllocID != "" || now.Sub(j.SubmittedAt) < scaleUpAfter {
+			continue
+		}
+		pool := j.Request.Pool
+		if j.Fallback != nil {
+			pool = j.Fallback.To
+		}
+		waiting[pool]++
+	}
+	return waiting
 }
 
 // deniedSweepPause is how long a sweep Nomad refused with a 403 is skipped before trying again,
@@ -271,6 +320,7 @@ func (l *fleetReconcileLoop) tick(ctx context.Context) {
 		return
 	}
 
+	options.Load = l.jobLoad(ctx, time.Now())
 	r := &fleet.Reconciler{
 		Client:  l.client,
 		Spec:    spec,
@@ -290,6 +340,9 @@ func (l *fleetReconcileLoop) tick(ctx context.Context) {
 			slog.Warn("serve: fleet reconciler: apply failed", "err", err)
 			l.status.Report(plan, err, time.Now())
 			return
+		}
+		if l.tracker != nil {
+			l.tracker.Applied(plan, time.Now())
 		}
 	}
 	// Every tick, not only when the plan changed something: a deleted VM's token is revoked
@@ -337,10 +390,14 @@ func (l *fleetReconcileLoop) tick(ctx context.Context) {
 func planSummary(plan fleet.Plan) string {
 	parts := make([]string, 0, len(plan.Creates)+len(plan.Deletes))
 	for _, c := range plan.Creates {
-		parts = append(parts, "+create "+c.Spec.Name)
+		part := "+create " + c.Spec.Name
+		if c.Reason != "" {
+			part += " (" + c.Reason + ")"
+		}
+		parts = append(parts, part)
 	}
 	for _, d := range plan.Deletes {
-		parts = append(parts, "-delete "+d.Name)
+		parts = append(parts, "-delete "+d.Name+" ("+d.Reason+")")
 	}
 	return strings.Join(parts, " / ")
 }

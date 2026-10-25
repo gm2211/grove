@@ -142,6 +142,33 @@ its observed placement (`fleet.PoolAndHost`): pool from parsing the name, host f
 create; extra → delete; spec drift (image/cpu/memory/diskSize/restartPolicy/ttl/scripts/network)
 → delete + recreate.
 
+**Elastic pools.** `maxPerWorker` (with an optional `minPerWorker`, default 0) replaces
+`perWorker` with a range, and `grove serve` sizes the pool from its queue (`internal/fleet/autoscale.go`):
+
+- **Scale up:** while jobs have waited unplaced in the pool for 30s, add one VM on the matching
+  worker with the most free memory that fits it (Orchard's `tart-vms` slots, cores, memory, and
+  Apple's 2-macOS-VMs-per-Mac limit), then wait for it to join Nomad (up to 10m) before adding
+  another.
+- **Swap:** when no worker has room, remove a VM of another elastic pool that has no waiting jobs,
+  stays at or above its minimum, and has been idle for 2m. The new VM is created once that one is
+  gone. At most one swap per tick, and 15m between swaps on one worker, so pools don't flap.
+- **Scale down:** a VM above its pool's minimum that has had no job for 15m is removed, one per
+  pool per tick.
+
+A job that fell back to macOS (docs/JOBS.md "Falling back to macOS") counts as demand for macOS,
+not Linux, so Linux VMs only come up for Linux jobs that can't run on macOS or are pinned there.
+For example, one Linux and one macOS slot shared by two Macs:
+
+```yaml
+pools:
+  - name: linux
+    minPerWorker: 0
+    maxPerWorker: 1
+  - name: macos
+    minPerWorker: 0
+    maxPerWorker: 2
+```
+
 **`network`** is `shared` (the default: Tart's NAT, so a guest reaches whatever its host Mac
 reaches, LAN and tailnet included) or `isolated`. An isolated (sealed) pool's VMs run on Softnet
 with the host blocked (`netSoftnet` + `netSoftnetBlock: ["out @host"]`), use public DNS, keep job

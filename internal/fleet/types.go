@@ -72,6 +72,30 @@ type Pool struct {
 	// Linux pool falls back to a shared macos pool, since most Linux build scripts run on macOS
 	// too. FallbackNone turns it off.
 	Fallback string `yaml:"fallback,omitempty" json:"fallback,omitempty"`
+	// MinPerWorker and MaxPerWorker make a shared pool elastic: each matching worker runs between
+	// min and max of its VMs, more while jobs wait for the pool, fewer once they sit idle, and a
+	// full worker swaps an idle VM of another elastic pool for one of this pool (see
+	// autoscale.go). Setting MaxPerWorker turns this on; MinPerWorker then defaults to 0 and
+	// PerWorker is ignored. Unset, the pool runs exactly PerWorker VMs per worker, as always.
+	MinPerWorker *int `yaml:"minPerWorker,omitempty" json:"minPerWorker,omitempty"`
+	MaxPerWorker *int `yaml:"maxPerWorker,omitempty" json:"maxPerWorker,omitempty"`
+}
+
+// Bounds is how many of p's VMs each matching worker runs: at least min, at most max.
+func (p Pool) Bounds() (min, max int) {
+	if p.MaxPerWorker == nil {
+		return p.PerWorker, p.PerWorker
+	}
+	if p.MinPerWorker != nil {
+		min = *p.MinPerWorker
+	}
+	return min, *p.MaxPerWorker
+}
+
+// Elastic reports whether p's VM count follows demand (see Bounds).
+func (p Pool) Elastic() bool {
+	min, max := p.Bounds()
+	return min != max
 }
 
 // FallbackNone is the Pool.Fallback value that keeps a pool's jobs in that pool.

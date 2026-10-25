@@ -276,6 +276,10 @@ func printPlan(w io.Writer, plan fleet.Plan) {
 	}
 
 	for _, c := range plan.Creates {
+		if c.Reason != "" {
+			fmt.Fprintf(w, "+ create %-30s pool=%s worker=%s (%s)\n", c.Spec.Name, c.Pool, c.Worker, c.Reason)
+			continue
+		}
 		fmt.Fprintf(w, "+ create %-30s pool=%s worker=%s\n", c.Spec.Name, c.Pool, c.Worker)
 	}
 }
