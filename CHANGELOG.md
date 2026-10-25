@@ -4,6 +4,12 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- Sealed jobs (`grove sandbox run`) no longer depend on the guest's `timeout(1)`. `run.sh` keeps
+  the time limit itself (TERM at the limit, KILL 10 seconds later, exit 124) and runs the script in
+  its own process group, so a cancel reaches it exactly once and reports the job's own exit
+  status. uutils' `timeout`, Ubuntu 26.04's default, exits 124 or dies leaving the job running
+  when it is TERMed; this also fixes CI's `TestRunMacOS_Cancel` on `ubuntu-latest`.
+
 - **Tailnet callers no longer need a grove token.** A request with no `Authorization` header from
   a Tailscale address is authenticated by `tailscale whois` on its peer address and gets the scopes
   the tailnet policy grants it through the `github.com/gm2211/grove` app capability, or that

@@ -315,8 +315,9 @@ and after step 5:
   equal the pool's `perWorker`.
 - **Sizing.** `jobCPU`/`jobMemory` and the runner image don't apply: the job has the whole VM, as
   sized by the pool's `cpu`/`memory`.
-- **Timeouts** are enforced from the control plane (macOS has no `timeout(1)`): a job past its
-  timeout is stopped (TERM, then KILL after 10 seconds) and reports 124 as usual.
+- **Timeouts** are kept by the job's own `run.sh` in the VM (macOS has no `timeout(1)`), with the
+  control plane as a backstop: a job past its timeout is stopped (TERM, then KILL after 10
+  seconds) and reports 124 as usual.
 - `hostXcode` works as on a shared macOS pool: the shared Xcode is checked at boot, and Nomad
   stays off.
 - There is no in-guest packet fence like Linux's `grove-egress-fence`: Softnet's host block is
