@@ -16,6 +16,7 @@ import (
 
 	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/fleet"
+	"github.com/gm2211/grove/internal/pki"
 	"gopkg.in/yaml.v3"
 )
 
@@ -37,10 +38,12 @@ func buildControlPlaneSteps(r Runner, opts Options, out io.Writer) []Step {
 	// Set when the Nomad config on disk differs from what this plan renders, so the Nomad start
 	// step restarts an already-running agent onto the new config.
 	nomadConfigChanged := new(bool)
+	// The same for the sandbox-host client agent's config (or the certificates it presents).
+	sandboxConfigChanged := new(bool)
 
 	var steps []Step
 	steps = append(steps, controlPlaneDependencySteps(r, opts, out, destOrchard, isDarwin)...)
-	steps = append(steps, controlPlaneConfigSteps(r, opts, cfgDir, destOrchard, nomadConfigChanged)...)
+	steps = append(steps, controlPlaneConfigSteps(r, opts, cfgDir, destOrchard, nomadConfigChanged, sandboxConfigChanged)...)
 	steps = append(steps, controlPlaneServiceSteps(r, opts, cfgDir, destOrchard, isDarwin)...)
 	steps = append(steps, controlPlaneStartStep(r, opts, "orchard-controller", isDarwin, nil))
 	steps = append(steps, Step{
@@ -103,7 +106,7 @@ func buildControlPlaneSteps(r Runner, opts Options, out io.Writer) []Step {
 			return updateConfig(cfgDir, func(cfg *config.Config) { cfg.Enrollment.IssuerToken = name + ":" + token })
 		},
 	})
-	steps = append(steps, controlPlaneFinalizationSteps(r, opts, isDarwin, nomadConfigChanged)...)
+	steps = append(steps, controlPlaneFinalizationSteps(r, opts, isDarwin, nomadConfigChanged, sandboxConfigChanged)...)
 	return steps
 }
 
@@ -152,19 +155,24 @@ func controlPlaneStartStep(r Runner, opts Options, service string, isDarwin bool
 		}}
 }
 
-func controlPlaneFinalizationSteps(r Runner, opts Options, isDarwin bool, nomadConfigChanged *bool) []Step {
-	services := []string{"orchard-controller", "nomad"}
+func controlPlaneFinalizationSteps(r Runner, opts Options, isDarwin bool, nomadConfigChanged, sandboxConfigChanged *bool) []Step {
+	services := []string{"orchard-controller", "nomad", "nomad-sandbox-client"}
 	steps := make([]Step, 0, len(services))
 	for _, service := range services {
 		var restart *bool
-		if service == "nomad" {
+		switch service {
+		case "nomad":
 			restart = nomadConfigChanged
+		case "nomad-sandbox-client":
+			restart = sandboxConfigChanged
 		}
 		steps = append(steps, controlPlaneStartStep(r, opts, service, isDarwin, restart))
 	}
 	// Nomad is running by now; bootstrap its ACLs before grove serve reloads so the server comes
 	// back up holding the management token.
 	steps = append(steps, nomadACLBootstrapStep(r, opts, isDarwin))
+	// With the management token in hand, let the sandbox-host client register.
+	steps = append(steps, nomadSandboxIntroStep(r, opts, isDarwin))
 	// Older installs ran MinIO as the artifact store; artifacts now live on this machine's disk.
 	steps = append(steps, retireLegacyMinIOStep(r, opts, isDarwin))
 	steps = append(steps, controlPlaneReloadServerStep(r, opts, isDarwin))
@@ -272,7 +280,7 @@ func installPinnedNomad(ctx context.Context, r Runner, opts Options) error {
 
 // controlPlaneConfigSteps render the files under ~/.config/grove/ that the supervised processes
 // and the grove CLI itself read.
-func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string, nomadConfigChanged *bool) []Step {
+func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string, nomadConfigChanged, sandboxConfigChanged *bool) []Step {
 	tailnetHost := resolvedTailnetHost(r, opts)
 	orchardAddr := hostPortOrDefault(opts.Controller, tailnetHost, defaultOrchardControllerPort)
 	nomadAddr := hostPortOrDefault(opts.NomadAddr, tailnetHost, defaultNomadPort)
@@ -283,6 +291,20 @@ func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string,
 	artifactDir := artifactStoreDir(opts)
 	fleetPath := filepath.Join(cfgDir, "fleet.yaml")
 	orchardHome := controlPlaneOrchardHome(cfgDir)
+	tlsDir := nomadTLSDir(cfgDir)
+	tlsFiles := pki.NomadFiles(tlsDir)
+	sans := nomadServerSANs(hostOnly(nomadAddr))
+	serverSpec := NomadServerConfigSpec{
+		DataDir:  filepath.Join(cfgDir, "nomad", "data"),
+		BindAddr: hostOnly(nomadAddr),
+		TLS:      NomadTLSFiles{CA: tlsFiles.CA, Cert: tlsFiles.Server, Key: tlsFiles.ServerKey},
+	}
+	sandboxConfPath := nomadSandboxClientConfPath(cfgDir)
+	sandboxSpec := NomadSandboxClientConfigSpec{
+		DataDir: nomadSandboxDataDir(cfgDir),
+		Server:  net.JoinHostPort(hostOnly(nomadAddr), "4647"),
+		TLS:     NomadTLSFiles{CA: tlsFiles.CA, Cert: tlsFiles.Node, Key: tlsFiles.NodeKey},
+	}
 
 	return []Step{
 		{
@@ -302,14 +324,29 @@ func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string,
 			}),
 		},
 		{
+			Name: "config:nomad-tls",
+			Description: fmt.Sprintf("Create or renew grove's Nomad CA and certificates in %s (CA key 0600, never leaves this machine; server cert for %s; "+
+				"a client cert for grove itself and one for the fleet's VMs).", tlsDir, hostOnly(nomadAddr)),
+			Check: func(context.Context) (bool, error) {
+				ok := pki.Current(tlsDir, sans, time.Now())
+				if !ok {
+					// Agents load certificates at start: restart both onto the new ones.
+					*nomadConfigChanged = true
+					*sandboxConfigChanged = true
+				}
+				return ok, nil
+			},
+			Apply: func(context.Context) error {
+				_, _, err := pki.EnsureNomad(tlsDir, sans, time.Now())
+				return err
+			},
+		},
+		{
 			Name:        "config:nomad-server",
-			Description: fmt.Sprintf("Render %s (single-node server, bootstrap_expect=1, ACLs on, bind %s; also the client that runs sealed pools' jobs).", nomadConfPath, nomadAddr),
+			Description: fmt.Sprintf("Render %s (single-node server, bootstrap_expect=1, ACLs on, mutual TLS, strict client introduction, bind %s).", nomadConfPath, nomadAddr),
 			Check: func(ctx context.Context) (bool, error) {
 				ok, err := fileHasContent(nomadConfPath, func() (string, error) {
-					return RenderNomadServerConfig(NomadServerConfigSpec{
-						DataDir:  filepath.Join(cfgDir, "nomad", "data"),
-						BindAddr: hostOnly(nomadAddr),
-					})
+					return RenderNomadServerConfig(serverSpec)
 				})(ctx)
 				if err == nil && !ok {
 					*nomadConfigChanged = true
@@ -317,10 +354,23 @@ func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string,
 				return ok, err
 			},
 			Apply: writeRenderedFile(nomadConfPath, func() (string, error) {
-				return RenderNomadServerConfig(NomadServerConfigSpec{
-					DataDir:  filepath.Join(cfgDir, "nomad", "data"),
-					BindAddr: hostOnly(nomadAddr),
-				})
+				return RenderNomadServerConfig(serverSpec)
+			}),
+		},
+		{
+			Name:        "config:nomad-sandbox-client",
+			Description: fmt.Sprintf("Render %s (the control plane's own Nomad client, for sealed pools' jobs only; a separate agent so it registers through client introduction like any VM).", sandboxConfPath),
+			Check: func(ctx context.Context) (bool, error) {
+				ok, err := fileHasContent(sandboxConfPath, func() (string, error) {
+					return RenderNomadSandboxClientConfig(sandboxSpec)
+				})(ctx)
+				if err == nil && !ok {
+					*sandboxConfigChanged = true
+				}
+				return ok, err
+			},
+			Apply: writeRenderedFile(sandboxConfPath, func() (string, error) {
+				return RenderNomadSandboxClientConfig(sandboxSpec)
 			}),
 		},
 		{
@@ -360,18 +410,24 @@ func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string,
 		},
 		{
 			Name:        "config:grove-config-yaml",
-			Description: fmt.Sprintf("Write %s/config.yaml (orchard/nomad/server endpoints, generated server token).", cfgDir),
+			Description: fmt.Sprintf("Write %s/config.yaml (orchard/nomad/server endpoints, Nomad TLS file paths, generated server token).", cfgDir),
 			Check: func(ctx context.Context) (bool, error) {
 				cfg, err := loadOrInitConfig(cfgDir)
 				if err != nil {
 					return false, err
 				}
-				return cfg.Server.Token != "" && cfg.Orchard.URL != "" && cfg.Nomad.URL != "", nil
+				return cfg.Server.Token != "" && cfg.Orchard.URL != "" &&
+					strings.HasPrefix(cfg.Nomad.URL, "https://") && nomadTLSConfigured(cfg.Nomad, tlsFiles), nil
 			},
 			Apply: func(ctx context.Context) error {
 				return updateConfig(cfgDir, func(cfg *config.Config) {
 					cfg.Orchard.URL = "http://" + orchardAddr
-					cfg.Nomad.URL = "http://" + nomadAddr
+					cfg.Nomad.URL = "https://" + nomadAddr
+					cfg.Nomad.CACert = tlsFiles.CA
+					cfg.Nomad.ClientCert = tlsFiles.CLI
+					cfg.Nomad.ClientKey = tlsFiles.CLIKey
+					cfg.Nomad.NodeCert = tlsFiles.Node
+					cfg.Nomad.NodeKey = tlsFiles.NodeKey
 					cfg.Server.Listen = serverAddr
 					cfg.Server.URL = "http://" + serverAddr
 					if cfg.Server.Token == "" {
@@ -432,6 +488,13 @@ func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string
 			program:     "nomad",
 			args:        []string{"agent", "-config", nomadConf},
 			workingDir:  nomadDataDir,
+		},
+		{
+			name:        "nomad-sandbox-client",
+			label:       "com.grove.nomad-sandbox-client",
+			description: "Nomad client for sealed pools' jobs",
+			program:     "nomad",
+			args:        []string{"agent", "-config", nomadSandboxClientConfPath(cfgDir)},
 		},
 		{
 			name:        "server",
@@ -733,3 +796,26 @@ func hostOnly(hostPort string) string {
 }
 
 const hour = time.Hour
+
+// nomadTLSDir holds grove's Nomad CA and certificates (internal/pki).
+func nomadTLSDir(cfgDir string) string { return filepath.Join(cfgDir, "nomad", "tls") }
+
+func nomadSandboxClientConfPath(cfgDir string) string {
+	return filepath.Join(cfgDir, "nomad", "sandbox-client.hcl")
+}
+
+func nomadSandboxDataDir(cfgDir string) string { return filepath.Join(cfgDir, "nomad", "sandbox-data") }
+
+// nomadServerSANs is what the server certificate must cover besides Nomad's role name: the host
+// grove and the VMs dial it by.
+func nomadServerSANs(host string) pki.ServerSANs {
+	if ip := net.ParseIP(host); ip != nil {
+		return pki.ServerSANs{IPs: []net.IP{ip}}
+	}
+	return pki.ServerSANs{DNSNames: []string{host}}
+}
+
+func nomadTLSConfigured(ep config.Endpoint, files pki.Files) bool {
+	return ep.CACert == files.CA && ep.ClientCert == files.CLI && ep.ClientKey == files.CLIKey &&
+		ep.NodeCert == files.Node && ep.NodeKey == files.NodeKey
+}

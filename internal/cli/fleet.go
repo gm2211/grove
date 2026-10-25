@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"text/tabwriter"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/fleet"
 	"github.com/gm2211/grove/internal/nomad"
+	"github.com/gm2211/grove/internal/wire"
 	"github.com/spf13/cobra"
 )
 
@@ -246,7 +248,7 @@ func fleetOptions(cfg *config.Config) (fleet.Options, error) {
 	// A nomad.token means Nomad runs with ACLs on: each VM then needs its own node token to
 	// drain itself on recycle, and its Nomad client should enforce ACLs too.
 	if cfg.Nomad.URL != "" && cfg.Nomad.Token != "" {
-		client, err := nomad.New(cfg.Nomad.URL, cfg.Nomad.Token)
+		client, err := wire.NewNomadClient(cfg.Nomad)
 		if err != nil {
 			return fleet.Options{}, err
 		}
@@ -255,8 +257,50 @@ func fleetOptions(cfg *config.Config) (fleet.Options, error) {
 			return fleet.Options{}, fmt.Errorf("nomad client cannot mint node tokens")
 		}
 		options.NodeTokens = tokens
+		// Nomad over mutual TLS (config.yaml names a node certificate): every VM gets the CA and
+		// node certificate, plus its own introduction token, without which the server's strict
+		// client introduction refuses to register it.
+		if cfg.Nomad.NodeCert != "" {
+			nodeTLS, err := readNodeTLS(cfg.Nomad)
+			if err != nil {
+				return fleet.Options{}, err
+			}
+			intros, ok := nomad.AsNodeIntros(client)
+			if !ok {
+				return fleet.Options{}, fmt.Errorf("nomad client cannot mint introduction tokens")
+			}
+			options.NodeTLS = nodeTLS
+			options.NodeIntros = intros
+		}
 	}
 	return options, nil
+}
+
+// readNodeTLS loads the PEM files a VM's Nomad client needs from the paths in config.yaml.
+func readNodeTLS(ep config.Endpoint) (*fleet.NodeTLS, error) {
+	read := func(key, path string) (string, error) {
+		if path == "" {
+			return "", fmt.Errorf("config.yaml nomad.%s is not set; re-run `grove install --role control-plane`", key)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("read nomad.%s: %w", key, err)
+		}
+		return string(data), nil
+	}
+	ca, err := read("caCert", ep.CACert)
+	if err != nil {
+		return nil, err
+	}
+	cert, err := read("nodeCert", ep.NodeCert)
+	if err != nil {
+		return nil, err
+	}
+	key, err := read("nodeKey", ep.NodeKey)
+	if err != nil {
+		return nil, err
+	}
+	return &fleet.NodeTLS{CA: ca, Cert: cert, Key: key}, nil
 }
 
 func printPlan(w io.Writer, plan fleet.Plan) {

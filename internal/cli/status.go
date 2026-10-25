@@ -11,6 +11,7 @@ import (
 	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
+	"github.com/gm2211/grove/internal/wire"
 	"github.com/spf13/cobra"
 )
 
@@ -140,5 +141,5 @@ func newNomadClient(cfg *config.Config) (nomad.Client, error) {
 		return nil, fmt.Errorf("nomad.url is not configured; run `grove config set nomad.url <url>`")
 	}
 
-	return nomad.New(cfg.Nomad.URL, cfg.Nomad.Token)
+	return wire.NewNomadClient(cfg.Nomad)
 }

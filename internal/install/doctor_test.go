@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gm2211/grove/internal/config"
+	"github.com/gm2211/grove/internal/pki"
 )
 
 // newHangingListener accepts TCP connections and never responds, so tests can verify doctor's
@@ -426,5 +427,29 @@ func TestCheckSandboxHost(t *testing.T) {
 	cfg.Nomad.URL = newFakeNomadServer(t, []fakeNomadNode{worker, controlPlane}).URL
 	if r := checkSandboxHost(context.Background(), cfg); !r.OK || !strings.Contains(r.Detail, "cp-1 runs sealed pools' jobs (linux)") {
 		t.Errorf("sealed pool with the sandbox host: %+v", r)
+	}
+}
+
+func TestCheckNomadTLS(t *testing.T) {
+	now := time.Now()
+	dir := t.TempDir()
+	files, _, err := pki.EnsureNomad(dir, pki.ServerSANs{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep := config.Endpoint{URL: "https://cp:4646", CACert: files.CA, ClientCert: files.CLI, ClientKey: files.CLIKey, NodeCert: files.Node, NodeKey: files.NodeKey}
+
+	if res := checkNomadTLS(ep, now); !res.OK {
+		t.Errorf("fresh certificates: %+v", res)
+	}
+	if res := checkNomadTLS(config.Endpoint{URL: "http://cp:4646"}, now); res.OK {
+		t.Error("plain-HTTP Nomad must fail the check")
+	}
+	expiry, _ := pki.Expiry(files.Node)
+	if res := checkNomadTLS(ep, expiry.Add(-pki.RenewBefore+time.Hour)); res.OK || !strings.Contains(res.Detail, "expires") {
+		t.Errorf("expiring node certificate: %+v", res)
+	}
+	if res := checkNomadTLS(config.Endpoint{}, now); !res.OK {
+		t.Error("no Nomad configured is not a failure")
 	}
 }

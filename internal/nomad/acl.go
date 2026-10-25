@@ -113,3 +113,38 @@ func (c *client) RevokeNodeToken(ctx context.Context, accessorID string) error {
 	}
 	return nil
 }
+
+// NodeIntros mints Nomad client introduction tokens. The control plane's Nomad enforces client
+// introduction strictly (server.client_introduction.enforcement = "strict"), so a client node can
+// only register by presenting a token bound to its own node name and node pool; a client
+// certificate alone is not enough. Minting needs node:write (config.yaml nomad.token). The
+// concrete Client returned by New implements it; see AsNodeIntros.
+type NodeIntros interface {
+	// CreateIntroToken mints a token valid for ttl that lets one client named nodeName register
+	// in nodePool ("" means Nomad's "default" pool).
+	CreateIntroToken(ctx context.Context, nodeName, nodePool string, ttl time.Duration) (string, error)
+}
+
+// AsNodeIntros returns c's NodeIntros implementation, if it has one.
+func AsNodeIntros(c Client) (NodeIntros, bool) {
+	t, ok := c.(NodeIntros)
+	return t, ok
+}
+
+func (c *client) CreateIntroToken(ctx context.Context, nodeName, nodePool string, ttl time.Duration) (string, error) {
+	if nodeName == "" {
+		return "", errors.New("nomad: an introduction token needs a node name")
+	}
+	resp, _, err := c.raw.ACLIdentity().CreateClientIntroductionToken(&nomadapi.ACLIdentityClientIntroductionTokenRequest{
+		NodeName: nodeName,
+		NodePool: nodePool,
+		TTL:      ttl,
+	}, wOpts(ctx))
+	if err != nil {
+		return "", fmt.Errorf("nomad: create introduction token for %s: %w", nodeName, wrapDenied(err))
+	}
+	if resp == nil || resp.JWT == "" {
+		return "", fmt.Errorf("nomad: create introduction token for %s: empty response", nodeName)
+	}
+	return resp.JWT, nil
+}

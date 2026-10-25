@@ -8,20 +8,52 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gm2211/grove/internal/config"
+	"github.com/gm2211/grove/internal/nomad"
 )
 
 func testControlPlaneOptions(home string, goos string) Options {
+	return testControlPlaneOptionsWith(home, goos, &fakeNomadAdmin{})
+}
+
+func testControlPlaneOptionsWith(home string, goos string, nc *fakeNomadAdmin) Options {
 	return Options{
-		Role:     RoleControlPlane,
-		Hostname: "test-cp",
-		Home:     home,
-		GOOS:     goos,
-		GOARCH:   "arm64",
-		LookPath: lookPathOnly("tailscale"),
-		Exists:   alwaysFalseExists,
+		Role:        RoleControlPlane,
+		Hostname:    "test-cp",
+		Home:        home,
+		GOOS:        goos,
+		GOARCH:      "arm64",
+		LookPath:    lookPathOnly("tailscale"),
+		Exists:      alwaysFalseExists,
+		NomadClient: func(config.Endpoint) (nomad.Client, error) { return nc, nil },
 	}
+}
+
+// fakeNomadAdmin is the slice of a Nomad API client the control-plane plan uses: listing nodes and
+// minting introduction tokens. Anything else panics through the nil embedded interface.
+type fakeNomadAdmin struct {
+	nomad.Client
+	nodes  []nomad.Node
+	intros []string
+}
+
+func (f *fakeNomadAdmin) ListNodes(context.Context) ([]nomad.Node, error) { return f.nodes, nil }
+
+func (f *fakeNomadAdmin) CreateIntroToken(_ context.Context, name, pool string, ttl time.Duration) (string, error) {
+	f.intros = append(f.intros, name)
+	return "intro-for-" + name, nil
+}
+
+// nomadBootstrapCall is the `nomad acl bootstrap` command line the plan runs for host, with the
+// TLS flags pointing at the CA and grove's own client certificate under home.
+func nomadBootstrapCall(home, host string) string {
+	tls := filepath.Join(home, ".config", "grove", "nomad", "tls")
+	return "nomad acl bootstrap -address=https://" + host + ":4646" +
+		" -ca-cert=" + filepath.Join(tls, "ca.pem") +
+		" -client-cert=" + filepath.Join(tls, "cli.pem") +
+		" -client-key=" + filepath.Join(tls, "cli-key.pem") + " -json"
 }
 
 func scriptWorkerEnrollmentToken(r *FakeRunner, home string) {
@@ -29,7 +61,7 @@ func scriptWorkerEnrollmentToken(r *FakeRunner, home string) {
 	r.Script(orchard+" get service-account grove/token", FakeResult{Stdout: "grove-account-secret\n"})
 	r.Script(orchard+" get service-account grove-enroller/token", FakeResult{Stdout: "enroller-account-secret\n"})
 	for _, host := range []string{"test-cp", "100.64.0.1"} {
-		r.Script("nomad acl bootstrap -address=http://"+host+":4646 -json", FakeResult{Stdout: `{"AccessorID":"acc","SecretID":"nomad-mgmt-secret"}`})
+		r.Script(nomadBootstrapCall(home, host), FakeResult{Stdout: `{"AccessorID":"acc","SecretID":"nomad-mgmt-secret"}`})
 	}
 }
 
@@ -359,8 +391,8 @@ func TestControlPlanePlan_RestartsNomadOnlyWhenItsConfigChanges(t *testing.T) {
 		t.Error("a re-run that rewrote the Nomad config did not restart Nomad")
 	}
 	data, _ := os.ReadFile(conf)
-	if !strings.Contains(string(data), `grove_sandbox_host = "true"`) {
-		t.Errorf("server.hcl = %s, want the sandbox client", data)
+	if !strings.Contains(string(data), `enforcement = "strict"`) {
+		t.Errorf("server.hcl = %s, want strict client introduction", data)
 	}
 }
 
@@ -471,6 +503,84 @@ func TestControlPlanePlan_RetiresLegacyObjectStore(t *testing.T) {
 			}
 			if cfg.Artifacts.Dir == "" {
 				t.Error("expected artifacts.dir to be recorded")
+			}
+		})
+	}
+}
+
+// TestControlPlanePlan_NomadMutualTLS: a control plane comes up with grove's own CA, a server
+// that insists on client certificates and introduction tokens, config.yaml pointing grove at its
+// client certificate, and the sandbox-host client registered through an introduction token of
+// its own. A re-run once that client is registered mints nothing.
+func TestControlPlanePlan_NomadMutualTLS(t *testing.T) {
+	for _, goos := range []string{"darwin", "linux"} {
+		t.Run(goos, func(t *testing.T) {
+			home := t.TempDir()
+			nc := &fakeNomadAdmin{}
+			run := func() *FakeRunner {
+				t.Helper()
+				r := NewFakeRunner()
+				scriptWorkerEnrollmentToken(r, home)
+				scriptTailscaleUp(r)
+				opts := testControlPlaneOptionsWith(home, goos, nc)
+				scriptPinnedDownloads(r, opts)
+				steps, err := BuildPlan(r, opts, io.Discard)
+				if err != nil {
+					t.Fatalf("BuildPlan: %v", err)
+				}
+				if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
+					t.Fatalf("RunPlan: %v", err)
+				}
+				return r
+			}
+			r := run()
+
+			cfgDir := filepath.Join(home, ".config", "grove")
+			tlsDir := filepath.Join(cfgDir, "nomad", "tls")
+			for _, key := range []string{"ca-key.pem", "server-key.pem", "cli-key.pem", "node-key.pem"} {
+				info, err := os.Stat(filepath.Join(tlsDir, key))
+				if err != nil || info.Mode().Perm() != 0o600 {
+					t.Errorf("%s: %v %v, want mode 0600", key, info, err)
+				}
+			}
+			cfg, err := config.LoadFrom(filepath.Join(cfgDir, "config.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(cfg.Nomad.URL, "https://") || cfg.Nomad.CACert != filepath.Join(tlsDir, "ca.pem") ||
+				cfg.Nomad.ClientCert != filepath.Join(tlsDir, "cli.pem") || cfg.Nomad.NodeCert != filepath.Join(tlsDir, "node.pem") {
+				t.Errorf("config.yaml nomad = %+v, want https and the TLS file paths", cfg.Nomad)
+			}
+			sandboxConf, err := os.ReadFile(filepath.Join(cfgDir, "nomad", "sandbox-client.hcl"))
+			if err != nil || !strings.Contains(string(sandboxConf), filepath.Join(tlsDir, "node.pem")) {
+				t.Errorf("sandbox-client.hcl = %s, %v; want the node certificate", sandboxConf, err)
+			}
+
+			token := filepath.Join(cfgDir, "nomad", "sandbox-data", "client", "intro_token.jwt")
+			data, err := os.ReadFile(token)
+			if err != nil || string(data) != "intro-for-"+SandboxClientNodeName {
+				t.Fatalf("intro token = %q, %v", data, err)
+			}
+			if info, _ := os.Stat(token); info.Mode().Perm() != 0o600 {
+				t.Errorf("intro token mode = %v, want 0600", info.Mode().Perm())
+			}
+			restart := "systemctl --user restart grove-nomad-sandbox-client.service"
+			if goos == "darwin" {
+				restart = "launchctl kickstart -k gui/" + strconv.Itoa(os.Getuid()) + "/com.grove.nomad-sandbox-client"
+			}
+			if !r.CalledWith(restart) {
+				t.Errorf("sandbox client not restarted onto its token (%s); calls: %v", restart, r.Calls)
+			}
+			for _, c := range r.Calls {
+				if strings.Contains(c.String(), "intro-for-") {
+					t.Errorf("introduction token reached argv: %s", c.String())
+				}
+			}
+
+			nc.nodes = []nomad.Node{{Name: SandboxClientNodeName, Status: "ready"}}
+			before := len(nc.intros)
+			if r := run(); r.CalledWith(restart) || len(nc.intros) != before {
+				t.Errorf("a re-run with the sandbox client registered minted %d tokens / restarted it", len(nc.intros)-before)
 			}
 		})
 	}

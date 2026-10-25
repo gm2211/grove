@@ -20,11 +20,31 @@ type client struct {
 // New constructs a Client talking to the Nomad server at url, authenticating with token (an ACL
 // SecretID) when non-empty.
 func New(url, token string) (Client, error) {
+	return NewTLS(url, token, TLS{})
+}
+
+// TLS names the PEM files for Nomad's mutual TLS (config.yaml nomad.caCert, clientCert,
+// clientKey). The zero value uses the system roots and presents no client certificate.
+type TLS struct {
+	CACert     string
+	ClientCert string
+	ClientKey  string
+}
+
+// NewTLS is New over mutual TLS: the server must chain to tls.CACert, and grove presents
+// tls.ClientCert, which a server with verify_https_client requires.
+func NewTLS(url, token string, tls TLS) (Client, error) {
 	cfg := nomadapi.DefaultConfig()
 	cfg.Address = url
 
 	if token != "" {
 		cfg.SecretID = token
+	}
+	if (tls.ClientCert == "") != (tls.ClientKey == "") {
+		return nil, errors.New("nomad: a client certificate needs both its cert and key file")
+	}
+	if tls != (TLS{}) {
+		cfg.TLSConfig = &nomadapi.TLSConfig{CACert: tls.CACert, ClientCert: tls.ClientCert, ClientKey: tls.ClientKey}
 	}
 
 	raw, err := nomadapi.NewClient(cfg)

@@ -7,12 +7,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/fleet"
+	"github.com/gm2211/grove/internal/pki"
 	"github.com/gm2211/grove/internal/wire"
 )
 
@@ -65,6 +67,7 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 		results = append(results,
 			checkOrchard(ctx, cfg.Orchard),
 			checkNomad(ctx, cfg.Nomad),
+			checkNomadTLS(cfg.Nomad, time.Now()),
 			checkHTTPEndpoint(ctx, "grove-server", cfg.Server.URL, "/api/v1/healthz", cfg.Server.Token),
 		)
 		results = append(results, checkMacOSCPUFingerprint(ctx, cfg))
@@ -334,8 +337,51 @@ func checkSandboxHost(ctx context.Context, cfg *config.Config) CheckResult {
 		Name:        name,
 		OK:          false,
 		Detail:      fmt.Sprintf("no ready Nomad node runs sealed pools' jobs, so jobs for %s stay pending", strings.Join(sealed, ", ")),
-		Remediation: "re-run `grove install --role control-plane` on the control plane: it makes the control plane's own Nomad agent the client that drives sealed VMs",
+		Remediation: "re-run `grove install --role control-plane` on the control plane: it sets up and registers the sandbox-host Nomad client (com.grove.nomad-sandbox-client / grove-nomad-sandbox-client) that drives sealed VMs",
 	}
+}
+
+// checkNomadTLS flags a Nomad endpoint without mutual TLS (anything that reaches the server's RPC
+// port could then register as a node and be handed jobs), and certificates close to expiry.
+func checkNomadTLS(ep config.Endpoint, now time.Time) CheckResult {
+	const name = "nomad-tls"
+	if ep.URL == "" {
+		return CheckResult{Name: name, OK: true, Detail: "nomad not configured (skipped)"}
+	}
+	if !strings.HasPrefix(ep.URL, "https://") || ep.CACert == "" {
+		return CheckResult{
+			Name:        name,
+			OK:          false,
+			Detail:      "Nomad runs without mutual TLS: anything that reaches its RPC port can register as a node and receive jobs",
+			Remediation: "re-run `grove install --role control-plane` on the control plane (it creates grove's Nomad CA and turns on mTLS and strict client introduction)",
+		}
+	}
+	files := map[string]string{"caCert": ep.CACert, "clientCert": ep.ClientCert, "nodeCert": ep.NodeCert}
+	keys := make([]string, 0, len(files))
+	for k := range files {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var soonest time.Time
+	for _, key := range keys {
+		path := files[key]
+		if path == "" {
+			continue
+		}
+		expiry, err := pki.Expiry(path)
+		if err != nil {
+			return CheckResult{Name: name, OK: false, Detail: fmt.Sprintf("nomad.%s: %v", key, err),
+				Remediation: "re-run `grove install --role control-plane` to recreate the Nomad certificates"}
+		}
+		if now.After(expiry.Add(-pki.RenewBefore)) {
+			return CheckResult{Name: name, OK: false, Detail: fmt.Sprintf("nomad.%s (%s) expires %s", key, path, expiry.Format(time.DateOnly)),
+				Remediation: "re-run `grove install --role control-plane` to renew it; the fleet then recreates its VMs with the new certificate"}
+		}
+		if soonest.IsZero() || expiry.Before(soonest) {
+			soonest = expiry
+		}
+	}
+	return CheckResult{Name: name, OK: true, Detail: "mutual TLS on; certificates valid until " + soonest.Format(time.DateOnly)}
 }
 
 // checkServiceUnits reports whether grove's launchd agents (macOS) or systemd --user units

@@ -39,6 +39,48 @@ VMs created before this keep running unchanged and pick both up on their next re
 it now, recycle them with `POST /api/v1/vms/{name}/recycle`, which drains through grove's own token
 first (their old shutdown script has no token, so its own drain step fails).
 
+## Nomad mutual TLS and client introduction
+
+ACLs gate Nomad's API, not who may register as a client node. Without more, anything that reached
+the server's RPC port (4647) — any tailnet device, or a job inside a VM, through the host's NAT —
+could start `nomad agent -client` with `meta { pool = "linux" }` and be handed real jobs, with
+their payloads. So `grove install --role control-plane` also:
+
+- **creates grove's own CA** in `~/.config/grove/nomad/tls/` (`internal/pki`; keys mode 0600, the
+  CA key never leaves the control plane) and certificates for the server (`server.global.nomad`
+  plus the address it binds), for grove itself (`cli.pem`, which `nomad.clientCert` points at),
+  and for the fleet's VMs (`node.pem`, `client.global.nomad`);
+- **turns on mutual TLS** for Nomad's RPC and HTTP, with `verify_server_hostname` (a client
+  certificate cannot pose as a server) and `verify_https_client` (the HTTP API answers only
+  CA-signed callers, on top of the ACL token). `nomad.url` becomes `https://`;
+- **enforces client introduction strictly**: a node registers only with an introduction token
+  bound to its node name, minted by grove. The fleet reconciler mints one per VM as it creates it
+  (valid 6 hours, written root-only to the VM's Nomad state directory) and names the VM's Nomad
+  node after the VM. Once registered, a node authenticates with the identity the server issued
+  it, so a reboot rejoins without a new token;
+- **runs the control plane's sandbox-host client as its own agent** (`com.grove.nomad-sandbox-client`
+  / `grove-nomad-sandbox-client`, config `~/.config/grove/nomad/sandbox-client.hcl`, node name
+  `grove-sandbox-host`), because the server holds every client to introduction, its own included.
+  The install mints its token and restarts it.
+
+Upgrading an existing control plane is re-running the installer. Nomad restarts onto TLS, the
+server's old built-in client goes down (the reconciler purges it like any down node), and the
+reconciler recreates every VM: a VM made before TLS can no longer register, so its startup script
+reads as drifted. Jobs queue until the new VMs are up.
+
+What each refusal looks like in a client's log, for debugging a VM that never shows up in
+`nomad node status`:
+
+| Log line | Meaning |
+| --- | --- |
+| `rpc error: stream closed` on `Node.Register` | the client has no TLS config (an old image or startup script) |
+| `x509: certificate signed by unknown authority` | the client trusts another CA: the control plane's CA was recreated, so recreate the VM |
+| `rpc error: Permission denied` on `Node.Register` | no introduction token, an expired one (older than 6 hours before first boot), or one minted for another name |
+
+`grove doctor` has a `nomad-tls` row: it fails when Nomad runs without mTLS and when a
+certificate is within 30 days of expiry. Certificates last two years; renewing is re-running the
+installer, after which the fleet recreates its VMs with the new node certificate.
+
 ## Rolling a new image
 
 Pool images (`ghcr.io/gm2211/grove-{linux,macos}-worker:latest`) are Packer-built under `images/`.
@@ -252,8 +294,8 @@ What changes for that pool's VMs:
   link-local addresses and off the guest itself.
 
 How a sealed pool's job runs. Its Nomad job (`nomad/jobs/sandbox.nomad.hcl`) isn't placed in a VM
-but on the control plane, whose own Nomad agent is also a client for exactly these jobs (node meta
-`grove_sandbox_host`). There `grove sandbox run`:
+but on the control plane, whose sandbox-host Nomad client runs exactly these jobs (node meta
+`grove_sandbox_host`; see "Nomad mutual TLS and client introduction"). There `grove sandbox run`:
 
 1. fetches the repository on the control plane, with the armed clone token if there is one, but
    checks out no file there: the checkout happens inside the job's container;
@@ -278,8 +320,8 @@ Before you switch a pool over:
    `grove doctor` shows a `softnet` row. Redo that command after any `brew upgrade softnet`,
    which drops the SUID bit (isolated VMs on that Mac fail to start until you do).
 2. **The control plane runs sealed jobs.** Re-run `grove install --role control-plane` on the
-   control plane after upgrading grove: it makes the control plane's Nomad agent the client for
-   sealed pools' jobs and restarts it. `grove doctor` shows a `sandbox-host` row once a pool is
+   control plane after upgrading grove: it sets up and registers the sandbox-host Nomad client
+   that runs sealed pools' jobs. `grove doctor` shows a `sandbox-host` row once a pool is
    sealed.
 
 Then set `network: isolated` and let the reconciler recreate the pool's VMs (`grove fleet plan`

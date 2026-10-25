@@ -1,6 +1,9 @@
 package install
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestRenderLaunchAgent(t *testing.T) {
 	got, err := RenderLaunchAgent(LaunchAgentSpec{
@@ -115,47 +118,69 @@ func TestRenderSystemdUnit(t *testing.T) {
 }
 
 func TestRenderNomadServerConfig(t *testing.T) {
-	got, err := RenderNomadServerConfig(NomadServerConfigSpec{
+	spec := NomadServerConfigSpec{
 		DataDir:  "/home/bob/.config/grove/nomad/data",
 		BindAddr: "100.64.0.5",
-	})
+		TLS:      NomadTLSFiles{CA: "/tls/ca.pem", Cert: "/tls/server.pem", Key: "/tls/server-key.pem"},
+	}
+	got, err := RenderNomadServerConfig(spec)
 	if err != nil {
 		t.Fatalf("RenderNomadServerConfig: %v", err)
 	}
-	want := "# Managed by grove install. Re-run `grove install --role control-plane` to regenerate.\n" +
-		`data_dir  = "/home/bob/.config/grove/nomad/data"` + "\n" +
-		`bind_addr = "100.64.0.5"` + "\n" +
-		"\n" +
-		"server {\n" +
-		"  enabled          = true\n" +
-		"  bootstrap_expect = 1\n" +
-		"}\n" +
-		"\n" +
-		"# The control plane is also a Nomad client for one kind of job only: `grove sandbox run`, which\n" +
-		"# drives a sealed pool's job in its VM from here (nomad/jobs/sandbox.nomad.hcl), since a sealed\n" +
-		"# VM can't reach Nomad. This node advertises grove_sandbox_host and no pool, so no other grove\n" +
-		"# job is ever placed on it.\n" +
-		"client {\n" +
-		"  enabled = true\n" +
-		"  meta {\n" +
-		"    grove_sandbox_host = \"true\"\n" +
-		"  }\n" +
-		"}\n" +
-		"\n" +
-		"plugin \"raw_exec\" {\n" +
-		"  config {\n" +
-		"    enabled = true\n" +
-		"  }\n" +
-		"}\n" +
-		"\n" +
-		"acl {\n" +
-		"  # On: anything on the tailnet (or inside a VM) that reaches this API without a token gets\n" +
-		"  # nothing. grove holds the management token (config.yaml nomad.token); each VM gets its own\n" +
-		"  # node-only token to drain itself on recycle.\n" +
-		"  enabled = true\n" +
-		"}\n"
-	if got != want {
-		t.Errorf("nomad config mismatch:\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	again, _ := RenderNomadServerConfig(spec)
+	if got != again {
+		t.Fatal("render is not deterministic")
+	}
+	for _, want := range []string{
+		`data_dir  = "/home/bob/.config/grove/nomad/data"`,
+		`bind_addr = "100.64.0.5"`,
+		"  client_introduction {\n    enforcement = \"strict\"\n  }\n",
+		"tls {\n  http                   = true\n  rpc                    = true\n" +
+			"  ca_file                = \"/tls/ca.pem\"\n  cert_file              = \"/tls/server.pem\"\n" +
+			"  key_file               = \"/tls/server-key.pem\"\n  verify_server_hostname = true\n" +
+			"  verify_https_client    = true\n}\n",
+		"acl {\n",
+		"  enabled = true\n}\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("server.hcl missing %q:\n%s", want, got)
+		}
+	}
+	// The sandbox-host client is its own agent now: the server runs no client, and so no jobs.
+	for _, unwanted := range []string{"client {", "raw_exec", "grove_sandbox_host"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("server.hcl must not contain %q:\n%s", unwanted, got)
+		}
+	}
+}
+
+func TestRenderNomadSandboxClientConfig(t *testing.T) {
+	got, err := RenderNomadSandboxClientConfig(NomadSandboxClientConfigSpec{
+		DataDir: "/home/bob/.config/grove/nomad/sandbox-data",
+		Server:  "100.64.0.5:4647",
+		TLS:     NomadTLSFiles{CA: "/tls/ca.pem", Cert: "/tls/node.pem", Key: "/tls/node-key.pem"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`name      = "grove-sandbox-host"`,
+		`data_dir  = "/home/bob/.config/grove/nomad/sandbox-data"`,
+		`bind_addr = "127.0.0.1"`,
+		"  http = 4656\n  rpc  = 4657\n  serf = 4658\n",
+		`  servers = ["100.64.0.5:4647"]`,
+		`    grove_sandbox_host = "true"`,
+		"tls {\n  rpc                    = true\n  ca_file                = \"/tls/ca.pem\"\n" +
+			"  cert_file              = \"/tls/node.pem\"\n  key_file               = \"/tls/node-key.pem\"\n" +
+			"  verify_server_hostname = true\n}\n",
+		"acl {\n  enabled = true\n}\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("sandbox-client.hcl missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "server {") || strings.Contains(got, "pool =") {
+		t.Errorf("the sandbox-host client must not be a server or join a pool:\n%s", got)
 	}
 }
 

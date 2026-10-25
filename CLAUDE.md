@@ -17,6 +17,7 @@ internal/dispatch/            JobRequest → parameterized Nomad job; status; lo
 internal/server/              HTTP API (/api/v1/…) + embedded UI; token + Tailscale-identity auth
 internal/tsauth/              Tailscale identity (tailscale whois on the peer address) → scopes
 internal/secrets/             operator-set named job secrets (JobRequest.Secrets)
+internal/pki/                 grove's Nomad CA: server, grove-client and VM-node certificates (mTLS)
 internal/gitauth/             operator-armed private-repo credential (see below)
 internal/health/              rebuilds VMs / pauses Macs that keep losing sealed-pool jobs
 internal/mcp/                 MCP server (stdio)
@@ -98,6 +99,20 @@ for it, deliberately.
   nothing.
 - Only `https://` repo URLs match: a token does nothing for an SSH remote, so handing one over
   there would be a leak with no upside.
+
+## Nomad mTLS and client introduction
+
+Only the control plane may tell a node what to do, so only nodes grove created may join Nomad.
+The control-plane install creates grove's CA (`internal/pki`, under `~/.config/grove/nomad/tls`)
+and runs Nomad with mutual TLS on RPC and HTTP and `client_introduction { enforcement = "strict" }`.
+A VM joins with the shared node certificate plus an introduction token the fleet reconciler mints
+for that VM's name right before `CreateVM` (`Options.NodeTLS`/`NodeIntros`, the
+`@GROVE_NOMAD_INTRO_TOKEN@` placeholder, like node tokens: a planned spec never holds one). The
+control plane's own sandbox-host client is a separate agent for the same reason. Keep it that
+way: never render a Nomad config without the `tls` block, never let a client register on a
+certificate alone, and keep `internal/install/nomadtls_integration_test.go` (real Nomad, run in
+CI) proving that a client with no TLS, another CA's certificate, or no introduction token is
+refused. Details: docs/OPERATIONS.md "Nomad mutual TLS and client introduction".
 
 ## `internal/secrets` — named job secrets
 
