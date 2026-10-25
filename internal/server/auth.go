@@ -184,6 +184,11 @@ func (s *Server) tailscalePrincipal(r *http.Request) Principal {
 	if !ok {
 		return Principal{}
 	}
+	if !s.opts.TrustWorkerHosts && s.isWorkerHost(r.Context(), res.Node) {
+		s.log.Warn("auth: refusing Tailscale identity of an Orchard worker host; its jobs share that identity, use its device credential",
+			"node", res.Node, "principal", res.ID)
+		return Principal{}
+	}
 	scopes := make([]string, 0, len(res.Scopes))
 	for _, scope := range res.Scopes {
 		if _, known := validAccessScopes[scope]; known {

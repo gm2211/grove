@@ -28,6 +28,10 @@ type Options struct {
 	// Tailscale, when non-nil, authenticates requests that carry no Authorization header by the
 	// caller's Tailscale identity (see internal/tsauth). Bearer tokens keep working beside it.
 	Tailscale PeerAuthenticator
+	// TrustWorkerHosts lets an Orchard worker's own Mac authenticate by Tailscale identity. Off,
+	// such a peer is refused: its shared-pool jobs reach grove through its NAT and would carry
+	// the same identity (see workerHosts).
+	TrustWorkerHosts bool
 	// Secrets holds the operator-managed named secrets jobs may request (JobRequest.Secrets). The
 	// same store is the dispatch service's resolver. Nil means no job can request one.
 	Secrets *secrets.Store
@@ -56,7 +60,9 @@ type Server struct {
 	artifacts artifacts.Client
 	opts      Options
 	log       *slog.Logger
-	handler   http.Handler
+
+	workerHosts *workerHosts
+	handler     http.Handler
 
 	// recycleDone, if non-nil, receives the vm name every time a background recycle finishes
 	// deleting a VM. Only set by tests, to synchronize on the async recycle flow.
@@ -99,6 +105,7 @@ func New(oc orchard.Client, nc nomad.Client, ds dispatch.Service, ac artifacts.C
 		log:            log,
 		fleetReconcile: &FleetReconcileStatus{},
 		joins:          newJoinStore(),
+		workerHosts:    &workerHosts{},
 	}
 	s.handler = s.routes()
 	return s

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/gm2211/grove/internal/dispatch"
+	"github.com/gm2211/grove/internal/orchard"
 	"github.com/gm2211/grove/internal/secrets"
 	"github.com/gm2211/grove/internal/tsauth"
 )
@@ -223,5 +225,52 @@ func TestCrossSiteBrowserRequestsAreRejected(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 	if rec.Code >= 400 {
 		t.Fatalf("same-origin POST /jobs = %d %s", rec.Code, rec.Body)
+	}
+}
+
+// A shared pool's jobs reach grove through their host Mac's NAT, so that Mac's Tailscale identity
+// is every one of its jobs' identity: it must not authenticate, however it is granted.
+func TestTailscaleIdentity_RefusesWorkerHosts(t *testing.T) {
+	peers := fakePeers{
+		"100.64.0.20:1": {ID: "tailscale:nMAC", Name: "giulio@example.com on giulios-macbook-pro", Node: "giulios-macbook-pro.tail1234.ts.net", Scopes: []string{ScopeOperator}},
+		"100.64.0.21:1": {ID: "tailscale:nLAPTOP", Name: "giulio@example.com on laptop", Node: "laptop.tail1234.ts.net", Scopes: []string{ScopeOperator}},
+	}
+	oc := &fakeOrchard{workers: []orchard.Worker{{Name: "Giulios-MacBook-Pro.local"}}}
+	whoami := func(srv *Server, remote string) int {
+		return peerRequest(srv, http.MethodGet, "/api/v1/whoami", "", remote, "").Code
+	}
+
+	srv := newTestServer(oc, nil, nil, Options{Token: "operator", Tailscale: peers})
+	if code := whoami(srv, "100.64.0.20:1"); code != http.StatusUnauthorized {
+		t.Errorf("worker host whoami = %d, want 401", code)
+	}
+	if code := whoami(srv, "100.64.0.21:1"); code != http.StatusOK {
+		t.Errorf("non-worker whoami = %d, want 200", code)
+	}
+	if rec := peerRequest(srv, http.MethodGet, "/api/v1/whoami", "", "100.64.0.20:1", "operator"); rec.Code != http.StatusOK {
+		t.Errorf("worker host with a token = %d, want 200", rec.Code)
+	}
+
+	trusting := newTestServer(oc, nil, nil, Options{Token: "operator", Tailscale: peers, TrustWorkerHosts: true})
+	if code := whoami(trusting, "100.64.0.20:1"); code != http.StatusOK {
+		t.Errorf("worker host with trustWorkerHosts = %d, want 200", code)
+	}
+
+	down := newTestServer(&fakeOrchard{listErr: errors.New("orchard down")}, nil, nil, Options{Token: "operator", Tailscale: peers})
+	if code := whoami(down, "100.64.0.21:1"); code != http.StatusUnauthorized {
+		t.Errorf("no worker list yet = %d, want 401 (fail closed)", code)
+	}
+}
+
+func TestHostLabel(t *testing.T) {
+	for in, want := range map[string]string{
+		"Giulios-MacBook-Pro.local":            "giulios-macbook-pro",
+		"giulios-macbook-pro.tail1234.ts.net.": "giulios-macbook-pro",
+		"Mac mini":                             "mac-mini",
+		"":                                     "",
+	} {
+		if got := hostLabel(in); got != want {
+			t.Errorf("hostLabel(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

@@ -75,6 +75,11 @@ type ServerTailscaleConfig struct {
 	Disabled bool `yaml:"disabled,omitempty"`
 	// Grants maps Tailscale identities to grove scopes, in addition to the policy file.
 	Grants []TailscaleGrant `yaml:"grants,omitempty"`
+	// TrustWorkerHosts lets an Orchard worker's own Mac authenticate by its Tailscale identity.
+	// Off by default: a shared pool's VMs reach the control plane through their host's NAT, so
+	// every job on that Mac would arrive as the Mac's identity. Workers use their device
+	// credential instead.
+	TrustWorkerHosts bool `yaml:"trustWorkerHosts,omitempty"`
 }
 
 // TailscaleGrant gives Scopes to every tailnet peer Match names: "tag:argos" (a node tag), a

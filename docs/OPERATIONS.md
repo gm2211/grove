@@ -142,9 +142,15 @@ server:
     grants:
       - match: tag:argos              # a node tag
         scopes: [read, dispatch]
-      - match: you@example.com        # a user login (untagged nodes only)
-        scopes: [operator]
 ```
+
+Grant tags, not user logins. An untagged machine is identified by its owner's login, and a grant
+to a login covers every machine that person owns. That includes worker Macs, whose shared-pool
+jobs reach the control plane through the Mac's own network and so arrive with the Mac's identity.
+For that reason grove refuses Tailscale identity auth from any Orchard worker's Mac (matched by its
+MagicDNS name) whatever it is granted; a worker uses the device credential `grove setup` stored
+in its Keychain. `server.tailscale.trustWorkerHosts: true` turns that check off, and with it lets
+every job on a shared pool act with its host's scopes.
 
 The scopes are the same as for device credentials (below); unknown ones are ignored. Both sources
 add up. A peer that nothing grants gets a 401, as does a bad `Authorization` header from any peer
