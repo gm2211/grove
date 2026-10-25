@@ -232,6 +232,38 @@ func TestSubmit_IdempotencyKey_ReturnsExistingWithoutRedispatch(t *testing.T) {
 	}
 }
 
+// Another caller reusing a key (argos's are predictable: "argos:<task>:<key>") must not be handed
+// the first caller's job, nor block the first caller from dispatching its own.
+func TestSubmit_IdempotencyKey_IsScopedToTheSubmitter(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestService(t, nc)
+
+	squatted, _, err := svc.Submit(context.Background(), JobRequest{
+		Kind: KindShell, Pool: "linux", Script: "true", IdempotencyKey: "argos:t1:k", SubmittedBy: "device:other",
+	})
+	if err != nil {
+		t.Fatalf("Submit (other): %v", err)
+	}
+	mine, created, err := svc.Submit(context.Background(), JobRequest{
+		Kind: KindShell, Pool: "linux", Script: "true", IdempotencyKey: "argos:t1:k", SubmittedBy: "tailscale:nARGOS",
+	})
+	if err != nil {
+		t.Fatalf("Submit (argos): %v", err)
+	}
+	if !created || mine.ID == squatted.ID {
+		t.Fatalf("argos got created=%v id=%q, want its own new job (not %q)", created, mine.ID, squatted.ID)
+	}
+	again, created, err := svc.Submit(context.Background(), JobRequest{
+		Kind: KindShell, Pool: "linux", Script: "true", IdempotencyKey: "argos:t1:k", SubmittedBy: "tailscale:nARGOS",
+	})
+	if err != nil || created || again.ID != mine.ID {
+		t.Fatalf("argos replay: created=%v id=%q err=%v, want replay of %q", created, again.ID, err, mine.ID)
+	}
+	if len(nc.dispatchCalls) != 2 {
+		t.Fatalf("expected 2 Dispatch calls, got %d", len(nc.dispatchCalls))
+	}
+}
+
 func TestSubmit_DifferentOrEmptyIdempotencyKeys_BothDispatch(t *testing.T) {
 	nc := &fakeNomad{}
 	svc := newTestService(t, nc)

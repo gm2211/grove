@@ -4,6 +4,15 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **A web page can no longer act as your machine's Tailscale identity.** State-changing API
+  requests a browser sends from another site (`Sec-Fetch-Site`, or an `Origin` that doesn't match
+  `Host`) are refused with 403, and tailnet-identity auth is only accepted on the control plane's
+  own names (an IP, a MagicDNS name, `localhost`, or `server.url`'s host), so a DNS-rebinding page
+  can't read or dispatch either. The CLI, argos and the same-origin UI are unaffected.
+
+- **Idempotency keys are per submitter.** Another caller reusing a key gets its own job instead of
+  being handed (or blocking) the original caller's.
+
 - **Elastic pools: VMs follow the queue.** A pool with `maxPerWorker` (and optional
   `minPerWorker`) gets one more VM while its jobs wait unplaced, on the roomiest matching worker
   (Orchard VM slots, cores, memory, and at most 2 macOS VMs per Mac). If no worker has room, an

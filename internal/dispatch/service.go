@@ -294,7 +294,7 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	}
 
 	if req.IdempotencyKey != "" {
-		if rec, ok := s.store.findByIdempotencyKey(req.IdempotencyKey); ok {
+		if rec, ok := s.store.findByIdempotencyKey(req.IdempotencyKey, req.SubmittedBy); ok {
 			job, err := s.reconcile(ctx, rec)
 			if err != nil {
 				return nil, false, err
