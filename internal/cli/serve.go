@@ -375,6 +375,7 @@ func poolConfigs(cfg *config.Config) ([]dispatch.PoolConfig, error) {
 			Isolated:          p.Isolated(),
 			Slots:             sealedVMSlots(p),
 			OS:                poolOS(p),
+			Fallback:          spec.FallbackFor(p),
 		})
 	}
 	return pools, nil

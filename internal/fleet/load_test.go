@@ -271,3 +271,42 @@ func TestLoad_MissingFile(t *testing.T) {
 		t.Fatal("want error for missing file, got nil")
 	}
 }
+
+func TestFallbackFor(t *testing.T) {
+	linux := Pool{Name: "linux", Image: "l", PerWorker: 1}
+	macos := Pool{Name: "macos", Image: "m", PerWorker: 1}
+	sealedMac := macos
+	sealedMac.Network = NetworkIsolated
+	off := linux
+	off.Fallback = FallbackNone
+
+	for _, tt := range []struct {
+		name  string
+		pools []Pool
+		pool  Pool
+		want  string
+	}{
+		{"linux falls back to macos by default", []Pool{linux, macos}, linux, "macos"},
+		{"macos has no default fallback", []Pool{linux, macos}, macos, ""},
+		{"no macos pool", []Pool{linux}, linux, ""},
+		{"sealed macos isn't a target", []Pool{linux, sealedMac}, linux, ""},
+		{"turned off", []Pool{off, macos}, off, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := &Spec{Pools: tt.pools}
+			if err := spec.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			if got := spec.FallbackFor(tt.pool); got != tt.want {
+				t.Fatalf("FallbackFor(%s) = %q, want %q", tt.pool.Name, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidate_FallbackMustExist(t *testing.T) {
+	spec := &Spec{Pools: []Pool{{Name: "linux", Image: "l", PerWorker: 1, Fallback: "windows"}}}
+	if err := spec.Validate(); err == nil {
+		t.Fatal("a fallback naming a missing pool must be rejected")
+	}
+}

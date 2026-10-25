@@ -79,6 +79,28 @@ to anyone who can read the dispatched job's meta in Nomad, so keep Nomad's ACLs 
 `env` values go to Nomad with the dispatch and nowhere else: the stored job, and every `Job` the
 API returns, keeps each key with the value `[redacted]`.
 
+## Falling back to macOS
+
+Most Linux build scripts run on macOS too, so a job a shared Linux pool can't place moves to the
+shared `macos` pool instead of waiting:
+
+- **When:** 20 seconds after submit when Nomad reports no node of the pool at all (every node it
+  evaluated was filtered out by `meta.pool`), or after 3 minutes unplaced when the pool's nodes are
+  all busy. A job moves at most once.
+- **How:** grove reads the dispatched job's meta and payload back from Nomad, dispatches them to
+  `grove-<kind>-macos`, then stops and purges the Linux copy, so exactly one copy is ever queued.
+  The job keeps its id; `job.fallback` says `{from, to, at, reason}`. On macOS it runs as a plain
+  process of the `_grovejob` user, not in the runner container.
+- **Opting out:** `"pinPool": true` on the JobRequest keeps a job in its pool (use it for scripts
+  that need Linux: docker, apt-get, ELF binaries). A job with `meta.image` (a nested container)
+  never falls back. Per pool, fleet.yaml `fallback: none` turns it off, or `fallback: <pool>` picks
+  another shared pool. Sealed (`network: isolated`) pools never fall back or take fallback jobs.
+- **Learning what doesn't work there:** jobs are grouped by kind, pool and repo. When the last 3
+  fallback runs of a group all failed (timeouts and cancels don't count), that group stops falling
+  back for 7 days after the last failure, and its jobs wait for their own pool, with
+  `pendingReason` saying why. A success among those runs keeps it on. The verdict is computed from
+  the job history, so it survives restarts and expires on its own.
+
 ## Per-job resource sizing
 
 Every `nomad/jobs/*.nomad.hcl` template's `resources { cpu = ...; memory = ... }` block is rendered

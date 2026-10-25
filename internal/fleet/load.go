@@ -88,6 +88,18 @@ func (s *Spec) Validate() error {
 		}
 	}
 
+	for _, p := range s.Pools {
+		switch {
+		case p.Fallback == "" || p.Fallback == FallbackNone:
+		case p.Fallback == p.Name:
+			return fmt.Errorf("pool %q: fallback can't be the pool itself", p.Name)
+		case !seen[p.Fallback]:
+			return fmt.Errorf("pool %q: fallback pool %q doesn't exist", p.Name, p.Fallback)
+		case s.FallbackFor(p) == "":
+			return fmt.Errorf("pool %q: fallback needs two shared (not isolated) pools", p.Name)
+		}
+	}
+
 	return nil
 }
 

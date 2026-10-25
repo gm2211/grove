@@ -18,6 +18,7 @@ type fakeNomad struct {
 	dispatchCalls  []dispatchCall
 	dispatchResult *nomad.DispatchResult
 	dispatchErr    error
+	dispatched     map[string]dispatchCall
 
 	allocationsByJob map[string][]nomad.Allocation
 	allocationsErr   error
@@ -90,10 +91,26 @@ func (f *fakeNomad) Dispatch(ctx context.Context, parentJobID string, meta map[s
 	if f.dispatchErr != nil {
 		return nil, f.dispatchErr
 	}
+	res := &nomad.DispatchResult{DispatchedJobID: parentJobID + "/dispatch-1", EvalID: "eval-1"}
 	if f.dispatchResult != nil {
-		return f.dispatchResult, nil
+		res = f.dispatchResult
 	}
-	return &nomad.DispatchResult{DispatchedJobID: parentJobID + "/dispatch-1", EvalID: "eval-1"}, nil
+	if f.dispatched == nil {
+		f.dispatched = map[string]dispatchCall{}
+	}
+	f.dispatched[res.DispatchedJobID] = f.dispatchCalls[len(f.dispatchCalls)-1]
+	return res, nil
+}
+
+// DispatchInput implements nomad.DispatchInputs from what Dispatch recorded.
+func (f *fakeNomad) DispatchInput(_ context.Context, id string) (map[string]string, []byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.dispatched[id]
+	if !ok {
+		return nil, nil, nomad.ErrNotFound
+	}
+	return c.meta, c.payload, nil
 }
 
 func (f *fakeNomad) ListAllocations(ctx context.Context, jobID string) ([]nomad.Allocation, error) {

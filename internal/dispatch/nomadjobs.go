@@ -37,6 +37,9 @@ type PoolConfig struct {
 	// OS is a sealed pool's guest OS ("linux" or "darwin", see sandbox.Request.OS), which picks
 	// how `grove sandbox run` drives its jobs. "" means linux.
 	OS string
+	// Fallback is the pool this pool's jobs move to when none of its nodes can place them (see
+	// fleet.Spec.FallbackFor), or "" to keep them waiting here.
+	Fallback string
 }
 
 // templateData is what a nomad/jobs/<kind>.nomad.hcl template is rendered with — see

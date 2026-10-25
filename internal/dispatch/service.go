@@ -111,6 +111,11 @@ type Options struct {
 	// Nomad allocation before reconcile marks it StatusLost (fleet full, or an unmatchable
 	// placement constraint — Nomad will otherwise leave it queued forever).
 	PendingTimeout time.Duration
+	// FallbackAfter overrides defaultFallbackAfter and FallbackNoNodesAfter
+	// defaultFallbackNoNodesAfter: how long an unplaced job waits before moving to its pool's
+	// fallback pool, when its pool's nodes are busy / when its pool has no node at all.
+	FallbackAfter        time.Duration
+	FallbackNoNodesAfter time.Duration
 	// LogTerminalPollInterval overrides defaultLogTerminalPollInterval — mainly for tests. See
 	// watchForTerminal.
 	LogTerminalPollInterval time.Duration
@@ -156,6 +161,12 @@ func New(nc nomad.Client, opts Options) (Service, error) {
 	}
 	if opts.PendingTimeout <= 0 {
 		opts.PendingTimeout = defaultPendingTimeout
+	}
+	if opts.FallbackAfter <= 0 {
+		opts.FallbackAfter = defaultFallbackAfter
+	}
+	if opts.FallbackNoNodesAfter <= 0 {
+		opts.FallbackNoNodesAfter = defaultFallbackNoNodesAfter
 	}
 	if opts.LogTerminalPollInterval <= 0 {
 		opts.LogTerminalPollInterval = defaultLogTerminalPollInterval
@@ -586,6 +597,9 @@ func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {
 			slog.Warn("dispatch: job evaluations lookup failed", "id", rec.ID, "err", everr)
 		} else {
 			updated.PendingReason = pendingReason(evals)
+			if len(allocs) == 0 {
+				s.maybeFallBack(ctx, rec, &updated, evals)
+			}
 		}
 	} else {
 		updated.PendingReason = ""
@@ -621,6 +635,27 @@ func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {
 
 	job := updated
 	return &job, nil
+}
+
+// maybeFallBack moves rec's unplaced job to its pool's fallback pool when it's due (see
+// fallbackTarget), updating job to match. A failed move is logged and retried on the next
+// reconcile; the job stays where it was meanwhile.
+func (s *service) maybeFallBack(ctx context.Context, rec *record, job *Job, evals []nomad.Evaluation) {
+	now := time.Now().UTC()
+	probe := *rec
+	probe.Job = *job
+	target, reason := s.fallbackTarget(&probe, evals, now)
+	job.PendingReason = probe.PendingReason
+	if target == "" {
+		return
+	}
+	if err := s.fallBack(ctx, rec, target, reason, now); err != nil {
+		slog.Warn("dispatch: falling back to another pool failed", "id", rec.ID, "from", rec.Request.Pool, "to", target, "err", err)
+		return
+	}
+	slog.Info("dispatch: job moved to its fallback pool", "id", rec.ID, "from", rec.Request.Pool, "to", target, "reason", reason)
+	job.Fallback = rec.Fallback
+	job.PendingReason = ""
 }
 
 // applyAttempts folds a sealed pool's attempt record into job: the driver runs on the control
