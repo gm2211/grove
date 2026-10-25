@@ -4,6 +4,13 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Worker Macs no longer authenticate by Tailscale identity.** A shared pool's jobs reach the
+  control plane through their host Mac's network, so they arrived as the Mac's identity, which
+  could carry its owner's operator grant. grove now refuses Tailscale identity auth from any
+  Orchard worker's Mac (by MagicDNS name, failing closed until the worker list loads); workers use
+  their Keychain device credential. `server.tailscale.trustWorkerHosts: true` restores the old
+  behaviour. docs/OPERATIONS.md no longer suggests granting a user login `operator`.
+
 - **A web page can no longer act as your machine's Tailscale identity.** State-changing API
   requests a browser sends from another site (`Sec-Fetch-Site`, or an `Origin` that doesn't match
   `Host`) are refused with 403, and tailnet-identity auth is only accepted on the control plane's

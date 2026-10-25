@@ -139,8 +139,10 @@ func parseWhoIs(data []byte) (Identity, error) {
 // Result is an authenticated tailnet caller: a stable principal id, a display name and the
 // scopes it was granted. Callers still validate Scopes against their own scope set.
 type Result struct {
-	ID     string
-	Name   string
+	ID   string
+	Name string
+	// Node is the node's MagicDNS name, e.g. "mac-mini-1.tail1234.ts.net".
+	Node   string
 	Tags   []string
 	Scopes []string
 }
@@ -211,7 +213,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, remoteAddr string) (Re
 	if id.Login != "" {
 		name = id.Login + " on " + id.Node
 	}
-	return Result{ID: "tailscale:" + key, Name: name, Tags: append([]string(nil), id.Tags...), Scopes: scopes}, true
+	return Result{ID: "tailscale:" + key, Name: name, Node: id.Node, Tags: append([]string(nil), id.Tags...), Scopes: scopes}, true
 }
 
 func (a *Authenticator) lookup(ctx context.Context, addr netip.Addr) (Identity, error) {

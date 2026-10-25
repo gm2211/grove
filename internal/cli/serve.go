@@ -151,6 +151,7 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 	}
 	if ts := tailscaleAuthenticator(cfg.Server.Tailscale); ts != nil {
 		serverOpts.Tailscale = ts
+		serverOpts.TrustWorkerHosts = cfg.Server.Tailscale.TrustWorkerHosts
 	}
 	accessStore, err := server.NewAccessStore(filepath.Join(filepath.Dir(cfgPath), "devices.json"))
 	if err != nil {
