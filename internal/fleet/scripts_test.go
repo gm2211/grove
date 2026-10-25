@@ -626,3 +626,38 @@ func TestBuildStartupScript_MacOSCreatesJobUserBeforeNomad(t *testing.T) {
 		t.Fatal("Linux startup script must not touch macOS accounts")
 	}
 }
+
+// TestBuildStartupScript_TailscaleFailureStillRestartsNomad is the regression test for the Studio's
+// Linux VM, restarted 40,426 times: under `set -eu` a failing `tailscale up` (expired auth key)
+// ended the startup script before Nomad was restarted with the VM's meta.
+func TestBuildStartupScript_TailscaleFailureStillRestartsNomad(t *testing.T) {
+	fakeBin := t.TempDir()
+	calls := filepath.Join(t.TempDir(), "calls")
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(fakeBin, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("id", "#!/bin/sh\necho 0\n")
+	write("uname", "#!/bin/sh\necho Linux\n")
+	write("tee", "#!/bin/sh\ncat >/dev/null\n")
+	write("mkdir", "#!/bin/sh\nexit 0\n")
+	write("tailscale", "#!/bin/sh\necho 'invalid key: unable to validate API key' >&2\nexit 1\n")
+	write("systemctl", "#!/bin/sh\necho \"systemctl $*\" >> \"$GROVE_TEST_CALLS\"\n")
+
+	script := BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", "tskey-expired")
+	cmd := exec.Command("/bin/sh", "-c", script)
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_CALLS="+calls)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("startup script must survive a failed tailscale up: %v\n%s", err, out)
+	}
+	got, _ := os.ReadFile(calls)
+	if string(got) != "systemctl restart nomad\n" {
+		t.Fatalf("nomad restart calls = %q, want one restart", got)
+	}
+	if !strings.Contains(string(out), "tailscale up failed") {
+		t.Errorf("want a warning naming the tailscale failure, got:\n%s", out)
+	}
+}

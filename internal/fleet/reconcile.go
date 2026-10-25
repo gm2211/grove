@@ -172,11 +172,11 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 				existing, ok := findVM(vms, name)
 				reason := "spec changed"
 				if ok && !specDrifted(spec, existing) {
-					failed, retry := r.failedVMDue(existing)
-					if !failed || !retry {
-						continue // already up to date, or failed too recently to rebuild yet
+					why, due := r.unhealthyVMDue(existing)
+					if why == "" || !due {
+						continue // already up to date, or unhealthy too recently to rebuild yet
 					}
-					reason = failedReason(existing)
+					reason = why
 				}
 
 				if ok {
@@ -234,28 +234,35 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 	return plan, nil
 }
 
-// FailedVMRetry is how long a VM may sit in Orchard's "failed" state before the Reconciler
+// FailedVMRetry is how long a VM may be unhealthy (see unhealthyVMDue) before the Reconciler
 // deletes and recreates it. Orchard's restart policy only covers a VM that stops on its own; a VM
 // whose start failed (image pull, not enough room on the host, a broken disk) stays "failed"
 // forever, and so does the slot it holds, so no job of its pool can ever be placed there. The
 // wait bounds the churn when the failure is permanent: one rebuild per VM per FailedVMRetry.
 const FailedVMRetry = 10 * time.Minute
 
-// failedVMDue reports whether vm is failed and, if so, whether it has been since long enough
-// ago (judged from its creation, the only timestamp Orchard keeps for a VM that never started)
-// to rebuild it now.
-func (r *Reconciler) failedVMDue(vm orchard.VM) (failed, due bool) {
-	if vm.Status != "failed" {
-		return false, false
-	}
-	return true, vm.CreatedAt.IsZero() || r.Options.now().Sub(vm.CreatedAt) >= FailedVMRetry
-}
+// BootLoopRestarts is how many times Orchard may restart a VM before the Reconciler counts it as
+// boot-looping and rebuilds it. A healthy VM lives one TTL with no restart at all; one whose
+// startup script fails is restarted by OnFailure over and over (tens of thousands of times, each
+// boot leaving a dead Nomad node behind) and never takes a job.
+const BootLoopRestarts = 3
 
-func failedReason(vm orchard.VM) string {
-	if vm.StatusMessage == "" {
-		return "failed"
+// unhealthyVMDue says why vm is unhealthy ("" when it isn't) and whether it has been around long
+// enough (judged from its creation, the only timestamp Orchard keeps for a VM that never started)
+// to rebuild it now.
+func (r *Reconciler) unhealthyVMDue(vm orchard.VM) (why string, due bool) {
+	switch {
+	case vm.Status == "failed":
+		why = "failed"
+		if vm.StatusMessage != "" {
+			why += ": " + vm.StatusMessage
+		}
+	case vm.RestartCount >= BootLoopRestarts:
+		why = fmt.Sprintf("boot loop: restarted %d times", vm.RestartCount)
+	default:
+		return "", false
 	}
-	return "failed: " + vm.StatusMessage
+	return why, vm.CreatedAt.IsZero() || r.Options.now().Sub(vm.CreatedAt) >= FailedVMRetry
 }
 
 // Apply executes a Plan: deletes first (so a spec-changed VM's old copy is gone before its

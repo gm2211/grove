@@ -1152,6 +1152,55 @@ func TestGet_StuckPendingPastTimeoutMarksLost(t *testing.T) {
 	if got.FailureReason == nil || !strings.Contains(*got.FailureReason, "no allocation within") {
 		t.Errorf("FailureReason = %v, want it to mention the pending timeout", got.FailureReason)
 	}
+	if len(nc.stopCalls) != 1 || !nc.stopCalls[0].purge {
+		t.Errorf("stop calls = %+v, want the unplaced Nomad job stopped and purged once", nc.stopCalls)
+	}
+}
+
+// TestGet_StuckPendingStopFailsStaysPending: if the unplaced Nomad job can't be stopped, the job
+// isn't marked lost yet, or the Nomad job would leak and run later, unwatched.
+func TestGet_StuckPendingStopFailsStaysPending(t *testing.T) {
+	nc := &fakeNomad{stopErr: errors.New("nomad down")}
+	svc := newTestServiceWithOpts(t, nc, Options{PendingTimeout: time.Millisecond})
+
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+
+	if _, err := svc.Get(context.Background(), job.ID); err == nil {
+		t.Fatal("Get should report the failed stop")
+	}
+	nc.stopErr = nil
+	got, err := svc.Get(context.Background(), job.ID)
+	if err != nil || got.Status != StatusLost {
+		t.Fatalf("after Nomad recovers: status=%v err=%v, want lost", got, err)
+	}
+}
+
+// TestRunReconciler_StopsLeakedUnplacedJobs covers jobs an older grove marked lost for never being
+// placed without stopping their Nomad job.
+func TestRunReconciler_StopsLeakedUnplacedJobs(t *testing.T) {
+	nc := &fakeNomad{}
+	svc := newTestServiceWithOpts(t, nc, Options{})
+	reason := pendingTimeoutReason(30 * time.Minute)
+	other := "nomad job x not found (server restarted or job purged)"
+	impl := svc.(*service)
+	for i, r := range []*string{&reason, &other} {
+		rec := &record{Job: Job{ID: fmt.Sprintf("j%d", i), Status: StatusLost, FailureReason: r}, NomadJobID: fmt.Sprintf("grove-shell-linux/dispatch-%d", i)}
+		if err := impl.store.put(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = svc.RunReconciler(ctx, time.Hour)
+
+	if len(nc.stopCalls) != 1 || nc.stopCalls[0].jobID != "grove-shell-linux/dispatch-0" || !nc.stopCalls[0].purge {
+		t.Fatalf("stop calls = %+v, want only the never-placed job's Nomad job purged", nc.stopCalls)
+	}
 }
 
 // TestGet_PendingWithinTimeoutStaysPending guards against a false-positive: a freshly submitted job

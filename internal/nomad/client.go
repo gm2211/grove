@@ -444,7 +444,7 @@ func drainReadyFrames(frames <-chan *nomadapi.StreamFrame, pw *io.PipeWriter) bo
 
 func (c *client) StopJob(ctx context.Context, jobID string, purge bool) error {
 	_, _, err := c.raw.Jobs().Deregister(jobID, purge, wOpts(ctx))
-	return err
+	return wrapNotFound(err)
 }
 
 func (c *client) RegisterJobFile(ctx context.Context, hcl string) error {

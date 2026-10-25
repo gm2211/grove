@@ -522,7 +522,12 @@ func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {
 		// Nomad still knows about the job but has never placed it — the fleet is full for this
 		// pool, or a constraint (e.g. meta.pool) can't be satisfied by any current node. Waiting
 		// longer won't help without an operator noticing, so stop showing it as merely "pending".
-		return s.markLost(rec, fmt.Sprintf("no allocation within %s (fleet full or constraint unmatchable)", s.opts.PendingTimeout))
+		// Stop and purge the dispatched job first: left in Nomad, it stays queued and runs the
+		// moment a matching node joins, long after grove (and its caller) gave up on it.
+		if err := s.nomad.StopJob(ctx, rec.NomadJobID, true); err != nil && !errors.Is(err, nomad.ErrNotFound) {
+			return nil, fmt.Errorf("dispatch: stop unplaced job %s: %w", rec.ID, err)
+		}
+		return s.markLost(rec, pendingTimeoutReason(s.opts.PendingTimeout))
 	}
 
 	updated := rec.Job
@@ -688,6 +693,29 @@ func (s *service) expireAttempts(now time.Time) {
 	}
 }
 
+// pendingTimeoutPrefix starts the FailureReason of a job marked lost for never being placed.
+const pendingTimeoutPrefix = "no allocation within "
+
+func pendingTimeoutReason(timeout time.Duration) string {
+	return fmt.Sprintf("%s%s (fleet full or constraint unmatchable)", pendingTimeoutPrefix, timeout)
+}
+
+// stopLeakedUnplaced stops and purges the Nomad job of every job already marked lost for never
+// being placed. Versions before the pending-timeout path stopped the job left it queued in Nomad,
+// where it would run, unwatched, the moment a matching node joined. Stopping an already-gone job
+// is a no-op, so this is safe to run on every start.
+func (s *service) stopLeakedUnplaced(ctx context.Context) {
+	for _, rec := range s.store.list() {
+		if rec.Status != StatusLost || rec.NomadJobID == "" || rec.FailureReason == nil ||
+			!strings.HasPrefix(*rec.FailureReason, pendingTimeoutPrefix) {
+			continue
+		}
+		if err := s.nomad.StopJob(ctx, rec.NomadJobID, true); err != nil && !errors.Is(err, nomad.ErrNotFound) {
+			slog.Warn("dispatch: could not stop a lost job's unplaced Nomad job", "id", rec.ID, "nomadJob", rec.NomadJobID, "err", err)
+		}
+	}
+}
+
 // markLost marks rec StatusLost with reason, persists it, refreshes the status cache, and returns
 // the updated Job. Used by reconcile when Nomad no longer knows about rec's dispatched job (a 404
 // — the server restarted with a wiped data dir, or the job was purged) or when a job has sat
@@ -771,6 +799,8 @@ func describeCounts(m map[string]int) string {
 
 // RunReconciler implements Service.RunReconciler.
 func (s *service) RunReconciler(ctx context.Context, interval time.Duration) error {
+	s.stopLeakedUnplaced(ctx)
+
 	tick := func() {
 		recs := s.store.list()
 		for i := range recs {
