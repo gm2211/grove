@@ -76,11 +76,16 @@ type fakeOrchard struct {
 	deleted []string
 	// deleteErr makes that many DeleteVM calls fail.
 	deleteErr int
+	workers   []orchard.Worker
 }
 
-func (o *fakeOrchard) ListWorkers(context.Context) ([]orchard.Worker, error) { return nil, nil }
-func (o *fakeOrchard) PauseWorker(context.Context, string) error             { return nil }
-func (o *fakeOrchard) ResumeWorker(context.Context, string) error            { return nil }
+func (o *fakeOrchard) ListWorkers(context.Context) ([]orchard.Worker, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return slices.Clone(o.workers), nil
+}
+func (o *fakeOrchard) PauseWorker(context.Context, string) error  { return nil }
+func (o *fakeOrchard) ResumeWorker(context.Context, string) error { return nil }
 func (o *fakeOrchard) ListVMs(context.Context) ([]orchard.VM, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()

@@ -695,6 +695,9 @@ func TestLogLines_NoAllocationYet(t *testing.T) {
 func newTestServiceWithOpts(t *testing.T, nc *fakeNomad, opts Options) Service {
 	t.Helper()
 	opts.StorePath = filepath.Join(t.TempDir(), "jobs.json")
+	if opts.AttemptsDir == "" {
+		opts.AttemptsDir = t.TempDir()
+	}
 	if opts.StatusTTL <= 0 {
 		opts.StatusTTL = time.Millisecond
 	}

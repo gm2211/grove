@@ -82,6 +82,12 @@ type Request struct {
 	Timeout    time.Duration
 	// ArtifactPrefix is where a build job's ./artifacts/** land in the artifact store.
 	ArtifactPrefix string
+	// JobID is the grove job this is; it names the job's attempt record. Empty records nothing.
+	JobID string
+	// RetryLost reruns the job in another VM when its VM is lost, up to dispatch.MaxAttempts runs
+	// in all, and stops it for good once it was lost on dispatch.QuarantineMachines different
+	// machines.
+	RetryLost bool
 }
 
 var (

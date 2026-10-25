@@ -18,6 +18,7 @@ internal/server/              HTTP API (/api/v1/…) + embedded UI; token + Tail
 internal/tsauth/              Tailscale identity (tailscale whois on the peer address) → scopes
 internal/secrets/             operator-set named job secrets (JobRequest.Secrets)
 internal/gitauth/             operator-armed private-repo credential (see below)
+internal/health/              rebuilds VMs / pauses Macs that keep losing sealed-pool jobs
 internal/mcp/                 MCP server (stdio)
 internal/install/             role bootstrap planner + doctor checks (see below)
 ui/                            Vite + React + TS SPA

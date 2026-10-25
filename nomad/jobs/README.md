@@ -53,7 +53,8 @@ Every rendered job:
 
 - `type = "batch"`.
 - `parameterized { payload = "required" meta_required = ["requester"] meta_optional = ["repo",
-  "ref", "env_json", "timeout_seconds", "grove_meta_json", "artifact_prefix", "image"] }` — a
+  "ref", "env_json", "timeout_seconds", "grove_meta_json", "artifact_prefix", "image",
+  "retry_lost"] }` (`retry_lost` is read only by the sealed-pool template) — a
   `JobRequest` (see `internal/dispatch/dispatch.go`) maps onto these dispatch meta keys 1:1, plus
   the request's `Script` becomes the dispatch payload (for build/agent behind a
   `grove-payload/1` header line and a clone-token line, read only by the `source` task).

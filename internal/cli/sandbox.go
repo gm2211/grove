@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/gm2211/grove/internal/artifacts"
+	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/sandbox"
 )
 
@@ -78,6 +79,10 @@ func runSandbox(ctx context.Context, f sandboxRunFlags) error {
 		CloneToken:     token,
 		Script:         script,
 		ArtifactPrefix: os.Getenv("NOMAD_META_artifact_prefix"),
+		RetryLost:      os.Getenv("NOMAD_META_retry_lost") == "true",
+	}
+	if id, ok := dispatch.JobIDFromArtifactPrefix(req.ArtifactPrefix); ok {
+		req.JobID = id
 	}
 	if raw := os.Getenv("NOMAD_META_env_json"); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &req.Env); err != nil {
@@ -108,10 +113,12 @@ func runSandbox(ctx context.Context, f sandboxRunFlags) error {
 	}
 
 	runner := &sandbox.Runner{
-		Orchard:  oc,
-		Uploader: uploader,
-		Slots:    sandbox.Slots{Dir: sandboxSlotDir(), PerVM: sandboxSlots(f)},
-		WorkDir:  os.Getenv("NOMAD_TASK_DIR"),
+		Orchard:     oc,
+		Uploader:    uploader,
+		Slots:       sandbox.Slots{Dir: sandboxStateDir("sandbox-slots"), PerVM: sandboxSlots(f)},
+		Queue:       sandbox.Queue{Dir: sandboxStateDir("sandbox-queue")},
+		AttemptsDir: dispatch.DefaultAttemptsDir(),
+		WorkDir:     os.Getenv("NOMAD_TASK_DIR"),
 	}
 	if f.kind == sandbox.KindAgent {
 		// The sandbox template gives an agent a 10m kill_timeout; leave time to collect its
@@ -135,13 +142,14 @@ func sandboxSlots(f sandboxRunFlags) int {
 	return f.slots
 }
 
-// sandboxSlotDir holds the per-VM slot locks every `grove sandbox run` on this machine shares.
-func sandboxSlotDir() string {
+// sandboxStateDir is a directory every `grove sandbox run` on this machine shares: the per-VM slot
+// locks ("sandbox-slots") and each pool's queue of waiting jobs ("sandbox-queue").
+func sandboxStateDir(name string) string {
 	if base := os.Getenv("XDG_STATE_HOME"); base != "" {
-		return filepath.Join(base, "grove", "sandbox-slots")
+		return filepath.Join(base, "grove", name)
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".local", "state", "grove", "sandbox-slots")
+		return filepath.Join(home, ".local", "state", "grove", name)
 	}
-	return filepath.Join(os.TempDir(), "grove-sandbox-slots")
+	return filepath.Join(os.TempDir(), "grove-"+name)
 }

@@ -266,6 +266,37 @@ processes, through `sudo` over the same Orchard exec:
 
 Exit codes are the same as on a Linux sealed pool (124, 125 → lost, a script's own 125 → 1).
 
+### When a sealed pool's VM dies: reruns, quarantine, sick machines
+
+Jobs waiting for a VM slot of a pool start in the order they were submitted. Each waiting
+`grove sandbox run` holds a ticket in `<state>/grove/sandbox-queue/<pool>/`, and a job takes a
+free slot only when fewer jobs are waiting ahead of it than there are free slots.
+
+When a job's VM stops answering, `grove sandbox run` reruns the job in another VM, on another Mac
+when the pool has one. A job runs at most 3 times. Only a lost VM starts a rerun: a script that
+fails, times out or is canceled is never rerun. `JobRequest.retryLost` decides; when it isn't set,
+build and shell jobs are rerun and agent jobs are not, since an agent may already have pushed or
+posted something.
+
+A job lost on 2 different Macs, after its script started, is a poison pill: it most likely takes
+the machines down itself. grove stops running it, and it ends `failed` with `quarantined: true`
+and a `failureReason` that names the Macs. A VM lost before the job's script started says nothing
+about the job, so it doesn't count.
+
+The driver writes each job's runs to `<state>/grove/attempts/<job id>.json` on the control
+plane. The job itself never runs there. `grove serve` folds the record into `Job.attempts` and
+`Job.placement`, then deletes it once the job has ended. `grove serve` also watches the attempts
+of the last hour:
+
+- a VM that lost 2 different jobs, with none finishing in it in between, is deleted, and the
+  fleet reconciler rebuilds it;
+- a Mac whose VMs lost 3 different jobs, in at least 2 of its VMs and with none finishing in
+  between, has its scheduling paused, so no new job goes to it until an operator runs `grove
+  worker resume`.
+
+Quarantined jobs are left out of both counts. Reruns and quarantine cover sealed pools only; a
+shared pool's job that is lost stays lost.
+
 ### Artifact retention
 
 Artifacts are kept briefly, so the artifact store never grows without bound: `grove serve` deletes a

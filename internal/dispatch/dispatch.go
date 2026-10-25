@@ -54,6 +54,19 @@ type JobRequest struct {
 	// a request that exceeds them with a 400. See docs/JOBS.md "Per-job resource sizing" for the
 	// full limitation and the plan for real per-dispatch sizing.
 	Resources *ResourceHint `json:"resources,omitempty"`
+	// RetryLost says whether a sealed pool's job is rerun in another VM when its VM dies under it
+	// (up to MaxAttempts runs, and never again once it was lost on QuarantineMachines different
+	// machines). Nil means the default: build and shell jobs are rerun, agent jobs are not, since
+	// an agent may already have pushed or posted something a rerun would do twice.
+	RetryLost *bool `json:"retryLost,omitempty"`
+}
+
+// retryLost is req's effective RetryLost.
+func (req JobRequest) retryLost() bool {
+	if req.RetryLost != nil {
+		return *req.RetryLost
+	}
+	return req.Kind != KindAgent
 }
 
 // ResourceHint is JobRequest.Resources: a CPU/memory sizing hint, in the same units as
@@ -103,6 +116,13 @@ type Job struct {
 	// rather than a genuine script failure.
 	FailureReason *string    `json:"failureReason,omitempty"`
 	Placement     *Placement `json:"placement,omitempty"`
+	// Attempts lists where a sealed pool's job ran, one entry per run: a job whose VM died under it
+	// is rerun in another (see JobRequest.RetryLost). Empty for other pools.
+	Attempts []Attempt `json:"attempts,omitempty"`
+	// Quarantined is set on a failed job that grove stopped running because it was lost on
+	// QuarantineMachines different machines: the job itself most likely takes them down, so it
+	// must not simply be resubmitted. FailureReason says where it was lost.
+	Quarantined bool `json:"quarantined,omitempty"`
 	// RepoCredentialUsed records that this job's clone was given the control plane's armed
 	// private-repo credential (see internal/gitauth and Options.RepoAuth). The credential itself
 	// is never stored on the Job or returned by the API — this is only the audit bit saying one

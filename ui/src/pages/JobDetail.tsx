@@ -106,6 +106,34 @@ export function JobDetailPage() {
             </>
           )}
 
+          {job.quarantined && (
+            <div className="rounded p-2 text-xs" style={{ background: "var(--bg-inset)", color: "var(--status-failed)" }}>
+              Quarantined: {job.failureReason ?? "lost on two different machines"}. Don't resubmit it unchanged.
+            </div>
+          )}
+
+          {job.attempts && job.attempts.length > 0 && (
+            <>
+              <div className="mt-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--fg-faint)" }}>
+                Attempts
+              </div>
+              {job.attempts.map((a, i) => (
+                <div key={i} className="flex flex-col text-xs">
+                  <div className="flex justify-between">
+                    <span className="mono">
+                      {i + 1}. {a.vm}
+                      {a.worker ? ` on ${a.worker}` : ""}
+                    </span>
+                    <span style={{ color: "var(--fg-muted)" }}>
+                      {a.outcome === "exited" ? `exited ${a.exitCode ?? "?"}` : a.outcome}
+                    </span>
+                  </div>
+                  {a.reason && <div style={{ color: "var(--fg-muted)" }}>{a.reason}</div>}
+                </div>
+              ))}
+            </>
+          )}
+
           <div className="mt-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--fg-faint)" }}>
             Status timeline
           </div>

@@ -19,6 +19,7 @@ import (
 	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/fleet"
 	"github.com/gm2211/grove/internal/gitauth"
+	"github.com/gm2211/grove/internal/health"
 	"github.com/gm2211/grove/internal/install"
 	"github.com/gm2211/grove/internal/orchard"
 	"github.com/gm2211/grove/internal/sandbox"
@@ -130,6 +131,15 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 	go func() {
 		if err := ds.RunReconciler(ctx, dispatch.DefaultReconcileInterval); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("serve: job reconciler sweep stopped", "err", err)
+		}
+	}()
+
+	// Rebuild a sealed VM that keeps losing jobs, and stop sending work to a Mac whose VMs keep
+	// losing them, from the attempt records the job drivers keep (see internal/health).
+	monitor := &health.Monitor{Jobs: ds, Orchard: oc}
+	go func() {
+		if err := monitor.Run(ctx, dispatch.DefaultReconcileInterval); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("serve: machine health monitor stopped", "err", err)
 		}
 	}()
 

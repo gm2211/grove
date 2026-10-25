@@ -52,6 +52,13 @@ func newHarness(t *testing.T) *harness {
 	return h
 }
 
+// stderrString reads what the runner wrote to stderr so far; the runner writes it under its lock.
+func (h *harness) stderrString() string {
+	h.runner.stderrMu.Lock()
+	defer h.runner.stderrMu.Unlock()
+	return h.stderr.String()
+}
+
 func shellRequest() Request {
 	return Request{
 		Kind: KindShell, Pool: "linux", AllocID: "alloc1", Image: "ghcr.io/gm2211/grove-runner:latest",
@@ -287,9 +294,9 @@ func TestRun_SkipsDrainingVM(t *testing.T) {
 	recreated := sealedVM("linux-mac0-0")
 	recreated.UID = "uid-new"
 	h.orchard.vms = []orchard.VM{recreated}
-	slot, uid, _ := r.acquire(context.Background(), "linux", map[string]bool{"linux-mac0-0/uid-old": true})
-	if slot == nil || slot.VM != "linux-mac0-0" || uid != "uid-new" {
-		t.Fatalf("acquire = %v, %q; want the recreated VM", slot, uid)
+	slot, vm, _ := r.acquire(context.Background(), shellRequest(), time.Now(), map[string]bool{"linux-mac0-0/uid-old": true}, nil)
+	if slot == nil || slot.VM != "linux-mac0-0" || vm.UID != "uid-new" {
+		t.Fatalf("acquire = %v, %q; want the recreated VM", slot, vm.UID)
 	}
 	slot.Release()
 }
