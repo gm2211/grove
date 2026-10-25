@@ -5,6 +5,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+
+	"github.com/gm2211/grove/internal/config"
+	"github.com/gm2211/grove/internal/nomad"
+	"github.com/gm2211/grove/internal/wire"
 )
 
 // Role selects which step set BuildPlan assembles.
@@ -51,6 +55,17 @@ type Options struct {
 	// Store bundle paths. Test override, so a test isn't at the mercy of what's actually installed
 	// on the machine running it; defaults to a real os.Stat-backed check.
 	Exists func(path string) bool
+	// NomadClient builds the Nomad API client the control-plane plan uses once Nomad is up (to
+	// mint the sandbox-host client's introduction token). Test override; defaults to
+	// wire.NewNomadClient.
+	NomadClient func(config.Endpoint) (nomad.Client, error)
+}
+
+func (o Options) nomadClient(ep config.Endpoint) (nomad.Client, error) {
+	if o.NomadClient != nil {
+		return o.NomadClient(ep)
+	}
+	return wire.NewNomadClient(ep)
 }
 
 func (o Options) hostname() string {

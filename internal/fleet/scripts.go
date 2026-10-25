@@ -54,6 +54,12 @@ func buildStartupScript(pool Pool, worker, vmName string, opts Options) string {
 		b.WriteString(nomadClientACLScript)
 		b.WriteString("\n")
 	}
+	if opts.NodeTLS != nil {
+		b.WriteString(nomadTLSScript(*opts.NodeTLS))
+		b.WriteString("\n")
+		b.WriteString(nomadIntroScript)
+		b.WriteString("\n")
+	}
 
 	if opts.TailscaleAuthKey != "" {
 		// Not fatal: a shared pool's guest already reaches the control plane through its host's
@@ -317,6 +323,77 @@ acl {
 }
 GROVE_META_ACL
 # grove:client-acl end
+`
+
+// NodeTLS is what a VM's Nomad client needs for mutual TLS with the control plane: the CA that
+// signed the server's certificate, and the client certificate and key it presents (PEM). See
+// internal/pki.
+type NodeTLS struct {
+	CA   string
+	Cert string
+	Key  string
+}
+
+// nomadTLSScript writes the VM's Nomad TLS material into a root-only directory next to the meta
+// file, and a config file turning on TLS for RPC to the server. RPC only: the client's own HTTP
+// API stays plain on 127.0.0.1, where the readiness check and the shutdown script's drain reach it
+// and its ACLs already apply. It also names the node after its VM, because the VM's introduction
+// token (nomadIntroScript) is bound to that name. The block is the same on every VM, so changing
+// the CA or the node certificate shows up as drift and the fleet recreates its VMs.
+func nomadTLSScript(t NodeTLS) string {
+	return strings.NewReplacer(
+		"@GROVE_NOMAD_CA@", strings.TrimRight(t.CA, "\n"),
+		"@GROVE_NOMAD_NODE_CERT@", strings.TrimRight(t.Cert, "\n"),
+		"@GROVE_NOMAD_NODE_KEY@", strings.TrimRight(t.Key, "\n"),
+	).Replace(nomadTLSScriptTemplate)
+}
+
+const nomadTLSScriptTemplate = `# grove:nomad-tls begin
+grove_nomad_dir=$(dirname "$grove_meta_file")
+grove_nomad_tls="$grove_nomad_dir/tls"
+grove_priv mkdir -p "$grove_nomad_tls"
+grove_priv chmod 0700 "$grove_nomad_tls"
+for grove_tls_file in ca.pem node.pem node-key.pem; do
+  grove_priv install -m 0600 /dev/null "$grove_nomad_tls/$grove_tls_file"
+done
+grove_priv tee "$grove_nomad_tls/ca.pem" >/dev/null <<'GROVE_NOMAD_CA'
+@GROVE_NOMAD_CA@
+GROVE_NOMAD_CA
+grove_priv tee "$grove_nomad_tls/node.pem" >/dev/null <<'GROVE_NOMAD_NODE_CERT'
+@GROVE_NOMAD_NODE_CERT@
+GROVE_NOMAD_NODE_CERT
+grove_priv tee "$grove_nomad_tls/node-key.pem" >/dev/null <<'GROVE_NOMAD_NODE_KEY'
+@GROVE_NOMAD_NODE_KEY@
+GROVE_NOMAD_NODE_KEY
+grove_priv tee "$grove_nomad_dir/grove-tls.hcl" >/dev/null <<GROVE_NOMAD_TLS
+name = "$grove_vm"
+
+tls {
+  rpc                    = true
+  ca_file                = "$grove_nomad_tls/ca.pem"
+  cert_file              = "$grove_nomad_tls/node.pem"
+  key_file               = "$grove_nomad_tls/node-key.pem"
+  verify_server_hostname = true
+}
+GROVE_NOMAD_TLS
+# grove:nomad-tls end
+`
+
+// nomadIntroTokenPlaceholder is filled with the VM's own client introduction token right before
+// CreateVM (see Reconciler.withIntroToken), like the node token placeholders: a planned spec never
+// holds one.
+const nomadIntroTokenPlaceholder = "@GROVE_NOMAD_INTRO_TOKEN@"
+
+// nomadIntroScript leaves the VM's introduction token where its Nomad client looks for one on
+// first registration (intro_token.jwt in the client state directory, under the images' data_dir).
+// Once registered the client authenticates with the node identity the server issued it, so a
+// reboot after the token expired still rejoins. The begin/end markers let specDrifted ignore the
+// block's token, which differs per VM.
+const nomadIntroScript = `# grove:nomad-intro begin
+grove_priv mkdir -p /opt/nomad/data/client
+grove_priv install -m 0600 /dev/null /opt/nomad/data/client/intro_token.jwt
+printf '%s' ` + nomadIntroTokenPlaceholder + ` | grove_priv tee /opt/nomad/data/client/intro_token.jwt >/dev/null
+# grove:nomad-intro end
 `
 
 // nomadMetaScript writes the Nomad client meta file naming this VM's pool/host/vm, at the path

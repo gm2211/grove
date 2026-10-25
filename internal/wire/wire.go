@@ -14,9 +14,10 @@ func NewOrchardClient(cfg config.Endpoint) (orchard.Client, error) {
 	return orchard.New(cfg.URL, cfg.Token)
 }
 
-// NewNomadClient builds the concrete Nomad client from an endpoint config.
+// NewNomadClient builds the concrete Nomad client from an endpoint config, over mutual TLS when
+// the endpoint names certificates (as `grove install --role control-plane` writes it).
 func NewNomadClient(cfg config.Endpoint) (nomad.Client, error) {
-	return nomad.New(cfg.URL, cfg.Token)
+	return nomad.NewTLS(cfg.URL, cfg.Token, nomad.TLS{CACert: cfg.CACert, ClientCert: cfg.ClientCert, ClientKey: cfg.ClientKey})
 }
 
 // NewArtifactsClient builds the concrete artifact store (a directory on this machine) from config.

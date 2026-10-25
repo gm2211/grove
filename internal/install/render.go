@@ -114,10 +114,18 @@ func RenderSystemdUnit(spec SystemdUnitSpec) (string, error) {
 	return buf.String(), nil
 }
 
+// NomadTLSFiles names the PEM files a Nomad agent presents and trusts (see internal/pki).
+type NomadTLSFiles struct {
+	CA   string
+	Cert string
+	Key  string
+}
+
 // NomadServerConfigSpec is what grove needs to render a single-node Nomad server config.
 type NomadServerConfigSpec struct {
 	DataDir  string
 	BindAddr string
+	TLS      NomadTLSFiles
 }
 
 var nomadServerConfigTemplate = template.Must(template.New("nomad").Parse(`# Managed by grove install. Re-run ` + "`grove install --role control-plane`" + ` to regenerate.
@@ -127,23 +135,28 @@ bind_addr = "{{.BindAddr}}"
 server {
   enabled          = true
   bootstrap_expect = 1
-}
 
-# The control plane is also a Nomad client for one kind of job only: ` + "`grove sandbox run`" + `, which
-# drives a sealed pool's job in its VM from here (nomad/jobs/sandbox.nomad.hcl), since a sealed
-# VM can't reach Nomad. This node advertises grove_sandbox_host and no pool, so no other grove
-# job is ever placed on it.
-client {
-  enabled = true
-  meta {
-    grove_sandbox_host = "true"
+  # A client registers only with an introduction token bound to its node name and pool, minted
+  # by grove for that one VM (or for the sandbox-host client below). A CA-signed certificate
+  # alone does not let a machine join.
+  client_introduction {
+    enforcement = "strict"
   }
 }
 
-plugin "raw_exec" {
-  config {
-    enabled = true
-  }
+# Mutual TLS on RPC and HTTP: the server only talks to peers holding a certificate grove's CA
+# signed. Without it anything that reached port 4647 could register as a node and be handed jobs.
+# verify_server_hostname makes Nomad check the certificate's role name (server.global.nomad /
+# client.global.nomad), so a client certificate cannot pose as a server. The CA key never leaves
+# this machine.
+tls {
+  http                   = true
+  rpc                    = true
+  ca_file                = "{{.TLS.CA}}"
+  cert_file              = "{{.TLS.Cert}}"
+  key_file               = "{{.TLS.Key}}"
+  verify_server_hostname = true
+  verify_https_client    = true
 }
 
 acl {
@@ -159,6 +172,88 @@ func RenderNomadServerConfig(spec NomadServerConfigSpec) (string, error) {
 	var buf bytes.Buffer
 	if err := nomadServerConfigTemplate.Execute(&buf, spec); err != nil {
 		return "", fmt.Errorf("render nomad server config: %w", err)
+	}
+	return buf.String(), nil
+}
+
+// SandboxClientNodeName is the Nomad node name of the control plane's own client, the one that
+// runs `grove sandbox run` for sealed pools. Its introduction token is bound to this name.
+const SandboxClientNodeName = "grove-sandbox-host"
+
+// Loopback ports of the sandbox-host client agent, clear of the server's 4646-4648.
+const (
+	sandboxClientHTTPPort = 4656
+	sandboxClientRPCPort  = 4657
+	sandboxClientSerfPort = 4658
+)
+
+// NomadSandboxClientConfigSpec renders the control plane's sandbox-host Nomad client.
+type NomadSandboxClientConfigSpec struct {
+	DataDir string
+	// Server is the server's RPC address, host:port.
+	Server string
+	TLS    NomadTLSFiles
+}
+
+var nomadSandboxClientConfigTemplate = template.Must(template.New("nomad-sandbox-client").Parse(`# Managed by grove install. Re-run ` + "`grove install --role control-plane`" + ` to regenerate.
+#
+# The control plane's own Nomad client, for one kind of job only: ` + "`grove sandbox run`" + `, which drives
+# a sealed pool's job in its VM from here (nomad/jobs/sandbox.nomad.hcl), since a sealed VM can't
+# reach Nomad. This node advertises grove_sandbox_host and no pool, so no other grove job is ever
+# placed on it. It is a separate agent from the server because the server enforces client
+# introduction for every client, its own included.
+name      = "` + SandboxClientNodeName + `"
+data_dir  = "{{.DataDir}}"
+bind_addr = "127.0.0.1"
+
+ports {
+  http = {{.HTTPPort}}
+  rpc  = {{.RPCPort}}
+  serf = {{.SerfPort}}
+}
+
+advertise {
+  http = "127.0.0.1:{{.HTTPPort}}"
+  rpc  = "127.0.0.1:{{.RPCPort}}"
+  serf = "127.0.0.1:{{.SerfPort}}"
+}
+
+client {
+  enabled = true
+  servers = ["{{.Server}}"]
+  meta {
+    grove_sandbox_host = "true"
+  }
+}
+
+plugin "raw_exec" {
+  config {
+    enabled = true
+  }
+}
+
+tls {
+  rpc                    = true
+  ca_file                = "{{.TLS.CA}}"
+  cert_file              = "{{.TLS.Cert}}"
+  key_file               = "{{.TLS.Key}}"
+  verify_server_hostname = true
+}
+
+acl {
+  enabled = true
+}
+`))
+
+// RenderNomadSandboxClientConfig renders the sandbox-host client's config. Deterministic.
+func RenderNomadSandboxClientConfig(spec NomadSandboxClientConfigSpec) (string, error) {
+	var buf bytes.Buffer
+	data := struct {
+		NomadSandboxClientConfigSpec
+		HTTPPort, RPCPort, SerfPort int
+	}{spec, sandboxClientHTTPPort, sandboxClientRPCPort, sandboxClientSerfPort}
+	if err := nomadSandboxClientConfigTemplate.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("render nomad sandbox client config: %w", err)
 	}
 	return buf.String(), nil
 }

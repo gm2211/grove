@@ -26,6 +26,18 @@ jobs:
 
       - run: go vet ./...
 
+      # The Nomad mTLS integration test (internal/install) runs grove's rendered configs against
+      # the real Nomad release the control plane installs; it skips without GROVE_NOMAD_BIN.
+      - name: Install Nomad for integration tests
+        if: runner.os == 'Linux'
+        run: |
+          version=$(sed -n 's/^\tNomadVersion = "\(.*\)"$/\1/p' internal/install/download.go)
+          sum=$(sed -n 's/^\t"linux\/amd64": *"\([0-9a-f]*\)",$/\1/p' internal/install/download.go)
+          curl -fsSL -o "$RUNNER_TEMP/nomad.zip" "https://releases.hashicorp.com/nomad/${version}/nomad_${version}_linux_amd64.zip"
+          echo "$sum  $RUNNER_TEMP/nomad.zip" | sha256sum -c -
+          unzip -o -q "$RUNNER_TEMP/nomad.zip" nomad -d "$RUNNER_TEMP"
+          echo "GROVE_NOMAD_BIN=$RUNNER_TEMP/nomad" >> "$GITHUB_ENV"
+
       - run: go test ./...
 
   ui:

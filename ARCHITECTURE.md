@@ -173,8 +173,9 @@ pools:
 reaches, LAN and tailnet included) or `isolated`. An isolated (sealed) pool's VMs run on Softnet
 with the host blocked (`netSoftnet` + `netSoftnetBlock: ["out @host"]`), use public DNS, keep job
 containers behind an in-guest fence, and run neither Nomad nor Tailscale: they reach the public
-internet and nothing at home. Their jobs are placed on the control plane instead, whose Nomad
-agent is also a client (node meta `grove_sandbox_host`, raw_exec), where `grove sandbox run`
+internet and nothing at home. Their jobs are placed on the control plane instead, on its
+sandbox-host Nomad client (a second agent beside the server; node meta `grove_sandbox_host`,
+raw_exec), where `grove sandbox run`
 (`internal/sandbox`) drives each one in a sealed VM from outside through Orchard exec: push the
 checkout in, run it in a fresh container, follow its logs, poll it, pull its artifacts out. A
 macOS guest has no container runtime: there the job runs as the unprivileged job user in a fresh

@@ -107,3 +107,19 @@ func (s *scriptedSequence) Run(ctx context.Context, name string, args ...string)
 	}
 	return s.FakeRunner.Run(ctx, name, args...)
 }
+
+func TestNomadACLBootstrap_PassesTLSFiles(t *testing.T) {
+	opts, cfgDir := nomadACLTestSetup(t)
+	if err := updateConfig(cfgDir, func(c *config.Config) {
+		c.Nomad.URL = "https://cp:4646"
+		c.Nomad.CACert, c.Nomad.ClientCert, c.Nomad.ClientKey = "/t/ca.pem", "/t/cli.pem", "/t/cli-key.pem"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r := NewFakeRunner()
+	r.Script("nomad acl bootstrap -address=https://cp:4646 -ca-cert=/t/ca.pem -client-cert=/t/cli.pem -client-key=/t/cli-key.pem -json",
+		FakeResult{Stdout: `{"SecretID":"mgmt-secret"}`})
+	if err := nomadACLBootstrapStep(r, opts, false).Apply(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

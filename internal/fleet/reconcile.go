@@ -38,6 +38,12 @@ type Options struct {
 	// Nomad client. Set it when the control plane's Nomad runs with ACLs on, i.e. config.yaml has
 	// a nomad.token. Nil leaves both out.
 	NodeTokens nomad.NodeTokens
+	// NodeTLS, when set, gives every non-sealed VM the CA and client certificate for Nomad's
+	// mutual TLS, plus a client introduction token minted by NodeIntros for that VM alone. Set
+	// both when the control plane's Nomad runs TLS with strict client introduction (config.yaml
+	// names nomad.nodeCert): without them its VMs cannot register.
+	NodeTLS    *NodeTLS
+	NodeIntros nomad.NodeIntros
 	// Load sizes elastic pools (see Pool.MaxPerWorker and autoscale.go). Nil keeps each elastic
 	// pool at its current size, clamped to its bounds.
 	Load *JobLoad
@@ -294,7 +300,11 @@ func (r *Reconciler) Apply(ctx context.Context, plan Plan) error {
 	}
 
 	for _, c := range plan.Creates {
-		spec, err := r.withNodeToken(ctx, c.Spec)
+		spec, err := r.withIntroToken(ctx, c.Spec)
+		if err != nil {
+			return fmt.Errorf("create vm %s: %w", c.Spec.Name, err)
+		}
+		spec, err = r.withNodeToken(ctx, spec)
 		if err != nil {
 			return fmt.Errorf("create vm %s: %w", c.Spec.Name, err)
 		}
@@ -331,6 +341,29 @@ func (r *Reconciler) withNodeToken(ctx context.Context, spec orchard.VMSpec) (or
 		nodeTokenSecretPlaceholder, shQuote(tok.SecretID),
 		nodeTokenAccessorPlaceholder, tok.AccessorID,
 	).Replace(spec.ShutdownScript)
+	return spec, nil
+}
+
+// introTokenTTL bounds how long a VM's introduction token stays usable. It covers an Orchard VM
+// waiting for a worker and pulling its image on first boot; after it, a VM that never registered
+// fails its readiness check and is rebuilt with a fresh token.
+const introTokenTTL = 6 * time.Hour
+
+// withIntroToken fills a planned spec's introduction-token placeholder with a token bound to this
+// VM's name. Unlike a node token there is no degraded mode: under strict client introduction a VM
+// without one can never register, so a minting failure fails the create and the next tick retries.
+func (r *Reconciler) withIntroToken(ctx context.Context, spec orchard.VMSpec) (orchard.VMSpec, error) {
+	if !strings.Contains(spec.StartupScript, nomadIntroTokenPlaceholder) {
+		return spec, nil
+	}
+	if r.Options.NodeIntros == nil {
+		return spec, errors.New("no Nomad introduction token issuer configured")
+	}
+	tok, err := r.Options.NodeIntros.CreateIntroToken(ctx, spec.Name, "", introTokenTTL)
+	if err != nil {
+		return spec, err
+	}
+	spec.StartupScript = strings.ReplaceAll(spec.StartupScript, nomadIntroTokenPlaceholder, shQuote(tok))
 	return spec, nil
 }
 
@@ -539,11 +572,19 @@ func specDrifted(desired orchard.VMSpec, existing orchard.VM) bool {
 
 var nodeACLBlocksRE = regexp.MustCompile(`(?s)# grove:(node-token|client-acl) begin\n.*?# grove:(node-token|client-acl) end\n\n?`)
 
+// introBlockRE matches the per-VM introduction token block (nomadIntroScript), filled or not.
+var introBlockRE = regexp.MustCompile(`(?s)# grove:nomad-intro begin\n.*?# grove:nomad-intro end\n`)
+
 // withoutNodeACL strips the node-token and client-acl blocks (see scripts.go) from a script before
 // drift comparison. Each VM's token differs, and turning Nomad ACLs on shouldn't recreate every
 // healthy VM at once: VMs made before it pick the blocks up on their next recycle.
+//
+// The introduction token block is normalized rather than stripped: its token differs per VM, but
+// whether a VM has the block at all must count, because a VM made before the control plane turned
+// on strict client introduction can no longer register and has to be recreated.
 func withoutNodeACL(script string) string {
-	return nodeACLBlocksRE.ReplaceAllString(script, "")
+	script = nodeACLBlocksRE.ReplaceAllString(script, "")
+	return introBlockRE.ReplaceAllLiteralString(script, nomadIntroScript)
 }
 
 // hostOf is a VM's best-known host: the controller-observed Worker once Orchard has actually

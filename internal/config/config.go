@@ -52,6 +52,17 @@ type TailscaleConfig struct {
 type Endpoint struct {
 	URL   string `yaml:"url"`
 	Token string `yaml:"token,omitempty"`
+
+	// The rest is Nomad's mutual TLS, written by `grove install --role control-plane` (see
+	// internal/pki). CACert verifies the server; ClientCert/ClientKey are grove's own client
+	// identity for the HTTP API. NodeCert/NodeKey are the client certificate the fleet hands each
+	// VM's Nomad client, which on its own does not let a node join: registering also needs a
+	// per-VM introduction token. All paths, never PEM contents.
+	CACert     string `yaml:"caCert,omitempty"`
+	ClientCert string `yaml:"clientCert,omitempty"`
+	ClientKey  string `yaml:"clientKey,omitempty"`
+	NodeCert   string `yaml:"nodeCert,omitempty"`
+	NodeKey    string `yaml:"nodeKey,omitempty"`
 }
 
 type ServerConfig struct {
