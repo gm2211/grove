@@ -44,6 +44,7 @@ func tailscaleServer(t *testing.T, ds *fakeDispatch) (*Server, *secrets.Store) {
 
 func peerRequest(srv *Server, method, path, body, remote, token string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Host = "grove.tail1234.ts.net:6120"
 	req.RemoteAddr = remote
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -148,5 +149,79 @@ func TestSubmit_NamedSecretsFollowTheirGrants(t *testing.T) {
 	}
 	if len(ds.submitCalls) != 2 || ds.submitCalls[0].SubmittedBy != "tailscale:nARGOS" {
 		t.Fatalf("submit calls = %+v", ds.submitCalls)
+	}
+}
+
+// A page that points its own domain at grove's tailnet address (DNS rebinding) makes the browser's
+// requests same-origin, and they would carry the browser machine's Tailscale identity.
+func TestTailscaleIdentity_RejectsForeignHostName(t *testing.T) {
+	srv, _ := tailscaleServer(t, nil)
+	for _, host := range []string{"attacker.example:6120", "grove.tail1234.ts.net.attacker.example"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/whoami", nil)
+		req.Host = host
+		req.RemoteAddr = "100.64.0.9:1"
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("Host %q: whoami = %d, want 403", host, rec.Code)
+		}
+	}
+	for _, host := range []string{"100.64.0.1:6120", "[fd7a:115c:a1e0::1]:6120", "grove:6120", "grove.tail1234.ts.net.", "localhost:6120"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/whoami", nil)
+		req.Host = host
+		req.RemoteAddr = "100.64.0.9:1"
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("Host %q: whoami = %d %s, want 200", host, rec.Code, rec.Body)
+		}
+	}
+}
+
+func TestTailscaleIdentity_ConfiguredServerHostIsTrusted(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/whoami", nil)
+	req.Host = "grove.home.example:6120"
+	if !tailnetHostTrusted(req, "http://grove.home.example:6120") {
+		t.Fatal("the configured server URL's host must be trusted")
+	}
+	if tailnetHostTrusted(req, "http://other.example:6120") {
+		t.Fatal("a host that is not the configured server URL's must not be trusted")
+	}
+}
+
+// A web page open on a granted machine must not be able to submit jobs as that machine.
+func TestCrossSiteBrowserRequestsAreRejected(t *testing.T) {
+	ds := &fakeDispatch{}
+	srv, _ := tailscaleServer(t, ds)
+	body := `{"kind":"shell","pool":"linux","script":"true"}`
+	for name, set := range map[string]func(*http.Request){
+		"sec-fetch-site": func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "cross-site") },
+		"origin":         func(r *http.Request) { r.Header.Set("Origin", "https://attacker.example") },
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(body))
+		req.Host = "grove.tail1234.ts.net:6120"
+		req.RemoteAddr = "100.64.0.9:1"
+		req.Header.Set("Content-Type", "text/plain")
+		set(req)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s: POST /jobs = %d, want 403", name, rec.Code)
+		}
+	}
+	if len(ds.submitCalls) != 0 {
+		t.Fatalf("a cross-site request dispatched %d job(s)", len(ds.submitCalls))
+	}
+
+	// The same-origin UI and header-less clients keep working.
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(body))
+	req.Host = "grove.tail1234.ts.net:6120"
+	req.RemoteAddr = "100.64.0.9:1"
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Origin", "http://grove.tail1234.ts.net:6120")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code >= 400 {
+		t.Fatalf("same-origin POST /jobs = %d %s", rec.Code, rec.Body)
 	}
 }

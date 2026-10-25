@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 	"crypto/subtle"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -86,10 +88,44 @@ func requiredScope(r *http.Request) string {
 	return ScopeRead
 }
 
-// withMiddleware wraps next with (in order, outside-in) request logging, same-origin CORS, and
-// Bearer token auth.
+// withMiddleware wraps next with (in order, outside-in) request logging, same-origin CORS,
+// cross-origin request rejection, and Bearer token auth.
 func (s *Server) withMiddleware(next http.Handler) http.Handler {
-	return s.withLogging(s.withCORS(s.withAuth(next)))
+	return s.withLogging(s.withCORS(withCrossOriginGuard(s.withAuth(next))))
+}
+
+// withCrossOriginGuard rejects state-changing requests a browser sent from another site
+// (Sec-Fetch-Site, or an Origin that doesn't match Host). A tailnet peer is authenticated by its
+// address alone, so without this any web page open in a browser on a granted machine could POST
+// /jobs as that machine. Requests without those headers (the CLI, argos, curl) pass untouched.
+func withCrossOriginGuard(next http.Handler) http.Handler {
+	return http.NewCrossOriginProtection().Handler(next)
+}
+
+// tailnetHostTrusted reports whether r was addressed to a name the control plane is actually
+// reached by on the tailnet: an IP literal, localhost, a MagicDNS name (short, or under .ts.net),
+// or the host of the configured server URL. Anything else is a page that pointed its own domain
+// at grove's address (DNS rebinding), whose requests would otherwise carry the browser machine's
+// Tailscale identity.
+func tailnetHostTrusted(r *http.Request, serverURL string) bool {
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.ToLower(strings.Trim(host, "[]")), ".")
+	if host == "" {
+		return false
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return true
+	}
+	if host == "localhost" || !strings.Contains(host, ".") || strings.HasSuffix(host, ".ts.net") {
+		return true
+	}
+	if u, err := url.Parse(serverURL); err == nil && u.Hostname() != "" {
+		return strings.EqualFold(strings.TrimSuffix(u.Hostname(), "."), host)
+	}
+	return false
 }
 
 // withAuth requires "Authorization: Bearer <token>" matching Options.Token or a device credential,
@@ -123,6 +159,10 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 				principal, _ = s.opts.AccessStore.Authenticate(token)
 			}
 		case auth == "" && s.opts.Tailscale != nil:
+			if !tailnetHostTrusted(r, s.opts.ServerURL) {
+				http.Error(w, "tailnet identity is only accepted on the control plane's own host name", http.StatusForbidden)
+				return
+			}
 			principal = s.tailscalePrincipal(r)
 		}
 		if principal.ID == "" {

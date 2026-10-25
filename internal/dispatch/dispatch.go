@@ -45,7 +45,8 @@ type JobRequest struct {
 	// It lets a dispatcher cancel its own jobs without granting fleet-wide operator power.
 	SubmittedBy string `json:"submittedBy,omitempty"`
 	// IdempotencyKey, if set, makes a repeat Submit with the same key return the existing Job
-	// instead of dispatching again. Orchestrator convention: "<orchestrator>:<taskId>:<runId>".
+	// instead of dispatching again. Scoped to SubmittedBy: only the same caller's earlier job is
+	// replayed. Orchestrator convention: "<orchestrator>:<taskId>:<runId>".
 	IdempotencyKey string `json:"idempotencyKey,omitempty"`
 	// Resources optionally hints at this job's desired sizing. Nomad cannot resize a parameterized
 	// job's `resources` block per dispatch (there is no dispatch-time equivalent of job update), so

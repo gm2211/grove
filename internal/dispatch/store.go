@@ -85,13 +85,15 @@ func (s *store) get(id string) (*record, bool) {
 	return &cp, true
 }
 
-// findByIdempotencyKey returns the first record whose JobRequest.IdempotencyKey matches key.
+// findByIdempotencyKey returns the first record submitted by submittedBy whose
+// JobRequest.IdempotencyKey matches key. Keys are per submitter: another caller reusing (or
+// guessing) a key gets its own job, never a replay of someone else's.
 // Linear scan over s.jobs is fine — job counts are small.
-func (s *store) findByIdempotencyKey(key string) (*record, bool) {
+func (s *store) findByIdempotencyKey(key, submittedBy string) (*record, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, r := range s.jobs {
-		if r.Request.IdempotencyKey == key {
+		if r.Request.IdempotencyKey == key && r.Request.SubmittedBy == submittedBy {
 			cp := *r
 			return &cp, true
 		}
