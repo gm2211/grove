@@ -38,6 +38,9 @@ type Options struct {
 	// Nomad client. Set it when the control plane's Nomad runs with ACLs on, i.e. config.yaml has
 	// a nomad.token. Nil leaves both out.
 	NodeTokens nomad.NodeTokens
+	// Load sizes elastic pools (see Pool.MaxPerWorker and autoscale.go). Nil keeps each elastic
+	// pool at its current size, clamped to its bounds.
+	Load *JobLoad
 	// Now returns the current time; defaults to time.Now. Overridable for tests.
 	Now func() time.Time
 	// Logger receives Run's per-tick errors without stopping the loop. Defaults to log.Default().
@@ -75,6 +78,8 @@ type PlannedCreate struct {
 	Pool   string
 	Worker string
 	Spec   orchard.VMSpec
+	// Reason is set when autoscaling adds the VM.
+	Reason string
 }
 
 // PlannedDelete is one VM the Reconciler intends to delete.
@@ -83,6 +88,8 @@ type PlannedDelete struct {
 	Pool   string
 	Worker string
 	Reason string
+	// Swap marks a VM removed to make room for another pool's (see SwapCooldown).
+	Swap bool
 }
 
 // PlannedBlock is a pool the Reconciler refused to build VMs for, and why.
@@ -137,6 +144,7 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 
 	desired := make(map[string]bool)
 	blocked := make(map[string]string)
+	scaled := r.scale(workers, vms)
 
 	for _, pool := range r.Spec.Pools {
 		if problem := isolationProblem(pool); problem != "" {
@@ -163,7 +171,14 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 				continue
 			}
 
-			for n := 0; n < pool.PerWorker; n++ {
+			indexes := scaled.poolIndexes(pool.Name, worker.Name)
+			if !pool.Elastic() {
+				indexes = make([]int, pool.PerWorker)
+				for n := range indexes {
+					indexes[n] = n
+				}
+			}
+			for _, n := range indexes {
 				name := VMName(pool.Name, worker.Name, n)
 				desired[name] = true
 
@@ -192,6 +207,7 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 					Pool:   pool.Name,
 					Worker: worker.Name,
 					Spec:   spec,
+					Reason: scaled.createReasons[name],
 				})
 			}
 		}
@@ -218,6 +234,8 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 		reason := "no longer desired"
 		if problem, ok := blocked[pool]; ok {
 			reason = "pool blocked: " + problem
+		} else if why, ok := scaled.deleteReasons[vm.Name]; ok {
+			reason = why
 		}
 
 		plan.Deletes = append(plan.Deletes, PlannedDelete{
@@ -225,6 +243,7 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 			Pool:   pool,
 			Worker: hostOf(vm, worker),
 			Reason: reason,
+			Swap:   scaled.swaps[vm.Name],
 		})
 	}
 

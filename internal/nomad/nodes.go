@@ -57,3 +57,44 @@ func (c *client) PurgeNode(ctx context.Context, nodeID string) error {
 	}
 	return nil
 }
+
+// NodeLoads reports which VMs' Nomad clients have joined and whether each runs a job, for the
+// fleet autoscaler. The concrete Client returned by New implements it; see AsNodeLoads.
+type NodeLoads interface {
+	// VMLoads maps meta.vm of every ready node to whether it has a running allocation. Down and
+	// initializing nodes, and nodes without meta.vm, are left out.
+	VMLoads(ctx context.Context) (map[string]bool, error)
+}
+
+// AsNodeLoads returns c's NodeLoads implementation, if it has one.
+func AsNodeLoads(c Client) (NodeLoads, bool) {
+	l, ok := c.(NodeLoads)
+	return l, ok
+}
+
+func (c *client) VMLoads(ctx context.Context) (map[string]bool, error) {
+	stubs, _, err := c.raw.Nodes().List(qOpts(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("nomad: list nodes: %w", wrapDenied(err))
+	}
+	out := map[string]bool{}
+	for _, stub := range stubs {
+		if stub == nil || stub.Status != "ready" {
+			continue
+		}
+		node, _, err := c.raw.Nodes().Info(stub.ID, qOpts(ctx))
+		if err != nil {
+			return nil, fmt.Errorf("nomad: get node %s: %w", stub.ID, err)
+		}
+		vm := node.Meta["vm"]
+		if vm == "" {
+			continue
+		}
+		allocs, _, err := c.raw.Nodes().Allocations(stub.ID, qOpts(ctx))
+		if err != nil {
+			return nil, fmt.Errorf("nomad: list allocations for node %s: %w", stub.ID, err)
+		}
+		out[vm] = out[vm] || runningAllocCount(allocs) > 0
+	}
+	return out, nil
+}

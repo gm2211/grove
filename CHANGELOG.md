@@ -4,6 +4,14 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Elastic pools: VMs follow the queue.** A pool with `maxPerWorker` (and optional
+  `minPerWorker`) gets one more VM while its jobs wait unplaced, on the roomiest matching worker
+  (Orchard VM slots, cores, memory, and at most 2 macOS VMs per Mac). If no worker has room, an
+  idle VM of another elastic pool with no waiting jobs is swapped out for it, at most once per
+  worker every 15 minutes. VMs idle for 15 minutes above the minimum are removed. `grove fleet
+  plan` and the serve log give the reason for each change. Pools without `maxPerWorker` keep
+  exactly `perWorker`. See ARCHITECTURE.md "Elastic pools".
+
 - **Linux jobs fall back to macOS.** A job a shared Linux pool can't place moves to the shared
   `macos` pool: after 20 seconds when the pool has no node at all, after 3 minutes when its nodes
   are busy. The job keeps its id and gains `fallback: {from, to, at, reason}`. Jobs whose last 3

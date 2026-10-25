@@ -62,7 +62,17 @@ func (s *Spec) Validate() error {
 			return fmt.Errorf("pool %q: image is required", p.Name)
 		}
 
-		if p.PerWorker < 1 {
+		if p.MaxPerWorker != nil {
+			min, max := p.Bounds()
+			if max < 1 || min < 0 || min > max {
+				return fmt.Errorf("pool %q: need 0 <= minPerWorker <= maxPerWorker and maxPerWorker >= 1, got %d..%d", p.Name, min, max)
+			}
+			if min != max && p.Isolated() {
+				return fmt.Errorf("pool %q: a sealed pool can't be elastic (its jobs' load isn't visible per VM); set perWorker instead", p.Name)
+			}
+		} else if p.MinPerWorker != nil {
+			return fmt.Errorf("pool %q: minPerWorker needs maxPerWorker", p.Name)
+		} else if p.PerWorker < 1 {
 			return fmt.Errorf("pool %q: perWorker must be >= 1, got %d", p.Name, p.PerWorker)
 		}
 
