@@ -97,7 +97,7 @@ func TestRun_ShellJobInSealedVM(t *testing.T) {
 	if strings.Contains(env, "secret-token") || strings.Contains(env, "bad-key") {
 		t.Errorf("env.sh = %q: the clone credential and unexportable keys must not enter the VM", env)
 	}
-	if !strings.Contains(h.vm.pushed["grove/run.sh"], "timeout --kill-after=10 3600 bash -eo pipefail /grove/script.sh") {
+	if !strings.Contains(h.vm.pushed["grove/run.sh"], "  sleep 3600 & grove_sleep=$!") {
 		t.Errorf("run.sh = %q, want the default timeout", h.vm.pushed["grove/run.sh"])
 	}
 	if _, ok := h.vm.pushed["workspace/"]; !ok {

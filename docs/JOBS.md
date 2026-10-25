@@ -252,10 +252,13 @@ processes, through `sudo` over the same Orchard exec:
   `env.sh`; the job's stdout, stderr and exit code go to a root-only directory
   `/private/var/grove-sandbox/<alloc>` that the job can't write;
 - logs are followed with `tail -c +<offset> -f`, resumed at the exact byte if the stream drops;
-- macOS has no `timeout(1)`, so the job's timeout is enforced by `grove sandbox run` itself: past
+- the job's timeout is kept by `run.sh` itself, on macOS and Linux alike (no `timeout(1)`: macOS
+  has none, and uutils' — Ubuntu 26.04's default — exits 124 or dies leaving the job running when
+  it is TERMed): the script runs in its own process group, which gets TERM at the limit and KILL
+  10 seconds later, and the job reports 124. `grove sandbox run` keeps a backstop timer too: past
   the timeout (plus a minute) it sends TERM to the job's process group, then KILL to it and to every
-  process of the job user, and the job reports 124; a cancel does the same and reports the job's
-  own exit status, as `docker stop` would;
+  process of the job user. A cancel TERMs the job once and reports the job's own exit status, as
+  `docker stop` would;
 - `./artifacts` is read back as a tar, as the job user;
 - the job's CPU/memory sizing and runner image don't apply: the job has the whole VM. Once it's
   over, grove deletes the run directory and then the VM itself, which the fleet reconciler

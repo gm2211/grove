@@ -118,7 +118,7 @@ exit 7
 		t.Errorf("env.sh = %q", env)
 	}
 	run := h.vm.pushed["grove/run.sh"]
-	for _, want := range []string{`cd "$grove_run/workspace"`, `. "$grove_run/grove"/env.sh`, `exec bash -eo pipefail "$grove_run/grove"/script.sh`,
+	for _, want := range []string{`cd "$grove_run/workspace"`, `. "$grove_run/grove"/env.sh`, `bash -eo pipefail "$grove_run/grove"/script.sh <&0 &`,
 		"export PATH=" + macPath} {
 		if !strings.Contains(run, want) {
 			t.Errorf("run.sh missing %q:\n%s", want, run)
@@ -372,7 +372,8 @@ func TestRunScriptAt_MacOS(t *testing.T) {
 		"grove_run=$(cd \"$(dirname \"$0\")/..\" && pwd -P) || exit 1\n",
 		"export HOME=/private/var/grove-job USER=_grovejob LOGNAME=_grovejob\n",
 		"cd \"$grove_run/workspace\"\nif ! git checkout --force --quiet 'main' --; then",
-		"exec timeout --kill-after=10 60 bash -eo pipefail \"$grove_run/grove\"/script.sh\nfi\nexec bash -eo pipefail \"$grove_run/grove\"/script.sh\n",
+		"bash -eo pipefail \"$grove_run/grove\"/script.sh <&0 &\n",
+		"  sleep 60 & grove_sleep=$!",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("run.sh missing %q:\n%s", want, script)

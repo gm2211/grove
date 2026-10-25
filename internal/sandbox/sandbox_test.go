@@ -174,7 +174,7 @@ func TestFetchRef(t *testing.T) {
 
 func TestRunScript(t *testing.T) {
 	got := runScript(90*time.Second, "", false)
-	if !strings.Contains(got, "timeout --kill-after=10 90 bash") || !strings.Contains(got, ". /grove/env.sh") || strings.Contains(got, "git") {
+	if !strings.Contains(got, "sleep 90 & grove_sleep=$!") || !strings.Contains(got, ". /grove/env.sh") || strings.Contains(got, "git") {
 		t.Fatalf("run.sh without a repo = %s", got)
 	}
 	got = runScript(time.Hour, "it's", true)

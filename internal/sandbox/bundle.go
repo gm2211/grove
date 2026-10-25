@@ -38,7 +38,7 @@ func runScript(timeout time.Duration, ref string, checkout bool) string {
 // runScriptAt is the job's entrypoint: for a job with a repository, the checkout of ref from the
 // .git the control plane fetched (exit 1 if that fails, as with the regular templates); then the
 // job's environment, then its script in the workspace under the same timeout the regular templates
-// apply (124 on expiry). Runner keeps its own timer too, for guests without timeout(1) (macOS).
+// apply (124 on expiry). Runner keeps its own timer too, in case the guest stops answering.
 func runScriptAt(p jobPaths, timeout time.Duration, ref string, checkout bool) string {
 	secs := int64(timeout / time.Second)
 	if secs < 1 {
@@ -61,11 +61,33 @@ set -uo pipefail
 fi
 `, shQuote(ref))
 	}
+	// The time limit is kept by run.sh itself, not timeout(1): implementations disagree on what a
+	// TERMed timeout does (GNU passes it to the job and exits with the job's status; uutils, the
+	// default from Ubuntu 26.04, exits 124 or dies leaving the job running), and a macOS guest has
+	// none. The job runs in its own process group so a stop reaches it, and its children, once:
+	// from run.sh, never also directly from a group-wide kill. Exit status: the job's own, or 124
+	// once the limit passed (the job is TERMed then, and KILLed 10s later).
 	fmt.Fprintf(&b, `. %[2]s/env.sh
-if command -v timeout >/dev/null 2>&1; then
-  exec timeout --kill-after=10 %[1]d bash -eo pipefail %[2]s/script.sh
-fi
-exec bash -eo pipefail %[2]s/script.sh
+grove_timed_out=
+set -m
+bash -eo pipefail %[2]s/script.sh <&0 &
+grove_job=$!
+set +m
+trap 'grove_woke=1; kill -s TERM -- "-$grove_job" 2>/dev/null' TERM INT HUP
+trap 'grove_woke=1 grove_timed_out=1; kill -s TERM -- "-$grove_job" 2>/dev/null' USR1
+(
+  trap 'kill "$grove_sleep" 2>/dev/null; exit 0' TERM
+  sleep %[1]d & grove_sleep=$!; wait "$grove_sleep"
+  kill -s USR1 $$ 2>/dev/null
+  sleep 10 & grove_sleep=$!; wait "$grove_sleep"
+  kill -s KILL -- "-$grove_job" 2>/dev/null
+) </dev/null >/dev/null 2>&1 &
+grove_dog=$!
+while :; do grove_woke=; wait "$grove_job"; grove_code=$?; [ -z "$grove_woke" ] && break; done
+kill "$grove_dog" 2>/dev/null
+wait "$grove_dog" 2>/dev/null
+if [ -n "$grove_timed_out" ]; then exit 124; fi
+exit "$grove_code"
 `, secs, p.grove)
 	return b.String()
 }
