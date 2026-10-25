@@ -68,7 +68,7 @@ func (c *client) CreateNodeToken(ctx context.Context, vmName string) (NodeToken,
 		Description: "grove: a VM drains its own Nomad client on recycle",
 		Rules:       nodeTokenPolicyRules,
 	}, wOpts(ctx)); err != nil {
-		return NodeToken{}, fmt.Errorf("nomad: upsert ACL policy %s: %w", NodeTokenPolicy, err)
+		return NodeToken{}, fmt.Errorf("nomad: upsert ACL policy %s: %w", NodeTokenPolicy, wrapDenied(err))
 	}
 	created, _, err := c.raw.ACLTokens().Create(&nomadapi.ACLToken{
 		Name:     NodeTokenPrefix + vmName,
@@ -76,7 +76,7 @@ func (c *client) CreateNodeToken(ctx context.Context, vmName string) (NodeToken,
 		Policies: []string{NodeTokenPolicy},
 	}, wOpts(ctx))
 	if err != nil {
-		return NodeToken{}, fmt.Errorf("nomad: create node token for %s: %w", vmName, err)
+		return NodeToken{}, fmt.Errorf("nomad: create node token for %s: %w", vmName, wrapDenied(err))
 	}
 	if created == nil || created.AccessorID == "" || created.SecretID == "" {
 		return NodeToken{}, fmt.Errorf("nomad: create node token for %s: empty response", vmName)
@@ -92,7 +92,7 @@ func (c *client) CreateNodeToken(ctx context.Context, vmName string) (NodeToken,
 func (c *client) ListNodeTokens(ctx context.Context) ([]NodeToken, error) {
 	stubs, _, err := c.raw.ACLTokens().List(qOpts(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("nomad: list ACL tokens: %w", err)
+		return nil, fmt.Errorf("nomad: list ACL tokens: %w", wrapDenied(err))
 	}
 	var out []NodeToken
 	for _, s := range stubs {
@@ -109,7 +109,7 @@ func (c *client) RevokeNodeToken(ctx context.Context, accessorID string) error {
 		if errors.Is(wrapNotFound(err), ErrNotFound) {
 			return nil
 		}
-		return fmt.Errorf("nomad: revoke node token %s: %w", accessorID, err)
+		return fmt.Errorf("nomad: revoke node token %s: %w", accessorID, wrapDenied(err))
 	}
 	return nil
 }

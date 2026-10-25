@@ -18,6 +18,11 @@ import (
 // the same condition.
 var ErrNotFound = errors.New("nomad: not found")
 
+// ErrPermissionDenied is wrapped into the error returned when Nomad responds 403: the configured
+// token (config.yaml nomad.token) lacks the capability the call needs, e.g. listing ACL tokens or
+// purging nodes without a management token. Retrying won't help until the token changes.
+var ErrPermissionDenied = errors.New("nomad: permission denied")
+
 // Node is a Nomad client node (one per worker VM, plus any bare-metal clients).
 type Node struct {
 	ID            string            `json:"id"`

@@ -170,8 +170,13 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 				spec := r.vmSpec(pool, worker.Name, name)
 
 				existing, ok := findVM(vms, name)
+				reason := "spec changed"
 				if ok && !specDrifted(spec, existing) {
-					continue // already up to date
+					failed, retry := r.failedVMDue(existing)
+					if !failed || !retry {
+						continue // already up to date, or failed too recently to rebuild yet
+					}
+					reason = failedReason(existing)
 				}
 
 				if ok {
@@ -179,7 +184,7 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 						Name:   name,
 						Pool:   pool.Name,
 						Worker: worker.Name,
-						Reason: "spec changed",
+						Reason: reason,
 					})
 				}
 
@@ -227,6 +232,30 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 	sort.Slice(plan.Deletes, func(i, j int) bool { return plan.Deletes[i].Name < plan.Deletes[j].Name })
 
 	return plan, nil
+}
+
+// FailedVMRetry is how long a VM may sit in Orchard's "failed" state before the Reconciler
+// deletes and recreates it. Orchard's restart policy only covers a VM that stops on its own; a VM
+// whose start failed (image pull, not enough room on the host, a broken disk) stays "failed"
+// forever, and so does the slot it holds, so no job of its pool can ever be placed there. The
+// wait bounds the churn when the failure is permanent: one rebuild per VM per FailedVMRetry.
+const FailedVMRetry = 10 * time.Minute
+
+// failedVMDue reports whether vm is failed and, if so, whether it has been since long enough
+// ago (judged from its creation, the only timestamp Orchard keeps for a VM that never started)
+// to rebuild it now.
+func (r *Reconciler) failedVMDue(vm orchard.VM) (failed, due bool) {
+	if vm.Status != "failed" {
+		return false, false
+	}
+	return true, vm.CreatedAt.IsZero() || r.Options.now().Sub(vm.CreatedAt) >= FailedVMRetry
+}
+
+func failedReason(vm orchard.VM) string {
+	if vm.StatusMessage == "" {
+		return "failed"
+	}
+	return "failed: " + vm.StatusMessage
 }
 
 // Apply executes a Plan: deletes first (so a spec-changed VM's old copy is gone before its
@@ -474,7 +503,8 @@ func specDrifted(desired orchard.VMSpec, existing orchard.VM) bool {
 	// treat every freshly created, not-yet-scheduled VM as instantly drifted — recreating it
 	// forever instead of ever letting it reach a worker. Skip that comparison until Orchard has
 	// something to report.
-	if existing.Status == "pending" {
+	// A failed VM may never have been given any either; FailedVMRetry decides when it's rebuilt.
+	if existing.Status == "pending" || existing.Status == "failed" {
 		return false
 	}
 

@@ -21,6 +21,7 @@ import (
 	"github.com/gm2211/grove/internal/gitauth"
 	"github.com/gm2211/grove/internal/health"
 	"github.com/gm2211/grove/internal/install"
+	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
 	"github.com/gm2211/grove/internal/sandbox"
 	"github.com/gm2211/grove/internal/secrets"
@@ -186,6 +187,9 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 			interval = defaultFleetReconcileInterval
 		}
 		loop := newFleetReconcileLoop(cfg, oc, srv.FleetReconcile())
+		if purger, ok := nomad.AsNodePurger(nc); ok {
+			loop.nodes = &fleet.NodeSweeper{Nodes: purger}
+		}
 		go loop.run(ctx, interval)
 	}
 
@@ -210,7 +214,18 @@ type fleetReconcileLoop struct {
 	warnedInvalid bool
 	// warnedBlocked is the blocked-pool message last logged, for the same once-per-streak logging.
 	warnedBlocked string
+
+	// nodes purges Nomad nodes that stay down (see fleet.NodeSweeper); nil skips that.
+	nodes *fleet.NodeSweeper
+	// tokenSweepPaused and nodeSweepPaused hold until when a sweep is skipped after Nomad refused
+	// it (403): the token in config.yaml can't do it, so retrying every tick only floods the log.
+	tokenSweepPaused time.Time
+	nodeSweepPaused  time.Time
 }
+
+// deniedSweepPause is how long a sweep Nomad refused with a 403 is skipped before trying again,
+// in case the operator has fixed the token in the meantime.
+const deniedSweepPause = time.Hour
 
 func newFleetReconcileLoop(cfg *config.Config, client orchard.Client, status *server.FleetReconcileStatus) *fleetReconcileLoop {
 	return &fleetReconcileLoop{cfg: cfg, client: client, status: status}
@@ -279,8 +294,28 @@ func (l *fleetReconcileLoop) tick(ctx context.Context) {
 	}
 	// Every tick, not only when the plan changed something: a deleted VM's token is revoked
 	// once Orchard has actually removed the VM, usually ticks after the delete.
-	if err := r.SweepNodeTokens(ctx); err != nil {
-		slog.Warn("serve: fleet reconciler: node token sweep failed", "err", err)
+	now := time.Now()
+	if now.After(l.tokenSweepPaused) {
+		if err := r.SweepNodeTokens(ctx); errors.Is(err, nomad.ErrPermissionDenied) {
+			l.tokenSweepPaused = now.Add(deniedSweepPause)
+			slog.Warn("serve: fleet reconciler: Nomad refused to list ACL tokens, so per-VM node tokens are never revoked; "+
+				"set config.yaml nomad.token to a management token (`nomad acl bootstrap`, or `nomad acl token create -type=management`). Retrying in "+deniedSweepPause.String(), "err", err)
+		} else if err != nil {
+			slog.Warn("serve: fleet reconciler: node token sweep failed", "err", err)
+		}
+	}
+	if l.nodes != nil && now.After(l.nodeSweepPaused) {
+		purged, err := l.nodes.Sweep(ctx)
+		if purged > 0 {
+			slog.Info("serve: fleet reconciler: purged Nomad nodes that stayed down", "count", purged)
+		}
+		if errors.Is(err, nomad.ErrPermissionDenied) {
+			l.nodeSweepPaused = now.Add(deniedSweepPause)
+			slog.Warn("serve: fleet reconciler: Nomad refused to purge down nodes (needs node:write); "+
+				"set config.yaml nomad.token to a management token. Retrying in "+deniedSweepPause.String(), "err", err)
+		} else if err != nil {
+			slog.Warn("serve: fleet reconciler: down-node sweep failed", "err", err)
+		}
 	}
 
 	// A blocked pool is a configuration problem, not a failed tick: the rest of the plan still

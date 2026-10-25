@@ -61,6 +61,19 @@ func wrapNotFound(err error) error {
 	return err
 }
 
+// wrapDenied wraps err with ErrPermissionDenied when it represents a Nomad 403 response (the
+// configured token lacks the capability the call needs). Any other error is returned unchanged.
+func wrapDenied(err error) error {
+	if err == nil {
+		return nil
+	}
+	var uerr nomadapi.UnexpectedResponseError
+	if errors.As(err, &uerr) && uerr.StatusCode() == http.StatusForbidden {
+		return fmt.Errorf("%w: %s", ErrPermissionDenied, err)
+	}
+	return err
+}
+
 func qOpts(ctx context.Context) *nomadapi.QueryOptions {
 	return (&nomadapi.QueryOptions{}).WithContext(ctx)
 }
