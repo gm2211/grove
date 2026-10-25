@@ -28,10 +28,12 @@ type JobRequest struct {
 	Ref  string `json:"ref,omitempty"`  // commit SHA, branch or tag
 	// Script is run with bash -eo pipefail in the checkout (build/agent) or cwd (shell).
 	Script string `json:"script"`
-	// Env is injected as environment variables. Secrets should reference names resolved
-	// server-side from the artifact/secret store rather than be sent inline.
-	Env     map[string]string `json:"env,omitempty"`
-	Secrets []string          `json:"secrets,omitempty"`
+	// Env is injected as environment variables. Credentials belong in Secrets instead.
+	Env map[string]string `json:"env,omitempty"`
+	// Secrets names operator-set secrets (internal/secrets) the job needs. Each is resolved on
+	// the control plane at dispatch and exported under its own name; the submitter never sends
+	// or sees the value, and the job record keeps only the names.
+	Secrets []string `json:"secrets,omitempty"`
 	// Timeout is a duration string ("30m", "2h", "90s") or a JSON number of SECONDS on the wire —
 	// never raw nanoseconds. See Duration's doc comment.
 	Timeout Duration `json:"timeout,omitempty"`
@@ -145,6 +147,11 @@ type RepoAuth interface {
 	// TokenFor returns the token to export as GH_TOKEN for repoURL, and ok=false when private-repo
 	// sourcing is off or repoURL is out of the armed credential's scope.
 	TokenFor(repoURL string) (token string, ok bool)
+}
+
+// SecretResolver turns named secrets into their values at dispatch time (internal/secrets.Store).
+type SecretResolver interface {
+	Resolve(names []string) (map[string]string, error)
 }
 
 // Service is the seam used by the HTTP server, the CLI and the MCP server.

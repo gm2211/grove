@@ -66,10 +66,15 @@ payload := encodePayload(req.Kind, cloneToken, req.Script)
 client.Dispatch(ctx, "grove-"+string(req.Kind)+"-"+req.Pool, meta, payload)
 ```
 
-`req.Secrets` (names to resolve server-side) is reserved: nothing resolves names yet, so `Submit`
-rejects a request that sends any rather than dispatching a job that silently lacks them. When
-resolution exists it belongs in `internal/dispatch` (values folded into `env_json` before
-dispatch), so changing how secrets are resolved never requires re-registering jobs.
+`req.Secrets` names operator-set secrets (`internal/secrets`, `grove secret set`). The API checks
+each name against the secret's grants before `Submit` (an operator may name any secret; anyone
+else only one whose `allow` list holds its principal id or one of its Tailscale tags, and a missing
+secret and an ungranted one get the same 403). `Submit` then resolves the values and folds them
+into `env_json`, each exported under its own name, so a rotated secret reaches the next job with
+no re-registration. A name that is also an `env` key, a name given twice, or a name that isn't a
+shell variable name is a 400. The values exist only in that dispatch: the stored job and every
+`Job` the API returns keep the names, never the values. Like every `env` value, they are visible
+to anyone who can read the dispatched job's meta in Nomad, so keep Nomad's ACLs on.
 
 `env` values go to Nomad with the dispatch and nowhere else: the stored job, and every `Job` the
 API returns, keeps each key with the value `[redacted]`.

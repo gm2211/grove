@@ -15,6 +15,7 @@ import (
 
 	"github.com/gm2211/grove/internal/artifacts"
 	"github.com/gm2211/grove/internal/dispatch"
+	"github.com/gm2211/grove/internal/secrets"
 )
 
 // defaultAllocationWait bounds how long a follow=true /logs request waits for a job to get a
@@ -122,9 +123,14 @@ func (s *Server) handleSubmitJob(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "device credential cannot dispatch this job kind", http.StatusForbidden)
 		return
 	}
-	if len(req.Secrets) > 0 && !principalHasScope(principal, ScopeOperator) {
-		http.Error(w, "named secrets require operator dispatch", http.StatusForbidden)
-		return
+	// Authorization for named secrets lives here, where the caller's identity is known; dispatch
+	// only resolves names this check already let through.
+	if len(req.Secrets) > 0 {
+		caller := secrets.Caller{ID: principal.ID, Tags: principal.Tags, Operator: principalHasScope(principal, ScopeOperator)}
+		if err := s.opts.Secrets.Authorize(req.Secrets, caller); err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
 	}
 	req.SubmittedBy = principal.ID
 	job, created, err := s.dispatch.Submit(r.Context(), req)

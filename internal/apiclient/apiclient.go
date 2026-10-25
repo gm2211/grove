@@ -16,6 +16,7 @@ import (
 
 	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/gitauth"
+	"github.com/gm2211/grove/internal/secrets"
 	"github.com/gm2211/grove/internal/server"
 )
 
@@ -185,6 +186,29 @@ func (c *Client) DisableGitHubSourcing(ctx context.Context) (*gitauth.Status, er
 		return nil, err
 	}
 	return &out, nil
+}
+
+// Secrets lists the control plane's named job secrets. Values are never returned.
+func (c *Client) Secrets(ctx context.Context) ([]secrets.Secret, error) {
+	var out []secrets.Secret
+	if err := c.doJSON(ctx, http.MethodGet, "/secrets", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SetSecret creates or replaces the named secret. Operator credential only.
+func (c *Client) SetSecret(ctx context.Context, name string, req secrets.SetRequest) (*secrets.Secret, error) {
+	var out secrets.Secret
+	if err := c.doJSON(ctx, http.MethodPut, "/secrets/"+url.PathEscape(name), req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteSecret deletes the named secret, wiping its value.
+func (c *Client) DeleteSecret(ctx context.Context, name string) error {
+	return c.doJSON(ctx, http.MethodDelete, "/secrets/"+url.PathEscape(name), nil, nil)
 }
 
 // SubmitJob dispatches req and returns the new job's id.

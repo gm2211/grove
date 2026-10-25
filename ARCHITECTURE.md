@@ -190,7 +190,15 @@ disarming it, or letting its TTL lapse, wipes it. See `docs/JOBS.md` → "Privat
 
 ## grove HTTP API (v1)
 
-All under `/api/v1`, `Authorization: Bearer <token>`, bind to the tailnet address.
+All under `/api/v1`, bind to the tailnet address. A caller authenticates with
+`Authorization: Bearer <token>` (the operator token or a device credential), or sends no
+`Authorization` header at all from a tailnet peer and is authenticated by its Tailscale identity:
+`grove serve` asks the local tailscaled (`tailscale whois`) who owns the TCP peer address and
+grants the scopes the tailnet policy file gives that node through the `github.com/gm2211/grove`
+app capability, plus any `server.tailscale.grants` in config.yaml. Only the peer address is ever
+trusted, never a header, and only Tailscale addresses are looked up. A presented token always
+wins: a bad one is a 401 even from a granted peer. See `internal/tsauth` and docs/OPERATIONS.md
+"Tailscale identity instead of tokens".
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -204,6 +212,7 @@ All under `/api/v1`, `Authorization: Bearer <token>`, bind to the tailnet addres
 | DELETE | `/jobs/{id}` · POST `/jobs/{id}/cancel` | cancel (same operation, two spellings) |
 | GET · POST · DELETE | `/access/devices` · `/access/devices/{id}` | operator-only: list device credentials / mint one (`{name, scopes}` → `{token, device}`; the raw token is returned only here, once) / revoke one |
 | GET | `/healthz` | `{ok, version, orchard, nomad, serverTime}`; orchard/nomad are "up" or "down" |
+| GET · PUT · DELETE | `/secrets` · `/secrets/{name}` | operator-only: list named job secrets (name, allow list, fingerprint, never the value) / set one (`{value, allow[]}`) / delete one. Jobs request them by name in JobRequest.secrets — see `docs/JOBS.md` |
 | GET · PUT · DELETE | `/github/sourcing` | operator-only: read / arm / disarm the credential jobs use to clone PRIVATE repositories. Off by default, never echoes the token — see `docs/JOBS.md` |
 
 The same operations are exposed as MCP tools (`grove mcp`) so Claude Code / Codex can use the fleet
