@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -92,6 +93,9 @@ type Options struct {
 	// stored on the Job record. Who may name which secret is decided before Submit, by the API
 	// (internal/server); nil means a request naming any secret is rejected.
 	Secrets SecretResolver
+	// AttemptsDir is where sealed pools' job drivers write each job's attempt record (see
+	// AttemptRecord). Empty uses DefaultAttemptsDir.
+	AttemptsDir string
 	// Pools, when set, is used only to validate JobRequest.Resources hints against each pool's
 	// configured job CPU/Memory defaults (Submit rejects a hint that exceeds them with a 400). It
 	// is unrelated to EnsureJobs, which takes its own []PoolConfig directly — callers that already
@@ -157,6 +161,9 @@ func New(nc nomad.Client, opts Options) (Service, error) {
 		opts.LogTerminalPollInterval = defaultLogTerminalPollInterval
 	}
 	opts.ArtifactRetention = opts.ArtifactRetention.WithDefaults()
+	if opts.AttemptsDir == "" {
+		opts.AttemptsDir = DefaultAttemptsDir()
+	}
 	if opts.LogStreamGracePeriod <= 0 {
 		opts.LogStreamGracePeriod = defaultLogStreamGracePeriod
 	}
@@ -330,6 +337,10 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 		meta["grove_meta_json"] = string(metaJSON)
 	}
 	meta["artifact_prefix"] = artifactPrefix(id)
+	// Only a sealed pool's driver reruns a job; the other templates accept the key and ignore it.
+	if s.pools[req.Pool].Isolated {
+		meta["retry_lost"] = strconv.FormatBool(req.retryLost())
+	}
 	if img, ok := req.Meta["image"]; ok && img != "" {
 		meta["image"] = img
 	}
@@ -558,6 +569,9 @@ func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {
 			updated.Placement.VMID = node.Meta["vm"]
 			updated.Placement.WorkerID = node.Meta["host"]
 		} // a GetNode error here is non-fatal — placement partially populated (AllocID/NodeID still set) beats failing the whole Get/List call over a node lookup blip.
+		if s.pools[rec.Request.Pool].Isolated {
+			s.applyAttempts(rec.ID, &updated)
+		}
 	}
 
 	if updated.Status == StatusPending {
@@ -602,6 +616,76 @@ func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {
 
 	job := updated
 	return &job, nil
+}
+
+// applyAttempts folds a sealed pool's attempt record into job: the driver runs on the control
+// plane's Nomad client, so Nomad's placement names that machine, and only the record says which VM
+// ran the job. A job the driver quarantined ends failed, not lost: it is not to be resubmitted.
+func (s *service) applyAttempts(id string, job *Job) {
+	rec, ok, err := ReadAttempts(s.opts.AttemptsDir, id)
+	if err != nil {
+		slog.Warn("dispatch: reading attempt record failed", "id", id, "err", err)
+		return
+	}
+	if !ok || len(rec.Attempts) == 0 {
+		return
+	}
+	job.Attempts = rec.Attempts
+	last := rec.Attempts[len(rec.Attempts)-1]
+	if job.Placement == nil {
+		job.Placement = &Placement{}
+	}
+	job.Placement.VMID = last.VM
+	job.Placement.WorkerID = last.Worker
+	if rec.Quarantined && job.Status == StatusLost {
+		job.Status = StatusFailed
+		job.Quarantined = true
+		reason := "quarantined: " + rec.QuarantineReason
+		job.FailureReason = &reason
+	}
+	// The history keeps the attempts once the job has ended; expireAttempts removes the record
+	// a while later, not now, so a reconcile racing this one still reads the same record.
+}
+
+// attemptRecordGrace is how long an attempt record outlives its job's end (or, for a job grove
+// doesn't know, its last write) before expireAttempts removes it.
+const attemptRecordGrace = time.Hour
+
+// expireAttempts removes attempt records whose job ended (and whose record was last written) more
+// than attemptRecordGrace ago, and stray ones that weren't written to for a day.
+func (s *service) expireAttempts(now time.Time) {
+	entries, err := os.ReadDir(s.opts.AttemptsDir)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("dispatch: listing attempt records failed", "err", err)
+		}
+		return
+	}
+	for _, e := range entries {
+		id, ok := strings.CutSuffix(e.Name(), ".json")
+		if !ok || !jobIDPattern.MatchString(id) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		ended := info.ModTime()
+		expired := false
+		if rec, known := s.store.get(id); known {
+			if rec.FinishedAt != nil && rec.FinishedAt.After(ended) {
+				ended = *rec.FinishedAt
+			}
+			expired = isTerminal(rec.Status) && now.Sub(ended) > attemptRecordGrace
+		} else {
+			expired = now.Sub(ended) > 24*time.Hour
+		}
+		if expired {
+			if err := RemoveAttempts(s.opts.AttemptsDir, id); err != nil {
+				slog.Warn("dispatch: removing attempt record failed", "id", id, "err", err)
+			}
+		}
+	}
 }
 
 // markLost marks rec StatusLost with reason, persists it, refreshes the status cache, and returns
@@ -698,6 +782,7 @@ func (s *service) RunReconciler(ctx context.Context, interval time.Duration) err
 			}
 		}
 		s.expireArtifacts(ctx, time.Now().UTC())
+		s.expireAttempts(time.Now().UTC())
 	}
 
 	tick()

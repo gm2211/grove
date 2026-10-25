@@ -92,7 +92,7 @@ func TestRenderAllKindsAndPools(t *testing.T) {
 				for _, want := range []string{
 					`payload       = "required"`,
 					`meta_required = ["requester"]`,
-					`meta_optional = ["repo", "ref", "env_json", "timeout_seconds", "grove_meta_json", "artifact_prefix", "image"]`,
+					`meta_optional = ["repo", "ref", "env_json", "timeout_seconds", "grove_meta_json", "artifact_prefix", "image", "retry_lost"]`,
 					`attempts = 0`, // reschedule/restart
 					`dispatch_payload`,
 					`destination = "local/run.sh"`,

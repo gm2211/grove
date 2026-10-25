@@ -89,6 +89,13 @@ failure. Related `Job` fields useful to the executor:
 - `placement` — `{allocId, nodeId, vmId, workerId}`, which alloc/node/VM/worker the job ran on.
   Not needed to interpret status, but useful for debugging a flaky worker (correlate several
   `lost` jobs by `workerId`).
+- `quarantined` — on a sealed pool, grove already reruns a job whose VM died, up to 3 runs in all,
+  on another machine where it can. A job lost on 2 different machines is stopped instead and ends
+  `status: "failed"` with `quarantined: true`: it most likely takes the machines down itself, so
+  treat it as a failure, not as transient, and don't resubmit it unchanged. A sealed pool's job
+  that still ends `lost` has already used its reruns (or asked for none, see `retryLost`).
+- `attempts` — on a sealed pool, one entry per run: `{vm, worker, startedAt, finishedAt, outcome,
+  exitCode, reason}`, with `outcome` one of `running`, `exited`, `lost`, `setup`, `canceled`.
 
 ## Idempotency key convention
 

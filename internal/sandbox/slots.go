@@ -84,3 +84,30 @@ func (s Slots) TryAcquire(vms []string) (*Slot, error) {
 	releaseAll()
 	return &Slot{VM: best, file: keep}, nil
 }
+
+// Free counts the free slots among vms' slots, without taking any.
+func (s Slots) Free(vms []string) (int, error) {
+	perVM := max(s.PerVM, 1)
+	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
+		return 0, fmt.Errorf("slot directory: %w", err)
+	}
+	free := 0
+	for _, vm := range vms {
+		for n := range perVM {
+			f, err := os.OpenFile(filepath.Join(s.Dir, fmt.Sprintf("%s.%d.lock", vm, n)), os.O_CREATE|os.O_RDWR, 0o600)
+			if err != nil {
+				return 0, fmt.Errorf("slot file: %w", err)
+			}
+			ok, err := tryLockFile(f)
+			if ok {
+				free++
+				unlockFile(f)
+			}
+			f.Close()
+			if err != nil {
+				return 0, fmt.Errorf("lock slot file: %w", err)
+			}
+		}
+	}
+	return free, nil
+}

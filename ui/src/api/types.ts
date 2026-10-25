@@ -56,6 +56,21 @@ export interface Job {
   // Set only while status is "pending": why Nomad hasn't placed this job yet (constraint
   // filtered / resources exhausted / no nodes available), derived from its blocked evaluation.
   pendingReason?: string;
+  failureReason?: string | null;
+  // Where a sealed pool's job ran, one entry per run: a job whose VM died is rerun in another.
+  attempts?: JobAttempt[];
+  // Set on a failed job grove stopped running because it was lost on two different machines.
+  quarantined?: boolean;
+}
+
+export interface JobAttempt {
+  vm: string;
+  worker?: string;
+  startedAt: string;
+  finishedAt?: string | null;
+  outcome: "running" | "exited" | "lost" | "setup" | "canceled";
+  exitCode?: number | null;
+  reason?: string;
 }
 
 export type FleetEntryKind = "worker" | "vm" | "node";

@@ -7,16 +7,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"mime"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gm2211/grove/internal/artifacts"
+	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/fleet"
 	"github.com/gm2211/grove/internal/orchard"
 )
@@ -83,8 +86,15 @@ type Runner struct {
 	TimeoutSlack time.Duration
 	// ArtifactLimit caps the bytes of artifacts collected from one job.
 	ArtifactLimit int64
+	// Queue orders the jobs waiting for a slot; a zero Queue lets them race for one.
+	Queue Queue
+	// AttemptsDir is where the job's attempt record goes (see dispatch.AttemptRecord); "" keeps
+	// none.
+	AttemptsDir string
 
 	stderrMu sync.Mutex
+	// lastSaid is the last message say printed, which names why an attempt was lost.
+	lastSaid string
 }
 
 func (r *Runner) defaults() {
@@ -135,7 +145,17 @@ func (l lockedWriter) Write(p []byte) (int, error) {
 }
 
 func (r *Runner) say(format string, args ...any) {
-	fmt.Fprintf(r.stderr(), "grove: "+format+"\n", args...)
+	msg := fmt.Sprintf(format, args...)
+	r.stderrMu.Lock()
+	r.lastSaid = msg
+	r.stderrMu.Unlock()
+	fmt.Fprintf(r.stderr(), "grove: %s\n", msg)
+}
+
+func (r *Runner) lastMessage() string {
+	r.stderrMu.Lock()
+	defer r.stderrMu.Unlock()
+	return r.lastSaid
 }
 
 // Run runs req in a sealed VM of req.Pool and returns the exit code the job's Nomad task should
@@ -164,55 +184,120 @@ func (r *Runner) Run(ctx context.Context, req Request) int {
 		}
 	}
 
-	// VMs found shutting down, by name and UID: the reconciler recreates a VM under the same
-	// name, and that new VM is fine to use.
-	draining := map[string]bool{}
+	// VMs found shutting down, and VMs the job was lost in, by name and UID: the reconciler
+	// recreates a VM under the same name, and that new VM is fine to use.
+	skip := map[string]bool{}
+	// Machines the job was lost on: a rerun goes to another one when the pool has one.
+	lostOn := map[string]bool{}
+	rec := attemptLog{dir: r.AttemptsDir, record: dispatch.AttemptRecord{JobID: req.JobID}}
+	joined := time.Now()
 	for {
-		slot, uid, code := r.acquire(ctx, req.Pool, draining)
+		slot, vm, code := r.acquire(ctx, req, joined, skip, lostOn)
 		if slot == nil {
 			return code
 		}
-		code = r.newJob(req, slot.VM).run(ctx, checkout)
+		at := rec.start(vm)
+		j := r.newJob(req, slot.VM)
+		code = j.run(ctx, checkout)
 		slot.Release()
-		if code != exitDraining {
+		if code == exitDraining {
+			rec.drop(at)
+			r.say("%s is shutting down; picking another VM", slot.VM)
+			skip[vm.Name+"/"+vm.UID] = true
+			continue
+		}
+		rec.finish(at, code, j.started, j.endMessage, ctx.Err() != nil)
+		if code != ExitLost || ctx.Err() != nil {
 			return code
 		}
-		r.say("%s is shutting down; picking another VM", slot.VM)
-		draining[slot.VM+"/"+uid] = true
+
+		skip[vm.Name+"/"+vm.UID] = true
+		if j.started {
+			lostOn[machine(vm)] = true
+		}
+		if len(lostOn) >= dispatch.QuarantineMachines {
+			reason := fmt.Sprintf("lost on %d different machines (%s): grove stopped running it so it can't take down another",
+				len(lostOn), strings.Join(slices.Sorted(maps.Keys(lostOn)), ", "))
+			r.say("quarantined the job: %s", reason)
+			rec.quarantine(reason)
+			return ExitLost
+		}
+		if !req.RetryLost {
+			return code
+		}
+		if n := rec.count(); n >= dispatch.MaxAttempts {
+			r.say("lost the job %d times; giving up", n)
+			return code
+		}
+		r.say("rerunning the job in another VM (attempt %d of %d)", rec.count()+1, dispatch.MaxAttempts)
 	}
 }
 
-// acquire waits for a free slot in one of pool's sealed, running VMs. A VM that isn't sealed
-// (Softnet with the host blocked) never gets a sealed pool's job, even while fleet.yaml says the
-// pool is isolated and the reconciler hasn't yet replaced it.
-func (r *Runner) acquire(ctx context.Context, pool string, exclude map[string]bool) (slot *Slot, uid string, code int) {
+// machine names the Mac a VM runs on: Orchard's worker, else the one its fleet name carries.
+func machine(vm orchard.VM) string {
+	if vm.Worker != "" {
+		return vm.Worker
+	}
+	if _, worker, _, ok := fleet.ParseVMName(vm.Name); ok {
+		return worker
+	}
+	return vm.Name
+}
+
+// acquire waits for a free slot in one of the pool's sealed, running VMs, in queue order: the job
+// joined the queue at joined. A VM that isn't sealed (Softnet with the host blocked) never gets a
+// sealed pool's job, even while fleet.yaml says the pool is isolated and the reconciler hasn't yet
+// replaced it, and neither does a VM in skip, or one on a machine whose scheduling is paused. A
+// machine in avoid (one the job was lost on) is passed over while the pool has VMs on another.
+func (r *Runner) acquire(ctx context.Context, req Request, joined time.Time, skip, avoid map[string]bool) (slot *Slot, vm orchard.VM, code int) {
+	pool := req.Pool
+	ticket, err := r.join(req, joined)
+	if err != nil {
+		r.say("could not join the queue for a VM: %v", err)
+		return nil, orchard.VM{}, ExitSetup
+	}
+	defer ticket.Leave()
+
 	start := time.Now()
 	said := ""
 	for {
-		var candidates []string
-		uids := map[string]string{}
+		var candidates, preferred []string
+		byName := map[string]orchard.VM{}
 		vms, err := r.Orchard.ListVMs(ctx)
+		paused := r.pausedMachines(ctx)
 		msg := ""
 		if err != nil {
 			msg = fmt.Sprintf("could not list VMs (%v); retrying", err)
 		} else {
 			for _, vm := range vms {
-				if p, _, _, ok := fleet.ParseVMName(vm.Name); ok && p == pool && vm.Status == "running" && fleet.IsolatedVM(vm) && !exclude[vm.Name+"/"+vm.UID] {
+				if p, _, _, ok := fleet.ParseVMName(vm.Name); ok && p == pool && vm.Status == "running" && fleet.IsolatedVM(vm) &&
+					!skip[vm.Name+"/"+vm.UID] && !paused[machine(vm)] {
 					candidates = append(candidates, vm.Name)
-					uids[vm.Name] = vm.UID
+					byName[vm.Name] = vm
+					if !avoid[machine(vm)] {
+						preferred = append(preferred, vm.Name)
+					}
 				}
 			}
-			slot, serr := r.Slots.TryAcquire(candidates)
+			// Another machine is preferred only while one of its VMs has a slot free: a rerun
+			// doesn't wait on busy machines while one it was lost on could take it.
+			if len(preferred) > 0 && len(preferred) < len(candidates) {
+				if free, ferr := r.Slots.Free(preferred); ferr == nil && free > 0 {
+					candidates = preferred
+				}
+			}
+			slot, serr := r.take(ticket, candidates)
 			if serr != nil {
 				r.say("could not take a VM slot: %v", serr)
-				return nil, "", ExitSetup
+				return nil, orchard.VM{}, ExitSetup
 			}
 			if slot != nil {
-				return slot, uids[slot.VM], 0
+				return slot, byName[slot.VM], 0
 			}
-			if len(candidates) == 0 {
+			switch {
+			case len(candidates) == 0:
 				msg = fmt.Sprintf("no sealed VM of pool %s is running yet; waiting", pool)
-			} else {
+			default:
 				msg = fmt.Sprintf("all %d sealed VMs of pool %s are busy; waiting for a free slot", len(candidates), pool)
 			}
 		}
@@ -222,15 +307,64 @@ func (r *Runner) acquire(ctx context.Context, pool string, exclude map[string]bo
 		}
 		if len(candidates) == 0 && time.Since(start) > r.NoVMTimeout {
 			r.say("no sealed VM of pool %s came up within %s", pool, r.NoVMTimeout)
-			return nil, "", ExitLost
+			return nil, orchard.VM{}, ExitLost
 		}
 		select {
 		case <-ctx.Done():
 			r.say("canceled while waiting for a sealed VM")
-			return nil, "", ExitCanceled
+			return nil, orchard.VM{}, ExitCanceled
 		case <-time.After(r.SlotWait):
 		}
 	}
+}
+
+// join takes the job's ticket in its pool's queue; without a queue directory there is none.
+func (r *Runner) join(req Request, joined time.Time) (*Ticket, error) {
+	if r.Queue.Dir == "" {
+		return nil, nil
+	}
+	return r.Queue.Join(req.Pool, req.AllocID, joined)
+}
+
+// take takes a free slot among vms, but only once fewer jobs are waiting ahead of this one than
+// there are free slots: a job never overtakes one that joined the queue before it.
+func (r *Runner) take(ticket *Ticket, vms []string) (*Slot, error) {
+	if len(vms) == 0 {
+		return nil, nil
+	}
+	if ticket != nil {
+		ahead, err := ticket.Ahead()
+		if err != nil {
+			return nil, err
+		}
+		if ahead > 0 {
+			free, err := r.Slots.Free(vms)
+			if err != nil {
+				return nil, err
+			}
+			if ahead >= free {
+				return nil, nil
+			}
+		}
+	}
+	return r.Slots.TryAcquire(vms)
+}
+
+// pausedMachines lists the machines whose scheduling is paused (an operator's `grove worker
+// pause`, or grove stopping work on a machine that keeps losing jobs). A failed lookup pauses
+// nothing.
+func (r *Runner) pausedMachines(ctx context.Context) map[string]bool {
+	workers, err := r.Orchard.ListWorkers(ctx)
+	if err != nil {
+		return nil
+	}
+	paused := map[string]bool{}
+	for _, w := range workers {
+		if w.SchedulingPaused {
+			paused[w.Name] = true
+		}
+	}
+	return paused
 }
 
 // job is one run of a Request in a chosen VM.
@@ -243,6 +377,10 @@ type job struct {
 	b backend
 
 	logs jobLogs
+	// started is set once the job's script was started in the VM.
+	started bool
+	// endMessage is the last thing grove said about the attempt before cleaning up after it.
+	endMessage string
 }
 
 func (r *Runner) newJob(req Request, vm string) *job {
@@ -303,6 +441,8 @@ func (j *job) run(ctx context.Context, checkout string) int {
 	if code != exitDraining {
 		defer j.b.remove(j)
 	}
+	// Runs before the clean-up above: what grove last said then is why the attempt ended.
+	defer func() { j.endMessage = j.r.lastMessage() }()
 	if code != 0 {
 		return failed(code)
 	}
@@ -313,6 +453,7 @@ func (j *job) run(ctx context.Context, checkout string) int {
 	if code := j.start(ctx); code != 0 {
 		return failed(code)
 	}
+	j.started = true
 	code = j.supervise(ctx)
 	if code != ExitLost && ctx.Err() == nil && j.req.Kind == KindBuild {
 		j.collectArtifacts()

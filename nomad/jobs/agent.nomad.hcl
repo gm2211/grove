@@ -14,7 +14,7 @@ job "grove-{{.Kind}}-{{.Pool}}" {
   parameterized {
     payload       = "required"
     meta_required = ["requester"]
-    meta_optional = ["repo", "ref", "env_json", "timeout_seconds", "grove_meta_json", "artifact_prefix", "image"]
+    meta_optional = ["repo", "ref", "env_json", "timeout_seconds", "grove_meta_json", "artifact_prefix", "image", "retry_lost"]
   }
 
   constraint {
