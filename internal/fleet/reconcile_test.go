@@ -643,3 +643,39 @@ func TestPoolAndHost(t *testing.T) {
 		})
 	}
 }
+
+func TestPlan_FailedVM_RebuiltAfterRetryWait(t *testing.T) {
+	pool := basePool()
+	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	r := &Reconciler{Spec: &Spec{Pools: []Pool{pool}}, Options: Options{Now: func() time.Time { return now }}}
+	name := VMName(pool.Name, "mac1", 0)
+	failed := existingFrom(r.vmSpec(pool, "mac1", name))
+	failed.Status = "failed"
+	failed.StatusMessage = "failed to pull image"
+	failed.CPU, failed.Memory = 0, 0
+	client := &fakeOrchardClient{workers: []orchard.Worker{onlineWorker("mac1")}, vms: []orchard.VM{failed}}
+	r.Client = client
+
+	failed.CreatedAt = now.Add(-time.Minute)
+	client.vms[0] = failed
+	plan, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Empty() {
+		t.Fatalf("a VM that just failed should get FailedVMRetry before it's rebuilt, got %+v", plan)
+	}
+
+	failed.CreatedAt = now.Add(-29 * 24 * time.Hour)
+	client.vms[0] = failed
+	plan, err = r.Plan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Deletes) != 1 || len(plan.Creates) != 1 || plan.Deletes[0].Name != name || plan.Creates[0].Spec.Name != name {
+		t.Fatalf("want the long-failed VM deleted and recreated, got %+v", plan)
+	}
+	if plan.Deletes[0].Reason != "failed: failed to pull image" {
+		t.Errorf("delete reason = %q, want Orchard's failure message", plan.Deletes[0].Reason)
+	}
+}

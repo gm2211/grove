@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/gm2211/grove/internal/config"
@@ -87,7 +89,29 @@ func printNomadCounts(ctx context.Context, out io.Writer, client nomad.Client) {
 		fmt.Fprintf(out, "nomad nodes: error: %v\n", err)
 		return
 	}
-	fmt.Fprintf(out, "nomad nodes: %d\n", len(nodes))
+	fmt.Fprintf(out, "nomad nodes: %s\n", nodeStatusCounts(nodes))
+}
+
+// nodeStatusCounts renders e.g. "3 (ready 2, down 1)", so stale down registrations don't read as
+// capacity.
+func nodeStatusCounts(nodes []nomad.Node) string {
+	counts := map[string]int{}
+	for _, n := range nodes {
+		counts[n.Status]++
+	}
+	statuses := make([]string, 0, len(counts))
+	for s := range counts {
+		statuses = append(statuses, s)
+	}
+	sort.Strings(statuses)
+	parts := make([]string, len(statuses))
+	for i, s := range statuses {
+		parts[i] = fmt.Sprintf("%s %d", s, counts[s])
+	}
+	if len(parts) == 0 {
+		return "0"
+	}
+	return fmt.Sprintf("%d (%s)", len(nodes), strings.Join(parts, ", "))
 }
 
 func printPingResult(w io.Writer, name, url string, err error) {

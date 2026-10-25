@@ -4,6 +4,22 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **A failed VM is rebuilt instead of holding its slot forever.** Orchard's restart policy never
+  touches a VM whose start failed, and the reconciler treated it as up to date, so a pool's only
+  VM could sit "failed" for weeks while every job for that pool ended "no allocation within 30m".
+  The reconciler now deletes and recreates a VM that has been failed for 10 minutes
+  (`fleet.FailedVMRetry`), at most once per 10 minutes, and logs Orchard's failure message as the
+  reason.
+
+- **Down Nomad nodes are purged.** Each VM boot registers a new Nomad node and the old one stayed
+  "down", so a VM stuck restarting left thousands behind (and `/fleet` fetches every node).
+  `grove serve` now purges nodes that stay down for 10 minutes; a live node simply re-registers.
+  `grove status` shows nodes by status (`3 (down 1, ready 2)`) instead of one total.
+
+- **A Nomad 403 from the node-token sweep is logged once an hour, with the fix**, instead of every
+  30 seconds. It means `nomad.token` in `config.yaml` isn't a management token; per-VM node
+  tokens are then never revoked.
+
 - Sealed jobs (`grove sandbox run`) no longer depend on the guest's `timeout(1)`. `run.sh` keeps
   the time limit itself (TERM at the limit, KILL 10 seconds later, exit 124) and runs the script in
   its own process group, so a cancel reaches it exactly once and reports the job's own exit
