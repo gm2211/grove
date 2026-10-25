@@ -184,7 +184,11 @@ func TestBuildStartupScript_ClientACLLandsInMetaFile(t *testing.T) {
 	writeExecutable("sudo", `#!/bin/sh
 [ "${1:-}" = "-n" ] && shift
 case "${1:-}" in
-  tee) if [ "${2:-}" = "-a" ]; then cat >> "$GROVE_TEST_META"; else cat > "$GROVE_TEST_META"; fi ;;
+  tee) case "$*" in
+    *grove-meta.hcl) if [ "${2:-}" = "-a" ]; then cat >> "$GROVE_TEST_META"; else cat > "$GROVE_TEST_META"; fi ;;
+    *) cat >/dev/null ;;
+  esac ;;
+  /bin/sh) cat >/dev/null ;;
 esac
 exit 0
 `)

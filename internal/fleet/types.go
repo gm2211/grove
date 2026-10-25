@@ -46,7 +46,8 @@ type Pool struct {
 	// the pool, so this is a deliberate per-pool trade-off, not something grove enables silently.
 	AllowDockerSocket bool `yaml:"allowDockerSocket,omitempty" json:"allowDockerSocket,omitempty"`
 	// Network chooses what this pool's VMs can reach. Empty or "shared" keeps Tart's default
-	// shared NAT, where a guest reaches everything its host Mac reaches: the LAN, the host's own
+	// shared NAT, where a guest reaches everything its host Mac reaches (though its jobs never do:
+	// see homeFenceScript): the LAN, the host's own
 	// services, and the whole tailnet through the host. "isolated" runs each VM on Softnet with
 	// the host blocked, so the guest reaches only public addresses, and gives it its own tagged
 	// tailnet login for the one control-plane port it needs (see isolation.go and

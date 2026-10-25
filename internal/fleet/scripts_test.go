@@ -78,7 +78,9 @@ func TestBuildStartupScript_LinuxMatchesV010(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", "")
+	// The home fence is the one intended change since v0.1.10: every Linux VM is recreated once to
+	// get it. Everything else must stay byte-identical.
+	got := strings.Replace(BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", ""), homeFenceScript(Pool{Name: "linux"})+"\n", "", 1)
 	if got != string(want) {
 		t.Fatalf("Linux startup script drifted from v0.1.10; this would recreate healthy Linux workers\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
@@ -133,6 +135,11 @@ case "${1:-}" in
     ;;
   systemctl)
     printf '%s\n' "$*" >> "$GROVE_TEST_SUDO_LOG"
+    ;;
+  chmod) exit 0 ;;
+  /bin/sh)
+    cat >/dev/null
+    printf 'fence %s\n' "$*" >> "$GROVE_TEST_SUDO_LOG"
     ;;
   *) exit 64 ;;
 esac
@@ -341,6 +348,7 @@ case "$2" in
 esac
 `)
 			writeExecutable("sw_vers", "#!/bin/sh\nprintf '%s\\n' \"$GROVE_TEST_GUEST_OS\"\n")
+			writeExecutable("pfctl", "#!/bin/sh\ncase \"$*\" in *'-s rules'*) echo 'block user = 7460' ;; *'-s info'*) echo 'Status: Enabled' ;; esac\n")
 			writeExecutable("xcode-select", `#!/bin/sh
 set -eu
 printf 'xcode-select %s\n' "$*" >> "$GROVE_TEST_COMMAND_LOG"
@@ -514,6 +522,10 @@ case "$body" in
 esac
 `)
 			writeExecutable("sleep", "#!/bin/sh\nexit 0\n")
+			writeExecutable("pfctl", `#!/bin/sh
+printf 'pfctl %s\\n' "$*" >> "$GROVE_TEST_COMMAND_LOG"
+case "$*" in *"-s rules"*) echo 'block return out quick proto tcp from any to 10.0.0.0/8 user = 7460' ;; *"-s info"*) echo 'Status: Enabled' ;; esac
+`)
 
 			cmd := exec.Command("/bin/sh", "-c", BuildStartupScript(Pool{Name: "macos"}, "mac1", "macos-mac1-0", ""))
 			cmd.Env = append(os.Environ(),
@@ -645,6 +657,8 @@ func TestBuildStartupScript_TailscaleFailureStillRestartsNomad(t *testing.T) {
 	write("mkdir", "#!/bin/sh\nexit 0\n")
 	write("tailscale", "#!/bin/sh\necho 'invalid key: unable to validate API key' >&2\nexit 1\n")
 	write("systemctl", "#!/bin/sh\necho \"systemctl $*\" >> \"$GROVE_TEST_CALLS\"\n")
+	write("chmod", "#!/bin/sh\nexit 0\n")
+	write("iptables", "#!/bin/sh\nexit 0\n")
 
 	script := BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", "tskey-expired")
 	cmd := exec.Command("/bin/sh", "-c", script)
@@ -654,10 +668,65 @@ func TestBuildStartupScript_TailscaleFailureStillRestartsNomad(t *testing.T) {
 		t.Fatalf("startup script must survive a failed tailscale up: %v\n%s", err, out)
 	}
 	got, _ := os.ReadFile(calls)
-	if string(got) != "systemctl restart nomad\n" {
+	if string(got) != "systemctl daemon-reload\nsystemctl restart nomad\n" {
 		t.Fatalf("nomad restart calls = %q, want one restart", got)
 	}
 	if !strings.Contains(string(out), "tailscale up failed") {
 		t.Errorf("want a warning naming the tailscale failure, got:\n%s", out)
+	}
+}
+
+// Shared pools' jobs reach the public internet only: the fence must be in every shared startup
+// script, before Nomad is restarted into service, and it must cover the tailnet and the LAN.
+func TestBuildStartupScript_FencesJobsOffHomeNetworks(t *testing.T) {
+	for _, pool := range []Pool{{Name: "linux"}, {Name: "macos"}, {Name: "gpu"}} {
+		script := buildStartupScript(pool, "mac1", pool.Name+"-mac1-0", Options{})
+		fenceAt := strings.Index(script, "jobs reach the internet, not home")
+		restartAt := strings.LastIndex(script, "com.grove.nomad")
+		if !pool.MacOS() {
+			restartAt = strings.LastIndex(script, "systemctl restart nomad")
+		}
+		if fenceAt < 0 || restartAt < 0 || fenceAt > restartAt {
+			t.Fatalf("%s: home fence missing or after the Nomad restart:\n%s", pool.Name, script)
+		}
+		for _, cidr := range []string{"10.0.0.0/8", "100.64.0.0/10", "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16"} {
+			if !strings.Contains(script, cidr) {
+				t.Errorf("%s: fence does not cover %s", pool.Name, cidr)
+			}
+		}
+	}
+	mac := homeFenceScript(Pool{Name: "macos"})
+	if !strings.Contains(mac, "user "+MacOSJobUser) || !strings.Contains(mac, "fc00::/7") || !strings.Contains(mac, "RunAtLoad") {
+		t.Errorf("macOS fence must match the job user, cover tailnet IPv6 and reload at boot:\n%s", mac)
+	}
+	linux := homeFenceScript(Pool{Name: "linux"})
+	if !strings.Contains(linux, "DOCKER-USER") || !strings.Contains(linux, "--dport 53") || !strings.Contains(linux, "ExecStartPre=/usr/local/sbin/grove-egress-fence") {
+		t.Errorf("Linux fence must sit in DOCKER-USER, keep DNS and rerun before Docker starts:\n%s", linux)
+	}
+	if sealed := buildStartupScript(Pool{Name: "linux", Network: NetworkIsolated}, "mac1", "linux-mac1-0", Options{}); strings.Contains(sealed, "jobs reach the internet, not home") || strings.Contains(sealed, "--dport 53") {
+		t.Error("sealed pools keep their own fence unchanged")
+	}
+}
+
+// The Linux fence script itself must run: shell syntax, and DNS allowed before the rejects.
+func TestSharedEgressFenceScript_Runs(t *testing.T) {
+	fakeBin := t.TempDir()
+	log := filepath.Join(t.TempDir(), "iptables.log")
+	if err := os.WriteFile(filepath.Join(fakeBin, "iptables"), []byte("#!/bin/sh\necho \"$*\" >> \"$GROVE_TEST_LOG\"\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/sh", "-s")
+	cmd.Stdin = strings.NewReader(sharedEgressFenceScript())
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_LOG="+log)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("fence script failed: %v\n%s", err, out)
+	}
+	got, _ := os.ReadFile(log)
+	rejectAt := strings.Index(string(got), "-d 100.64.0.0/10 -j REJECT")
+	if rejectAt < 0 {
+		t.Fatalf("tailnet not rejected:\n%s", got)
+	}
+	if dnsAt := strings.Index(string(got), "--dport 53"); dnsAt > rejectAt {
+		t.Fatalf("DNS allowance must come before the rejects:\n%s", got)
 	}
 }

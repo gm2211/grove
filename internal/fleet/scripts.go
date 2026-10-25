@@ -79,6 +79,10 @@ func buildStartupScript(pool Pool, worker, vmName string, opts Options) string {
 		b.WriteString("\n")
 	}
 
+	// Before Nomad comes back with this VM's meta and can take a job.
+	b.WriteString(homeFenceScript(pool))
+	b.WriteString("\n")
+
 	if pool.HostXcode != nil {
 		b.WriteString(nomadRestartWithHostXcodeScript)
 	} else if pool.Name == "macos" {
