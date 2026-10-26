@@ -389,8 +389,15 @@ it: `"secrets": ["CLAUDE_CODE_OAUTH_TOKEN"]`. The value lives on the control pla
 (`secrets.json` next to `config.yaml`, mode 0600) and is exported into the job under that name at
 dispatch; the submitter never sends or sees it, and job history keeps only the name.
 
+The job itself does hold the real value, so prefer a per-job credential for anything the broker can
+swap (see "The credential broker" above): there the job holds only a placeholder. Argos sends its
+own Claude sign-in that way, so a fleet it dispatches to needs no `CLAUDE_CODE_OAUTH_TOKEN` secret
+here. Named secrets stay the way for the rest: Codex's `auth.json`, which its CLI parses instead of
+sending as a header, and any value whose service the broker does not know.
+
 ```bash
 # on any machine with the operator credential; the value comes from stdin or an env var, never argv
+# (only for a dispatcher that does not send its Claude sign-in as a credential)
 claude setup-token | grove secret set CLAUDE_CODE_OAUTH_TOKEN --allow tag:argos
 grove secret set CODEX_AUTH_JSON --allow tag:argos < ~/.codex/auth.json
 grove secret set OPENAI_API_KEY --from-env OPENAI_API_KEY --allow DEVICE_ID
