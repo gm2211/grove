@@ -303,6 +303,30 @@ jobs; never implied by `dispatch`), `operator` (everything). A non-operator cred
 sees and cancels its own jobs, and job `env` values come back `[redacted]` to everyone. The same
 thing over HTTP is `POST /api/v1/access/devices` with `{"name": ..., "scopes": [...]}`.
 
+`--expires-in 180d` (or any Go duration, `"expiresIn": "4320h"` over HTTP) makes a credential stop
+working after that long. `grove access list` shows the date, and its holder sees it in
+`GET /api/v1/whoami` (`expiresAt`), so it can ask for a new one in time.
+
+### Argos on the control-plane Mac: the local socket
+
+When the orchestrator runs on the control-plane Mac itself (Argos on the Studio), it shouldn't
+use Tailscale identity: that Mac is usually also a worker, and its job VMs reach the network
+through its address. Give it the local socket instead, and an expiring token on top:
+
+```bash
+grove config set server.socket /Users/Shared/grove/api.sock
+grove config set server.socketUsers giulio      # the macOS user Argos runs as
+# restart grove serve, then:
+grove access issue --name argos --scope read --scope dispatch --expires-in 180d
+```
+
+`grove serve` then also listens on that socket. Requests on it never touch the network, so
+nothing on the tailnet and no job VM can reach them. Only the listed users can connect: grove
+checks the user the kernel reports for each connection, not the socket's file mode, and closes
+anyone else's connection unread. Every request on the socket still needs a bearer token, and
+Tailscale identity counts for nothing there. So if Argos ever moves off this Mac, it carries
+its token with it and is never left with no authentication.
+
 Re-running `grove setup` on a Mac gives it a new credential. Once that Mac is back online, grove
 revokes the Mac's earlier setup credentials (same name, read/dispatch scopes only), so
 `grove access list` holds one live credential per Mac. Credentials issued with `grove access issue`

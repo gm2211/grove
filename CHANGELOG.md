@@ -4,6 +4,13 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Credentials can expire, and a local client can use a Unix socket.** `grove access issue
+  --expires-in 180d` (`expiresIn` over HTTP) issues a credential that stops working after that
+  long; `grove access list` and `GET /api/v1/whoami` show when. `server.socket` and
+  `server.socketUsers` make `grove serve` also listen on a Unix socket that only those macOS
+  users can connect to (checked against the peer the kernel reports), with a bearer token still
+  required on every request. This is how Argos on the control-plane Mac talks to grove.
+
 - **Every worker runs the credential broker.** Approving a Mac's `grove setup` now also issues it
   a credential with only the `broker` scope, named after the worker. Setup keeps it in Keychain
   and loads a `com.grove.broker` LaunchAgent running `grove broker`, which reads it from there.

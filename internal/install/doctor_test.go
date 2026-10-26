@@ -453,3 +453,26 @@ func TestCheckNomadTLS(t *testing.T) {
 		t.Error("no Nomad configured is not a failure")
 	}
 }
+
+func TestCheckLocalSocket(t *testing.T) {
+	dir, err := os.MkdirTemp("", "gs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	path := filepath.Join(dir, "api.sock")
+	if c := checkLocalSocket(path, nil); c.OK {
+		t.Fatalf("no users: %+v", c)
+	}
+	if c := checkLocalSocket(path, []string{"giulio"}); c.OK {
+		t.Fatalf("no socket: %+v", c)
+	}
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	if c := checkLocalSocket(path, []string{"giulio"}); !c.OK || !strings.Contains(c.Detail, "giulio") {
+		t.Fatalf("listening: %+v", c)
+	}
+}

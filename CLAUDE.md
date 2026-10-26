@@ -167,6 +167,14 @@ tokens on the way to a fixed set of upstreams and masks the tokens on the way ba
 
 `internal/broker/proxy_test.go` drives the whole path end to end; keep its refusal cases passing.
 
+## Local socket (`server.socket`)
+
+`internal/server/localsock.go` lets a client on the control-plane Mac (Argos) reach the API
+without the network. The gate is the peer uid the kernel reports (`peerUID`, per OS), never the
+socket's file mode, and `withAuth` still demands a bearer token on it, never Tailscale identity.
+Keep both: the token is what stops a later move of the client off this Mac from running with no
+auth.
+
 ## Building / testing
 
 ```

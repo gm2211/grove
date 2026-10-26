@@ -200,6 +200,24 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 		go loop.run(ctx, interval)
 	}
 
+	if cfg.Server.Socket != "" {
+		uids, err := server.LocalUIDs(cfg.Server.SocketUsers)
+		if err != nil {
+			return err
+		}
+		l, err := server.ListenLocal(cfg.Server.Socket, uids, slog.Default())
+		if err != nil {
+			return fmt.Errorf("server.socket: %w", err)
+		}
+		local := &http.Server{Handler: srv, ConnContext: server.LocalConnContext, ReadHeaderTimeout: 30 * time.Second}
+		go func() {
+			if err := local.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("grove serve: local socket stopped", "socket", cfg.Server.Socket, "err", err)
+			}
+		}()
+		slog.Info("grove serve: listening on the local socket", "socket", cfg.Server.Socket, "users", cfg.Server.SocketUsers)
+	}
+
 	slog.Info("grove serve: listening", "addr", addr)
 	return http.ListenAndServe(addr, srv)
 }
