@@ -192,6 +192,14 @@ job "grove-{{.Kind}}-{{.Pool}}" {
     }
 
     task "main" {
+      # The node's credential broker, if its startup script found one (internal/fleet's
+      # brokerScript); run.sh checks both before using them. Unset node meta stays a literal
+      # "${meta...}", which run.sh rejects.
+      env {
+        GROVE_BROKER    = "${meta.grove_broker}"
+        GROVE_BROKER_CA = "${meta.grove_broker_ca}"
+      }
+
       kill_timeout = "10m"
 
 {{if eq .Pool "macos"}}
@@ -253,6 +261,44 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         if [ -n "$${NOMAD_META_env_json:-}" ]; then
           eval "$(printf '%s' "$NOMAD_META_env_json" | jq -r 'to_entries[] | select(.key | test("^[A-Za-z_][A-Za-z0-9_]*$")) | "export " + .key + "=" + (.value|tostring|@sh)')"
         fi
+
+        # grove:broker begin
+        # The worker's credential broker (internal/broker), which this VM's startup script found on
+        # its gateway and whose CA it checked: the node advertises both as meta (see env below).
+        # Every HTTP(S) request the job makes goes through it, and the CA it adds to the job's trust
+        # is name-constrained to the hosts whose placeholders it swaps for real credentials.
+        grove_broker="$${GROVE_BROKER:-}"
+        grove_broker_ca="$${GROVE_BROKER_CA:-}"
+        unset GROVE_BROKER GROVE_BROKER_CA
+        case "$grove_broker" in
+          http://*:3128) ;;
+          *) grove_broker="" ;;
+        esac
+        case "$grove_broker_ca" in
+          "" | *[!A-Za-z0-9+/=]*) grove_broker="" ;;
+        esac
+        if [ -n "$grove_broker" ]; then
+          grove_bundle="$(mktemp "$${TMPDIR:-/tmp}/grove-ca.XXXXXX")"
+          for grove_roots in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+            if [ -s "$grove_roots" ]; then
+              cat "$grove_roots" > "$grove_bundle"
+              break
+            fi
+          done
+          {
+            echo "-----BEGIN CERTIFICATE-----"
+            printf '%s\n' "$grove_broker_ca" | fold -w 64
+            echo "-----END CERTIFICATE-----"
+          } >> "$grove_bundle"
+          chmod 0644 "$grove_bundle"
+          export HTTPS_PROXY="$grove_broker" HTTP_PROXY="$grove_broker" https_proxy="$grove_broker" http_proxy="$grove_broker"
+          export NO_PROXY="" no_proxy=""
+          export SSL_CERT_FILE="$grove_bundle" CURL_CA_BUNDLE="$grove_bundle" GIT_SSL_CAINFO="$grove_bundle"
+          export REQUESTS_CA_BUNDLE="$grove_bundle" NODE_EXTRA_CA_CERTS="$grove_bundle"
+        elif env | grep -q 'gph1_'; then
+          echo "grove: this job's environment holds credential placeholders (gph1_...), but this VM has no credential broker, so calls that need them will fail" >&2
+        fi
+        # grove:broker end
 
         if [ -n "$${NOMAD_META_repo:-}" ]; then
           cd "$state/work"

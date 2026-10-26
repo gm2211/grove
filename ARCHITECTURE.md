@@ -83,7 +83,9 @@ Nothing long-lived is cleaned, only replaced:
    Orchard's VMs and drains any node no VM accounts for (docs/OPERATIONS.md).
 3. grove's fleet reconciler notices the VM is gone and recreates it from the (freshly pulled) image.
 
-Tailscale inside guests uses **ephemeral tagged auth keys**, so recycled VMs vanish from the tailnet.
+**No VM joins the tailnet.** A shared VM's Nomad client dials the control plane's RPC address
+(resolved to an IP by the control plane, since guests use public DNS) through its host Mac's NAT;
+the startup script turns the image's Tailscale off, and no tailnet key goes into a VM spec.
 
 ## Repository layout and ownership
 
@@ -172,15 +174,18 @@ pools:
 
 **`network`** is `shared` (the default: Tart's NAT, so a guest reaches whatever its host Mac
 reaches, LAN and tailnet included) or `isolated`. On a shared pool only the guest's own Nomad
-client and Tailscale use that reach: a firewall in the guest (`homeFenceScript`, DOCKER-USER on
+client uses that reach: a firewall in the guest (`homeFenceScript`, DOCKER-USER on
 Linux, a pf anchor on the job user on macOS) gives jobs the public internet and nothing at home,
-no private, tailnet or link-local address, with no opt-out. That includes DNS: the guest's
+no private, tailnet or link-local address, with no opt-out. The one exception is TCP to the DHCP
+default gateway's port 3128 (`broker.Port`), the host Mac's credential broker, which listens
+only there; nothing else on the host is reachable. That includes DNS: the guest's
 DHCP resolver is its host Mac, so job containers get public resolvers (`dns_servers` in
 `nomad/jobs`) and a macOS guest resolves through them VM-wide. No job gets the VM's docker socket,
 which would give it root on the guest and a way around the fence. An isolated (sealed) pool's VMs run on Softnet
 with the host blocked (`netSoftnet` + `netSoftnetBlock: ["out @host"]`), use public DNS, keep job
 containers behind an in-guest fence, and run neither Nomad nor Tailscale: they reach the public
-internet and nothing at home. Their jobs are placed on the control plane instead, on its
+internet and nothing at home, not even the broker (Softnet's rules have no ports, so the host is
+blocked whole). Their jobs are placed on the control plane instead, on its
 sandbox-host Nomad client (a second agent beside the server; node meta `grove_sandbox_host`,
 raw_exec), where `grove sandbox run`
 (`internal/sandbox`) drives each one in a sealed VM from outside through Orchard exec: push the
@@ -237,7 +242,7 @@ wins: a bad one is a 401 even from a granted peer. See `internal/tsauth` and doc
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/fleet` | `{workers[], vms[], nodes[], fetchedAt, totals}` normalised: name, host, pool (vm entries only, derived — see above), arch, online, cordoned, capacity, running; `totals` is at-a-glance counts (workersOnline/Cordoned, vmsRunning, nodesReady/Draining, jobsRunning/Pending). A VM's `raw` never includes its startup/shutdown scripts — they embed the isolated-network Tailscale auth key and pool setup commands |
+| GET | `/fleet` | `{workers[], vms[], nodes[], fetchedAt, totals}` normalised: name, host, pool (vm entries only, derived — see above), arch, online, cordoned, capacity, running; `totals` is at-a-glance counts (workersOnline/Cordoned, vmsRunning, nodesReady/Draining, jobsRunning/Pending). A VM's `raw` never includes its startup/shutdown scripts — they embed pool setup commands and, until a VM is recreated, older secrets |
 | POST | `/vms/{name}/recycle` | drain (via Nomad) then delete; reconciler recreates |
 | POST | `/workers/{name}/pause` · `/resume` | Orchard cordon |
 | GET | `/jobs` · `/jobs/{id}` | list / status. An operator sees every job; any other credential sees only the jobs it submitted (403 on someone else's). `request.env` keeps its keys but every value reads `[redacted]`, for every caller |

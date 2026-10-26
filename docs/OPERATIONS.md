@@ -436,9 +436,39 @@ while a job runs — is in [docs/JOBS.md](JOBS.md#private-repositories).
 
 ## Isolating a pool's network
 
-By default a worker VM shares its host Mac's network through Tart's NAT, so a job can reach
+No worker VM joins the tailnet. A shared VM's Nomad client dials the control plane's RPC
+address (port 4647 on the host of `nomad.url`, which the control plane resolves to an IP, since
+guests resolve names through public resolvers only) through its host Mac's NAT, and the host's
+own Tailscale carries it the rest of the way. So the tailnet's ACLs must let each worker Mac reach
+the control plane on 4647; nothing needs to allow VMs as tailnet devices any more, and
+`tailscale.authKey` is no longer used (`grove config set` refuses it). The startup script turns
+the image's Tailscale daemon off. To get a shell in a VM, use `orchard ssh vm <name>` from the
+control plane rather than tailnet SSH.
+
+By default a worker VM shares its host Mac's network through Tart's NAT, so the VM can reach
 whatever that Mac reaches: your LAN, services the Mac itself runs, and every device on your
-tailnet, through the Mac's own Tailscale login. `network: isolated` seals a pool's VMs instead:
+tailnet, through the Mac's own Tailscale login. Its jobs can't: a firewall in the guest
+(`grove-egress-fence` in DOCKER-USER for Linux containers, the `com.apple/grove-jobs` pf anchor
+for the macOS job user) refuses every private, tailnet and link-local address, with exactly one
+exception, TCP to the default gateway the guest got from DHCP on port 3128: the host Mac's
+credential broker, which listens only on that address. The gateway is read each time the fence
+loads; a guest with no IPv4 default route gets no exception.
+
+At boot a shared VM fetches the broker's CA from `http://<gateway>:3128/ca.pem` and keeps it only
+if it is a single CA certificate (pathlen 0) whose critical name constraints permit only the
+broker's hosts (github.com, api.github.com, api.anthropic.com, api.openai.com, chatgpt.com, or
+some of them) and exclude every IP address; even a forged CA that passes can vouch for no other
+site. The VM then
+advertises the broker as Nomad node meta (`grove_broker`, `grove_broker_ca`, in
+`grove-broker.hcl`), and each build/agent/shell job's `run.sh` sets `HTTPS_PROXY`/`HTTP_PROXY` to
+it and `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `REQUESTS_CA_BUNDLE` and
+`NODE_EXTRA_CA_CERTS` to the system roots plus that CA. Tools that trust only the macOS keychain
+won't accept the broker's certificates. With no broker (none answering within two minutes of
+boot, or a CA that fails the check, reported in the startup script's output) jobs run without
+one, and a job whose environment holds `gph1_` placeholders says so in its log. After installing
+the broker on a worker, recycle its VMs so they pick it up.
+
+`network: isolated` seals a pool's VMs instead:
 
 ```yaml
 pools:
@@ -457,7 +487,8 @@ What changes for that pool's VMs:
 - **Softnet, host blocked.** Each VM runs on Softnet instead of Tart's NAT, with
   `--net-softnet-block "out @host"`. The guest reaches public internet addresses only. The host
   can still open connections into the guest, which is how Orchard runs the startup script and how
-  grove drives each job.
+  grove drives each job. Softnet's rules match addresses, not ports, so there is no hole for the
+  host's credential broker: a sealed job gets no broker credentials.
 - **No Nomad, no Tailscale, no credentials.** The startup script turns off the image's Nomad client
   and Tailscale (on macOS it disables and boots out their launchd jobs, `com.grove.nomad` and
   `homebrew.mxcl.tailscale`). The VM holds no tailnet key, no Nomad token, no artifact store key

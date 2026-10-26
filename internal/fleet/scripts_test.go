@@ -78,9 +78,12 @@ func TestBuildStartupScript_LinuxMatchesV010(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The home fence is the one intended change since v0.1.10: every Linux VM is recreated once to
-	// get it. Everything else must stay byte-identical.
-	got := strings.Replace(BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", ""), homeFenceScript(Pool{Name: "linux"})+"\n", "", 1)
+	// Turning Tailscale off, the home fence and the broker block are the intended changes since
+	// v0.1.10: every Linux VM is recreated once to get them. Everything else must stay
+	// byte-identical.
+	got := BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", "")
+	got = strings.Replace(got, tailscaleOffScript+"\n", "", 1)
+	got = strings.Replace(got, homeFenceScript(Pool{Name: "linux"})+"\n"+brokerScript()+"\n", "", 1)
 	if got != string(want) {
 		t.Fatalf("Linux startup script drifted from v0.1.10; this would recreate healthy Linux workers\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
@@ -122,11 +125,13 @@ func TestBuildStartupScript_UnprivilegedGuestUsesNonInteractiveSudo(t *testing.T
 	}
 	writeExecutable("id", "#!/bin/sh\necho 502\n")
 	writeExecutable("uname", "#!/bin/sh\necho Linux\n")
+	// No default route: the broker block looks for no broker (see broker_test.go).
+	writeExecutable("ip", "#!/bin/sh\nexit 0\n")
 	writeExecutable("sudo", `#!/bin/sh
 set -eu
 [ "${1:-}" = "-n" ] && shift
 case "${1:-}" in
-  mkdir) exit 0 ;;
+  mkdir|rm) exit 0 ;;
   tee)
     tee_args="$*"
     [ "${2:-}" = "-a" ] && shift
@@ -166,13 +171,29 @@ esac
 	}
 }
 
-func TestBuildStartupScript_Tailscale(t *testing.T) {
-	pool := Pool{Name: "linux"}
-	script := BuildStartupScript(pool, "mac1", "linux-mac1-0", "tskey-abc")
-
-	want := `tailscale up --authkey='tskey-abc' --hostname="$grove_vm" --ssh --accept-routes`
-	if !strings.Contains(script, want) {
-		t.Errorf("startup script missing tailscale up call %q:\n%s", want, script)
+// No VM joins the tailnet any more, whatever key it is handed: a shared VM turns the image's
+// Tailscale off and reaches Nomad through its host Mac's NAT, at the address it is given.
+func TestBuildStartupScript_StaysOffTheTailnet(t *testing.T) {
+	for _, pool := range []Pool{{Name: "linux"}, {Name: "macos"}} {
+		script := buildStartupScript(pool, "mac1", pool.Name+"-mac1-0", Options{TailscaleAuthKey: "tskey-abc", NomadRPCAddress: "100.101.229.60:4647"})
+		if strings.Contains(script, "tailscale up") || strings.Contains(script, "tskey-abc") {
+			t.Errorf("%s: startup script joins the tailnet or carries the key:\n%s", pool.Name, script)
+		}
+		offAt := strings.Index(script, "systemctl disable --now tailscaled.service")
+		restartAt := strings.LastIndex(script, "systemctl restart nomad")
+		dir := "/etc/nomad.d"
+		if pool.MacOS() {
+			offAt = strings.Index(script, "launchctl bootout system/homebrew.mxcl.tailscale")
+			restartAt = strings.LastIndex(script, "launchctl kickstart -k system/com.grove.nomad")
+			dir = "/usr/local/etc/nomad.d"
+		}
+		rpcAt := strings.Index(script, "grove_priv tee "+dir+"/grove-rpc.hcl")
+		if offAt < 0 || rpcAt < 0 || restartAt < offAt || restartAt < rpcAt || !strings.Contains(script, `servers = ["100.101.229.60:4647"]`) {
+			t.Errorf("%s: Tailscale not turned off, or no RPC server, before Nomad restarts:\n%s", pool.Name, script)
+		}
+	}
+	if strings.Contains(BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", "tskey-abc"), "tskey-abc") {
+		t.Error("BuildStartupScript must ignore the tailnet key it is passed")
 	}
 }
 
@@ -522,6 +543,8 @@ case "$body" in
 esac
 `)
 			writeExecutable("sleep", "#!/bin/sh\nexit 0\n")
+			// No default route: no broker exception, no broker (see broker_test.go).
+			writeExecutable("route", "#!/bin/sh\nexit 1\n")
 			writeExecutable("pfctl", `#!/bin/sh
 printf 'pfctl %s\\n' "$*" >> "$GROVE_TEST_COMMAND_LOG"
 case "$*" in *"-s rules"*) echo 'block return out quick proto tcp from any to 10.0.0.0/8 user = 7460' ;; *"-s info"*) echo 'Status: Enabled' ;; esac
@@ -642,7 +665,7 @@ func TestBuildStartupScript_MacOSCreatesJobUserBeforeNomad(t *testing.T) {
 // TestBuildStartupScript_TailscaleFailureStillRestartsNomad is the regression test for the Studio's
 // Linux VM, restarted 40,426 times: under `set -eu` a failing `tailscale up` (expired auth key)
 // ended the startup script before Nomad was restarted with the VM's meta.
-func TestBuildStartupScript_TailscaleFailureStillRestartsNomad(t *testing.T) {
+func TestBuildStartupScript_LinuxTurnsTailscaleOffThenRestartsNomad(t *testing.T) {
 	fakeBin := t.TempDir()
 	calls := filepath.Join(t.TempDir(), "calls")
 	write := func(name, body string) {
@@ -655,24 +678,22 @@ func TestBuildStartupScript_TailscaleFailureStillRestartsNomad(t *testing.T) {
 	write("uname", "#!/bin/sh\necho Linux\n")
 	write("tee", "#!/bin/sh\ncat >/dev/null\n")
 	write("mkdir", "#!/bin/sh\nexit 0\n")
-	write("tailscale", "#!/bin/sh\necho 'invalid key: unable to validate API key' >&2\nexit 1\n")
+	write("tailscale", "#!/bin/sh\necho \"tailscale $*\" >> \"$GROVE_TEST_CALLS\"\nexit 1\n")
 	write("systemctl", "#!/bin/sh\necho \"systemctl $*\" >> \"$GROVE_TEST_CALLS\"\n")
 	write("chmod", "#!/bin/sh\nexit 0\n")
 	write("iptables", "#!/bin/sh\nexit 0\n")
+	write("ip", "#!/bin/sh\nexit 0\n")
 
 	script := BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", "tskey-expired")
 	cmd := exec.Command("/bin/sh", "-c", script)
 	cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_CALLS="+calls)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("startup script must survive a failed tailscale up: %v\n%s", err, out)
+		t.Fatalf("startup script failed: %v\n%s", err, out)
 	}
 	got, _ := os.ReadFile(calls)
-	if string(got) != "systemctl daemon-reload\nsystemctl restart nomad\n" {
-		t.Fatalf("nomad restart calls = %q, want one restart", got)
-	}
-	if !strings.Contains(string(out), "tailscale up failed") {
-		t.Errorf("want a warning naming the tailscale failure, got:\n%s", out)
+	if string(got) != "systemctl disable --now tailscaled.service\nsystemctl daemon-reload\nsystemctl restart nomad\n" {
+		t.Fatalf("calls = %q, want Tailscale off, then one Nomad restart", got)
 	}
 }
 
@@ -718,25 +739,116 @@ func TestBuildStartupScript_FencesJobsOffHomeNetworks(t *testing.T) {
 	}
 }
 
-// The Linux fence script itself must run: shell syntax, and no DNS exception ahead of the rejects.
+// The Linux fence script itself must run: shell syntax, no DNS exception, and exactly one way to
+// the host: TCP to the DHCP default gateway's broker port, ahead of the rejects, and none at all
+// when the guest has no IPv4 default route (or ip prints something that isn't an address).
 func TestSharedEgressFenceScript_Runs(t *testing.T) {
-	fakeBin := t.TempDir()
-	log := filepath.Join(t.TempDir(), "iptables.log")
-	if err := os.WriteFile(filepath.Join(fakeBin, "iptables"), []byte("#!/bin/sh\necho \"$*\" >> \"$GROVE_TEST_LOG\"\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
+	for _, tc := range []struct {
+		name, route, wantException string
+	}{
+		{"gateway", "default via 192.168.64.1 dev enp0s1 proto dhcp src 192.168.64.5 metric 100", "-w -A GROVE-EGRESS -d 192.168.64.1/32 -p tcp --dport 3128 -j RETURN"},
+		{"no default route", "", ""},
+		{"not an address", "default via fe80::1 dev enp0s1", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeBin := t.TempDir()
+			log := filepath.Join(t.TempDir(), "iptables.log")
+			if err := os.WriteFile(filepath.Join(fakeBin, "iptables"), []byte("#!/bin/sh\necho \"$*\" >> \"$GROVE_TEST_LOG\"\nexit 0\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			ip := "#!/bin/sh\n[ \"$*\" = \"-4 route show default\" ] || exit 64\n"
+			if tc.route != "" {
+				ip += "echo '" + tc.route + "'\n"
+			}
+			if err := os.WriteFile(filepath.Join(fakeBin, "ip"), []byte(ip), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("/bin/sh", "-s")
+			cmd.Stdin = strings.NewReader(sharedEgressFenceScript())
+			cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_LOG="+log)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("fence script failed: %v\n%s", err, out)
+			}
+			data, _ := os.ReadFile(log)
+			got := string(data)
+			rejectAt := strings.Index(got, "-d 10.0.0.0/8 -j REJECT")
+			if rejectAt < 0 || !strings.Contains(got, "-d 100.64.0.0/10 -j REJECT") || !strings.Contains(got, "-d 192.168.0.0/16 -j REJECT") {
+				t.Fatalf("home networks not rejected:\n%s", got)
+			}
+			if strings.Contains(got, "--dport 53") {
+				t.Fatalf("no resolver may be let through:\n%s", got)
+			}
+			var exceptions []string
+			for _, line := range strings.Split(got, "\n") {
+				if strings.Contains(line, "GROVE-EGRESS -d ") && !strings.Contains(line, "REJECT") {
+					exceptions = append(exceptions, line)
+				}
+			}
+			switch {
+			case tc.wantException == "" && len(exceptions) != 0:
+				t.Fatalf("no gateway, yet an exception:\n%s", got)
+			case tc.wantException != "" && (len(exceptions) != 1 || exceptions[0] != tc.wantException):
+				t.Fatalf("exceptions = %q, want just %q", exceptions, tc.wantException)
+			case tc.wantException != "" && strings.Index(got, tc.wantException) > rejectAt:
+				t.Fatalf("the broker exception must come before the rejects:\n%s", got)
+			}
+		})
 	}
-	cmd := exec.Command("/bin/sh", "-s")
-	cmd.Stdin = strings.NewReader(sharedEgressFenceScript())
-	cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_LOG="+log)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("fence script failed: %v\n%s", err, out)
+	if strings.Contains(egressFenceScript, "3128") || strings.Contains(egressFenceScript, "@BROKER") {
+		t.Errorf("a sealed guest's fence has no broker exception:\n%s", egressFenceScript)
 	}
-	got, _ := os.ReadFile(log)
-	rejectAt := strings.Index(string(got), "-d 100.64.0.0/10 -j REJECT")
-	if rejectAt < 0 {
-		t.Fatalf("tailnet not rejected:\n%s", got)
-	}
-	if strings.Contains(string(got), "--dport 53") || strings.Contains(string(got), "-d 192.168.64.1") {
-		t.Fatalf("no private resolver may be let through:\n%s", got)
+}
+
+// The macOS fence loader puts the job user's one exception, TCP to the default gateway's broker
+// port, ahead of the anchor's block rule, and loads no exception when there's no gateway.
+func TestMacOSHomeFenceLoader_BrokerException(t *testing.T) {
+	for _, tc := range []struct {
+		name, route, want string
+	}{
+		{"gateway", "   route to: default\ndestination: default\n    gateway: 192.168.64.1\n  interface: en0", "pass out quick proto tcp from any to 192.168.64.1 port 3128 user " + MacOSJobUser + "\n"},
+		{"no gateway", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeBin := t.TempDir()
+			dir := t.TempDir()
+			anchor := filepath.Join(dir, "anchor")
+			for name, body := range map[string]string{
+				"route": "#!/bin/sh\n[ \"$*\" = \"-n get default\" ] || exit 64\n" + func() string {
+					if tc.route == "" {
+						return "exit 1\n"
+					}
+					return "printf '%s\\n' '" + strings.ReplaceAll(tc.route, "\n", "' '") + "'\n"
+				}(),
+				"sleep": "#!/bin/sh\nexit 0\n",
+				"pfctl": `#!/bin/sh
+case "$*" in
+  "-q -f /etc/pf.conf") ;;
+  "-q -a com.apple/grove-jobs -f -") cat > "$GROVE_TEST_ANCHOR" ;;
+  "-q -E") ;;
+  "-q -a com.apple/grove-jobs -s rules") cat "$GROVE_TEST_ANCHOR" ;;
+  "-s info") echo "Status: Enabled" ;;
+  *) exit 64 ;;
+esac
+`,
+				"cat": "#!/bin/sh\nif [ \"$1\" = /usr/local/etc/grove/pf-jobs.conf ]; then printf '%s' \"$GROVE_TEST_RULES\"; else exec /bin/cat \"$@\"; fi\n",
+			} {
+				if err := os.WriteFile(filepath.Join(fakeBin, name), []byte(body), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := exec.Command("/bin/sh", "-s")
+			cmd.Stdin = strings.NewReader(macosHomeFenceLoader)
+			cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_ANCHOR="+anchor, "GROVE_TEST_RULES="+macosHomeFenceRules)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("loader failed: %v\n%s", err, out)
+			}
+			got, err := os.ReadFile(anchor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := tc.want + macosHomeFenceRules; string(got) != want {
+				t.Errorf("anchor =\n%s\nwant:\n%s", got, want)
+			}
+		})
 	}
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -739,5 +741,32 @@ func TestPlan_BootLoopingVM_Rebuilt(t *testing.T) {
 	}
 	if len(plan.Deletes) != 1 || len(plan.Creates) != 1 || plan.Deletes[0].Reason != "boot loop: restarted 40426 times" {
 		t.Fatalf("want the boot-looping VM rebuilt, got %+v", plan)
+	}
+}
+
+// The resolved RPC address lands in every VM's startup script: an IP passes through untouched, and
+// a name resolves to the same address whatever order the resolver answers in.
+func TestResolveNomadRPCAddress(t *testing.T) {
+	answers := [][]net.IP{
+		{net.ParseIP("fd7a:115c:a1e0::60"), net.ParseIP("100.101.229.61"), net.ParseIP("100.101.229.60")},
+		{net.ParseIP("100.101.229.60"), net.ParseIP("fd7a:115c:a1e0::60"), net.ParseIP("100.101.229.61")},
+	}
+	for _, ips := range answers {
+		lookup := func(context.Context, string, string) ([]net.IP, error) { return slices.Clone(ips), nil }
+		if got, err := ResolveNomadRPCAddress(context.Background(), "nomad.tail.ts.net:4647", lookup); err != nil || got != "100.101.229.60:4647" {
+			t.Errorf("ResolveNomadRPCAddress = %q, %v; want 100.101.229.60:4647", got, err)
+		}
+	}
+	never := func(context.Context, string, string) ([]net.IP, error) { t.Fatal("looked up an IP"); return nil, nil }
+	for _, addr := range []string{"", "100.101.229.60:4647", "[fd7a:115c:a1e0::60]:4647"} {
+		if got, err := ResolveNomadRPCAddress(context.Background(), addr, never); err != nil || got != addr {
+			t.Errorf("ResolveNomadRPCAddress(%q) = %q, %v", addr, got, err)
+		}
+	}
+	v6 := func(context.Context, string, string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("fd7a:115c:a1e0::60")}, nil
+	}
+	if got, _ := ResolveNomadRPCAddress(context.Background(), "nomad:4647", v6); got != "[fd7a:115c:a1e0::60]:4647" {
+		t.Errorf("IPv6-only host = %q", got)
 	}
 }

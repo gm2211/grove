@@ -147,7 +147,7 @@ func setConfigKey(cfg *config.Config, key, value string) error {
 	case "fleet":
 		cfg.Fleet = value
 	case "tailscale.authKey":
-		cfg.Tailscale.AuthKey = value
+		return fmt.Errorf("config key %q is no longer used: worker VMs no longer join the tailnet, they reach Nomad through their host Mac", key)
 	default:
 		return fmt.Errorf("unknown config key %q", key)
 	}

@@ -15,8 +15,9 @@ const defaultShutdownTimeout = 2*time.Hour + 30*time.Minute
 const nomadDrainDeadline = "2h"
 
 // BuildStartupScript renders the guest StartupScript for a VM: it records which pool/worker/VM
-// it belongs to (so the Nomad client inside can advertise it as node meta), optionally joins the
-// tailnet, and restarts the Nomad client so the new meta takes effect. pool.StartupScript, if
+// it belongs to (so the Nomad client inside can advertise it as node meta), keeps the VM off the
+// tailnet, and restarts the Nomad client so the new meta takes effect. tailscaleAuthKey is
+// ignored: no VM joins the tailnet any more. pool.StartupScript, if
 // set, is appended verbatim after the generated part (see ARCHITECTURE.md → "Recycling").
 func BuildStartupScript(pool Pool, worker, vmName, tailscaleAuthKey string) string {
 	return buildStartupScript(pool, worker, vmName, Options{TailscaleAuthKey: tailscaleAuthKey})
@@ -63,15 +64,10 @@ func buildStartupScript(pool Pool, worker, vmName string, opts Options) string {
 		b.WriteString("\n")
 	}
 
-	if opts.TailscaleAuthKey != "" {
-		// Not fatal: a shared pool's guest already reaches the control plane through its host's
-		// NAT, and under `set -eu` an expired or revoked key used to end the script here, before
-		// Nomad was restarted with this VM's meta. Orchard then restarted the VM, again and again,
-		// while its meta-less Nomad node could take no job.
-		fmt.Fprintf(&b, "if ! tailscale up --authkey=%s --hostname=\"$grove_vm\" --ssh --accept-routes; then\n"+
-			"  echo \"grove: tailscale up failed (expired or revoked tailscale.authKey?); continuing without joining the tailnet\" >&2\nfi\n\n",
-			shQuote(opts.TailscaleAuthKey))
-	}
+	// A shared VM stays off the tailnet: its Nomad client reaches the control plane through the
+	// host Mac's NAT (the host is on the tailnet), and no tailnet key goes into a VM spec.
+	b.WriteString(tailscaleOffScript)
+	b.WriteString("\n")
 
 	if pool.MacOS() {
 		b.WriteString(macosJobUserScript)
@@ -80,15 +76,17 @@ func buildStartupScript(pool Pool, worker, vmName string, opts Options) string {
 		// advertisement, even for a client, so declare it before restarting.
 		b.WriteString(macosNomadAdvertiseScript)
 		b.WriteString("\n")
-		if opts.NomadRPCAddress != "" {
-			fmt.Fprintf(&b, "grove_priv mkdir -p /usr/local/etc/nomad.d\ngrove_priv tee /usr/local/etc/nomad.d/grove-rpc.hcl >/dev/null <<'GROVE_NOMAD_RPC'\nclient {\n  servers = [%s]\n}\nGROVE_NOMAD_RPC\n\n", strconv.Quote(opts.NomadRPCAddress))
-		}
+		writeNomadRPCConfig(&b, "/usr/local/etc/nomad.d", opts.NomadRPCAddress)
 		b.WriteString(nomadClientReadinessScript)
 		b.WriteString("\n")
+	} else {
+		writeNomadRPCConfig(&b, "/etc/nomad.d", opts.NomadRPCAddress)
 	}
 
 	// Before Nomad comes back with this VM's meta and can take a job.
 	b.WriteString(homeFenceScript(pool))
+	b.WriteString("\n")
+	b.WriteString(brokerScript())
 	b.WriteString("\n")
 
 	if opts.NodeTLS != nil {
@@ -108,6 +106,28 @@ func buildStartupScript(pool Pool, worker, vmName string, opts Options) string {
 
 	return b.String()
 }
+
+// writeNomadRPCConfig points the guest's Nomad client at the control plane's RPC listener, an
+// address it reaches through its host Mac's NAT.
+func writeNomadRPCConfig(b *strings.Builder, dir, address string) {
+	if address == "" {
+		return
+	}
+	fmt.Fprintf(b, "grove_priv mkdir -p %[1]s\ngrove_priv tee %[1]s/grove-rpc.hcl >/dev/null <<'GROVE_NOMAD_RPC'\nclient {\n  servers = [%[2]s]\n}\nGROVE_NOMAD_RPC\n\n", dir, strconv.Quote(address))
+}
+
+// tailscaleOffScript stops and disables the image's Tailscale daemon, as a sealed guest does
+// (sealedStartupScriptTemplate): on Linux the tailscaled unit, on macOS the launchd job
+// `brew services` installed. Either may be absent.
+const tailscaleOffScript = `# This VM stays off the tailnet: Nomad reaches the control plane through the host Mac's NAT.
+if [ "$(uname -s)" = "Darwin" ]; then
+  grove_priv launchctl disable system/homebrew.mxcl.tailscale >/dev/null 2>&1 || true
+  grove_priv launchctl bootout system/homebrew.mxcl.tailscale >/dev/null 2>&1 || true
+  grove_priv pkill -x tailscaled >/dev/null 2>&1 || true
+else
+  grove_priv systemctl disable --now tailscaled.service >/dev/null 2>&1 || true
+fi
+`
 
 const guestHostXcodeMountPath = "/Volumes/My Shared Files/grove-xcode.app"
 
