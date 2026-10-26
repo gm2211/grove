@@ -1,5 +1,5 @@
 ## Parameterized "build" job template — rendered by the grove server (package nomadjobs) with a
-## struct carrying at least {Kind: "build", Pool: "linux"|"macos", CPU, Memory, AllowDockerSocket}.
+## struct carrying at least {Kind: "build", Pool: "linux"|"macos", CPU, Memory}.
 ## See README.md for the full dispatch contract and docs/JOBS.md for how internal/dispatch maps a
 ## JobRequest onto `nomad job dispatch`.
 ##
@@ -208,18 +208,9 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         image   = "{{.RunnerImage}}"
         command = "/bin/bash"
         args    = ["${NOMAD_TASK_DIR}/run.sh"]
-        # Nomad's docker driver cannot interpolate `image` from dispatch-time meta
-        # (hashicorp/nomad#6247), so a per-job image override (meta_optional "image") is NOT a
-        # different outer container — instead run.sh nests a `docker run` against this socket
-        # when NOMAD_META_image differs from the default. See docs/JOBS.md.
-{{if .AllowDockerSocket}}
-        # OPT-IN (fleet.yaml pool.allowDockerSocket: true). This mounts the VM's docker socket
-        # into every job on this pool: any job gets root-equivalent control of the VM host and
-        # can reach every other job's containers through the same daemon, trading job-to-job
-        # isolation for per-dispatch image selection. Default is false — see the branch below in
-        # run.sh for what happens when this is off.
-        volumes = ["/var/run/docker.sock:/var/run/docker.sock"]
-{{end}}
+        # Never the VM's docker socket: it would give the job root on the guest, past the fence
+        # that keeps jobs off home networks. Nomad's docker driver can't take `image` from
+        # dispatch meta (hashicorp/nomad#6247), so a per-job "image" override is ignored.
       }
 {{end}}
 
@@ -331,23 +322,9 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         }
 
         set +e
-{{if .AllowDockerSocket}}
-        if command -v docker >/dev/null 2>&1 && [ -n "$${NOMAD_META_image:-}" ] && [ "$NOMAD_META_image" != "$DEFAULT_IMAGE" ]; then
-          docker run --rm \
-            -v "$PWD":/workspace -w /workspace \
-            $(env | awk -F= '/^(NOMAD_META_|GH_TOKEN|GIT_TOKEN)/{print "-e", $1}') \
-            "$NOMAD_META_image" \
-            timeout "$T" bash -eo pipefail "$(basename "$script_src")"
-        else
-          run_with_timeout "$T" bash -eo pipefail "$script_src"
-        fi
-{{else}}
-        # This pool has no docker-socket access (fleet.yaml pool.allowDockerSocket is unset or
-        # false — the grove default). NOMAD_META_image is still accepted for dispatch-contract
-        # symmetry with opted-in pools, but it's ignored here: every job runs in this fixed
-        # grove-runner image, no nested `docker run` is ever attempted.
+        # NOMAD_META_image is still accepted by the dispatch contract but ignored: every job runs
+        # in this fixed runner image, and no job can reach the VM's docker daemon.
         run_with_timeout "$T" bash -eo pipefail "$script_src"
-{{end}}
         code=$?
         set -e
 

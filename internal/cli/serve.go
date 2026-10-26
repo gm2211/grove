@@ -425,15 +425,14 @@ func poolConfigs(cfg *config.Config) ([]dispatch.PoolConfig, error) {
 			return nil, fmt.Errorf("pool %q runnerImage: %w", p.Name, err)
 		}
 		pools = append(pools, dispatch.PoolConfig{
-			Name:              p.Name,
-			RunnerImage:       runnerImage,
-			CPU:               int(p.JobCPUOrDefault()),
-			Memory:            int(p.JobMemoryOrDefault()),
-			AllowDockerSocket: p.AllowDockerSocket,
-			Isolated:          p.Isolated(),
-			Slots:             sealedVMSlots(p),
-			OS:                poolOS(p),
-			Fallback:          spec.FallbackFor(p),
+			Name:        p.Name,
+			RunnerImage: runnerImage,
+			CPU:         int(p.JobCPUOrDefault()),
+			Memory:      int(p.JobMemoryOrDefault()),
+			Isolated:    p.Isolated(),
+			Slots:       sealedVMSlots(p),
+			OS:          poolOS(p),
+			Fallback:    spec.FallbackFor(p),
 		})
 	}
 	return pools, nil

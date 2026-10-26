@@ -19,12 +19,11 @@ client {
 
 plugin "docker" {
   config {
-    # allow_privileged/volumes: the "build" job's runner container mounts the host docker socket
-    # to run a nested container matching a job-requested image (see docs/JOBS.md — Nomad's docker
-    # driver does not support interpolating `config.image` from dispatch-time meta, hashicorp/nomad#6247,
-    # so grove-runner uses docker-in-docker instead of a dynamic image field).
+    # No host bind mounts and no privileged containers: a job that could mount the docker socket
+    # or run privileged would be root on this VM, past the fence that keeps jobs off home
+    # networks (see docs/JOBS.md).
     volumes {
-      enabled = true
+      enabled = false
     }
     allow_privileged = false
   }

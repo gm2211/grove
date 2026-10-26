@@ -45,14 +45,14 @@ func TestSpecValidate_Network(t *testing.T) {
 		},
 		{name: "isolated macos pool", pool: Pool{Name: "macos", Image: "image", PerWorker: 1, Network: "isolated"}},
 		{
-			name:    "isolated macos with docker socket",
-			pool:    Pool{Name: "macos", Image: "image", PerWorker: 1, Network: "isolated", AllowDockerSocket: true},
-			wantErr: "allowDockerSocket can't be combined",
+			name:    "shared with docker socket",
+			pool:    Pool{Name: "linux", Image: "image", PerWorker: 1, AllowDockerSocket: true},
+			wantErr: "allowDockerSocket is no longer supported",
 		},
 		{
 			name:    "isolated with docker socket",
 			pool:    Pool{Name: "linux", Image: "image", PerWorker: 1, Network: "isolated", AllowDockerSocket: true},
-			wantErr: "allowDockerSocket can't be combined",
+			wantErr: "allowDockerSocket is no longer supported",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

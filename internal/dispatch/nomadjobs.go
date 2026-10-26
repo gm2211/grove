@@ -24,9 +24,8 @@ type PoolConfig struct {
 	// Orchard VM's own sizing). Zero means "let the job template fall back to its own hardcoded
 	// default (2000 MHz / 4096 MiB)" — callers that know the pool (internal/cli/serve.go) instead
 	// pass fleet.Pool.JobCPUOrDefault()/JobMemoryOrDefault() so that fallback is rarely hit.
-	CPU               int
-	Memory            int
-	AllowDockerSocket bool
+	CPU    int
+	Memory int
 	// Isolated marks a sealed pool (fleet.yaml `network: isolated`): its VMs can't reach home, so
 	// every kind is registered from nomad/jobs/sandbox.nomad.hcl instead, which runs on the
 	// control plane and drives the job in a sealed VM from outside (see internal/sandbox).
@@ -47,12 +46,11 @@ type PoolConfig struct {
 // these templates). CPU/Memory come from the pool's PoolConfig; a pool built without them (CPU==0
 // && Memory==0) leaves every job at the templates' own hardcoded defaults (2000 MHz / 4096 MiB).
 type templateData struct {
-	Kind              Kind
-	Pool              string
-	CPU               int
-	Memory            int
-	AllowDockerSocket bool
-	RunnerImage       string
+	Kind        Kind
+	Pool        string
+	CPU         int
+	Memory      int
+	RunnerImage string
 	// GroveBin and Slots are only used by sandbox.nomad.hcl: the grove binary the control plane's
 	// Nomad client runs, and the pool's per-VM slot count.
 	GroveBin string
@@ -121,7 +119,7 @@ func EnsureJobs(ctx context.Context, nc nomad.Client, pools []PoolConfig) error 
 				return fmt.Errorf("nomadjobs: parse template %s: %w", file, err)
 			}
 			var buf bytes.Buffer
-			data := templateData{Kind: kind, Pool: pool.Name, CPU: pool.CPU, Memory: pool.Memory, AllowDockerSocket: pool.AllowDockerSocket, RunnerImage: pool.RunnerImage, GroveBin: groveBin, Slots: max(pool.Slots, 1), OS: pool.OS}
+			data := templateData{Kind: kind, Pool: pool.Name, CPU: pool.CPU, Memory: pool.Memory, RunnerImage: pool.RunnerImage, GroveBin: groveBin, Slots: max(pool.Slots, 1), OS: pool.OS}
 			if err := tmpl.ExecuteTemplate(&buf, file, data); err != nil {
 				return fmt.Errorf("nomadjobs: render %s/%s: %w", kind, pool.Name, err)
 			}

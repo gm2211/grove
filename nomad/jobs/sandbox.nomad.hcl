@@ -14,8 +14,8 @@
 ##
 ## The dispatch contract is the same as the other templates': same meta, same payload, exit 124
 ## on a timeout. Exit 125 means the sealed VM was lost (internal/dispatch reports StatusLost).
-## Sealed pools can't opt into the docker socket (fleet.yaml validation), so the "image" meta is
-## accepted but ignored, as on any pool without it.
+## No job ever gets the docker socket, so the "image" meta is accepted but ignored, as on every
+## pool.
 
 job "grove-{{.Kind}}-{{.Pool}}" {
   datacenters = ["dc1"]

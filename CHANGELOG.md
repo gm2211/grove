@@ -4,6 +4,12 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **`allowDockerSocket` is gone.** Mounting the VM's docker socket gave a job root on the guest,
+  and with it a way past the network fence. Every Linux job now runs in its pool's `runnerImage`;
+  the per-job `image` meta is ignored on every pool. A `fleet.yaml` that still sets
+  `allowDockerSocket` is refused at load: delete the line. The Linux worker image also turns off
+  Docker host volumes (takes effect when the image is rebuilt).
+
 - **macOS clones are fenced too.** A macOS job's `source` task stays root (to hide the clone token
   from the job) but runs every git command as a new unprivileged `_grovesrc` user, which the
   guest's pf fence keeps off home networks alongside the job user. The token reaches git's
