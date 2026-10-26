@@ -91,12 +91,9 @@ Every rendered job:
 Nomad's docker driver does not support interpolating its `image` config field from dispatch-time
 meta ([hashicorp/nomad#6247](https://github.com/hashicorp/nomad/issues/6247) — confirmed still
 open); `${NOMAD_META_x}` only resolves reliably in fields like `args`/`env`, not `image`. So the
-outer container is always the pool's registered `runnerImage`, optionally mounted with the host's docker socket
-(`/var/run/docker.sock`, requires `docker.volumes.enabled = true` on the client — set in
-`images/linux-worker/files/client.hcl`), and `run.sh` nests a `docker run "$NOMAD_META_image" ...`
-only when a dispatch actually requested a different image than the default. `images/runner`
-ships the docker CLI (no daemon) specifically for this. The `macos`/`raw_exec` pool ignores the
-`image` meta entirely — there's no docker binary there to nest with.
+outer container is always the pool's registered `runnerImage`, and the `image` meta is ignored on
+every pool. No job ever gets the VM's docker socket: it would give the job root on the guest, past
+the fence that keeps jobs off home networks (see docs/JOBS.md).
 
 ### kind differences
 

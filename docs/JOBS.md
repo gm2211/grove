@@ -354,9 +354,8 @@ Each `run.sh` now defines a `run_with_timeout` shell function instead of calling
 directly:
 
 - If `command -v timeout` finds a real `timeout` binary (true inside the `docker`-driver `linux`
-  pool's `grove-runner` image, and inside the nested `docker run` in the `AllowDockerSocket`
-  branch, both of which are Linux-based and carry GNU coreutils), it's used directly — same
-  behavior as before.
+  pool's `grove-runner` image, which is Linux-based and carries GNU coreutils), it's used
+  directly — same behavior as before.
 - Otherwise (macOS raw_exec, bash 3.2 at `/bin/bash`), the command runs in the background (under
   `set -m` so it lands in its own process group — see below) under a watchdog subshell that sleeps
   `$T`, sends `kill -TERM "-$pid"`, then polls (`ps -o stat=`, once a second, up to 10s) until the
@@ -422,46 +421,15 @@ The outer task image is fixed when Grove registers each pool's parameterized job
 when omitted it remains `ghcr.io/gm2211/grove-runner:latest`. Grove validates this value before
 rendering HCL. Changing it requires `grove serve` to register the jobs again.
 
-Per-dispatch overrides remain separate. The host's docker socket can be bind-mounted in
-(`volumes = ["/var/run/docker.sock:/var/run/docker.sock"]`,
-which needs `docker.volumes.enabled = true` in the client's plugin config — see
-`images/linux-worker/files/client.hcl`). `images/runner/Dockerfile` installs the Docker **CLI**
-(not a daemon) for exactly this reason: when `NOMAD_META_image` is set and differs from the
-default, `run.sh` nests a `docker run --rm -v "$PWD":/workspace -w /workspace ... "$NOMAD_META_image"
-timeout ... bash -eo pipefail <script>` instead of running the script directly. This is real,
-functioning per-dispatch image selection — it just happens one level down from where a first
-glance at the Nomad job spec would suggest. The `macos`/`raw_exec` pool has no docker daemon at
-all, so it ignores `image` entirely and always runs the script as a native process — there's
-nothing to select an image for a `raw_exec` task in the first place.
-
-**Not independently verified**: the docker-image-interpolation limitation is confirmed via the
-linked upstream issue and Nomad's own interpolation docs, but the nested-`docker run` fallback
-itself has not been exercised against a live Nomad cluster (no server available in this
-environment) — see `nomad/jobs/README.md`'s testing section for what *was* verified
-(template rendering via `go test ./nomad/...`).
-
-### The socket mount is opt-in per pool, off by default
-
-The docker-socket-mount-plus-nested-`docker run` mechanism described above is **not** unconditional
-— it's gated behind `fleet.yaml`'s `pools[].allowDockerSocket` (default `false`, see
-`internal/fleet.Pool.AllowDockerSocket`), threaded through `dispatch.PoolConfig` into each job
-template's `{{.AllowDockerSocket}}`.
-
-- When `allowDockerSocket` is unset or `false` (the default): the docker task's `config` block
-  never mounts `/var/run/docker.sock`, and `run.sh` never attempts a nested `docker run`.
-  `NOMAD_META_image` is still accepted (it stays in every template's `meta_optional` list for
-  dispatch-contract symmetry across pools) but it is silently ignored — every job on the pool runs
-  in the pool's fixed `runnerImage` (or the default Grove runner image when unset).
-- When `allowDockerSocket` is `true`: behavior is exactly as described above — the socket is
-  mounted and `run.sh` nests a `docker run` whenever `NOMAD_META_image` differs from the default.
-
-**Why default to off**: the docker socket gives a container root-equivalent control of the VM
-host it's running on, and it lets any job on the pool reach every other job's containers through
-the same daemon. On a shared multi-tenant pool that's a real isolation hole — one job's
-`docker run` can inspect, exec into, or kill any other job's container, or escape to the host
-entirely. That's a meaningful security/blast-radius trade-off in exchange for per-dispatch image
-selection, so grove requires an operator to opt a pool into it explicitly rather than enabling it
-silently for everyone.
+There is no per-dispatch image override. `NOMAD_META_image` stays in every template's
+`meta_optional` list so older callers don't break, but it is ignored: every Linux job runs in its
+pool's fixed `runnerImage`, and the `macos`/`raw_exec` pool always runs the script as a native
+process. Grove used to offer this through `fleet.yaml`'s `pools[].allowDockerSocket`, which mounted
+the VM's docker socket into jobs so `run.sh` could nest a `docker run "$NOMAD_META_image"`. It was
+removed: the socket gives a job root on the VM, so it could start a container on the VM's own
+network (past the fence that keeps jobs off the tailnet and the LAN), rewrite that fence, or reach
+every other job's containers. `grove serve` now refuses a `fleet.yaml` that still sets it. A
+per-job image, if it comes back, has to be chosen by the control plane at dispatch time.
 
 ## HCL escaping in `run.sh`
 
@@ -498,7 +466,7 @@ what most of `run.sh` uses today.
 ## Testing the contract
 
 ```console
-$ go test ./nomad/...                    # renders every (kind × pool × AllowDockerSocket) job,
+$ go test ./nomad/...                    # renders every (kind × pool) job,
                                           # asserts its shape, and parses it with Nomad's own
                                           # jobspec2 library (github.com/hashicorp/nomad/jobspec2)
                                           # offline — the same regression check that would have

@@ -333,7 +333,7 @@ script, which marks the VM so no new job lands in it and waits for the running o
 
 Limits:
 
-- `allowDockerSocket` can't be combined with it, and the per-job `image` override is ignored.
+- The per-job `image` override is ignored (as on every pool).
 - A job still reaches anything on the public internet, your home's public IP included.
 - (Linux) Job images must already be in the VM image or come from a public registry (the default runner
   image is on ghcr.io): the guest can't pull from a registry on your LAN or tailnet.

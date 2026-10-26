@@ -277,11 +277,8 @@ wasn't started with `--rosetta rosetta`, the script logs and exits 0 rather than
 
 See docs/JOBS.md's "Why the image isn't just `image = "${NOMAD_META_image}"`" section — the short
 version is that Nomad's docker driver can't interpolate its `image` field from dispatch-time meta,
-so `images/runner` ships the Docker CLI specifically so a job that wants a different image gets it
-via a nested `docker run` against the mounted host socket, rather than by changing the outer
-container. That mechanism is now gated behind `fleet.yaml`'s `pools[].allowDockerSocket` (default
-`false`) — see docs/JOBS.md's "The socket mount is opt-in per pool, off by default" for why it
-defaults off and what happens on each side of the flag.
+and the nested `docker run` against the VM's docker socket that used to work around it was removed
+(the socket gave jobs root on the VM). Every Linux job runs in its pool's `runnerImage`.
 
 ## Rebuilding after a base image update
 

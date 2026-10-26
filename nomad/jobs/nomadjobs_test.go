@@ -19,15 +19,14 @@ import (
 // template (see README.md). CPU/Memory are optional — each template falls back to a default when
 // they're zero.
 type renderData struct {
-	Kind              string
-	Pool              string
-	CPU               int
-	Memory            int
-	AllowDockerSocket bool
-	RunnerImage       string
-	GroveBin          string
-	Slots             int
-	OS                string
+	Kind        string
+	Pool        string
+	CPU         int
+	Memory      int
+	RunnerImage string
+	GroveBin    string
+	Slots       int
+	OS          string
 }
 
 func render(t *testing.T, file string, data renderData) string {
@@ -164,11 +163,10 @@ var dockerRunMarkers = map[string]string{
 	"shell": "exec docker run --rm",
 }
 
-// TestRenderDockerSocketOptOut asserts that with AllowDockerSocket left at its zero value (the
-// fleet.yaml default), the rendered HCL for every kind's docker-driver ("linux") task neither
-// mounts the VM's docker socket nor ever attempts a nested `docker run` — see
-// internal/fleet.Pool.AllowDockerSocket and docs/JOBS.md.
-func TestRenderDockerSocketOptOut(t *testing.T) {
+// TestRenderNeverMountsDockerSocket asserts that no kind's docker-driver ("linux") task mounts the
+// VM's docker socket or attempts a nested `docker run`: the socket would give the job root on the
+// guest, past the fence that keeps jobs off home networks.
+func TestRenderNeverMountsDockerSocket(t *testing.T) {
 	files := map[string]string{
 		"build": "build.nomad.hcl",
 		"agent": "agent.nomad.hcl",
@@ -176,34 +174,12 @@ func TestRenderDockerSocketOptOut(t *testing.T) {
 	}
 	for kind, file := range files {
 		t.Run(kind, func(t *testing.T) {
-			out := render(t, file, renderData{Kind: kind, Pool: "linux", AllowDockerSocket: false})
+			out := render(t, file, renderData{Kind: kind, Pool: "linux"})
 			if strings.Contains(out, "/var/run/docker.sock") {
-				t.Errorf("rendered %s/linux with AllowDockerSocket=false unexpectedly mounts the docker socket\n---\n%s", kind, out)
+				t.Errorf("rendered %s/linux unexpectedly mounts the docker socket\n---\n%s", kind, out)
 			}
 			if strings.Contains(out, dockerRunMarkers[kind]) {
-				t.Errorf("rendered %s/linux with AllowDockerSocket=false unexpectedly attempts a nested docker run\n---\n%s", kind, out)
-			}
-		})
-	}
-}
-
-// TestRenderDockerSocketOptIn asserts that with AllowDockerSocket true, the rendered HCL restores
-// exactly the previous (pre-opt-in) behavior: the docker socket is mounted and run.sh is able to
-// nest a `docker run` for a per-dispatch NOMAD_META_image override.
-func TestRenderDockerSocketOptIn(t *testing.T) {
-	files := map[string]string{
-		"build": "build.nomad.hcl",
-		"agent": "agent.nomad.hcl",
-		"shell": "shell.nomad.hcl",
-	}
-	for kind, file := range files {
-		t.Run(kind, func(t *testing.T) {
-			out := render(t, file, renderData{Kind: kind, Pool: "linux", AllowDockerSocket: true})
-			if !strings.Contains(out, "/var/run/docker.sock:/var/run/docker.sock") {
-				t.Errorf("rendered %s/linux with AllowDockerSocket=true missing docker socket mount\n---\n%s", kind, out)
-			}
-			if !strings.Contains(out, dockerRunMarkers[kind]) {
-				t.Errorf("rendered %s/linux with AllowDockerSocket=true missing nested docker run invocation\n---\n%s", kind, out)
+				t.Errorf("rendered %s/linux unexpectedly attempts a nested docker run\n---\n%s", kind, out)
 			}
 		})
 	}
@@ -225,17 +201,15 @@ func TestRenderedHCLParsesWithJobspec2(t *testing.T) {
 		"shell": "shell.nomad.hcl",
 	}
 	pools := []string{"linux", "macos"}
-	sockets := []bool{false, true}
 
 	for kind, file := range files {
 		for _, pool := range pools {
-			for _, allowDockerSocket := range sockets {
-				name := kind + "/" + pool + "/socket=" + boolToStr(allowDockerSocket)
+			{
+				name := kind + "/" + pool
 				t.Run(name, func(t *testing.T) {
 					hcl := render(t, file, renderData{
-						Kind:              kind,
-						Pool:              pool,
-						AllowDockerSocket: allowDockerSocket,
+						Kind: kind,
+						Pool: pool,
 					})
 
 					job, err := jobspec2.ParseWithConfig(&jobspec2.ParseConfig{
@@ -244,7 +218,7 @@ func TestRenderedHCLParsesWithJobspec2(t *testing.T) {
 						AllowFS: false,
 					})
 					if err != nil {
-						t.Fatalf("jobspec2 failed to parse rendered %s (pool=%s, AllowDockerSocket=%v): %v\n---\n%s", file, pool, allowDockerSocket, err, hcl)
+						t.Fatalf("jobspec2 failed to parse rendered %s (pool=%s): %v\n---\n%s", file, pool, err, hcl)
 					}
 
 					wantID := "grove-" + kind + "-" + pool
@@ -314,13 +288,6 @@ func TestRenderedHCLParsesWithJobspec2(t *testing.T) {
 			}
 		}
 	}
-}
-
-func boolToStr(b bool) string {
-	if b {
-		return "true"
-	}
-	return "false"
 }
 
 // runRunSH writes runSH and scriptBody to a fresh NOMAD_TASK_DIR-shaped temp dir and executes

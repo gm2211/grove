@@ -85,14 +85,13 @@ func (s *Spec) Validate() error {
 			}
 		}
 
+		if p.AllowDockerSocket {
+			// The docker socket gave every job root on the guest, past the in-guest fence that
+			// keeps jobs off home networks.
+			return fmt.Errorf("pool %q: allowDockerSocket is no longer supported (it gave jobs root on the VM, past the network fence); remove it from fleet.yaml", p.Name)
+		}
 		switch p.Network {
-		case "", NetworkShared:
-		case NetworkIsolated:
-			// The docker socket gives every job root on the guest, past the in-guest fence that
-			// keeps jobs off the guest's tailnet login.
-			if p.AllowDockerSocket {
-				return fmt.Errorf("pool %q: allowDockerSocket can't be combined with network %q", p.Name, NetworkIsolated)
-			}
+		case "", NetworkShared, NetworkIsolated:
 		default:
 			return fmt.Errorf("pool %q: network must be %q or %q, got %q", p.Name, NetworkShared, NetworkIsolated, p.Network)
 		}
