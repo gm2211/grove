@@ -228,6 +228,7 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 	)
 
 	steps = append(steps, workerFinalizationSteps(r, opts, plistPath, wrapper)...)
+	steps = append(steps, brokerSteps(r, opts)...)
 	return steps
 }
 

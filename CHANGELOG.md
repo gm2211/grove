@@ -4,6 +4,12 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Every worker runs the credential broker.** Approving a Mac's `grove setup` now also issues it
+  a credential with only the `broker` scope, named after the worker. Setup keeps it in Keychain
+  and loads a `com.grove.broker` LaunchAgent running `grove broker`, which reads it from there.
+  Rerunning setup replaces it and revokes the old one. `grove doctor` gets a `broker` row, and the
+  broker's `/healthz` now says whether its last sync worked.
+
 - **Jobs can carry credentials they never see.** `JobRequest.credentials` (`kind`, `env`, `token`)
   gives the job a `gph1_…` placeholder under `env`, keeps the token in the control plane's
   memory only, and serves it to the broker on the worker the job lands on, until the job ends.

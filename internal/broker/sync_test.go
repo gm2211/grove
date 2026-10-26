@@ -26,10 +26,13 @@ func TestSyncer(t *testing.T) {
 	}
 	ctx := context.Background()
 
+	if s.Synced() {
+		t.Fatal("Synced before any sync")
+	}
 	next = []Entry{e}
 	s.Sync(ctx)
-	if store.Len() != 1 || fetches != 1 {
-		t.Fatalf("Len %d, fetches %d", store.Len(), fetches)
+	if store.Len() != 1 || fetches != 1 || !s.Synced() {
+		t.Fatalf("Len %d, fetches %d, synced %v", store.Len(), fetches, s.Synced())
 	}
 	// A job asking about unknown placeholders in a loop costs at most one fetch per two seconds.
 	for i := 0; i < 10; i++ {
@@ -45,6 +48,9 @@ func TestSyncer(t *testing.T) {
 	s.Sync(ctx)
 	if store.Len() != 1 {
 		t.Fatal("failed sync dropped live entries")
+	}
+	if s.Synced() {
+		t.Fatal("Synced after a failed sync")
 	}
 	now = now.Add(Lease)
 	s.Sync(ctx)

@@ -387,7 +387,7 @@ func TestProxyTunnelsOnlyToPublicAddresses(t *testing.T) {
 }
 
 func TestProxyLocalEndpoints(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness(t, func(h *harness) { h.proxy.Synced = func() bool { return true } })
 	resp, err := http.Get("http://" + h.addr + "/ca.pem")
 	if err != nil {
 		t.Fatal(err)
@@ -404,10 +404,11 @@ func TestProxyLocalEndpoints(t *testing.T) {
 	var health struct {
 		OK      bool `json:"ok"`
 		Entries int  `json:"entries"`
+		Synced  bool `json:"synced"`
 	}
 	json.NewDecoder(resp.Body).Decode(&health)
 	resp.Body.Close()
-	if !health.OK || health.Entries != 1 {
+	if !health.OK || health.Entries != 1 || !health.Synced {
 		t.Fatalf("healthz = %+v", health)
 	}
 }

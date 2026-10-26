@@ -29,6 +29,10 @@ type Options struct {
 	NomadAddr  string // Nomad HTTP API URL
 	ServerURL  string // grove server URL (client role, and recorded on control-plane/worker too)
 	Token      string // bootstrap / server token, meaning depends on Role
+	// BrokerToken is a worker's broker credential (only the broker scope, named after the
+	// worker), from `grove setup`. Install keeps it in Keychain for `grove broker`; it never
+	// appears in arguments, LaunchAgent files or the plan's output.
+	BrokerToken string
 
 	// Registry/RegistryUser/RegistryToken configure `tart login` for a worker's private image
 	// pulls (see docs/IMAGES.md "Pushing to GHCR": ghcr.io packages are private by default, and

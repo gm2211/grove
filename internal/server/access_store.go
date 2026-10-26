@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -245,19 +246,20 @@ func (s *AccessStore) Revoke(id string) error {
 }
 
 // RevokeSuperseded revokes every other active join credential named name, once the device holding
-// keep has finished enrolling. Re-running `grove setup` on a Mac replaces the token in its
-// Keychain, so the earlier credentials are no longer held by anything legitimate. Credentials made
+// the keep credentials (its client and broker credentials) has finished enrolling. Re-running
+// `grove setup` on a Mac replaces the tokens in its Keychain, so the earlier credentials are no
+// longer held by anything legitimate. Credentials made
 // before Source existed count as join credentials when their scopes are ones join hands out (read
 // and dispatch kinds, never shell or operator). Operator-issued credentials are never touched.
 // It returns the IDs it revoked.
-func (s *AccessStore) RevokeSuperseded(name, keep string) ([]string, error) {
+func (s *AccessStore) RevokeSuperseded(name string, keep ...string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now().UTC()
 	var revoked []string
 	originals := map[string]accessRecord{}
 	for id, record := range s.credentials {
-		if id == keep || record.Name != name || record.RevokedAt != nil || !supersededByJoin(record) {
+		if slices.Contains(keep, id) || record.Name != name || record.RevokedAt != nil || !supersededByJoin(record) {
 			continue
 		}
 		originals[id] = record

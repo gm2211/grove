@@ -34,7 +34,10 @@ type joinStart struct {
 }
 type joinResult struct {
 	Status, ControllerURL, BootstrapToken, ServerURL, ClientToken, DeviceID string
-	WorkerOnline                                                            bool `json:"workerOnline"`
+	// BrokerToken is this worker's broker credential. A control plane from before the broker
+	// sends none.
+	BrokerToken  string
+	WorkerOnline bool `json:"workerOnline"`
 }
 
 var joinHTTPClient = &http.Client{Timeout: 10 * time.Second}
@@ -93,8 +96,11 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	}
 	opts := install.Options{
 		Role: install.RoleWorker, Controller: result.ControllerURL, ServerURL: result.ServerURL,
-		Token: result.BootstrapToken, RegistryUser: setupRegistryUser,
+		Token: result.BootstrapToken, BrokerToken: result.BrokerToken, RegistryUser: setupRegistryUser,
 		RegistryToken: os.Getenv("GROVE_REGISTRY_TOKEN"),
+	}
+	if result.BrokerToken == "" {
+		fmt.Fprintln(cmd.ErrOrStderr(), "warning: the control plane sent no broker credential, so jobs on this Mac can't use credentials yet. Update Grove on the control plane, then run `grove setup` here again.")
 	}
 	if err := applyInstall(cmd, opts, false, false); err != nil {
 		return err

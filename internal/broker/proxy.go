@@ -41,7 +41,8 @@ const (
 //   - Any other CONNECT is a plain byte tunnel, but only to a public address (Dialer).
 //   - A plain-HTTP request is forwarded to a public address with nothing injected; plain HTTP to an
 //     inject host is refused.
-//   - GET /ca.pem serves the CA certificate, GET /healthz reports the entry count.
+//   - GET /ca.pem serves the CA certificate, GET /healthz reports the entry count and whether
+//     the latest sync worked.
 type Proxy struct {
 	Store  *Store
 	CA     *CA
@@ -50,6 +51,9 @@ type Proxy struct {
 	// lookup tried once more: a job can start using its placeholder before the next scheduled sync.
 	// It should rate-limit itself.
 	Resync func(ctx context.Context)
+	// Synced, when set, reports whether the broker's latest sync with the control plane worked;
+	// GET /healthz shows it, so `grove doctor` can tell a broker that can't sync.
+	Synced func() bool
 	// Upstream sends intercepted and plain-HTTP requests; nil means a transport dialing through
 	// Dialer with the system's roots. Tests replace it.
 	Upstream          http.RoundTripper
@@ -127,7 +131,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Write(p.CA.CertPEM())
 	case r.URL.Path == "/healthz" && r.Method == http.MethodGet:
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"ok": true, "entries": p.Store.Len()})
+		health := map[string]any{"ok": true, "entries": p.Store.Len()}
+		if p.Synced != nil {
+			health["synced"] = p.Synced()
+		}
+		json.NewEncoder(w).Encode(health)
 	default:
 		http.NotFound(w, r)
 	}

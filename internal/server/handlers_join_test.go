@@ -88,8 +88,14 @@ func TestJoinRequiresOperatorApprovalAndDeliversCredentialOnce(t *testing.T) {
 	if !active(earlier.ID) {
 		t.Fatal("the Mac's earlier credential must stay valid until the new enrollment finishes")
 	}
-	var delivered struct{ DeviceID string }
+	var delivered struct{ DeviceID, BrokerDeviceID, BrokerToken string }
 	_ = json.Unmarshal(got.Body.Bytes(), &delivered)
+	if delivered.BrokerToken == "" || delivered.BrokerDeviceID == "" {
+		t.Fatalf("missing broker credential: %s", got.Body.String())
+	}
+	if p, ok := access.Authenticate(delivered.BrokerToken); !ok || p.Name != "new-mac" || len(p.Scopes) != 1 || p.Scopes[0] != ScopeBroker {
+		t.Fatalf("broker credential = %+v, want only the broker scope, named after the worker", p)
+	}
 	oc.workers = []orchard.Worker{{Name: "new-mac", Offline: false, LastSeen: time.Now().Add(time.Second)}}
 	if online := pollVerify(); online.Code != http.StatusOK || !bytes.Contains(online.Body.Bytes(), []byte(`"workerOnline":true`)) {
 		t.Fatalf("online status=%d %s", online.Code, online.Body.String())
@@ -97,8 +103,8 @@ func TestJoinRequiresOperatorApprovalAndDeliversCredentialOnce(t *testing.T) {
 	if active(earlier.ID) {
 		t.Error("the Mac's earlier join credential should be revoked once the new one is enrolled")
 	}
-	if !active(delivered.DeviceID) {
-		t.Error("the newly delivered credential must stay active")
+	if !active(delivered.DeviceID) || !active(delivered.BrokerDeviceID) {
+		t.Error("the newly delivered credentials must stay active")
 	}
 	if !active(shellSameName.ID) || !active(otherDevice.ID) {
 		t.Error("operator-issued credentials (shell scope, other names) must never be revoked by a join")

@@ -23,9 +23,17 @@ type Syncer struct {
 	Interval time.Duration
 	Log      *slog.Logger
 
-	mu   sync.Mutex
-	last time.Time
-	now  func() time.Time
+	mu     sync.Mutex
+	last   time.Time
+	synced bool
+	now    func() time.Time
+}
+
+// Synced reports whether the latest sync with the control plane succeeded.
+func (s *Syncer) Synced() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.synced
 }
 
 // Run syncs now and then every Interval until ctx is done. A failed sync keeps the entries the
@@ -68,6 +76,7 @@ func (s *Syncer) Sync(ctx context.Context) {
 	// Measure the gap from the end of this fetch, so requests that queued behind a slow one
 	// don't each fetch again.
 	s.last = now()
+	s.synced = false
 	if err != nil {
 		log.Warn("broker: sync with the control plane failed; keeping current entries until their leases end", "err", err, "entries", s.Store.Len())
 		return
@@ -76,5 +85,6 @@ func (s *Syncer) Sync(ctx context.Context) {
 		log.Error("broker: control plane sent entries the broker refuses; keeping current ones", "err", err)
 		return
 	}
+	s.synced = true
 	log.Debug("broker: synced", "entries", len(entries))
 }
