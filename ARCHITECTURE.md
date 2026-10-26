@@ -175,7 +175,7 @@ reaches, LAN and tailnet included) or `isolated`. On a shared pool only the gues
 client and Tailscale use that reach: a firewall in the guest (`homeFenceScript`, DOCKER-USER on
 Linux, a pf anchor on the job user on macOS) gives jobs the public internet and nothing at home,
 no private, tailnet or link-local address, with no opt-out. The one exception is TCP to the DHCP
-default gateway's port 3128 (`fleet.BrokerPort`), the host Mac's credential broker, which listens
+default gateway's port 3128 (`broker.Port`), the host Mac's credential broker, which listens
 only there; nothing else on the host is reachable. That includes DNS: the guest's
 DHCP resolver is its host Mac, so job containers get public resolvers (`dns_servers` in
 `nomad/jobs`) and a macOS guest resolves through them VM-wide. No job gets the VM's docker socket,

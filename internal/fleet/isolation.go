@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/gm2211/grove/internal/broker"
 	"github.com/gm2211/grove/internal/orchard"
 )
 
@@ -25,13 +26,6 @@ const softnetBlockHost = "out @host"
 // softnetBlockHost applies, and on a shared guest a host service no job should reach. nomad/jobs'
 // dns_servers name the same two for job containers.
 var isolatedDNSServers = []string{"1.1.1.1", "8.8.8.8"}
-
-// BrokerPort is the one port on its host Mac a shared VM's jobs may reach: the per-Mac credential
-// broker, which listens only on the VM gateway's address. The guest fences let job traffic
-// through to the default gateway the guest learned from DHCP on this TCP port and nothing else on
-// the host, the LAN or the tailnet. A sealed VM's Softnet fence can't filter by port, so a sealed
-// VM reaches no host port at all, the broker's included.
-const BrokerPort = 3128
 
 // Isolated reports whether p asks for network isolation (Pool.Network "isolated").
 func (p Pool) Isolated() bool { return p.Network == NetworkIsolated }
@@ -265,7 +259,9 @@ func homeFenceScript(pool Pool) string {
 }
 
 // sharedEgressFenceScript is egressFenceScript for a shared pool, with one exception ahead of the
-// rejects: TCP to the default gateway's BrokerPort, the host's credential broker. The gateway is
+// rejects: TCP to the default gateway's broker.Port, the host's credential broker, which listens
+// only there. A sealed VM's Softnet fence can't filter by port, so a sealed VM reaches no host
+// port at all, the broker's included. The gateway is
 // read every time the fence runs (it is whatever DHCP handed out this boot); with no IPv4 default
 // route there is no exception, and jobs simply can't reach the broker. A shared guest's resolver
 // is usually its host Mac too, and there is no exception for it: job containers get public
@@ -280,7 +276,7 @@ func sharedEgressFenceScript() string {
 var linuxBrokerException = `grove_gateway=$(ip -4 route show default 2>/dev/null | awk '$1 == "default" && $2 == "via" { print $3; exit }')
 case "$grove_gateway" in
   "" | *[!0-9.]*) ;;
-  *) iptables -w -A GROVE-EGRESS -d "$grove_gateway/32" -p tcp --dport ` + fmt.Sprint(BrokerPort) + ` -j RETURN ;;
+  *) iptables -w -A GROVE-EGRESS -d "$grove_gateway/32" -p tcp --dport ` + fmt.Sprint(broker.Port) + ` -j RETURN ;;
 esac
 `
 
@@ -357,7 +353,7 @@ fi
 // LaunchDaemon reruns it at every boot.
 //
 // Ahead of the fence it lets the job user, and only the job user, reach the default gateway's
-// BrokerPort: the host's credential broker. The gateway is read when the anchor loads (at boot it
+// broker.Port: the host's credential broker. The gateway is read when the anchor loads (at boot it
 // waits up to a minute for DHCP); with none there is no exception, and jobs can't reach the broker.
 var macosHomeFenceLoader = `#!/bin/sh
 # Installed by grove's fleet startup script for the macos pool.
@@ -377,7 +373,7 @@ done
 pfctl -q -f /etc/pf.conf
 {
   if [ -n "$grove_gateway" ]; then
-    printf 'pass out quick proto tcp from any to %s port ` + fmt.Sprint(BrokerPort) + ` user ` + MacOSJobUser + `\n' "$grove_gateway"
+    printf 'pass out quick proto tcp from any to %s port ` + fmt.Sprint(broker.Port) + ` user ` + MacOSJobUser + `\n' "$grove_gateway"
   fi
   cat /usr/local/etc/grove/pf-jobs.conf
 } | pfctl -q -a com.apple/grove-jobs -f -
