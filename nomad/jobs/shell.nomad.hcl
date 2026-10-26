@@ -45,6 +45,10 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         image   = "{{.RunnerImage}}"
         command = "/bin/bash"
         args    = ["${NOMAD_TASK_DIR}/run.sh"]
+
+        # Public resolvers, never the VM's own: a shared VM's resolver is its host Mac, and the
+        # egress fence lets a container reach no private address at all.
+        dns_servers = ["1.1.1.1", "8.8.8.8"]
         # Never the VM's docker socket: it would give the job root on the guest, past the fence
         # that keeps jobs off home networks. So a NOMAD_META_image override is ignored.
       }

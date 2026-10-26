@@ -130,6 +130,11 @@ func TestSpecValidate_HostXcodePath(t *testing.T) {
 		{name: "comma", path: "/Applications/Xcode,27.app"},
 		{name: "control", path: "/Applications/Xcode\x7f.app"},
 		{name: "newline", path: "/Applications/Xcode\n.app"},
+		// Shared with every guest: only an application bundle, never a home or system directory.
+		{name: "home", path: "/Users/giulio/Xcode.app"},
+		{name: "nested", path: "/Applications/Tools/Xcode.app"},
+		{name: "root", path: "/Xcode.app"},
+		{name: "bare suffix", path: "/Applications/.app"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

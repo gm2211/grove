@@ -739,3 +739,26 @@ func TestSandboxTemplate_MacOS(t *testing.T) {
 		t.Errorf("a Linux pool's sandbox job passes --os:\n%s", linux)
 	}
 }
+
+// A shared VM's resolver is its host Mac, which the egress fence no longer lets containers reach:
+// every job container must be pointed at public resolvers instead.
+func TestDockerTasksUsePublicResolvers(t *testing.T) {
+	for kind, file := range map[string]string{"build": "build.nomad.hcl", "agent": "agent.nomad.hcl", "shell": "shell.nomad.hcl"} {
+		job, err := jobspec2.ParseWithConfig(&jobspec2.ParseConfig{
+			Path: "job.hcl",
+			Body: []byte(render(t, file, renderData{Kind: kind, Pool: "linux"})),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, task := range job.TaskGroups[0].Tasks {
+			if task.Driver != "docker" {
+				continue
+			}
+			got, _ := task.Config["dns_servers"].([]interface{})
+			if len(got) != 2 || got[0] != "1.1.1.1" || got[1] != "8.8.8.8" {
+				t.Errorf("%s task %s: dns_servers = %v, want the public resolvers", kind, task.Name, task.Config["dns_servers"])
+			}
+		}
+	}
+}
