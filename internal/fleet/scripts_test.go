@@ -700,15 +700,25 @@ func TestBuildStartupScript_FencesJobsOffHomeNetworks(t *testing.T) {
 		t.Errorf("macOS fence must match the job user, cover tailnet IPv6 and reload at boot:\n%s", mac)
 	}
 	linux := homeFenceScript(Pool{Name: "linux"})
-	if !strings.Contains(linux, "DOCKER-USER") || !strings.Contains(linux, "--dport 53") || !strings.Contains(linux, "ExecStartPre=/usr/local/sbin/grove-egress-fence") {
-		t.Errorf("Linux fence must sit in DOCKER-USER, keep DNS and rerun before Docker starts:\n%s", linux)
+	if !strings.Contains(linux, "DOCKER-USER") || !strings.Contains(linux, "ExecStartPre=/usr/local/sbin/grove-egress-fence") {
+		t.Errorf("Linux fence must sit in DOCKER-USER and rerun before Docker starts:\n%s", linux)
+	}
+	// The guest's resolver is its host Mac: no job may reach it, DNS included.
+	if strings.Contains(linux, "--dport 53") || strings.Contains(mac, "port 53") {
+		t.Errorf("the fences must not let jobs reach the host's DNS:\n%s\n%s", linux, mac)
+	}
+	if !strings.Contains(mac, "networksetup -setdnsservers \"$grove_dns_service\" 1.1.1.1 8.8.8.8") {
+		t.Errorf("a shared macOS guest must resolve through public resolvers:\n%s", mac)
+	}
+	if i, j := strings.Index(mac, "networksetup -setdnsservers"), strings.Index(mac, "pfctl"); i < 0 || j < 0 || i > j {
+		t.Errorf("DNS must move off the host before the fence goes up:\n%s", mac)
 	}
 	if sealed := buildStartupScript(Pool{Name: "linux", Network: NetworkIsolated}, "mac1", "linux-mac1-0", Options{}); strings.Contains(sealed, "jobs reach the internet, not home") || strings.Contains(sealed, "--dport 53") {
 		t.Error("sealed pools keep their own fence unchanged")
 	}
 }
 
-// The Linux fence script itself must run: shell syntax, and DNS allowed before the rejects.
+// The Linux fence script itself must run: shell syntax, and no DNS exception ahead of the rejects.
 func TestSharedEgressFenceScript_Runs(t *testing.T) {
 	fakeBin := t.TempDir()
 	log := filepath.Join(t.TempDir(), "iptables.log")
@@ -726,7 +736,7 @@ func TestSharedEgressFenceScript_Runs(t *testing.T) {
 	if rejectAt < 0 {
 		t.Fatalf("tailnet not rejected:\n%s", got)
 	}
-	if dnsAt := strings.Index(string(got), "--dport 53"); dnsAt > rejectAt {
-		t.Fatalf("DNS allowance must come before the rejects:\n%s", got)
+	if strings.Contains(string(got), "--dport 53") || strings.Contains(string(got), "-d 192.168.64.1") {
+		t.Fatalf("no private resolver may be let through:\n%s", got)
 	}
 }

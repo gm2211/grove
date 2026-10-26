@@ -122,6 +122,11 @@ func validateHostXcode(config HostXcodeConfig) error {
 	if filepath.Ext(config.Path) != ".app" {
 		return fmt.Errorf("hostXcode.path must end in .app")
 	}
+	// The worker shares whatever directory this names with every guest of the pool: keep it to an
+	// application bundle, never a home directory or anything else that could hold host secrets.
+	if filepath.Dir(config.Path) != "/Applications" || len(config.Path) <= len("/Applications/.app") {
+		return fmt.Errorf("hostXcode.path must be an .app directly under /Applications")
+	}
 	for _, r := range config.Path {
 		if r == ':' || r == ',' || unicode.IsControl(r) {
 			return fmt.Errorf("hostXcode.path must not contain colons, commas, or control characters")

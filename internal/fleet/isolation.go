@@ -21,8 +21,9 @@ const (
 // each job. Directional rules need softnet 0.22.0 or newer.
 const softnetBlockHost = "out @host"
 
-// isolatedDNSServers replace the DHCP-provided resolver, which is the host Mac and therefore
-// unreachable once softnetBlockHost applies.
+// isolatedDNSServers replace the DHCP-provided resolver, which is the host Mac: unreachable once
+// softnetBlockHost applies, and on a shared guest a host service no job should reach. nomad/jobs'
+// dns_servers name the same two for job containers.
 var isolatedDNSServers = []string{"1.1.1.1", "8.8.8.8"}
 
 // Isolated reports whether p asks for network isolation (Pool.Network "isolated").
@@ -66,7 +67,7 @@ func sealedStartupScript(pool Pool) string {
 func sealedMacOSStartupScript() string {
 	return strings.NewReplacer(
 		"@GROVE_PRIV@", strings.TrimSuffix(grovePrivFunc, "\n"),
-		"@DNS_SERVERS@", strings.Join(isolatedDNSServers, " "),
+		"@PUBLIC_DNS@", strings.TrimSuffix(macosPublicDNSScript, "\n"),
 		"@JOB_USER@", strings.TrimSuffix(macosJobUserScript, "\n"),
 	).Replace(sealedMacOSStartupScriptTemplate)
 }
@@ -185,16 +186,8 @@ grove_priv pkill -x nomad >/dev/null 2>&1 || true
 grove_priv pkill -x tailscaled >/dev/null 2>&1 || true
 grove_priv rm -f ` + SealedDrainingMarkerMacOS + `
 
-# DHCP names the host Mac as the DNS server, and Softnet blocks the host. Every network service
-# (the first line of the listing is a legend; a leading * marks a disabled service) gets the
-# public resolvers.
-grove_dns_services=$(networksetup -listallnetworkservices | sed -e 1d -e 's/^\*//')
-printf '%s\n' "$grove_dns_services" | while IFS= read -r grove_dns_service; do
-  [ -n "$grove_dns_service" ] || continue
-  grove_priv networksetup -setdnsservers "$grove_dns_service" @DNS_SERVERS@
-done
-grove_priv dscacheutil -flushcache >/dev/null 2>&1 || true
-grove_priv killall -HUP mDNSResponder >/dev/null 2>&1 || true
+# DHCP names the host Mac as the DNS server, and Softnet blocks the host.
+@PUBLIC_DNS@
 
 @JOB_USER@
 `
@@ -243,12 +236,13 @@ ExecStartPre=/usr/local/sbin/grove-egress-fence
 // they reach the public internet, but not private, tailnet (CGNAT) or link-local addresses, so not
 // the LAN, the host Mac, the control plane or any tailnet device. It filters only job traffic: the
 // VM's own Nomad client and Tailscale are untouched. On Linux jobs are containers, fenced in
-// DOCKER-USER exactly as a sealed guest's are, except that DNS to the guest's own resolvers stays
-// open (a shared guest's resolver is often its host). On macOS jobs are processes of the job user,
-// fenced by a pf anchor matching that user.
+// DOCKER-USER exactly as a sealed guest's are, and resolve through public resolvers (dns_servers in
+// nomad/jobs). On macOS jobs are processes of the job user, fenced by a pf anchor matching that
+// user, and the guest resolves through public resolvers.
 func homeFenceScript(pool Pool) string {
 	if pool.MacOS() {
 		return strings.NewReplacer(
+			"@PUBLIC_DNS@", strings.TrimSuffix(macosPublicDNSScript, "\n"),
 			"@PF_RULES@", strings.TrimSuffix(macosHomeFenceRules, "\n"),
 			"@PF_LOADER@", strings.TrimSuffix(macosHomeFenceLoader, "\n"),
 			"@SOURCE_USER@", strings.TrimSuffix(macosSourceUserScript, "\n"),
@@ -260,22 +254,11 @@ func homeFenceScript(pool Pool) string {
 	).Replace(linuxHomeFenceTemplate)
 }
 
-// homeFenceCIDRs are the destinations no job may reach.
-const homeFenceCIDRs = "10.0.0.0/8 100.64.0.0/10 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16"
-
-// sharedEgressFenceScript is egressFenceScript with DNS to the guest's resolvers let through ahead
-// of the rejects.
+// sharedEgressFenceScript is egressFenceScript for a shared pool. A shared guest's resolver is
+// usually its host Mac, the one host service the fence would otherwise leave reachable, so there is
+// no exception for it: job containers get public resolvers instead (dns_servers in nomad/jobs).
 func sharedEgressFenceScript() string {
-	const rejects = "for grove_cidr in 10.0.0.0/8 100.64.0.0/10 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16; do\n"
-	dns := `# A shared guest's resolver is usually its host Mac (or Tailscale's 100.100.100.100), which the
-# rejects below would cut off; containers may still ask it, on port 53 only.
-for grove_ns in $(awk '$1 == "nameserver" && $2 !~ /:/ { print $2 }' /etc/resolv.conf 2>/dev/null); do
-  iptables -w -A GROVE-EGRESS -d "$grove_ns" -p udp --dport 53 -j RETURN
-  iptables -w -A GROVE-EGRESS -d "$grove_ns" -p tcp --dport 53 -j RETURN
-done
-`
-	s := strings.Replace(egressFenceScript, rejects, dns+"for grove_cidr in "+homeFenceCIDRs+"; do\n", 1)
-	return strings.Replace(s, "for pools with network: isolated", "for shared pools", 1)
+	return strings.Replace(egressFenceScript, "for pools with network: isolated", "for shared pools", 1)
 }
 
 const sharedEgressFenceDropIn = `# Installed by grove's fleet startup script for shared pools.
@@ -302,11 +285,23 @@ GROVE_EGRESS_FENCE_NOW
 `
 
 // macosHomeFenceRules is the pf anchor that fences the job user. pf can match a socket's owner
-// only for TCP and UDP, which is all a job can open without root. DNS (port 53) stays open, since
-// the guest's resolver is usually its host.
+// only for TCP and UDP, which is all a job can open without root. There is no DNS exception: the
+// guest resolves through public resolvers (macosPublicDNSScript), never its host Mac.
 const macosHomeFenceRules = `grove_home = "{ 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, fc00::/7, fe80::/10 }"
-pass out quick proto { tcp, udp } from any to $grove_home port 53 user { ` + MacOSJobUser + `, ` + MacOSSourceUser + ` }
 block return out quick proto { tcp, udp } from any to $grove_home user { ` + MacOSJobUser + `, ` + MacOSSourceUser + ` }
+`
+
+// macosPublicDNSScript points every network service of a macOS guest at isolatedDNSServers instead
+// of the DHCP-provided resolver, which is the host Mac. A job's lookups go through mDNSResponder
+// (root, so past the pf fence), which would otherwise relay them to the host. The first line of
+// the listing is a legend; a leading * marks a disabled service.
+var macosPublicDNSScript = `grove_dns_services=$(networksetup -listallnetworkservices | sed -e 1d -e 's/^\*//')
+printf '%s\n' "$grove_dns_services" | while IFS= read -r grove_dns_service; do
+  [ -n "$grove_dns_service" ] || continue
+  grove_priv networksetup -setdnsservers "$grove_dns_service" ` + strings.Join(isolatedDNSServers, " ") + `
+done
+grove_priv dscacheutil -flushcache >/dev/null 2>&1 || true
+grove_priv killall -HUP mDNSResponder >/dev/null 2>&1 || true
 `
 
 // MacOSSourceUser is the unprivileged account a macOS job's "source" task runs git as
@@ -349,7 +344,8 @@ pfctl -s info 2>/dev/null | grep -q 'Status: Enabled'
 const macosHomeFenceTemplate = `# --- jobs reach the internet, not home ---
 # Processes of the job user, and of the user each job's clone runs as, may not open connections to
 # private, tailnet or link-local addresses; this VM's own Nomad client and Tailscale are not
-# affected.
+# affected. Name lookups go to public resolvers, not the host Mac.
+@PUBLIC_DNS@
 @SOURCE_USER@
 grove_priv mkdir -p /usr/local/etc/grove /usr/local/sbin
 grove_priv tee /usr/local/etc/grove/pf-jobs.conf >/dev/null <<'GROVE_PF_JOBS'
