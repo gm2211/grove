@@ -425,10 +425,12 @@ subcommands, or `GET /api/v1/jobs/{id}/logs?follow=1`.
 - **grove CLI**: re-run `scripts/install.sh` (or `brew upgrade grove` on macOS), then re-run
   `grove install --role <role>` to pick up any new config/unit templates — it's idempotent, so
   already-correct steps are skipped.
-- **Orchard on workers** is built from source at `OrchardForkCommit` (`internal/install/download.go`),
-  fetched by SHA, never from the tip of gm2211/orchard's main. The bundle records the commit it
-  was built from (`Contents/Resources/grove-orchard-commit`). When the pin moves, `grove install
-  --role worker` rebuilds and restarts the worker. To move it, merge to the fork, then bump the
+- **Orchard** (the control plane's controller and every worker) is built from source at
+  `OrchardForkCommit` (`internal/install/download.go`), fetched by SHA, never from the tip of
+  gm2211/orchard's main. Each build records its commit: the worker bundle in
+  `Contents/Resources/grove-orchard-commit`, the controller's binary in `orchard.grove-commit`
+  beside it. When the pin moves, `grove install --role control-plane` / `--role worker` rebuilds
+  and restarts the controller / worker. To move it, merge to the fork, then bump the
   constant here in a reviewed PR.
 - **Orchard / Nomad**: `grove install` re-checks each binary; bump the version pin (and
   every per-platform SHA-256 beside it, in `internal/install/download.go`) in this
