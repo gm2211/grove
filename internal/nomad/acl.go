@@ -11,19 +11,21 @@ import (
 )
 
 // NodeTokenPolicy is the Nomad ACL policy every per-VM node token carries: enough for a VM's
-// shutdown script to find its own node ID (`-self` reads /v1/agent/self, agent:read), drain it
-// (node:write) and watch the drain finish (node:read), and nothing else. It grants no namespace
-// capability, so a node token can't read job specs, dispatch payloads, logs or other allocations'
-// files.
-const NodeTokenPolicy = "grove-node"
+// shutdown script to find its own node (`-self` reads /v1/agent/self, agent:read) and watch its
+// allocations finish (node:read), and nothing else. Draining is the control plane's job (see
+// fleet.Reconciler), so a VM can't drain, mark ineligible or purge any node, its own included; and
+// with no namespace capability a node token can't read job specs, dispatch payloads, logs or other
+// allocations' files. The name changed when node:write was dropped, so tokens minted under the
+// old "grove-node" policy keep working until their VMs are recycled.
+const NodeTokenPolicy = "grove-node-read"
 
 // NodeTokenPrefix starts the Name of every token grove mints for a VM, so ListNodeTokens can tell
 // them apart from operator-made tokens and never revokes anything else.
 const NodeTokenPrefix = "grove-vm/"
 
-const nodeTokenPolicyRules = `# Managed by grove: lets a VM drain its own Nomad client on recycle.
+const nodeTokenPolicyRules = `# Managed by grove: lets a VM watch its own Nomad client drain on recycle.
 node {
-  policy = "write"
+  policy = "read"
 }
 
 agent {
@@ -65,7 +67,7 @@ func (c *client) CreateNodeToken(ctx context.Context, vmName string) (NodeToken,
 	}
 	if _, err := c.raw.ACLPolicies().Upsert(&nomadapi.ACLPolicy{
 		Name:        NodeTokenPolicy,
-		Description: "grove: a VM drains its own Nomad client on recycle",
+		Description: "grove: a VM watches its own Nomad client drain on recycle",
 		Rules:       nodeTokenPolicyRules,
 	}, wOpts(ctx)); err != nil {
 		return NodeToken{}, fmt.Errorf("nomad: upsert ACL policy %s: %w", NodeTokenPolicy, wrapDenied(err))

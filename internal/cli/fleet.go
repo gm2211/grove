@@ -259,6 +259,8 @@ func fleetOptions(cfg *config.Config) (fleet.Options, error) {
 			return fleet.Options{}, fmt.Errorf("nomad client cannot mint node tokens")
 		}
 		options.NodeTokens = tokens
+		// A VM's own token is read-only, so the control plane drains its node.
+		options.NodeDrainer = client
 		// Nomad over mutual TLS (config.yaml names a node certificate): every VM's startup script
 		// gets the CA, and the reconciler enrols each VM once it is up, with a certificate of its
 		// own signed by grove's CA and an introduction token bound to its name and pool, without

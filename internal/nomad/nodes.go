@@ -17,6 +17,8 @@ type NodeSummary struct {
 	// NodePool is the pool the node registered in. Under strict client introduction that is the
 	// pool its introduction token was bound to, not something the node chose.
 	NodePool string
+	// Eligible is false for a node the scheduler places nothing on (drained, or marked so).
+	Eligible bool
 }
 
 // NodePurger finds and removes Nomad client nodes. Every recycled or restarted VM boots a fresh
@@ -47,7 +49,8 @@ func (c *client) ListNodeSummaries(ctx context.Context) ([]NodeSummary, error) {
 		if s == nil {
 			continue
 		}
-		out = append(out, NodeSummary{ID: s.ID, Name: s.Name, Status: s.Status, NodePool: s.NodePool})
+		out = append(out, NodeSummary{ID: s.ID, Name: s.Name, Status: s.Status, NodePool: s.NodePool,
+			Eligible: s.SchedulingEligibility == nomadapi.NodeSchedulingEligible})
 	}
 	return out, nil
 }
@@ -62,6 +65,11 @@ func (c *client) PurgeNode(ctx context.Context, nodeID string) error {
 	}
 	return nil
 }
+
+// SandboxHostNodeName is the Nomad node name of the control plane's own client, the one that runs
+// `grove sandbox run` for sealed pools (see internal/install). Its introduction token is bound to
+// this name, and the roll call leaves it alone.
+const SandboxHostNodeName = "grove-sandbox-host"
 
 // NodePools creates Nomad node pools. Each shared fleet pool registers its VMs in a node pool of
 // its own name (the introduction token binds a VM to it), and grove's jobs for that pool name it,

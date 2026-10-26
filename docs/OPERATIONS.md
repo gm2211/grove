@@ -6,16 +6,18 @@ Nothing long-lived is cleaned in place — it's replaced. See ARCHITECTURE.md's 
 hygiene" section for the full mechanism; the short version:
 
 1. Every worker VM has an Orchard **TTL** (fork feature, e.g. `ttl: 12h` in `fleet.yaml`).
-2. When it expires, Orchard deletes the VM, running its **ShutdownScript** (fork feature) inside
-   the guest first: `nomad node drain -self -enable -deadline 2h`, then it waits for zero
-   allocations before letting the delete proceed. The guest drains itself — Orchard never learns
-   Nomad exists, and Nomad never learns about VM lifecycle.
+2. A couple of minutes before it expires, grove's reconciler drains the VM's Nomad node (2h
+   deadline), so no new job lands on it. At expiry Orchard deletes the VM, running its
+   **ShutdownScript** (fork feature) inside the guest first, which waits for zero allocations
+   before letting the delete proceed. With Nomad ACLs on, the VM's own token is read-only, so it
+   can't drain itself (or any other node); without ACLs the script still runs
+   `nomad node drain -self` itself. Orchard never learns Nomad exists.
 3. grove's fleet reconciler notices the VM is gone (or spec drifted) and recreates it from the
    pool's `image`.
 
 To force a recycle right now (bad VM, want fresh image): `POST /api/v1/vms/{name}/recycle` (drains
-via Nomad, then deletes; the reconciler recreates it), or just `orchard delete <name>` directly if
-you don't need the graceful drain.
+via Nomad, then deletes; the reconciler recreates it). `orchard delete <name>` directly skips that
+drain; the roll call (below) then drains the node within a tick, since its VM is gone.
 
 ## Nomad ACLs and node tokens
 
@@ -28,10 +30,14 @@ hand, set the existing management token with `grove config set nomad.token <secr
 
 With `nomad.token` set, the fleet reconciler also gives each VM it creates:
 
-- **its own node token** (Nomad policy `grove-node`: `node` write and `agent` read, no namespace access, named
-  `grove-vm/<vm>`). It sits only in the VM's shutdown script environment, never on the VM's disk,
-  so `nomad node drain -self` works on recycle and jobs never see it. The reconciler revokes a
-  VM's token once Orchard has actually removed the VM (`nomad acl token list` shows the live ones).
+- **its own node token** (Nomad policy `grove-node-read`: `node` and `agent` read, nothing
+  writable, no namespace access, named `grove-vm/<vm>`). It sits only in the VM's shutdown script
+  environment, never on the VM's disk, so the script can watch its allocations finish and jobs
+  never see it. Draining is the control plane's job: grove drains a VM's node before it deletes
+  the VM and before its TTL, so a VM can't drain, mark ineligible or purge any node, its own
+  included. Tokens minted under the old `grove-node` policy (node write) keep working until their
+  VMs are recycled; the upgrade recreates them all. The reconciler revokes a VM's token once
+  Orchard has removed the VM (`nomad acl token list` shows the live ones).
 - **ACL enforcement in the VM's own Nomad client**, so a job can't read other allocations' files
   or logs through `127.0.0.1:4646`.
 
@@ -88,6 +94,23 @@ Enrolment state lives in `grove serve`'s memory: after a restart it simply enrol
 which renews its certificate. `grove fleet apply` creates VMs but doesn't enrol them; the running
 `grove serve` does, within a tick. A VM that is never enrolled fails its startup script after 30
 minutes, and Orchard's restarts then hand it to the reconciler's boot-loop rebuild.
+
+Every tick, `grove serve` also takes a **roll call** of Nomad's live, eligible nodes against
+Orchard's VMs, the one record of what grove created (the control plane's `grove-sandbox-host` is
+left alone):
+
+| Finding | What grove does |
+| --- | --- |
+| a node whose name is no VM in Orchard (a copied identity, or a VM deleted behind grove's back) | drains it |
+| two or more nodes claim one VM | drains them all and deletes the VM, so it is rebuilt with a fresh identity |
+| a node outside its pool's node pool | drains it and deletes the VM |
+
+A drained node stays ineligible for good, across restarts and re-registrations: Nomad never
+places another job there. A purge would not do: a live node comes straight back, within seconds,
+on the identity it holds (`internal/install/nomadtls_integration_test.go` shows both). Its running
+jobs keep the usual 2-hour drain deadline, so a VM deleted with `orchard delete` doesn't lose
+them. Each one is logged as `roll call took a Nomad node out of service`, with the reason. Once
+the node goes down, the down-node sweeper purges it.
 
 Upgrading an existing control plane is re-running the installer. Nomad restarts onto TLS, the
 server's old built-in client goes down (the reconciler purges it like any down node), and the

@@ -72,10 +72,10 @@ func TestNodeTokens_PolicyIsNodeOnlyAndTokensAreScoped(t *testing.T) {
 	if created.Type != "client" || strings.Join(created.Policies, ",") != NodeTokenPolicy || created.Name != NodeTokenPrefix+"linux-mac1-0" {
 		t.Errorf("created token = %+v, want a client token with only %s", created, NodeTokenPolicy)
 	}
-	if !strings.Contains(policy.Rules, "node {\n  policy = \"write\"\n}") ||
+	if !strings.Contains(policy.Rules, "node {\n  policy = \"read\"\n}") || strings.Contains(policy.Rules, "write") ||
 		!strings.Contains(policy.Rules, "agent {\n  policy = \"read\"\n}") ||
 		strings.Contains(policy.Rules, "namespace") || strings.Contains(policy.Rules, "operator") {
-		t.Errorf("node policy must grant node:write and agent:read (for -self) and no namespace capability:\n%s", policy.Rules)
+		t.Errorf("node policy must grant node:read and agent:read (for -self), nothing writable and no namespace capability:\n%s", policy.Rules)
 	}
 
 	listed, err := tokens.ListNodeTokens(ctx)

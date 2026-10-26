@@ -327,7 +327,7 @@ func (f *enrolFixture) enrol() error {
 }
 
 func (f *enrolFixture) register(status string) {
-	f.nodes.nodes = []nomad.NodeSummary{{ID: "n1", Name: "linux-mac1-0", Status: status, NodePool: "linux"}}
+	f.nodes.nodes = []nomad.NodeSummary{{ID: "n1", Name: "linux-mac1-0", Status: status, NodePool: "linux", Eligible: true}}
 }
 
 func (f *enrolFixture) hups() string {
@@ -511,5 +511,22 @@ func TestEnrol_OnlyVMsTheReconcilerWouldHaveMade(t *testing.T) {
 		if len(f.execs) != 0 || len(f.intros.calls) != 0 {
 			t.Errorf("%s: a VM grove didn't plan was enrolled", name)
 		}
+	}
+}
+
+func TestEnrol_ANodeTakenOutOfServiceDoesNotCountAsTheVMs(t *testing.T) {
+	f := newEnrolFixture(t)
+	// The roll call drained a duplicate claiming this name; the rebuilt VM still needs a token.
+	f.nodes.nodes = []nomad.NodeSummary{{ID: "twin", Name: "linux-mac1-0", Status: "ready", NodePool: "linux", Eligible: false}}
+	if err := f.enrol(); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.intros.calls) != 1 {
+		t.Fatalf("want a token for the rebuilt VM, got %d", len(f.intros.calls))
+	}
+	// A draining node is still there: no fresh token every half hour while it drains.
+	f.now = f.now.Add(introTokenTTL + time.Minute)
+	if err := f.enrol(); err != nil || len(f.intros.calls) != 1 {
+		t.Fatalf("re-enrolled a VM whose node is present (%d tokens, %v)", len(f.intros.calls), err)
 	}
 }

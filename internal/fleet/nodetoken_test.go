@@ -97,8 +97,11 @@ func TestNodeTokens_PlanHoldsNoSecretApplyMintsOne(t *testing.T) {
 	if strings.Contains(got.StartupScript, "secret-1") {
 		t.Error("node token leaked into the startup script; it belongs only in the shutdown script's env")
 	}
-	if strings.Index(got.ShutdownScript, "export NOMAD_TOKEN") > strings.Index(got.ShutdownScript, "nomad node drain") {
-		t.Error("token must be exported before the drain")
+	if strings.Index(got.ShutdownScript, "export NOMAD_TOKEN") > strings.Index(got.ShutdownScript, "nomad node status -self") {
+		t.Error("token must be exported before the allocation poll")
+	}
+	if strings.Contains(got.ShutdownScript, "nomad node drain") {
+		t.Error("with ACLs on, the control plane drains the node: the VM's read-only token can't")
 	}
 
 	// The created VM, token and all, is up to date on the next tick.
@@ -112,7 +115,7 @@ func TestNodeTokens_PlanHoldsNoSecretApplyMintsOne(t *testing.T) {
 	}
 }
 
-func TestNodeTokens_TurningACLsOnDoesNotRecreateHealthyVMs(t *testing.T) {
+func TestNodeTokens_TurningACLsOnRecreatesVMsThatDrainThemselves(t *testing.T) {
 	pool := basePool()
 	name := VMName(pool.Name, "mac1", 0)
 	before := (&Reconciler{}).vmSpec(pool, "mac1", name)
@@ -126,8 +129,10 @@ func TestNodeTokens_TurningACLsOnDoesNotRecreateHealthyVMs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !plan.Empty() {
-		t.Fatalf("a VM made before node tokens should keep running until its next recycle, got %+v", plan)
+	// Its shutdown script would run `nomad node drain -self` with no token, fail, and leave the VM
+	// to be deleted under its running jobs.
+	if len(plan.Creates) != 1 {
+		t.Fatalf("a VM made before ACLs drains itself, which ACLs refuse, and must be recreated, got %+v", plan)
 	}
 }
 
@@ -136,7 +141,7 @@ func TestNodeTokens_OtherShutdownChangesStillDrift(t *testing.T) {
 	r := &Reconciler{Options: Options{NodeTokens: &fakeNodeTokens{}}}
 	desired := r.vmSpec(pool, "mac1", VMName(pool.Name, "mac1", 0))
 	existing := existingFrom(desired)
-	existing.ShutdownScript = strings.Replace(existing.ShutdownScript, "grove recycle", "something else", 1)
+	existing.ShutdownScript = strings.Replace(existing.ShutdownScript, "sleep 5", "sleep 50", 1)
 	if !specDrifted(desired, existing) {
 		t.Fatal("a changed shutdown script outside the token block must still drift")
 	}

@@ -30,7 +30,7 @@ func TestFleetOptions_MutualTLSEnrolsVMsWithTheCAAndNoSharedNodeKey(t *testing.T
 	if opts.NodeTLS == nil || opts.NodeTLS.CA != string(ca) {
 		t.Fatalf("NodeTLS = %+v, want the CA certificate", opts.NodeTLS)
 	}
-	if opts.NodeCerts == nil || opts.NodeIntros == nil || opts.Nodes == nil || opts.NodePools == nil {
+	if opts.NodeCerts == nil || opts.NodeIntros == nil || opts.Nodes == nil || opts.NodePools == nil || opts.NodeDrainer == nil {
 		t.Fatalf("enrolment is not fully wired: %+v", opts)
 	}
 	if _, err := opts.NodeCerts.IssueNode("linux-mac1-0", time.Now(), pki.NodeCertValidity); err != nil {

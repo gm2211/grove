@@ -233,6 +233,8 @@ type fleetReconcileLoop struct {
 	// fleet.Reconciler.Enrol), and warnedEnrol the enrolment error last logged.
 	enrolment   fleet.EnrolState
 	warnedEnrol string
+	// warnedRollCall is the roll call error last logged.
+	warnedRollCall string
 
 	// jobs, vmLoads and tracker feed elastic pools' autoscaling (see fleet.JobLoad); nil leaves
 	// elastic pools at their current size.
@@ -352,6 +354,20 @@ func (l *fleetReconcileLoop) tick(ctx context.Context) {
 		}
 	} else {
 		l.warnedEnrol = ""
+	}
+
+	actions, err := r.RollCall(ctx)
+	for _, a := range actions {
+		slog.Warn("serve: fleet reconciler: roll call took a Nomad node out of service",
+			"node", a.NodeID, "name", a.Name, "reason", a.Reason, "deletedVM", a.DeletedVM)
+	}
+	if err != nil {
+		if msg := err.Error(); msg != l.warnedRollCall {
+			slog.Warn("serve: fleet reconciler: roll call failed", "err", err)
+			l.warnedRollCall = msg
+		}
+	} else {
+		l.warnedRollCall = ""
 	}
 
 	if !plan.Empty() {

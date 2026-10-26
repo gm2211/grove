@@ -38,6 +38,11 @@ type Options struct {
 	// Nomad client. Set it when the control plane's Nomad runs with ACLs on, i.e. config.yaml has
 	// a nomad.token. Nil leaves both out.
 	NodeTokens nomad.NodeTokens
+	// NodeDrainer, when set, drains a VM's Nomad node from the control plane before Apply deletes
+	// the VM and before Orchard recycles it at its TTL (see RollCall), and takes nodes the roll
+	// call doesn't recognise out of service. Set it with NodeTokens: a VM's own token is read-only,
+	// so the VM can't drain itself.
+	NodeDrainer NodeDrainer
 	// NodeTLS, when set, puts every non-sealed VM's Nomad client on mutual TLS in its pool's node
 	// pool, and holds it back until Enrol has pushed in the VM's own certificate (NodeCerts) and
 	// introduction token (NodeIntros), which Nodes and NodePools are needed for too. Set all of
@@ -306,6 +311,7 @@ func (r *Reconciler) unhealthyVMDue(vm orchard.VM) (why string, due bool) {
 // Apply executes a Plan: deletes first (so a spec-changed VM's old copy is gone before its
 // replacement is created), then creates.
 func (r *Reconciler) Apply(ctx context.Context, plan Plan) error {
+	r.drainBeforeDelete(ctx, plan.Deletes)
 	for _, d := range plan.Deletes {
 		if err := r.Client.DeleteVM(ctx, d.Name); err != nil {
 			return fmt.Errorf("delete vm %s: %w", d.Name, err)
@@ -433,6 +439,14 @@ func (r *Reconciler) Run(ctx context.Context, interval time.Duration) error {
 
 		if err := r.Enrol(ctx, &enrolment); err != nil {
 			logger.Printf("fleet: enrolment failed: %v", err)
+		}
+
+		actions, err := r.RollCall(ctx)
+		for _, a := range actions {
+			logger.Printf("fleet: roll call took Nomad node %s (%s) out of service: %s", a.NodeID, a.Name, a.Reason)
+		}
+		if err != nil {
+			logger.Printf("fleet: roll call failed: %v", err)
 		}
 	}
 

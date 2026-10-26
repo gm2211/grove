@@ -241,18 +241,18 @@ if [ ! -d "$grove_macos_sdk" ]; then
 fi
 `
 
-// BuildShutdownScript renders the default guest ShutdownScript: drain the local Nomad client,
-// then wait (bounded by the returned timeout, defaulting to defaultShutdownTimeout) for zero
+// BuildShutdownScript renders the default guest ShutdownScript (for a Nomad without ACLs): drain
+// the local Nomad client, then wait (bounded by the returned timeout, defaulting to defaultShutdownTimeout) for zero
 // non-terminal allocations before Orchard deletes the VM. pool.ShutdownScript, if set, is
 // appended verbatim after the generated part.
 func BuildShutdownScript(pool Pool) (script string, timeout time.Duration) {
 	return buildShutdownScript(pool, false)
 }
 
-// buildShutdownScript is BuildShutdownScript, optionally with the node-token block whose
-// placeholders Reconciler.Apply fills in with a freshly minted per-VM Nomad token. With Nomad ACLs
-// on, `nomad node drain -self` needs node:write; without a token it fails and the VM is deleted
-// under its running jobs.
+// buildShutdownScript is BuildShutdownScript, or, with Nomad ACLs on (nodeToken), the node-token
+// block whose placeholders Reconciler.Apply fills in with a freshly minted per-VM Nomad token, and
+// no drain: the token is read-only (nomad.NodeTokenPolicy), and the control plane drains the node
+// before the VM is deleted, so the script only waits for its allocations.
 func buildShutdownScript(pool Pool, nodeToken bool) (script string, timeout time.Duration) {
 	timeout = pool.ShutdownTimeout.Std()
 	if timeout <= 0 {
@@ -274,11 +274,14 @@ func buildShutdownScript(pool Pool, nodeToken bool) (script string, timeout time
 		return b.String(), timeout
 	}
 	if nodeToken {
+		// Nomad runs with ACLs: the control plane drains this VM's node before deleting it (see
+		// Reconciler.Apply and RollCall), and the VM's own token can only watch.
 		b.WriteString(nodeTokenBlock)
 		b.WriteString("\n")
+	} else {
+		fmt.Fprintf(&b, "nomad node drain -self -enable -deadline %s -m %s\n\n",
+			nomadDrainDeadline, shQuote("grove recycle"))
 	}
-	fmt.Fprintf(&b, "nomad node drain -self -enable -deadline %s -m %s\n\n",
-		nomadDrainDeadline, shQuote("grove recycle"))
 	fmt.Fprintf(&b, "grove_deadline=$(( $(date +%%s) + %d ))\n", int(timeout.Seconds()))
 	b.WriteString(pollAllocsScript)
 

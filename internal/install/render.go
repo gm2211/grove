@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"text/template"
+
+	"github.com/gm2211/grove/internal/nomad"
 )
 
 // LaunchAgentSpec renders a macOS launchd agent plist.
@@ -178,7 +180,7 @@ func RenderNomadServerConfig(spec NomadServerConfigSpec) (string, error) {
 
 // SandboxClientNodeName is the Nomad node name of the control plane's own client, the one that
 // runs `grove sandbox run` for sealed pools. Its introduction token is bound to this name.
-const SandboxClientNodeName = "grove-sandbox-host"
+const SandboxClientNodeName = nomad.SandboxHostNodeName
 
 // Loopback ports of the sandbox-host client agent, clear of the server's 4646-4648.
 const (

@@ -83,10 +83,17 @@ func (r *Reconciler) Enrol(ctx context.Context, state *EnrolState) error {
 		return err
 	}
 	// A down node can be a previous VM of the same name, which the new one doesn't share an
-	// identity with: only a live node counts as this VM being registered.
+	// identity with, and so can one the roll call took out of service (ineligible): only a live,
+	// eligible node counts as this VM being registered. A VM whose node is draining still is, for
+	// renewing its certificate, but needs no new token.
 	registered := map[string]bool{}
+	present := map[string]bool{}
 	for _, n := range nodes {
-		if n.Status != "down" {
+		if n.Status == "down" {
+			continue
+		}
+		present[n.Name] = true
+		if n.Eligible {
 			registered[n.Name] = true
 		}
 	}
@@ -107,7 +114,7 @@ func (r *Reconciler) Enrol(ctx context.Context, state *EnrolState) error {
 		switch {
 		case !have || rec.uid != vm.UID:
 		case now.After(rec.notAfter.Add(-nodeCertRenewBefore)):
-		case !registered[vm.Name] && now.Sub(rec.at) > introTokenTTL:
+		case !present[vm.Name] && now.Sub(rec.at) > introTokenTTL:
 		default:
 			continue
 		}
