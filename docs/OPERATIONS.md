@@ -443,8 +443,23 @@ tailnet, through the Mac's own Tailscale login. Its jobs can't: a firewall in th
 for the macOS job user) refuses every private, tailnet and link-local address, with exactly one
 exception, TCP to the default gateway the guest got from DHCP on port 3128: the host Mac's
 credential broker, which listens only on that address. The gateway is read each time the fence
-loads; a guest with no IPv4 default route gets no exception. `network: isolated` seals a pool's
-VMs instead:
+loads; a guest with no IPv4 default route gets no exception.
+
+At boot a shared VM fetches the broker's CA from `http://<gateway>:3128/ca.pem` and keeps it only
+if it is a single CA certificate (pathlen 0) whose critical name constraints permit only the
+broker's hosts (github.com, api.github.com, api.anthropic.com, api.openai.com, chatgpt.com, or
+some of them) and exclude every IP address; even a forged CA that passes can vouch for no other
+site. The VM then
+advertises the broker as Nomad node meta (`grove_broker`, `grove_broker_ca`, in
+`grove-broker.hcl`), and each build/agent/shell job's `run.sh` sets `HTTPS_PROXY`/`HTTP_PROXY` to
+it and `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `REQUESTS_CA_BUNDLE` and
+`NODE_EXTRA_CA_CERTS` to the system roots plus that CA. Tools that trust only the macOS keychain
+won't accept the broker's certificates. With no broker (none answering within two minutes of
+boot, or a CA that fails the check, reported in the startup script's output) jobs run without
+one, and a job whose environment holds `gph1_` placeholders says so in its log. After installing
+the broker on a worker, recycle its VMs so they pick it up.
+
+`network: isolated` seals a pool's VMs instead:
 
 ```yaml
 pools:

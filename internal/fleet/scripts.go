@@ -90,6 +90,8 @@ func buildStartupScript(pool Pool, worker, vmName string, opts Options) string {
 	// Before Nomad comes back with this VM's meta and can take a job.
 	b.WriteString(homeFenceScript(pool))
 	b.WriteString("\n")
+	b.WriteString(brokerScript())
+	b.WriteString("\n")
 
 	if opts.NodeTLS != nil {
 		b.WriteString(nomadEnrolWaitScript)

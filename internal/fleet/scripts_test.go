@@ -78,9 +78,9 @@ func TestBuildStartupScript_LinuxMatchesV010(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The home fence is the one intended change since v0.1.10: every Linux VM is recreated once to
-	// get it. Everything else must stay byte-identical.
-	got := strings.Replace(BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", ""), homeFenceScript(Pool{Name: "linux"})+"\n", "", 1)
+	// The home fence and the broker block are the intended changes since v0.1.10: every Linux VM
+	// is recreated once to get them. Everything else must stay byte-identical.
+	got := strings.Replace(BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", ""), homeFenceScript(Pool{Name: "linux"})+"\n"+brokerScript()+"\n", "", 1)
 	if got != string(want) {
 		t.Fatalf("Linux startup script drifted from v0.1.10; this would recreate healthy Linux workers\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
@@ -122,11 +122,13 @@ func TestBuildStartupScript_UnprivilegedGuestUsesNonInteractiveSudo(t *testing.T
 	}
 	writeExecutable("id", "#!/bin/sh\necho 502\n")
 	writeExecutable("uname", "#!/bin/sh\necho Linux\n")
+	// No default route: the broker block looks for no broker (see broker_test.go).
+	writeExecutable("ip", "#!/bin/sh\nexit 0\n")
 	writeExecutable("sudo", `#!/bin/sh
 set -eu
 [ "${1:-}" = "-n" ] && shift
 case "${1:-}" in
-  mkdir) exit 0 ;;
+  mkdir|rm) exit 0 ;;
   tee)
     tee_args="$*"
     [ "${2:-}" = "-a" ] && shift
@@ -522,6 +524,8 @@ case "$body" in
 esac
 `)
 			writeExecutable("sleep", "#!/bin/sh\nexit 0\n")
+			// No default route: no broker exception, no broker (see broker_test.go).
+			writeExecutable("route", "#!/bin/sh\nexit 1\n")
 			writeExecutable("pfctl", `#!/bin/sh
 printf 'pfctl %s\\n' "$*" >> "$GROVE_TEST_COMMAND_LOG"
 case "$*" in *"-s rules"*) echo 'block return out quick proto tcp from any to 10.0.0.0/8 user = 7460' ;; *"-s info"*) echo 'Status: Enabled' ;; esac
