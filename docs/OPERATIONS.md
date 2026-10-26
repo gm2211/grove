@@ -446,9 +446,10 @@ credential broker, which listens only on that address. The gateway is read each 
 loads; a guest with no IPv4 default route gets no exception.
 
 At boot a shared VM fetches the broker's CA from `http://<gateway>:3128/ca.pem` and keeps it only
-if it is a single CA certificate (pathlen 0) whose critical name constraints are exactly the
-broker's hosts (github.com, api.github.com, api.anthropic.com, api.openai.com, chatgpt.com) with
-every IP address excluded; even a forged CA that passes can vouch for no other site. The VM then
+if it is a single CA certificate (pathlen 0) whose critical name constraints permit only the
+broker's hosts (github.com, api.github.com, api.anthropic.com, api.openai.com, chatgpt.com, or
+some of them) and exclude every IP address; even a forged CA that passes can vouch for no other
+site. The VM then
 advertises the broker as Nomad node meta (`grove_broker`, `grove_broker_ca`, in
 `grove-broker.hcl`), and each build/agent/shell job's `run.sh` sets `HTTPS_PROXY`/`HTTP_PROXY` to
 it and `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `REQUESTS_CA_BUNDLE` and

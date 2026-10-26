@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -115,8 +116,8 @@ cp "$GROVE_TEST_CA" "$out"
 	return string(data), string(out)
 }
 
-// A shared VM advertises its worker's broker, and the broker's CA, only when that CA is exactly
-// what internal/broker makes: a forged or looser CA, or none at all, leaves it without a broker.
+// A shared VM advertises its worker's broker, and the broker's CA, only when that CA can vouch
+// for nothing beyond internal/broker's hosts: a looser CA, or none at all, leaves it without one.
 func TestBrokerScript_AdvertisesOnlyGrovesBrokerCA(t *testing.T) {
 	real, err := broker.LoadOrCreateCA("")
 	if err != nil {
@@ -165,6 +166,15 @@ func TestBrokerScript_AdvertisesOnlyGrovesBrokerCA(t *testing.T) {
 				t.Errorf("no word on why there is no broker:\n%s", out)
 			}
 		})
+	}
+
+	// Fewer hosts, or the same hosts in another order, permit nothing the guest doesn't know.
+	reversed := append([]string{}, hosts...)
+	slices.Reverse(reversed)
+	for name, permitted := range map[string][]string{"fewer hosts": hosts[:1], "another order": reversed} {
+		if meta, out := runBrokerScript(t, "192.168.64.1", testCA(t, brokerCATemplate(permitted))); meta == "" {
+			t.Errorf("%s: refused:\n%s", name, out)
+		}
 	}
 
 	// A forged CA with exactly the broker's constraints passes, and can do no more than the

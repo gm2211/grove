@@ -11,7 +11,8 @@ import (
 // credential broker (internal/broker) and tells the VM's Nomad client about it. The broker listens
 // on the VM gateway, broker.Port, the one host address the guest fences let jobs reach. The script
 // fetches its CA from there (as root, which the fences don't cover), checks it is a CA whose name
-// constraints are exactly the broker's inject hosts with every IP address excluded, and advertises
+// constraints permit only the broker's inject hosts (a subset: an older guest refuses a newer
+// broker's extra host, the safe way round) with every IP address excluded, and advertises
 // the broker's URL and the CA as node meta (grove-broker.hcl, beside grove-meta.hcl). nomad/jobs'
 // run.sh points the job's HTTP(S) proxy at that URL and adds the CA to the bundle it trusts.
 //
@@ -20,12 +21,10 @@ import (
 // within two minutes, leaves the VM without one: jobs still run, and a job holding placeholders
 // is told why its credentials don't work.
 func brokerScript() string {
-	permitted := broker.InjectHosts()
-	want := "Permitted:\nDNS:" + strings.Join(permitted, "\nDNS:") + "\nExcluded:\nIP:0.0.0.0/0\nIP:::/0"
 	return strings.NewReplacer(
+		"@HOSTS@", strings.Join(broker.InjectHosts(), " "),
 		"@PORT@", fmt.Sprint(broker.Port),
 		"@TRIES@", fmt.Sprint(brokerFetchTries),
-		"@WANT_CONSTRAINTS@", want,
 	).Replace(brokerScriptTemplate)
 }
 
@@ -48,8 +47,9 @@ case "$grove_gateway" in
 esac
 grove_priv rm -f "$grove_broker_meta"
 
-# The broker's CA must be one certificate, a CA that can sign only leaves, constrained to exactly
-# the hosts the broker swaps credentials for, with every IP address excluded.
+# The broker's CA must be one certificate, a CA that can sign only leaves, whose critical name
+# constraints permit nothing but hosts this script knows the broker serves (any of them, in any
+# order) and exclude every IP address.
 grove_broker_ca_ok() {
   [ "$(grep -c '^-----BEGIN ' "$1")" = 1 ] || return 1
   [ "$(sed -n 1p "$1")" = "-----BEGIN CERTIFICATE-----" ] || return 1
@@ -60,7 +60,32 @@ grove_broker_ca_ok() {
     !inside && /X509v3 Name Constraints: critical$/ { inside = 1; match($0, /^ */); indent = RLENGTH; next }
     inside { match($0, /^ */); if (RLENGTH <= indent) exit; gsub(/^ +| +$/, ""); print }
   ' | sed -e 's|^IP:0\.0\.0\.0/0\.0\.0\.0$|IP:0.0.0.0/0|' -e 's|^IP:[0:]*:[0:]*/[0:]*$|IP:::/0|')
-  [ "$grove_ca_constraints" = "@WANT_CONSTRAINTS@" ]
+  grove_ca_section=""
+  grove_ca_permitted=0
+  grove_ca_excluded=""
+  while IFS= read -r grove_ca_line; do
+    case "$grove_ca_line" in
+      Permitted:) grove_ca_section=permitted ;;
+      Excluded:) grove_ca_section=excluded ;;
+      DNS:*)
+        [ "$grove_ca_section" = permitted ] || return 1
+        case " @HOSTS@ " in
+          *" ${grove_ca_line#DNS:} "*) grove_ca_permitted=$((grove_ca_permitted + 1)) ;;
+          *) return 1 ;;
+        esac
+        ;;
+      IP:0.0.0.0/0 | IP:::/0)
+        [ "$grove_ca_section" = excluded ] || return 1
+        grove_ca_excluded="$grove_ca_excluded $grove_ca_line"
+        ;;
+      *) return 1 ;;
+    esac
+  done <<GROVE_CA_CONSTRAINTS
+$grove_ca_constraints
+GROVE_CA_CONSTRAINTS
+  [ "$grove_ca_permitted" -gt 0 ] || return 1
+  case "$grove_ca_excluded" in *" IP:0.0.0.0/0"*) ;; *) return 1 ;; esac
+  case "$grove_ca_excluded" in *" IP:::/0"*) ;; *) return 1 ;; esac
 }
 
 grove_broker_ca=""
