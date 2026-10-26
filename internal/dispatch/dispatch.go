@@ -5,6 +5,8 @@ import (
 	"context"
 	"io"
 	"time"
+
+	"github.com/gm2211/grove/internal/broker"
 )
 
 // Kind selects which parameterized Nomad job a request maps to.
@@ -34,6 +36,11 @@ type JobRequest struct {
 	// the control plane at dispatch and exported under its own name; the submitter never sends
 	// or sees the value, and the job record keeps only the names.
 	Secrets []string `json:"secrets,omitempty"`
+	// Credentials are real tokens the submitter hands grove for this job, which the job itself
+	// never sees: it gets a placeholder under each Env, and the credential broker on its worker
+	// swaps the token in on the way to the token's service (see internal/broker). Only shared
+	// pools can use them; the job record keeps Kind and Env, never Token.
+	Credentials []Credential `json:"credentials,omitempty"`
 	// Timeout is a duration string ("30m", "2h", "90s") or a JSON number of SECONDS on the wire —
 	// never raw nanoseconds. See Duration's doc comment.
 	Timeout Duration `json:"timeout,omitempty"`
@@ -65,6 +72,21 @@ type JobRequest struct {
 	// docker or apt-get.
 	PinPool bool `json:"pinPool,omitempty"`
 }
+
+// Credential is one JobRequest.Credentials entry.
+type Credential struct {
+	// Kind is the service the token is for; it fixes the hosts the broker sends it to.
+	Kind broker.Kind `json:"kind"`
+	// Env is the variable the job finds the placeholder in, e.g. GH_TOKEN or
+	// CLAUDE_CODE_OAUTH_TOKEN.
+	Env string `json:"env"`
+	// Token is the real credential. It is accepted on submit and on UpdateCredentials and never
+	// stored or returned.
+	Token string `json:"token,omitempty"`
+}
+
+// MaxCredentials caps JobRequest.Credentials.
+const MaxCredentials = 8
 
 // retryLost is req's effective RetryLost.
 func (req JobRequest) retryLost() bool {
@@ -215,4 +237,12 @@ type Service interface {
 	// the background; a failed reconcile for one job is logged and doesn't stop the sweep. Returns
 	// ctx.Err() once ctx is done.
 	RunReconciler(ctx context.Context, interval time.Duration) error
+	// UpdateCredentials replaces the tokens behind a live job's credentials, matched by Env: a
+	// submitter refreshing a token, or sending its tokens again after a control-plane restart.
+	// The job's placeholders don't change. ErrNotFound for an unknown job, ErrJobEnded for one
+	// that has ended.
+	UpdateCredentials(ctx context.Context, id string, creds []Credential) error
+	// BrokerEntries returns the credential-broker entries of every live job placed on worker, each
+	// with a fresh lease, and forgets those of jobs that have ended.
+	BrokerEntries(ctx context.Context, worker string) ([]broker.Entry, error)
 }

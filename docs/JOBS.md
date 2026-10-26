@@ -79,6 +79,32 @@ to anyone who can read the dispatched job's meta in Nomad, so keep Nomad's ACLs 
 `env` values go to Nomad with the dispatch and nowhere else: the stored job, and every `Job` the
 API returns, keeps each key with the value `[redacted]`.
 
+`req.Credentials` are real tokens the submitter hands grove for this one job, which the job never
+sees (see docs/OPERATIONS.md "The credential broker"):
+
+```json
+"credentials": [
+  {"kind": "github",    "env": "GH_TOKEN",                "token": "ghs_…"},
+  {"kind": "anthropic", "env": "CLAUDE_CODE_OAUTH_TOKEN", "token": "sk-ant-oat01-…"}
+]
+```
+
+`Submit` mints a placeholder (`gph1_…`) for each and puts the placeholder in `env_json` under
+`env`. The token stays in the control plane's memory, where the broker on the worker the job lands
+on pulls it. `kind` is `github`, `anthropic` or `openai` and fixes the hosts the token can reach.
+The stored job and the API keep `kind` and `env` only. Credentials are refused on a sealed pool,
+whose VMs can't reach a broker, and a job with credentials never falls back onto one. An unknown
+kind, an `env` that is also an `env` key or named secret, a name given twice, more than 8, or a
+token that isn't printable ASCII without spaces is a 400.
+
+Tokens expire, and a control-plane restart forgets them. The submitter puts fresh ones behind the
+same placeholders with `PUT /api/v1/jobs/{id}/credentials` (the submitting device or an
+operator; 404 for an unknown job, 409 once it has ended):
+
+```json
+{"credentials": [{"env": "GH_TOKEN", "token": "ghs_…new"}]}
+```
+
 ## Falling back to macOS
 
 Most Linux build scripts run on macOS too, so a job a shared Linux pool can't place moves to the

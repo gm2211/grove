@@ -18,6 +18,11 @@ import (
 type record struct {
 	Job
 	NomadJobID string `json:"nomadJobId"`
+	// Placeholders maps each of the job's credentials (by Env) to the placeholder the job got,
+	// so UpdateCredentials can put fresh tokens behind the same placeholders. A placeholder is
+	// worthless without the in-memory registry entry, and it never leaves the record: the API
+	// returns only Job.
+	Placeholders map[string]string `json:"placeholders,omitempty"`
 }
 
 // store is a thread-safe in-memory job store, persisted as JSON so history survives restarts.

@@ -257,15 +257,22 @@ A job never holds a real credential. It gets a placeholder (`gph1_…`), and eac
 Any other HTTPS is a plain tunnel and plain HTTP is relayed, both to public addresses only: the
 tailnet, the LAN, the host and every other private or special range are refused.
 
-Entries live in memory only. The broker pulls its worker's list every 30 seconds from
+Entries live in memory only, on the control plane and on each broker. A control-plane restart
+forgets every token, and running jobs get them back when their submitter sends them again
+(`PUT /api/v1/jobs/{id}/credentials`). The broker pulls its worker's list every 30 seconds from
 `GET /api/v1/broker/entries`, with a device credential whose only scope is `broker` and whose name
 is the worker's (`grove access issue --name <worker> --scope broker`); no other credential,
 operator's included, can read that route. An entry leaves when its job ends (the control plane
 stops listing it), when its 10-minute lease runs out without renewal, or when the broker restarts.
 At most 1,000 entries are held per worker.
 
-Not wired in yet: dispatch doesn't create entries, VMs don't trust the CA or use the proxy, and
-the worker install doesn't run `grove broker`. Those land separately.
+Entries come from job submissions: a job's `credentials` (docs/JOBS.md) become placeholders in
+its env and entries in the control plane's memory, and a broker is served only the entries of live
+jobs placed on its worker. They leave the control plane when the job ends or is canceled. Sealed
+pools take no credentials, since their VMs block the host and so the broker.
+
+Not wired in yet: shared VMs don't trust the CA or use the proxy, and the worker install doesn't
+run `grove broker`. Those land separately.
 
 ## Credentials for orchestrators and scripts
 

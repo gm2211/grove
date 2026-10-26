@@ -97,9 +97,9 @@ func NewPlaceholder() (string, error) {
 	return PlaceholderPrefix + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b[:])), nil
 }
 
-// validToken accepts a token that can go in a header as is: printable ASCII, no spaces. Anything
+// CheckToken accepts a token that can go in a header as is: printable ASCII, no spaces. Anything
 // else could split a header, and would also break the stripper's no-pattern-spans-a-newline rule.
-func validToken(t string) error {
+func CheckToken(t string) error {
 	if t == "" {
 		return errors.New("no token")
 	}
@@ -119,7 +119,7 @@ func validEntry(e Entry) error {
 	if !e.Kind.Valid() {
 		return fmt.Errorf("entry for job %q has unknown kind %q", e.Job, e.Kind)
 	}
-	if err := validToken(e.Token); err != nil {
+	if err := CheckToken(e.Token); err != nil {
 		return fmt.Errorf("entry for job %q: %w", e.Job, err)
 	}
 	return nil

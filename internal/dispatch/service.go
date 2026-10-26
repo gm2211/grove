@@ -21,6 +21,7 @@ import (
 	"context"
 
 	"github.com/gm2211/grove/internal/artifacts"
+	"github.com/gm2211/grove/internal/broker"
 	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/nomad"
 )
@@ -135,6 +136,8 @@ type service struct {
 	opts      Options
 	store     *store
 	pools     map[string]PoolConfig
+	// creds holds the real tokens behind jobs' credential placeholders, in memory only.
+	creds *broker.Registry
 
 	mu    sync.Mutex
 	cache map[string]cachedStatus
@@ -182,7 +185,7 @@ func New(nc nomad.Client, opts Options) (Service, error) {
 	for _, p := range opts.Pools {
 		pools[p.Name] = p
 	}
-	return &service{nomad: nc, artifacts: opts.Artifacts, opts: opts, store: st, pools: pools, cache: map[string]cachedStatus{}}, nil
+	return &service{nomad: nc, artifacts: opts.Artifacts, opts: opts, store: st, pools: pools, creds: broker.NewRegistry(0), cache: map[string]cachedStatus{}}, nil
 }
 
 // jobName returns the parameterized Nomad job name for a kind×pool pair, e.g. "grove-build-linux".
@@ -219,6 +222,9 @@ func validate(req JobRequest) error {
 	}
 	if strings.HasPrefix(req.Ref, "-") {
 		return fmt.Errorf("dispatch: ref must not start with '-'")
+	}
+	if err := validateCredentials(req); err != nil {
+		return err
 	}
 	seen := make(map[string]struct{}, len(req.Secrets))
 	for _, name := range req.Secrets {
@@ -333,6 +339,21 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	if err != nil {
 		return nil, false, err
 	}
+	// Credentials: the job gets placeholders in its env; the tokens stay in the in-memory
+	// registry, which its worker's broker reads. A sealed pool's VMs can't reach a broker.
+	if len(req.Credentials) > 0 && s.pools[req.Pool].Isolated {
+		return nil, false, fmt.Errorf("dispatch: pool %s is sealed and its jobs can't reach the credential broker; send credentials only to a shared pool", req.Pool)
+	}
+	placeholders, err := mintPlaceholders(req.Credentials)
+	if err != nil {
+		return nil, false, err
+	}
+	env = withPlaceholders(env, placeholders)
+	if len(req.Credentials) > 0 {
+		if err := s.creds.Put(id, credentialEntries(id, req.Credentials, placeholders)); err != nil {
+			return nil, false, fmt.Errorf("dispatch: %w", err)
+		}
+	}
 	if len(env) > 0 {
 		envJSON, err := json.Marshal(env)
 		if err != nil {
@@ -359,6 +380,7 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	name := jobName(req.Kind, req.Pool)
 	res, err := s.nomad.Dispatch(ctx, name, meta, encodePayload(req.Kind, cloneToken, req.Script))
 	if err != nil {
+		s.creds.RemoveJob(id)
 		return nil, false, fmt.Errorf("dispatch %s: %w", name, err)
 	}
 
@@ -366,15 +388,17 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	rec := &record{
 		Job: Job{
 			ID:                 id,
-			Request:            withRedactedEnv(req),
+			Request:            withRedactedCredentials(withRedactedEnv(req)),
 			Status:             StatusPending,
 			SubmittedAt:        now,
 			Meta:               req.Meta,
 			RepoCredentialUsed: repoCredentialUsed,
 		},
-		NomadJobID: res.DispatchedJobID,
+		NomadJobID:   res.DispatchedJobID,
+		Placeholders: placeholders,
 	}
 	if err := s.store.put(rec); err != nil {
+		s.creds.RemoveJob(id)
 		return nil, false, fmt.Errorf("dispatch: persist job %s: %w", id, err)
 	}
 	job := rec.Job
@@ -628,6 +652,9 @@ func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {
 	if err := s.store.put(rec); err != nil {
 		return nil, fmt.Errorf("dispatch: persist job %s: %w", rec.ID, err)
 	}
+	if isTerminal(updated.Status) {
+		s.creds.RemoveJob(rec.ID)
+	}
 
 	s.mu.Lock()
 	s.cache[rec.ID] = cachedStatus{at: time.Now(), job: updated}
@@ -761,6 +788,7 @@ func (s *service) markLost(rec *record, reason string) (*Job, error) {
 	rec.FailureReason = &reason
 	rec.FinishedAt = &now
 	rec.PendingReason = ""
+	s.creds.RemoveJob(rec.ID)
 	if err := s.store.put(rec); err != nil {
 		return nil, fmt.Errorf("dispatch: persist job %s: %w", rec.ID, err)
 	}
@@ -1153,6 +1181,7 @@ func (s *service) Cancel(ctx context.Context, id string) error {
 	if err := s.nomad.StopJob(ctx, rec.NomadJobID, false); err != nil {
 		return fmt.Errorf("dispatch: stop job %s: %w", id, err)
 	}
+	s.creds.RemoveJob(id)
 	now := time.Now().UTC()
 	rec.Status = StatusCanceled
 	rec.FinishedAt = &now

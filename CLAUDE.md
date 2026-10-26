@@ -157,6 +157,9 @@ tokens on the way to a fixed set of upstreams and masks the tokens on the way ba
 - Tunnels and plain HTTP go through `Dialer`, which dials only public addresses it resolved itself.
 - Entries are in memory only, on both sides (`Registry`, `Store`), with a lease. Only a
   credential whose single scope is `broker` reads `GET /broker/entries`, and only its own worker's.
+- In `internal/dispatch`, a `JobRequest.Credentials` token goes only into the registry: never
+  `env_json`, the payload, the stored `Job.Request` (kind and env only) or an API response.
+  `internal/dispatch/credentials_test.go` asserts it.
 
 `internal/broker/proxy_test.go` drives the whole path end to end; keep its refusal cases passing.
 

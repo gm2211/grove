@@ -4,6 +4,12 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Jobs can carry credentials they never see.** `JobRequest.credentials` (`kind`, `env`, `token`)
+  gives the job a `gph1_…` placeholder under `env`, keeps the token in the control plane's
+  memory only, and serves it to the broker on the worker the job lands on, until the job ends.
+  `PUT /api/v1/jobs/{id}/credentials` puts fresh tokens behind the same placeholders. Refused on
+  sealed pools. `grove broker --listen` now takes an IP only; the port is always 3128.
+
 - **Credential broker (not wired into dispatch yet).** `grove broker` runs on a worker Mac as the
   proxy its job VMs use. A job gets a placeholder (`gph1_` and 256 random bits) instead of a real
   token; on requests to GitHub, Anthropic or OpenAI/ChatGPT the broker swaps it for the real token

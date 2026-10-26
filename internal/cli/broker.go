@@ -51,7 +51,7 @@ address that isn't private.`,
 }
 
 func init() {
-	brokerCmd.Flags().StringVar(&brokerListen, "listen", "", "address to listen on (default: the vmnet gateway, port "+strconv.Itoa(broker.Port)+")")
+	brokerCmd.Flags().StringVar(&brokerListen, "listen", "", "IP address to listen on, always on port "+strconv.Itoa(broker.Port)+" (default: the vmnet gateway)")
 	brokerCmd.Flags().StringVar(&brokerCADir, "ca-dir", "", "directory holding the broker CA (default: <grove config dir>/broker)")
 	brokerCmd.Flags().DurationVar(&brokerSyncInterval, "sync-interval", broker.DefaultSyncInterval, "how often to pull entries from the control plane")
 	Root.AddCommand(brokerCmd)
@@ -123,14 +123,15 @@ func runBroker(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// brokerListenAddr parses --listen, or builds the default: vmnet's gateway on broker.Port.
+// brokerListenAddr is --listen, or vmnet's gateway, on broker.Port. The port is fixed because the
+// job VMs' firewalls open exactly that one.
 func brokerListenAddr(ctx context.Context, flag string) (netip.AddrPort, error) {
 	if flag != "" {
-		ap, err := netip.ParseAddrPort(flag)
+		a, err := netip.ParseAddr(flag)
 		if err != nil {
-			return netip.AddrPort{}, fmt.Errorf("--listen %q: want an IP literal and port: %w", flag, err)
+			return netip.AddrPort{}, fmt.Errorf("--listen %q: want an IP address (the port is always %d): %w", flag, broker.Port, err)
 		}
-		return ap, nil
+		return netip.AddrPortFrom(a, broker.Port), nil
 	}
 	gw, err := vmnetGateway(ctx)
 	if err != nil {
