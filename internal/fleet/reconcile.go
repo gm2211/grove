@@ -51,9 +51,6 @@ type Options struct {
 	Now func() time.Time
 	// Logger receives Run's per-tick errors without stopping the loop. Defaults to log.Default().
 	Logger *log.Logger
-
-	// rotateGuestPassword is set per worker by Plan (see rotatesGuestPassword).
-	rotateGuestPassword bool
 }
 
 func (o Options) now() time.Time {
@@ -153,6 +150,7 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 
 	desired := make(map[string]bool)
 	blocked := make(map[string]string)
+	unsafeHosts := make(map[string]string) // "pool/worker" → guestPasswordBlock
 	scaled := r.scale(workers, vms)
 
 	for _, pool := range r.Spec.Pools {
@@ -180,6 +178,12 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 				continue
 			}
 
+			if problem := guestPasswordBlock(pool, worker); problem != "" {
+				plan.Blocked = append(plan.Blocked, PlannedBlock{Pool: pool.Name, Reason: problem})
+				unsafeHosts[pool.Name+"/"+worker.Name] = problem
+				continue // and any VM it has there is swept below
+			}
+
 			indexes := scaled.poolIndexes(pool.Name, worker.Name)
 			if !pool.Elastic() {
 				indexes = make([]int, pool.PerWorker)
@@ -191,9 +195,7 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 				name := VMName(pool.Name, worker.Name, n)
 				desired[name] = true
 
-				opts := r.Options
-				opts.rotateGuestPassword = rotatesGuestPassword(pool, worker)
-				spec := r.vmSpecWith(pool, worker.Name, name, opts)
+				spec := r.vmSpec(pool, worker.Name, name)
 
 				existing, ok := findVM(vms, name)
 				reason := "spec changed"
@@ -245,6 +247,8 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 		reason := "no longer desired"
 		if problem, ok := blocked[pool]; ok {
 			reason = "pool blocked: " + problem
+		} else if problem, ok := unsafeHosts[pool+"/"+worker]; ok {
+			reason = "unsafe: " + problem
 		} else if why, ok := scaled.deleteReasons[vm.Name]; ok {
 			reason = why
 		}
@@ -470,13 +474,8 @@ func (r *Reconciler) Run(ctx context.Context, interval time.Duration) error {
 // the worker pin vmToV1 applies from Worker; pool/host bookkeeping lives in the VM's *name* and
 // in Worker, not in labels.
 func (r *Reconciler) vmSpec(pool Pool, worker, name string) orchard.VMSpec {
-	return r.vmSpecWith(pool, worker, name, r.Options)
-}
-
-// vmSpecWith is vmSpec with per-worker options (see Options.rotateGuestPassword).
-func (r *Reconciler) vmSpecWith(pool Pool, worker, name string, opts Options) orchard.VMSpec {
-	startup := buildStartupScript(pool, worker, name, opts)
-	shutdown, shutdownTimeout := buildShutdownScript(pool, opts.NodeTokens != nil)
+	startup := buildStartupScript(pool, worker, name, r.Options)
+	shutdown, shutdownTimeout := buildShutdownScript(pool, r.Options.NodeTokens != nil)
 
 	spec := orchard.VMSpec{
 		Name:            name,

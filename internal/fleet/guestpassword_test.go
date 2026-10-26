@@ -19,18 +19,12 @@ func macosPool() Pool {
 	return pool
 }
 
-func rotatingWorker(name string) orchard.Worker {
-	w := onlineWorker(name)
-	w.Capabilities = []string{"vm-endpoints", WorkerCapabilityGuestPasswordRotation}
-	return w
-}
-
 var hexPassword = regexp.MustCompile(`^[0-9a-f]{48}$`)
 
 func TestGuestPassword_EachVMGetsItsOwnAndOrchardTheSame(t *testing.T) {
 	pool := macosPool()
 	pool.PerWorker = 2
-	client := &fakeOrchardClient{workers: []orchard.Worker{rotatingWorker("mac1")}}
+	client := &fakeOrchardClient{workers: []orchard.Worker{onlineWorker("mac1")}}
 	r := &Reconciler{Client: client, Spec: &Spec{Pools: []Pool{pool}}}
 
 	plan, err := r.Plan(context.Background())
@@ -87,22 +81,18 @@ func TestGuestPassword_EachVMGetsItsOwnAndOrchardTheSame(t *testing.T) {
 	}
 }
 
-func TestGuestPassword_OnlyWhereItIsSafeAndNeeded(t *testing.T) {
+func TestGuestPassword_OnlyWhereNeeded(t *testing.T) {
 	custom := macosPool()
 	custom.Password = "operator-chosen"
-	for name, tc := range map[string]struct {
-		pool   Pool
-		worker orchard.Worker
-	}{
-		// The worker's Orchard would lock itself out of the shutdown script.
-		"worker without the capability": {macosPool(), onlineWorker("mac1")},
+	for name, pool := range map[string]Pool{
 		// Linux jobs run in containers the egress fence keeps off the VM's sshd.
-		"linux pool":                 {basePool(), rotatingWorker("mac1")},
-		"pool with its own password": {custom, rotatingWorker("mac1")},
+		"linux pool":                 basePool(),
+		"pool with its own password": custom,
 	} {
 		t.Run(name, func(t *testing.T) {
-			client := &fakeOrchardClient{workers: []orchard.Worker{tc.worker}}
-			r := &Reconciler{Client: client, Spec: &Spec{Pools: []Pool{tc.pool}}}
+			// Neither needs the worker's fallback either.
+			client := &fakeOrchardClient{workers: []orchard.Worker{legacyWorker("mac1")}}
+			r := &Reconciler{Client: client, Spec: &Spec{Pools: []Pool{pool}}}
 			plan, err := r.Plan(context.Background())
 			if err != nil {
 				t.Fatal(err)
@@ -111,19 +101,50 @@ func TestGuestPassword_OnlyWhereItIsSafeAndNeeded(t *testing.T) {
 				t.Fatal(err)
 			}
 			vm := client.created[0]
-			if strings.Contains(vm.StartupScript, "grove:guest-password") || vm.Password != tc.pool.Password {
+			if strings.Contains(vm.StartupScript, "grove:guest-password") || vm.Password != pool.Password {
 				t.Fatalf("want no password swap, got Password %q and script:\n%s", vm.Password, vm.StartupScript)
 			}
 		})
 	}
 }
 
-func TestGuestPassword_UpgradedWorkerRecreatesItsVMs(t *testing.T) {
+func TestGuestPassword_RefusesWorkersThatCantRotate(t *testing.T) {
+	pool := macosPool()
+	name := VMName(pool.Name, "mac1", 0)
+	// A VM made before the swap existed, still on admin/admin.
+	old := (&Reconciler{}).vmSpec(pool, "mac1", name)
+	old.StartupScript = guestPasswordBlockRE.ReplaceAllString(old.StartupScript, "")
+	client := &fakeOrchardClient{
+		workers: []orchard.Worker{legacyWorker("mac1"), onlineWorker("mac2")},
+		vms:     []orchard.VM{existingFrom(old)},
+	}
+	r := &Reconciler{Client: client, Spec: &Spec{Pools: []Pool{pool}}}
+	plan, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Blocked) != 1 || !strings.Contains(plan.Blocked[0].Reason, "worker mac1's Orchard") ||
+		!strings.Contains(plan.Blocked[0].Reason, WorkerCapabilityGuestPasswordRotation) {
+		t.Fatalf("want mac1 reported as unable to rotate, got %+v", plan.Blocked)
+	}
+	if len(plan.Creates) != 1 || plan.Creates[0].Worker != "mac2" {
+		t.Fatalf("want a VM on mac2 only, got %+v", plan.Creates)
+	}
+	if len(plan.Deletes) != 1 || plan.Deletes[0].Name != name || !strings.HasPrefix(plan.Deletes[0].Reason, "unsafe: ") {
+		t.Fatalf("mac1's admin/admin VM must be deleted as unsafe, got %+v", plan.Deletes)
+	}
+	if plan.BlockedError() == nil {
+		t.Fatal("a refused worker must surface as a plan error")
+	}
+}
+
+func TestGuestPassword_VMsWithoutTheSwapAreRecreated(t *testing.T) {
 	pool := macosPool()
 	name := VMName(pool.Name, "mac1", 0)
 	before := (&Reconciler{}).vmSpec(pool, "mac1", name)
+	before.StartupScript = guestPasswordBlockRE.ReplaceAllString(before.StartupScript, "")
 	client := &fakeOrchardClient{
-		workers: []orchard.Worker{rotatingWorker("mac1")},
+		workers: []orchard.Worker{onlineWorker("mac1")},
 		vms:     []orchard.VM{existingFrom(before)},
 	}
 	r := &Reconciler{Client: client, Spec: &Spec{Pools: []Pool{pool}}}
@@ -132,14 +153,14 @@ func TestGuestPassword_UpgradedWorkerRecreatesItsVMs(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(plan.Creates) != 1 || len(plan.Deletes) != 1 {
-		t.Fatalf("a VM still on admin/admin must be recreated once its worker can rotate, got %+v", plan)
+		t.Fatalf("a VM still on admin/admin must be recreated, got %+v", plan)
 	}
 }
 
 func TestGuestPassword_SealedMacOSPoolsToo(t *testing.T) {
 	pool := macosPool()
 	pool.Network = NetworkIsolated
-	script := buildStartupScript(pool, "mac1", "macos-mac1-0", Options{rotateGuestPassword: true})
+	script := buildStartupScript(pool, "mac1", "macos-mac1-0", Options{})
 	if !strings.Contains(script, guestPasswordPlaceholder) {
 		t.Fatalf("a sealed macOS VM's job can su to admin too:\n%s", script)
 	}

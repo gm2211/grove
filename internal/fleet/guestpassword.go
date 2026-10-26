@@ -55,14 +55,28 @@ fi
 // per-VM password but still notices a VM without the block.
 var guestPasswordBlockRE = regexp.MustCompile(`(?s)# grove:guest-password begin\n.*?# grove:guest-password end\n`)
 
-// rotatesGuestPassword says whether a VM of pool on worker gets its own admin password: macOS
-// pools still on the image password, on a worker that can log in after the swap. Linux jobs run in
-// containers that the egress fence keeps off the VM's own sshd; a pool with its own password set
-// in fleet.yaml has already replaced the image's.
-func rotatesGuestPassword(pool Pool, worker orchard.Worker) bool {
-	return pool.MacOS() &&
-		(pool.Password == "" || pool.Password == imageGuestPassword) &&
-		slices.Contains(worker.Capabilities, WorkerCapabilityGuestPasswordRotation)
+// needsGuestPasswordRotation says whether pool's VMs must get their own admin password: macOS
+// pools still on the image password. Linux jobs run in containers that the egress fence keeps off
+// the VM's own sshd; a pool with its own password set in fleet.yaml has already replaced the
+// image's.
+func needsGuestPasswordRotation(pool Pool) bool {
+	return pool.MacOS() && (pool.Password == "" || pool.Password == imageGuestPassword)
+}
+
+// canRotateGuestPassword says whether worker's Orchard still gets into a VM after the swap.
+func canRotateGuestPassword(worker orchard.Worker) bool {
+	return slices.Contains(worker.Capabilities, WorkerCapabilityGuestPasswordRotation)
+}
+
+// guestPasswordBlock is why a pool needing its own admin password gets no VM on worker, or "" when
+// it may have one. A VM left on admin/admin hands every job root, so there is no degraded mode.
+func guestPasswordBlock(pool Pool, worker orchard.Worker) string {
+	if !needsGuestPasswordRotation(pool) || canRotateGuestPassword(worker) {
+		return ""
+	}
+	return fmt.Sprintf("worker %s's Orchard can't replace the image's admin/admin (no %s capability), "+
+		"which would give every job root; upgrade it (docs/OPERATIONS.md \"The macOS guest's admin password\")",
+		worker.Name, WorkerCapabilityGuestPasswordRotation)
 }
 
 // withGuestPassword fills a planned spec's guest password placeholder with a fresh random password

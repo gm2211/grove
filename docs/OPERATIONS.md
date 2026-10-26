@@ -99,10 +99,12 @@ database.
 
 Orchard's startup and shutdown scripts both log in with the VM's `Password`. On first boot the
 guest still has `admin`, so the worker has to fall back to the image password. Workers built from
-gm2211/orchard with that fallback advertise the `guest-password-rotation` capability, and grove
-swaps the password only on those workers. VMs on an older worker keep `admin`/`admin` until it is
-upgraded. After that, the fleet recreates them on its next tick. To upgrade a worker, run this on
-the Mac:
+gm2211/orchard with that fallback advertise the `guest-password-rotation` capability. A worker
+without it gets no macOS VM at all, because a VM left on `admin`/`admin` hands every job root:
+`grove fleet plan` and `grove serve` report the macOS pool as blocked on that worker, and any macOS
+VM already running there is deleted as `unsafe`. Linux VMs on the same Mac are unaffected. Once the
+worker is upgraded, the fleet creates its macOS VMs on the next tick. To upgrade a worker, run this
+on the Mac:
 
 ```sh
 rm -rf ~/Applications/"Grove Orchard Worker.app" && grove install --role worker
