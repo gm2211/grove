@@ -19,6 +19,7 @@ internal/tsauth/              Tailscale identity (tailscale whois on the peer ad
 internal/secrets/             operator-set named job secrets (JobRequest.Secrets)
 internal/pki/                 grove's Nomad CA: server, grove-client and per-VM node certificates (mTLS)
 internal/gitauth/             operator-armed private-repo credential (see below)
+internal/broker/              per-worker credential broker: placeholders in, real tokens out (see below)
 internal/health/              rebuilds VMs / pauses Macs that keep losing sealed-pool jobs
 internal/mcp/                 MCP server (stdio)
 internal/install/             role bootstrap planner + doctor checks (see below)
@@ -139,6 +140,22 @@ the names), never in the job history, never in an API response (`Secret` carries
 Authorization (who may name which secret) is checked in `internal/server` where the principal is
 known; `internal/dispatch` only resolves. `internal/dispatch/secrets_test.go`,
 `internal/secrets/secrets_test.go` and `internal/server/tailscale_auth_test.go` assert it.
+
+## `internal/broker` — jobs never hold a real credential
+
+A job gets placeholders (`gph1_` + 256 random bits); the broker on its worker swaps them for real
+tokens on the way to a fixed set of upstreams and masks the tokens on the way back. Keep it that way:
+
+- The hosts a kind's token may go to are fixed in code (`kindHosts`), never configured.
+- Swap only in `Authorization` and `x-api-key` (`injectHeaders`), never in a body, URL or other
+  header: anything else lets a job make an upstream store or echo the token.
+- Never follow redirects, never add HTTP/2 or protocol upgrades on intercepted hosts, and never
+  pass on a response the stripper can't read (an unrequested `Content-Encoding`).
+- Tunnels and plain HTTP go through `Dialer`, which dials only public addresses it resolved itself.
+- Entries are in memory only, on both sides (`Registry`, `Store`), with a lease. Only a
+  credential whose single scope is `broker` reads `GET /broker/entries`, and only its own worker's.
+
+`internal/broker/proxy_test.go` drives the whole path end to end; keep its refusal cases passing.
 
 ## Building / testing
 

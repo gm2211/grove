@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gm2211/grove/internal/artifacts"
+	"github.com/gm2211/grove/internal/broker"
 	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/gitauth"
 	"github.com/gm2211/grove/internal/nomad"
@@ -40,6 +41,9 @@ type Options struct {
 	// Secrets holds the operator-managed named secrets jobs may request (JobRequest.Secrets). The
 	// same store is the dispatch service's resolver. Nil means no job can request one.
 	Secrets *secrets.Store
+	// Broker is the control plane's record of live credential-broker entries, which each worker's
+	// broker pulls from GET /broker/entries. Nil serves every broker an empty list.
+	Broker *broker.Registry
 	// GitAuth holds the optional, operator-armed credential for cloning PRIVATE repositories.
 	// Nil (or armed-never) means jobs can only source public repos. The same store is handed to
 	// the dispatch service as its RepoAuth, so arming it here takes effect on the next dispatch
@@ -154,6 +158,7 @@ func (s *Server) routes() http.Handler {
 	api.HandleFunc("GET /github/sourcing", s.handleGitHubSourcing)
 	api.HandleFunc("PUT /github/sourcing", s.handleEnableGitHubSourcing)
 	api.HandleFunc("DELETE /github/sourcing", s.handleDisableGitHubSourcing)
+	api.HandleFunc("GET /broker/entries", s.handleBrokerEntries)
 
 	root := http.NewServeMux()
 	root.Handle("/api/v1/", http.StripPrefix("/api/v1", s.withMiddleware(api)))

@@ -215,6 +215,35 @@ grove config set server.listen 100.x.y.z:6120   # this machine's tailnet IP
 A server with no operator token, device store or Tailscale auth configured answers every
 `/api/v1` request with 503 rather than running open.
 
+## The credential broker
+
+A job never holds a real credential. It gets a placeholder (`gph1_…`), and each worker Mac runs
+`grove broker`, the proxy its job VMs send traffic through (port 3128 on the VM bridge address,
+192.168.64.1 unless vmnet is configured otherwise). For a request to one of the fixed upstreams
+(github.com, api.github.com, api.anthropic.com, api.openai.com, chatgpt.com) the broker:
+
+- terminates TLS with its own CA (`<grove config dir>/broker/broker-ca.pem`), which is
+  name-constrained to those five hosts, so it can't be used to impersonate any other site;
+- refuses the request unless the placeholder is live, issued for that service, and (when the entry
+  names one) sent from the job's own VM;
+- swaps the placeholder for the real token in `Authorization` (Bearer, token or Basic, which is
+  how git sends it) or `x-api-key`, never anywhere else;
+- masks that token in the response headers and body (as is, URL- or JSON-escaped, base64), and
+  refuses an upstream reply in an encoding it can't read through.
+
+Any other HTTPS is a plain tunnel and plain HTTP is relayed, both to public addresses only: the
+tailnet, the LAN, the host and every other private or special range are refused.
+
+Entries live in memory only. The broker pulls its worker's list every 30 seconds from
+`GET /api/v1/broker/entries`, with a device credential whose only scope is `broker` and whose name
+is the worker's (`grove access issue --name <worker> --scope broker`); no other credential,
+operator's included, can read that route. An entry leaves when its job ends (the control plane
+stops listing it), when its 10-minute lease runs out without renewal, or when the broker restarts.
+At most 1,000 entries are held per worker.
+
+Not wired in yet: dispatch doesn't create entries, VMs don't trust the CA or use the proxy, and
+the worker install doesn't run `grove broker`. Those land separately.
+
 ## Credentials for orchestrators and scripts
 
 An orchestrator (an agent runner, a CI script) should not hold the operator token: it can approve devices,

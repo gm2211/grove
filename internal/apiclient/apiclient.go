@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gm2211/grove/internal/broker"
 	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/gitauth"
 	"github.com/gm2211/grove/internal/secrets"
@@ -90,6 +91,16 @@ func (c *Client) doJSON(ctx context.Context, method, path string, reqBody, respB
 		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(respBody)
+}
+
+// BrokerEntries returns every live credential-broker entry for the worker this client's
+// credential is named after. Only a broker-scoped credential may call it.
+func (c *Client) BrokerEntries(ctx context.Context) ([]broker.Entry, error) {
+	var out server.BrokerEntriesResponse
+	if err := c.doJSON(ctx, http.MethodGet, "/broker/entries", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Entries, nil
 }
 
 // Fleet returns the normalised fleet view: {workers, vms, nodes}.

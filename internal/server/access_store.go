@@ -28,10 +28,14 @@ const (
 	ScopeAgent    = "dispatch:agent"
 	ScopeShell    = "dispatch:shell"
 	ScopeOperator = "operator"
+	// ScopeBroker lets a worker's credential broker pull its entries (GET /broker/entries), real
+	// tokens included, and nothing else. It is never implied by ScopeOperator and never granted by
+	// Tailscale identity: only a device credential named after the worker carries it.
+	ScopeBroker = "broker"
 )
 
 var validAccessScopes = map[string]struct{}{
-	ScopeRead: {}, ScopeDispatch: {}, ScopeBuild: {}, ScopeAgent: {}, ScopeShell: {}, ScopeOperator: {},
+	ScopeRead: {}, ScopeDispatch: {}, ScopeBuild: {}, ScopeAgent: {}, ScopeShell: {}, ScopeOperator: {}, ScopeBroker: {},
 }
 
 // Principal identifies the device behind an authenticated access token.
