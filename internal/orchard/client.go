@@ -158,7 +158,19 @@ func workerFromV1(w v1.Worker) Worker {
 		LastSeen:         w.LastSeen,
 		Offline:          w.Offline(workerOfflineTimeout),
 		SchedulingPaused: w.SchedulingPaused,
+		Capabilities:     capabilitiesFromV1(w.Capabilities),
 	}
+}
+
+func capabilitiesFromV1(capabilities v1.WorkerCapabilities) []string {
+	if len(capabilities) == 0 {
+		return nil
+	}
+	out := make([]string, len(capabilities))
+	for i, capability := range capabilities {
+		out[i] = string(capability)
+	}
+	return out
 }
 
 func (c *client) ListVMs(ctx context.Context) ([]VM, error) {

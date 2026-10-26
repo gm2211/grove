@@ -22,6 +22,9 @@ type Worker struct {
 	LastSeen         time.Time         `json:"lastSeen"`
 	Offline          bool              `json:"offline"`
 	SchedulingPaused bool              `json:"schedulingPaused"`
+	// Capabilities are what the worker's Orchard build advertises, e.g. "vm-endpoints" or
+	// "guest-password-rotation" (see fleet.WorkerCapabilityGuestPasswordRotation).
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 // VM is an Orchard VM as observed.

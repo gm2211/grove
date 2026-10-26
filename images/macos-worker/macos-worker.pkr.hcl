@@ -50,7 +50,7 @@ variable "xcode_profile" {
 variable "ssh_username" {
   type        = string
   default     = "admin"
-  description = "Tart base images use admin/admin; grove keeps that account rather than provisioning a new one."
+  description = "Tart base images use admin/admin; grove keeps that account for Packer, and each VM's startup script replaces the password (docs/OPERATIONS.md)."
 }
 
 variable "ssh_password" {

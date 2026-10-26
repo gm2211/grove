@@ -114,6 +114,18 @@ certificate alone, and keep `internal/install/nomadtls_integration_test.go` (rea
 CI) proving that a client with no TLS, another CA's certificate, or no introduction token is
 refused. Details: docs/OPERATIONS.md "Nomad mutual TLS and client introduction".
 
+## macOS guest admin password
+
+Tart's macOS images boot with `admin`/`admin`, a passwordless sudoer, so a job that knows the
+password is root. Every macOS VM therefore gets its own random admin password, generated right
+before `CreateVM` (`internal/fleet/guestpassword.go`, the `@GROVE_GUEST_PASSWORD@` placeholder,
+like intro tokens: a planned spec never holds one). The value goes into the VM spec's `Password`
+and into the startup script's first block. That block sets it via `dscl` stdin, never argv, and
+fails closed if `admin`/`admin` still works. This only happens on workers advertising
+`guest-password-rotation` (the gm2211/orchard fallback to the image password). Keep it that way:
+never put the password on a command line, in the API or in a planned spec. Details:
+docs/OPERATIONS.md "The macOS guest's admin password".
+
 ## `internal/secrets` — named job secrets
 
 Same discipline as the private-repo token: a value is set only by an operator (`grove secret set`,
