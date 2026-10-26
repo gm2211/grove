@@ -3,12 +3,16 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 )
 
 // IssueDeviceRequest is the body of POST /access/devices.
 type IssueDeviceRequest struct {
 	Name   string   `json:"name"`
 	Scopes []string `json:"scopes"`
+	// ExpiresIn, a Go duration such as "4320h", makes the credential stop working that long from
+	// now. Empty never expires.
+	ExpiresIn string `json:"expiresIn,omitempty"`
 }
 
 // IssueDeviceResponse is POST /access/devices's reply. Token is the raw credential and is never
@@ -32,7 +36,19 @@ func (s *Server) handleIssueDevice(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	token, principal, err := s.opts.AccessStore.Issue(in.Name, in.Scopes)
+	var token string
+	var principal Principal
+	var err error
+	if in.ExpiresIn == "" {
+		token, principal, err = s.opts.AccessStore.Issue(in.Name, in.Scopes)
+	} else {
+		ttl, perr := time.ParseDuration(in.ExpiresIn)
+		if perr != nil {
+			http.Error(w, "expiresIn: "+perr.Error(), http.StatusBadRequest)
+			return
+		}
+		token, principal, err = s.opts.AccessStore.IssueExpiring(in.Name, in.Scopes, ttl)
+	}
 	if err != nil {
 		// Issue's errors are input validation (name/scopes) or a persistence failure; neither
 		// carries token material.

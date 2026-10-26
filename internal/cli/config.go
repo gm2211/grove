@@ -130,6 +130,16 @@ func setConfigKey(cfg *config.Config, key, value string) error {
 		cfg.Server.URL = value
 	case "server.token":
 		cfg.Server.Token = value
+	case "server.socket":
+		cfg.Server.Socket = value
+	case "server.socketUsers":
+		// Comma-separated macOS user names or uids, e.g. "giulio" or "giulio,argos".
+		cfg.Server.SocketUsers = nil
+		for _, u := range strings.Split(value, ",") {
+			if u = strings.TrimSpace(u); u != "" {
+				cfg.Server.SocketUsers = append(cfg.Server.SocketUsers, u)
+			}
+		}
 	case "artifacts.dir":
 		cfg.Artifacts.Dir = value
 	case "artifacts.endpoint", "artifacts.bucket", "artifacts.accessKey", "artifacts.secretKey":

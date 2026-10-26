@@ -48,6 +48,9 @@ type Principal struct {
 	// Tags are the Tailscale node tags of a principal authenticated by Tailscale identity; empty
 	// for a token. A named secret may be granted to a tag (see internal/secrets).
 	Tags []string `json:"tags,omitempty"`
+	// ExpiresAt is when the credential stops working, for one issued with an expiry; GET /whoami
+	// shows it, so its holder can ask for a new one in time.
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
 }
 
 // DeviceCredential is the JSON-safe public record for an enrolled device.
@@ -63,6 +66,8 @@ type DeviceCredential struct {
 	CreatedAt  time.Time  `json:"createdAt"`
 	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
 	RevokedAt  *time.Time `json:"revokedAt,omitempty"`
+	// ExpiresAt is when an expiring credential stops authenticating; nil never expires.
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
 }
 
 type accessRecord struct {
@@ -128,15 +133,23 @@ const SourceJoin = "join"
 
 // Issue creates a credential and returns its raw token exactly once.
 func (s *AccessStore) Issue(name string, scopes []string) (string, Principal, error) {
-	return s.issue(name, scopes, "")
+	return s.issue(name, scopes, "", 0)
+}
+
+// IssueExpiring is Issue for a credential that stops working after ttl.
+func (s *AccessStore) IssueExpiring(name string, scopes []string, ttl time.Duration) (string, Principal, error) {
+	if ttl <= 0 {
+		return "", Principal{}, errors.New("expiry must be in the future")
+	}
+	return s.issue(name, scopes, "", ttl)
 }
 
 // IssueJoined is Issue for a device enrolling through join approval; see RevokeSuperseded.
 func (s *AccessStore) IssueJoined(name string, scopes []string) (string, Principal, error) {
-	return s.issue(name, scopes, SourceJoin)
+	return s.issue(name, scopes, SourceJoin, 0)
 }
 
-func (s *AccessStore) issue(name string, scopes []string, source string) (string, Principal, error) {
+func (s *AccessStore) issue(name string, scopes []string, source string, ttl time.Duration) (string, Principal, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", Principal{}, errors.New("device name is required")
@@ -165,6 +178,10 @@ func (s *AccessStore) issue(name string, scopes []string, source string) (string
 		},
 		TokenHash: hashToken(token),
 	}
+	if ttl > 0 {
+		expires := record.CreatedAt.Add(ttl)
+		record.ExpiresAt = &expires
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -186,11 +203,14 @@ func (s *AccessStore) Authenticate(token string) (Principal, bool) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now().UTC()
 	for id, record := range s.credentials {
 		if record.RevokedAt != nil || !constantTimeHexEqual(digest, record.TokenHash) {
 			continue
 		}
-		now := time.Now().UTC()
+		if record.ExpiresAt != nil && !now.Before(*record.ExpiresAt) {
+			return Principal{}, false
+		}
 		persistUsage := record.LastUsedAt == nil || now.Sub(*record.LastUsedAt) >= time.Minute
 		record.LastUsedAt = &now
 		s.credentials[id] = record
@@ -379,7 +399,7 @@ func normalizeScopes(scopes []string) ([]string, error) {
 }
 
 func principalFor(record accessRecord) Principal {
-	return Principal{ID: record.ID, Name: record.Name, Scopes: cloneStrings(record.Scopes)}
+	return Principal{ID: record.ID, Name: record.Name, Scopes: cloneStrings(record.Scopes), ExpiresAt: record.ExpiresAt}
 }
 
 func cloneStrings(values []string) []string {

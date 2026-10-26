@@ -67,3 +67,16 @@ func TestSetConfigKey_ArtifactsDirAndRetiredS3Keys(t *testing.T) {
 		t.Error("retired keys must not be written")
 	}
 }
+
+func TestSetConfigKey_LocalSocket(t *testing.T) {
+	cfg := &config.Config{}
+	if err := setConfigKey(cfg, "server.socket", "/Users/Shared/grove/api.sock"); err != nil {
+		t.Fatal(err)
+	}
+	if err := setConfigKey(cfg, "server.socketUsers", "giulio, argos,"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.Socket != "/Users/Shared/grove/api.sock" || strings.Join(cfg.Server.SocketUsers, "|") != "giulio|argos" {
+		t.Fatalf("server = %+v", cfg.Server)
+	}
+}

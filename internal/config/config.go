@@ -77,6 +77,13 @@ type ServerConfig struct {
 	// Tailscale lets tailnet peers call the API with no token at all, authenticated by their
 	// Tailscale identity (see internal/tsauth). Bearer tokens keep working alongside it.
 	Tailscale ServerTailscaleConfig `yaml:"tailscale,omitempty"`
+	// Socket, when set, makes `grove serve` also listen on this Unix socket, for a client on the
+	// same Mac (Argos on the Studio), e.g. "/Users/Shared/grove/api.sock". Only SocketUsers may
+	// connect, checked against the user the kernel reports for each connection, and every
+	// request still needs a bearer token.
+	Socket string `yaml:"socket,omitempty"`
+	// SocketUsers are the macOS user names (or uids) allowed to connect to Socket.
+	SocketUsers []string `yaml:"socketUsers,omitempty"`
 }
 
 // ServerTailscaleConfig is server.tailscale. Identity auth is on whenever the control plane has a
