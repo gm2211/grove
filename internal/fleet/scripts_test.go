@@ -718,25 +718,116 @@ func TestBuildStartupScript_FencesJobsOffHomeNetworks(t *testing.T) {
 	}
 }
 
-// The Linux fence script itself must run: shell syntax, and no DNS exception ahead of the rejects.
+// The Linux fence script itself must run: shell syntax, no DNS exception, and exactly one way to
+// the host: TCP to the DHCP default gateway's broker port, ahead of the rejects, and none at all
+// when the guest has no IPv4 default route (or ip prints something that isn't an address).
 func TestSharedEgressFenceScript_Runs(t *testing.T) {
-	fakeBin := t.TempDir()
-	log := filepath.Join(t.TempDir(), "iptables.log")
-	if err := os.WriteFile(filepath.Join(fakeBin, "iptables"), []byte("#!/bin/sh\necho \"$*\" >> \"$GROVE_TEST_LOG\"\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
+	for _, tc := range []struct {
+		name, route, wantException string
+	}{
+		{"gateway", "default via 192.168.64.1 dev enp0s1 proto dhcp src 192.168.64.5 metric 100", "-w -A GROVE-EGRESS -d 192.168.64.1/32 -p tcp --dport 3128 -j RETURN"},
+		{"no default route", "", ""},
+		{"not an address", "default via fe80::1 dev enp0s1", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeBin := t.TempDir()
+			log := filepath.Join(t.TempDir(), "iptables.log")
+			if err := os.WriteFile(filepath.Join(fakeBin, "iptables"), []byte("#!/bin/sh\necho \"$*\" >> \"$GROVE_TEST_LOG\"\nexit 0\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			ip := "#!/bin/sh\n[ \"$*\" = \"-4 route show default\" ] || exit 64\n"
+			if tc.route != "" {
+				ip += "echo '" + tc.route + "'\n"
+			}
+			if err := os.WriteFile(filepath.Join(fakeBin, "ip"), []byte(ip), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("/bin/sh", "-s")
+			cmd.Stdin = strings.NewReader(sharedEgressFenceScript())
+			cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_LOG="+log)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("fence script failed: %v\n%s", err, out)
+			}
+			data, _ := os.ReadFile(log)
+			got := string(data)
+			rejectAt := strings.Index(got, "-d 10.0.0.0/8 -j REJECT")
+			if rejectAt < 0 || !strings.Contains(got, "-d 100.64.0.0/10 -j REJECT") || !strings.Contains(got, "-d 192.168.0.0/16 -j REJECT") {
+				t.Fatalf("home networks not rejected:\n%s", got)
+			}
+			if strings.Contains(got, "--dport 53") {
+				t.Fatalf("no resolver may be let through:\n%s", got)
+			}
+			var exceptions []string
+			for _, line := range strings.Split(got, "\n") {
+				if strings.Contains(line, "GROVE-EGRESS -d ") && !strings.Contains(line, "REJECT") {
+					exceptions = append(exceptions, line)
+				}
+			}
+			switch {
+			case tc.wantException == "" && len(exceptions) != 0:
+				t.Fatalf("no gateway, yet an exception:\n%s", got)
+			case tc.wantException != "" && (len(exceptions) != 1 || exceptions[0] != tc.wantException):
+				t.Fatalf("exceptions = %q, want just %q", exceptions, tc.wantException)
+			case tc.wantException != "" && strings.Index(got, tc.wantException) > rejectAt:
+				t.Fatalf("the broker exception must come before the rejects:\n%s", got)
+			}
+		})
 	}
-	cmd := exec.Command("/bin/sh", "-s")
-	cmd.Stdin = strings.NewReader(sharedEgressFenceScript())
-	cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_LOG="+log)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("fence script failed: %v\n%s", err, out)
+	if strings.Contains(egressFenceScript, "3128") || strings.Contains(egressFenceScript, "@BROKER") {
+		t.Errorf("a sealed guest's fence has no broker exception:\n%s", egressFenceScript)
 	}
-	got, _ := os.ReadFile(log)
-	rejectAt := strings.Index(string(got), "-d 100.64.0.0/10 -j REJECT")
-	if rejectAt < 0 {
-		t.Fatalf("tailnet not rejected:\n%s", got)
-	}
-	if strings.Contains(string(got), "--dport 53") || strings.Contains(string(got), "-d 192.168.64.1") {
-		t.Fatalf("no private resolver may be let through:\n%s", got)
+}
+
+// The macOS fence loader puts the job user's one exception, TCP to the default gateway's broker
+// port, ahead of the anchor's block rule, and loads no exception when there's no gateway.
+func TestMacOSHomeFenceLoader_BrokerException(t *testing.T) {
+	for _, tc := range []struct {
+		name, route, want string
+	}{
+		{"gateway", "   route to: default\ndestination: default\n    gateway: 192.168.64.1\n  interface: en0", "pass out quick proto tcp from any to 192.168.64.1 port 3128 user " + MacOSJobUser + "\n"},
+		{"no gateway", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeBin := t.TempDir()
+			dir := t.TempDir()
+			anchor := filepath.Join(dir, "anchor")
+			for name, body := range map[string]string{
+				"route": "#!/bin/sh\n[ \"$*\" = \"-n get default\" ] || exit 64\n" + func() string {
+					if tc.route == "" {
+						return "exit 1\n"
+					}
+					return "printf '%s\\n' '" + strings.ReplaceAll(tc.route, "\n", "' '") + "'\n"
+				}(),
+				"sleep": "#!/bin/sh\nexit 0\n",
+				"pfctl": `#!/bin/sh
+case "$*" in
+  "-q -f /etc/pf.conf") ;;
+  "-q -a com.apple/grove-jobs -f -") cat > "$GROVE_TEST_ANCHOR" ;;
+  "-q -E") ;;
+  "-q -a com.apple/grove-jobs -s rules") cat "$GROVE_TEST_ANCHOR" ;;
+  "-s info") echo "Status: Enabled" ;;
+  *) exit 64 ;;
+esac
+`,
+				"cat": "#!/bin/sh\nif [ \"$1\" = /usr/local/etc/grove/pf-jobs.conf ]; then printf '%s' \"$GROVE_TEST_RULES\"; else exec /bin/cat \"$@\"; fi\n",
+			} {
+				if err := os.WriteFile(filepath.Join(fakeBin, name), []byte(body), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := exec.Command("/bin/sh", "-s")
+			cmd.Stdin = strings.NewReader(macosHomeFenceLoader)
+			cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_ANCHOR="+anchor, "GROVE_TEST_RULES="+macosHomeFenceRules)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("loader failed: %v\n%s", err, out)
+			}
+			got, err := os.ReadFile(anchor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := tc.want + macosHomeFenceRules; string(got) != want {
+				t.Errorf("anchor =\n%s\nwant:\n%s", got, want)
+			}
+		})
 	}
 }
