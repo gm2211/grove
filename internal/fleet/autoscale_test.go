@@ -18,7 +18,7 @@ func elasticSpec() *Spec {
 }
 
 func mac(name string, slots uint64) orchard.Worker {
-	return orchard.Worker{Name: name, Labels: map[string]string{}, Resources: map[string]uint64{
+	return orchard.Worker{Name: name, Labels: map[string]string{}, Capabilities: []string{WorkerCapabilityGuestPasswordRotation}, Resources: map[string]uint64{
 		"org.cirruslabs.tart-vms": slots, "logical-cores": 16, "memory-mib": 65536,
 	}}
 }

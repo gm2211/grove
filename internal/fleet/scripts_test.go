@@ -360,7 +360,7 @@ if [ "${1:-}" = "-version" ]; then
   printf 'Xcode 27.0\nBuild version %s\n' "$GROVE_TEST_XCODE_BUILD"
 fi
 `)
-			writeExecutable("dscl", "#!/bin/sh\n[ \"$2\" = -read ] && exit 1\nexit 0\n")
+			writeExecutable("dscl", "#!/bin/sh\n[ \"$2\" = -read ] && exit 1\n[ \"$2\" = -authonly ] && exit 1\nexit 0\n")
 			writeExecutable("chown", "#!/bin/sh\nexit 0\n")
 			writeExecutable("chmod", "#!/bin/sh\nexit 0\n")
 			writeExecutable("xcrun", `#!/bin/sh
@@ -500,7 +500,7 @@ esac
 `)
 			writeExecutable("sysctl", "#!/bin/sh\nprintf '12\\n'\n")
 			writeExecutable("mkdir", "#!/bin/sh\nexit 0\n")
-			writeExecutable("dscl", "#!/bin/sh\n[ \"$2\" = -read ] && exit 1\nexit 0\n")
+			writeExecutable("dscl", "#!/bin/sh\n[ \"$2\" = -read ] && exit 1\n[ \"$2\" = -authonly ] && exit 1\nexit 0\n")
 			writeExecutable("chown", "#!/bin/sh\nexit 0\n")
 			writeExecutable("chmod", "#!/bin/sh\nexit 0\n")
 			writeExecutable("tee", "#!/bin/sh\ncat >/dev/null\n")

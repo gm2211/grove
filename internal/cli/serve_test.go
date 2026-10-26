@@ -70,7 +70,7 @@ pools:
 
 // A sealed pool needs nothing from the tailnet: no auth key, and no tailnet address for Nomad.
 func TestFleetReconcileLoop_IsolatedPool_CreatesOnceThenNoOp(t *testing.T) {
-	oc := &fakeReconcileOrchard{workers: []orchard.Worker{{Name: "mac1"}}}
+	oc := &fakeReconcileOrchard{workers: []orchard.Worker{{Name: "mac1", Capabilities: []string{fleet.WorkerCapabilityGuestPasswordRotation}}}}
 	cfg := &config.Config{
 		Fleet: writeIsolatedFleet(t, "linux"),
 		Nomad: config.Endpoint{URL: "http://cp.local:4646"},
@@ -93,7 +93,7 @@ func TestFleetReconcileLoop_IsolatedPool_CreatesOnceThenNoOp(t *testing.T) {
 
 // A sealed macOS pool gets a Softnet VM with the host blocked, like a Linux one.
 func TestFleetReconcileLoop_IsolatedMacOSPool_GetsSealedVM(t *testing.T) {
-	oc := &fakeReconcileOrchard{workers: []orchard.Worker{{Name: "mac1"}}}
+	oc := &fakeReconcileOrchard{workers: []orchard.Worker{{Name: "mac1", Capabilities: []string{fleet.WorkerCapabilityGuestPasswordRotation}}}}
 	cfg := &config.Config{Fleet: writeIsolatedFleet(t, "macos"), Nomad: config.Endpoint{URL: "http://100.64.0.10:4646"}}
 	loop := newFleetReconcileLoop(cfg, oc, &server.FleetReconcileStatus{})
 
@@ -318,7 +318,7 @@ pools:
 		t.Fatal(err)
 	}
 
-	oc := &fakeReconcileOrchard{workers: []orchard.Worker{{Name: "mac1"}}}
+	oc := &fakeReconcileOrchard{workers: []orchard.Worker{{Name: "mac1", Capabilities: []string{fleet.WorkerCapabilityGuestPasswordRotation}}}}
 	cfg := &config.Config{Fleet: fleetPath, Nomad: config.Endpoint{URL: "http://100.101.229.60:4646"}}
 	status := &server.FleetReconcileStatus{}
 

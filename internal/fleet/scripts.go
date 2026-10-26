@@ -32,7 +32,7 @@ func buildStartupScript(pool Pool, worker, vmName string, opts Options) string {
 	fmt.Fprintf(&b, "grove_pool=%s\n", shQuote(pool.Name))
 	fmt.Fprintf(&b, "grove_host=%s\n", shQuote(worker))
 	fmt.Fprintf(&b, "grove_vm=%s\n\n", shQuote(vmName))
-	if opts.rotateGuestPassword && pool.MacOS() {
+	if needsGuestPasswordRotation(pool) {
 		b.WriteString(guestPasswordScript)
 		b.WriteString("\n")
 	}

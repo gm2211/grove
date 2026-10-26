@@ -73,11 +73,18 @@ func basePool() Pool {
 	}
 }
 
+// onlineWorker is a worker running a current Orchard (see legacyWorker).
 func onlineWorker(name string) orchard.Worker {
 	return orchard.Worker{
-		Name:   name,
-		Labels: map[string]string{},
+		Name:         name,
+		Labels:       map[string]string{},
+		Capabilities: []string{WorkerCapabilityGuestPasswordRotation},
 	}
+}
+
+// legacyWorker is a worker whose Orchard predates guest password rotation.
+func legacyWorker(name string) orchard.Worker {
+	return orchard.Worker{Name: name, Labels: map[string]string{}}
 }
 
 func TestPlan_MissingVM_Create(t *testing.T) {
