@@ -4,6 +4,15 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Credential broker (not wired into dispatch yet).** `grove broker` runs on a worker Mac as the
+  proxy its job VMs use. A job gets a placeholder (`gph1_` and 256 random bits) instead of a real
+  token; on requests to GitHub, Anthropic or OpenAI/ChatGPT the broker swaps it for the real token
+  in the `Authorization`/`x-api-key` header only, and masks that token (raw, URL- or JSON-escaped,
+  base64) in the response. Everything else is tunnelled, to public addresses only. Entries live in
+  memory, come from the control plane (`GET /api/v1/broker/entries`, a credential with only the new
+  `broker` scope, named after the worker) and die when the job ends or a 10-minute lease runs out.
+  Dispatch, the VM side and the worker install follow in later changes.
+
 - **grove only listens on the tailnet.** `grove serve` refuses to start when `server.listen` is a
   wildcard (`0.0.0.0`, `:6120`) or resolves to anything but loopback or a Tailscale address, and
   `grove doctor` has a `grove-listen` row for it. Fix with `grove config set server.listen

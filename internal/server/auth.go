@@ -80,6 +80,9 @@ func requiredScope(r *http.Request) string {
 		strings.HasPrefix(path, "/github/") {
 		return ScopeOperator
 	}
+	if path == "/broker/entries" {
+		return ScopeBroker
+	}
 	if r.Method == http.MethodPost && path == "/jobs" ||
 		r.Method == http.MethodDelete && strings.HasPrefix(path, "/jobs/") ||
 		r.Method == http.MethodPost && strings.HasSuffix(path, "/cancel") {
@@ -196,7 +199,7 @@ func (s *Server) tailscalePrincipal(r *http.Request) Principal {
 	}
 	scopes := make([]string, 0, len(res.Scopes))
 	for _, scope := range res.Scopes {
-		if _, known := validAccessScopes[scope]; known {
+		if _, known := validAccessScopes[scope]; known && scope != ScopeBroker {
 			scopes = append(scopes, scope)
 		}
 	}
