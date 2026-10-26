@@ -43,9 +43,9 @@ type EnrollmentConfig struct {
 }
 
 type TailscaleConfig struct {
-	// AuthKey is an ephemeral, tagged Tailscale auth key used by shared-network worker VMs'
-	// StartupScript to join the tailnet (see ARCHITECTURE.md → "Recycling / hygiene"). VMs of an
-	// isolated pool (fleet.yaml network: isolated) never join the tailnet and never get it.
+	// AuthKey is no longer used: no worker VM joins the tailnet. A shared VM reaches the control
+	// plane's Nomad through its host Mac's NAT, and a key in a VM's startup script was readable by
+	// anything that could list Orchard's VMs. Kept so existing config files still load.
 	AuthKey string `yaml:"authKey,omitempty"`
 }
 

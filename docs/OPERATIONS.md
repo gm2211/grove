@@ -436,6 +436,15 @@ while a job runs — is in [docs/JOBS.md](JOBS.md#private-repositories).
 
 ## Isolating a pool's network
 
+No worker VM joins the tailnet. A shared VM's Nomad client dials the control plane's RPC
+address (port 4647 on the host of `nomad.url`, which the control plane resolves to an IP, since
+guests resolve names through public resolvers only) through its host Mac's NAT, and the host's
+own Tailscale carries it the rest of the way. So the tailnet's ACLs must let each worker Mac reach
+the control plane on 4647; nothing needs to allow VMs as tailnet devices any more, and
+`tailscale.authKey` is no longer used (`grove config set` refuses it). The startup script turns
+the image's Tailscale daemon off. To get a shell in a VM, use `orchard ssh vm <name>` from the
+control plane rather than tailnet SSH.
+
 By default a worker VM shares its host Mac's network through Tart's NAT, so the VM can reach
 whatever that Mac reaches: your LAN, services the Mac itself runs, and every device on your
 tailnet, through the Mac's own Tailscale login. Its jobs can't: a firewall in the guest

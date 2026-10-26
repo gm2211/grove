@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -27,11 +28,13 @@ const LabelWorkerPin = "org.cirruslabs.orchard.worker-name"
 
 // Options tunes the Reconciler's behaviour. The zero value is usable.
 type Options struct {
-	// TailscaleAuthKey, when set, makes generated StartupScripts join the tailnet (see
-	// scripts.go). Typically config.Config.Tailscale.AuthKey.
+	// TailscaleAuthKey is ignored: no VM joins the tailnet. A shared VM reaches the control
+	// plane's Nomad through its host Mac's NAT instead, and a tailnet key in a VM's startup script
+	// was readable by anything that can list Orchard's VMs.
 	TailscaleAuthKey string
-	// NomadRPCAddress, when set, points macOS worker clients at the Nomad RPC listener. It is
-	// derived from the configured Nomad HTTP URL by the CLI.
+	// NomadRPCAddress, when set, points worker clients at the Nomad RPC listener. The CLI derives
+	// it from the configured Nomad HTTP URL and resolves a host name to an IP address, since a
+	// guest resolves names through public resolvers only (see ResolveNomadRPCAddress).
 	NomadRPCAddress string
 	// NodeTokens, when set, gives every VM it creates its own node-scoped Nomad ACL token (in the
 	// shutdown script only, so the VM can drain itself) and turns on ACL enforcement in the VM's
@@ -620,4 +623,42 @@ func PoolAndHost(vm orchard.VM) (pool, host string) {
 	}
 
 	return pool, hostOf(vm, worker)
+}
+
+// ResolveNomadRPCAddress turns a host:port RPC address into ip:port with lookup, preferring IPv4.
+// A guest resolves names only through public resolvers (isolatedDNSServers), so a tailnet name
+// like the control plane's MagicDNS one would never resolve inside it; the control plane resolves
+// it instead, and the guest dials the address through its host Mac's NAT. An address that is
+// already an IP, or "", comes back unchanged. A failed lookup is an error, never a fallback to the
+// name: that would change every VM's startup script, and so recreate the fleet, on a DNS hiccup.
+func ResolveNomadRPCAddress(ctx context.Context, address string, lookup func(ctx context.Context, network, host string) ([]net.IP, error)) (string, error) {
+	if address == "" {
+		return "", nil
+	}
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return "", err
+	}
+	if net.ParseIP(host) != nil {
+		return address, nil
+	}
+	ips, err := lookup(ctx, "ip", host)
+	if err != nil {
+		return "", fmt.Errorf("resolve Nomad host %s: %w", host, err)
+	}
+	if len(ips) == 0 {
+		return "", fmt.Errorf("resolve Nomad host %s: no addresses", host)
+	}
+	// The address lands in every VM's startup script, so the pick must not depend on the order
+	// the resolver happens to answer in: the lowest IPv4 address, else the lowest IPv6 one.
+	slices.SortFunc(ips, func(a, b net.IP) int {
+		if a4, b4 := a.To4() != nil, b.To4() != nil; a4 != b4 {
+			if a4 {
+				return -1
+			}
+			return 1
+		}
+		return bytes.Compare(a.To16(), b.To16())
+	})
+	return net.JoinHostPort(ips[0].String(), port), nil
 }
