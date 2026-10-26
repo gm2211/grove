@@ -25,7 +25,12 @@ job "grove-{{.Kind}}-{{.Pool}}" {
     attribute = "${meta.pool}"
     value     = "{{.Pool}}"
   }
-
+{{if .NodePool}}
+  # The pool's VMs register in a node pool of its name, which their introduction tokens bind
+  # them to (see internal/fleet's enrol.go): unlike meta.pool, which a node sets for itself, a VM
+  # can't claim another pool's node pool, so it is never handed that pool's jobs.
+  node_pool = "{{.NodePool}}"
+{{end}}
   # grove owns retries at the JobRequest level (see internal/dispatch); Nomad must not also retry.
   reschedule {
     attempts = 0

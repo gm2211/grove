@@ -11,9 +11,10 @@
 //	ca.pem, ca-key.pem          the CA (10 years)
 //	server.pem, server-key.pem  server.global.nomad plus the server's own addresses (2 years)
 //	cli.pem, cli-key.pem        cli.global.nomad: grove's own HTTP API client (2 years)
-//	node.pem, node-key.pem      client.global.nomad: what every VM's Nomad client presents (2 years)
+//	node.pem, node-key.pem      client.global.nomad: the control plane's sandbox-host client (2 years)
 //
-// A node certificate alone does not let a VM join: the server also enforces client
+// Each VM gets a certificate of its own instead (CA.IssueNode, a day long), pushed in after boot by
+// the fleet. A node certificate alone does not let a machine join: the server also enforces client
 // introduction, so registering needs a per-VM introduction token as well (see internal/fleet).
 package pki
 
@@ -363,4 +364,78 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 		return fmt.Errorf("pki: write %s: %w", path, err)
 	}
 	return nil
+}
+
+// NodeCertValidity is how long a VM's own Nomad client certificate lasts (see CA.IssueNode). The
+// fleet renews it well before then, over Orchard exec, so a certificate copied out of a VM is
+// useless within a day and a VM nobody renews drops out of Nomad on its own.
+const NodeCertValidity = 24 * time.Hour
+
+// CA signs certificates with grove's Nomad CA outside EnsureNomad: the per-VM client
+// certificates the fleet hands out at enrolment.
+type CA struct {
+	cert *x509.Certificate
+	key  *ecdsa.PrivateKey
+}
+
+// LoadCA reads the CA certificate and key EnsureNomad maintains.
+func LoadCA(certPath, keyPath string) (*CA, error) {
+	cert, key, err := loadPair(certPath, keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("pki: load CA: %w", err)
+	}
+	if !cert.IsCA {
+		return nil, fmt.Errorf("pki: %s is not a CA certificate", certPath)
+	}
+	return &CA{cert: cert, key: key}, nil
+}
+
+// NodeCert is one VM's Nomad client certificate and key, PEM encoded.
+type NodeCert struct {
+	Cert, Key string
+	NotAfter  time.Time
+}
+
+// IssueNode signs a fresh key pair for the Nomad client of the VM named vmName, valid for
+// validity (capped at the CA's own expiry). Nomad's role check needs the client.global.nomad name,
+// so the VM's name rides along as a second DNS name and in the organizational unit: anything
+// holding the certificate is that VM's, and only for a day.
+func (ca *CA) IssueNode(vmName string, now time.Time, validity time.Duration) (NodeCert, error) {
+	if vmName == "" {
+		return NodeCert{}, errors.New("pki: a node certificate needs a VM name")
+	}
+	tmpl := clientTemplate(ClientName)
+	tmpl.Subject.OrganizationalUnit = []string{vmName}
+	tmpl.DNSNames = append(tmpl.DNSNames, vmName)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return NodeCert{}, fmt.Errorf("pki: generate key for %s: %w", vmName, err)
+	}
+	serial, err := serialNumber()
+	if err != nil {
+		return NodeCert{}, err
+	}
+	tmpl.SerialNumber = serial
+	tmpl.NotBefore = now.Add(-time.Minute)
+	tmpl.NotAfter = now.Add(validity)
+	if tmpl.NotAfter.After(ca.cert.NotAfter) {
+		tmpl.NotAfter = ca.cert.NotAfter
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, &key.PublicKey, ca.key)
+	if err != nil {
+		return NodeCert{}, fmt.Errorf("pki: sign node certificate for %s: %w", vmName, err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		return NodeCert{}, fmt.Errorf("pki: parse node certificate for %s: %w", vmName, err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return NodeCert{}, fmt.Errorf("pki: marshal key: %w", err)
+	}
+	return NodeCert{
+		Cert:     string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
+		Key:      string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})),
+		NotAfter: cert.NotAfter,
+	}, nil
 }

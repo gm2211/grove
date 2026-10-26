@@ -49,19 +49,45 @@ their payloads. So `grove install --role control-plane` also:
 - **creates grove's own CA** in `~/.config/grove/nomad/tls/` (`internal/pki`; keys mode 0600, the
   CA key never leaves the control plane) and certificates for the server (`server.global.nomad`
   plus the address it binds), for grove itself (`cli.pem`, which `nomad.clientCert` points at),
-  and for the fleet's VMs (`node.pem`, `client.global.nomad`);
+  and for the control plane's own sandbox-host client (`node.pem`, `client.global.nomad`). VMs
+  never get that one: each gets a certificate of its own at enrolment (below);
 - **turns on mutual TLS** for Nomad's RPC and HTTP, with `verify_server_hostname` (a client
   certificate cannot pose as a server) and `verify_https_client` (the HTTP API answers only
   CA-signed callers, on top of the ACL token). `nomad.url` becomes `https://`;
 - **enforces client introduction strictly**: a node registers only with an introduction token
-  bound to its node name, minted by grove. The fleet reconciler mints one per VM as it creates it
-  (valid 6 hours, written root-only to the VM's Nomad state directory) and names the VM's Nomad
-  node after the VM. Once registered, a node authenticates with the identity the server issued
-  it, so a reboot rejoins without a new token;
+  bound to its node name and node pool, minted by grove. Once registered, a node authenticates
+  with the identity the server issued it, so a reboot rejoins without a new token;
 - **runs the control plane's sandbox-host client as its own agent** (`com.grove.nomad-sandbox-client`
   / `grove-nomad-sandbox-client`, config `~/.config/grove/nomad/sandbox-client.hcl`, node name
   `grove-sandbox-host`), because the server holds every client to introduction, its own included.
   The install mints its token and restarts it.
+
+Nothing a VM's Nomad client needs to authenticate is in its Orchard spec, which every Orchard
+worker and API caller can read. A shared VM's startup script carries only the CA certificate and
+the TLS config, then waits (up to 30 minutes, `# grove:nomad-enrol wait`) before restarting Nomad.
+Each reconciler tick in `grove serve`, the fleet **enrols** every running shared VM that needs it
+over Orchard exec (`sudo -n /bin/sh -c …`, with everything secret on stdin, never argv). Only a
+VM exactly as the reconciler would create it qualifies (its pool's image and scripts, on the worker
+its name pins it to): any worker's Orchard credential can create VMs, and one that merely looks
+like grove's gets nothing. Each enrolled VM gets:
+
+- a client certificate of its own (`client.global.nomad`, which Nomad's role check needs, plus
+  the VM's name as a DNS name and OU), valid **24 hours** and renewed after 12, with a new key each
+  time. A renewal is written over the old files and Nomad is sent `SIGHUP`, which reloads them and
+  reconnects (an established connection outlives its certificate; a new handshake does not). A
+  certificate copied out of a VM is useless within a day;
+- while its Nomad client isn't registered, an **introduction token** bound to the VM's name and
+  to its pool's **node pool** (valid 30 minutes, Nomad's maximum; re-minted if the VM hasn't
+  registered by then). The VM's Nomad config names that node pool, and the pool's jobs are pinned
+  to it (`node_pool` in `grove-<kind>-<pool>`), so a VM can only ever be handed its own pool's
+  jobs: unlike `meta.pool`, which a node sets for itself, the node pool is checked against the
+  token by the server. grove creates the node pools; `default` and `all` are Nomad's own, so no
+  fleet pool may be named either.
+
+Enrolment state lives in `grove serve`'s memory: after a restart it simply enrols every VM again,
+which renews its certificate. `grove fleet apply` creates VMs but doesn't enrol them; the running
+`grove serve` does, within a tick. A VM that is never enrolled fails its startup script after 30
+minutes, and Orchard's restarts then hand it to the reconciler's boot-loop rebuild.
 
 Upgrading an existing control plane is re-running the installer. Nomad restarts onto TLS, the
 server's old built-in client goes down (the reconciler purges it like any down node), and the
@@ -75,11 +101,15 @@ What each refusal looks like in a client's log, for debugging a VM that never sh
 | --- | --- |
 | `rpc error: stream closed` on `Node.Register` | the client has no TLS config (an old image or startup script) |
 | `x509: certificate signed by unknown authority` | the client trusts another CA: the control plane's CA was recreated, so recreate the VM |
-| `rpc error: Permission denied` on `Node.Register` | no introduction token, an expired one (older than 6 hours before first boot), or one minted for another name |
+| `rpc error: Permission denied` on `Node.Register` | no introduction token, an expired one (older than 30 minutes), or one minted for another name |
+| `introduction claims mismatch` in the server's log | the token names another node pool than the client's config: the VM is not the pool it claims to be |
+| `tls: expired certificate` | the VM's certificate wasn't renewed: is `grove serve` running, and does `serve: fleet reconciler: enrolling VMs into Nomad failed` say why? |
+| startup script fails with `the control plane never enrolled this VM into Nomad` | the same, for a VM's first enrolment |
 
 `grove doctor` has a `nomad-tls` row: it fails when Nomad runs without mTLS and when a
-certificate is within 30 days of expiry. Certificates last two years; renewing is re-running the
-installer, after which the fleet recreates its VMs with the new node certificate.
+certificate is within 30 days of expiry. grove's CA lasts ten years and the control plane's own
+certificates two; renewing is re-running the installer (a new CA makes the fleet recreate its VMs).
+VMs' certificates renew themselves, as above.
 
 ## The macOS guest's admin password
 

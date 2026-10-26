@@ -55,9 +55,10 @@ type Endpoint struct {
 
 	// The rest is Nomad's mutual TLS, written by `grove install --role control-plane` (see
 	// internal/pki). CACert verifies the server; ClientCert/ClientKey are grove's own client
-	// identity for the HTTP API. NodeCert/NodeKey are the client certificate the fleet hands each
-	// VM's Nomad client, which on its own does not let a node join: registering also needs a
-	// per-VM introduction token. All paths, never PEM contents.
+	// identity for the HTTP API. NodeCert/NodeKey are the control plane's own sandbox-host client's
+	// certificate; setting them also marks Nomad as running mutual TLS, so the fleet enrols each
+	// VM with a certificate of its own, signed by the CA key beside CACert (see
+	// fleet.Reconciler.Enrol). All paths, never PEM contents.
 	CACert     string `yaml:"caCert,omitempty"`
 	ClientCert string `yaml:"clientCert,omitempty"`
 	ClientKey  string `yaml:"clientKey,omitempty"`

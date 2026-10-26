@@ -17,7 +17,7 @@ internal/dispatch/            JobRequest → parameterized Nomad job; status; lo
 internal/server/              HTTP API (/api/v1/…) + embedded UI; token + Tailscale-identity auth
 internal/tsauth/              Tailscale identity (tailscale whois on the peer address) → scopes
 internal/secrets/             operator-set named job secrets (JobRequest.Secrets)
-internal/pki/                 grove's Nomad CA: server, grove-client and VM-node certificates (mTLS)
+internal/pki/                 grove's Nomad CA: server, grove-client and per-VM node certificates (mTLS)
 internal/gitauth/             operator-armed private-repo credential (see below)
 internal/health/              rebuilds VMs / pauses Macs that keep losing sealed-pool jobs
 internal/mcp/                 MCP server (stdio)
@@ -105,14 +105,17 @@ for it, deliberately.
 Only the control plane may tell a node what to do, so only nodes grove created may join Nomad.
 The control-plane install creates grove's CA (`internal/pki`, under `~/.config/grove/nomad/tls`)
 and runs Nomad with mutual TLS on RPC and HTTP and `client_introduction { enforcement = "strict" }`.
-A VM joins with the shared node certificate plus an introduction token the fleet reconciler mints
-for that VM's name right before `CreateVM` (`Options.NodeTLS`/`NodeIntros`, the
-`@GROVE_NOMAD_INTRO_TOKEN@` placeholder, like node tokens: a planned spec never holds one). The
-control plane's own sandbox-host client is a separate agent for the same reason. Keep it that
-way: never render a Nomad config without the `tls` block, never let a client register on a
-certificate alone, and keep `internal/install/nomadtls_integration_test.go` (real Nomad, run in
-CI) proving that a client with no TLS, another CA's certificate, or no introduction token is
-refused. Details: docs/OPERATIONS.md "Nomad mutual TLS and client introduction".
+A shared VM's spec carries only the CA. Once it runs, `Reconciler.Enrol` (`internal/fleet/enrol.go`,
+called every `grove serve` tick) pushes in, over Orchard exec with the secrets on stdin, its own
+24-hour client certificate (`pki.CA.IssueNode`, renewed after 12 with a SIGHUP) and, until it
+registers, an introduction token bound to its name and its pool's Nomad node pool; the pool's jobs
+are pinned to that node pool. The control plane's own sandbox-host client is a separate agent for
+the same reason. Keep it that way: never put a node key or an introduction token into a VM spec
+or onto an exec's argv, never render a Nomad config without the `tls` block, never let a client
+register on a certificate alone, and keep `internal/install/nomadtls_integration_test.go` (real
+Nomad, run in CI) proving that a client with no TLS, another CA's certificate, no introduction
+token, or a token for another node pool is refused, and that a renewed certificate is what a
+reloaded client handshakes with. Details: docs/OPERATIONS.md "Nomad mutual TLS and client introduction".
 
 ## macOS guest admin password
 

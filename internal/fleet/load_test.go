@@ -315,3 +315,12 @@ func TestValidate_FallbackMustExist(t *testing.T) {
 		t.Fatal("a fallback naming a missing pool must be rejected")
 	}
 }
+
+func TestLoad_NomadReservedPoolNames(t *testing.T) {
+	for _, name := range []string{"default", "all"} {
+		spec := Spec{Pools: []Pool{{Name: name, Image: "a", PerWorker: 1}}}
+		if err := spec.Validate(); err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Errorf("pool %q: Validate() = %v, want the name refused", name, err)
+		}
+	}
+}
