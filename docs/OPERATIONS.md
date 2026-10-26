@@ -81,6 +81,40 @@ What each refusal looks like in a client's log, for debugging a VM that never sh
 certificate is within 30 days of expiry. Certificates last two years; renewing is re-running the
 installer, after which the fleet recreates its VMs with the new node certificate.
 
+## The macOS guest's admin password
+
+Tart's macOS images boot with `admin`/`admin`, and `admin` is a passwordless sudoer. A job that
+knows that password (`su admin`, `ssh admin@localhost`, Screen Sharing, an `osascript … with
+administrator privileges` prompt) is root in the VM, past the pf fence (which matches only the job
+users) and able to read the Nomad node key, the introduction token and other jobs' secrets.
+
+So every macOS VM gets its own admin password. Right before `CreateVM` the reconciler generates a
+random one (24 bytes from `crypto/rand`), hands it to Orchard as the VM's `Password`, and fills it
+into the first block of the startup script (`# grove:guest-password`). That block sets it through
+`dscl .` on stdin (sudo logs argv, and `ps` shows argv to every user), then fails the script, so
+the VM never takes a job, if `admin`/`admin` still authenticates. A planned spec never holds the
+password, the API never returns it (`orchard.VM` has no password field), and drift detection
+ignores its value. The only copies are in Orchard's VM record and the guest's own account
+database.
+
+Orchard's startup and shutdown scripts both log in with the VM's `Password`. On first boot the
+guest still has `admin`, so the worker has to fall back to the image password. Workers built from
+gm2211/orchard with that fallback advertise the `guest-password-rotation` capability, and grove
+swaps the password only on those workers. VMs on an older worker keep `admin`/`admin` until it is
+upgraded. After that, the fleet recreates them on its next tick. To upgrade a worker, run this on
+the Mac:
+
+```sh
+rm -rf ~/Applications/"Grove Orchard Worker.app" && grove install --role worker
+```
+
+Linux pools keep the image password: their jobs run in containers that the egress fence keeps
+off the VM's own addresses. A pool that sets its own `password` in fleet.yaml has already replaced
+the image's, and is left alone.
+
+A VM that reboots comes up at the login window, because the image's auto-login password no longer
+matches. Nothing grove runs needs a GUI session.
+
 ## Rolling a new image
 
 Pool images (`ghcr.io/gm2211/grove-{linux,macos}-worker:latest`) are Packer-built under `images/`.

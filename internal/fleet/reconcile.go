@@ -51,6 +51,9 @@ type Options struct {
 	Now func() time.Time
 	// Logger receives Run's per-tick errors without stopping the loop. Defaults to log.Default().
 	Logger *log.Logger
+
+	// rotateGuestPassword is set per worker by Plan (see rotatesGuestPassword).
+	rotateGuestPassword bool
 }
 
 func (o Options) now() time.Time {
@@ -188,7 +191,9 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 				name := VMName(pool.Name, worker.Name, n)
 				desired[name] = true
 
-				spec := r.vmSpec(pool, worker.Name, name)
+				opts := r.Options
+				opts.rotateGuestPassword = rotatesGuestPassword(pool, worker)
+				spec := r.vmSpecWith(pool, worker.Name, name, opts)
 
 				existing, ok := findVM(vms, name)
 				reason := "spec changed"
@@ -301,6 +306,10 @@ func (r *Reconciler) Apply(ctx context.Context, plan Plan) error {
 
 	for _, c := range plan.Creates {
 		spec, err := r.withIntroToken(ctx, c.Spec)
+		if err != nil {
+			return fmt.Errorf("create vm %s: %w", c.Spec.Name, err)
+		}
+		spec, err = withGuestPassword(spec)
 		if err != nil {
 			return fmt.Errorf("create vm %s: %w", c.Spec.Name, err)
 		}
@@ -461,8 +470,13 @@ func (r *Reconciler) Run(ctx context.Context, interval time.Duration) error {
 // the worker pin vmToV1 applies from Worker; pool/host bookkeeping lives in the VM's *name* and
 // in Worker, not in labels.
 func (r *Reconciler) vmSpec(pool Pool, worker, name string) orchard.VMSpec {
-	startup := buildStartupScript(pool, worker, name, r.Options)
-	shutdown, shutdownTimeout := buildShutdownScript(pool, r.Options.NodeTokens != nil)
+	return r.vmSpecWith(pool, worker, name, r.Options)
+}
+
+// vmSpecWith is vmSpec with per-worker options (see Options.rotateGuestPassword).
+func (r *Reconciler) vmSpecWith(pool Pool, worker, name string, opts Options) orchard.VMSpec {
+	startup := buildStartupScript(pool, worker, name, opts)
+	shutdown, shutdownTimeout := buildShutdownScript(pool, opts.NodeTokens != nil)
 
 	spec := orchard.VMSpec{
 		Name:            name,
@@ -584,6 +598,7 @@ var introBlockRE = regexp.MustCompile(`(?s)# grove:nomad-intro begin\n.*?# grove
 // on strict client introduction can no longer register and has to be recreated.
 func withoutNodeACL(script string) string {
 	script = nodeACLBlocksRE.ReplaceAllString(script, "")
+	script = guestPasswordBlockRE.ReplaceAllLiteralString(script, guestPasswordScript)
 	return introBlockRE.ReplaceAllLiteralString(script, nomadIntroScript)
 }
 
