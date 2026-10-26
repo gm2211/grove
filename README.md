@@ -122,6 +122,67 @@ Three separate systems, deliberate seams:
 
 Full design, fleet spec, job model, and HTTP API reference: [ARCHITECTURE.md](ARCHITECTURE.md).
 
+## Jobs never hold your tokens
+
+A job has to sign in somewhere — push to GitHub, call an AI provider. But anything running in
+that job can read its environment: a dependency's install script, an instruction hidden in a
+file the agent reads, the agent itself. So grove doesn't put the real token there.
+
+The dispatcher sends the token *with* the job (`"credentials": [...]`, see
+[docs/JOBS.md](docs/JOBS.md)). The job's environment gets a `gph1_…` placeholder instead, and a
+credential broker on that job's own Mac swaps the real token in on the way to the service it
+belongs to — then masks it back out of the reply.
+
+```mermaid
+flowchart LR
+    dispatcher["your dispatcher\n(orchestrator, CI, you)\nholds the real tokens"]
+
+    subgraph cp["control plane"]
+        grove["grove\nplaces the job,\npasses its tokens on,\nkeeps none on disk"]
+    end
+
+    subgraph mac["worker Mac"]
+        broker["credential broker\non the host\ntokens in RAM,\nthis Mac's jobs only"]
+        subgraph tart["Tart VM"]
+            job["your job\nholds only gph1_...\nno tailnet, no LAN,\nnone of the host"]
+        end
+    end
+
+    up["github.com\napi.anthropic.com\napi.openai.com · chatgpt.com"]
+    net["the rest of the internet\nnpm, pip, cargo, docs..."]
+
+    dispatcher -- "1. job + its tokens" --> grove
+    grove -- "2. this job's tokens, over the tailnet" --> broker
+    job -- "3. Bearer gph1_... to one port on the VM's gateway" --> broker
+    broker -- "4. real token in, masked out of the reply" --> up
+    job -- "5. direct, nothing added" --> net
+
+    style cp fill:transparent,stroke:#2f6f4f
+    style mac fill:transparent,stroke:#8a9182
+    style tart fill:transparent,stroke:#9a4b3f
+```
+
+Three things hold that up:
+
+- **A placeholder is worth nothing anywhere else.** 256 random bits, for one job, held only in
+  that Mac's broker memory and never on disk. It dies when the job ends, when its lease runs
+  out, when the VM goes, or when the broker restarts.
+- **Only a short list of hosts is ever handed a token.** The broker terminates TLS for those
+  hosts alone, with a CA name-constrained to them that is trusted only inside the VM, and a
+  token of one kind can only go to its own service's hosts. Everything else is tunnelled
+  untouched, with nothing added.
+- **The VM can reach that one port and nothing else of yours.** Not the host, not the tailnet,
+  not your LAN — the guest's own firewall allows the broker's port on its gateway and fences
+  off every other private address.
+
+A long-running job keeps working: its placeholder never changes while the dispatcher puts a
+fresh token behind it (`PUT /api/v1/jobs/{id}/credentials`) for as long as the job runs.
+
+Named secrets (`"secrets": [...]`) still exist for a value the broker can't swap — a sign-in a
+CLI reads from a file, say — and for sealed pools, whose VMs reach no broker. A job does hold
+those. See [docs/OPERATIONS.md](docs/OPERATIONS.md) ("The credential broker", "Named secrets
+for jobs").
+
 ## What works today
 
 - fleet reconciler that keeps Orchard VMs matching `fleet.yaml`, including per-VM TTL and
@@ -129,6 +190,8 @@ Full design, fleet spec, job model, and HTTP API reference: [ARCHITECTURE.md](AR
   (`--fleet-reconcile-interval`, `--no-fleet-reconcile`)
 - parameterized Nomad jobs for `build` / `agent` / `shell`, dispatched and tracked end to end,
   with resumable NDJSON log streaming and stuck/orphaned-job detection (`lost` status)
+- credential broker on every worker Mac: a job's sign-ins reach it as `gph1_…` placeholders and
+  the real tokens never enter the VM (see "Jobs never hold your tokens" above)
 - HTTP API (`/api/v1/...`) + embedded control-plane UI (fleet view, job list, job detail with
   live logs, dispatch form, settings)
 - MCP server for orchestrators (Claude Code, Codex, your own agent runner) to dispatch and follow
