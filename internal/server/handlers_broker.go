@@ -22,9 +22,13 @@ func (s *Server) handleBrokerEntries(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden: needs a device credential with the broker scope", http.StatusForbidden)
 		return
 	}
-	entries := []broker.Entry{}
-	if s.opts.Broker != nil {
-		entries = s.opts.Broker.For(p.Name)
+	entries, err := s.dispatch.BrokerEntries(r.Context(), p.Name)
+	if err != nil {
+		s.writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	if entries == nil {
+		entries = []broker.Entry{}
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	s.writeJSON(w, http.StatusOK, BrokerEntriesResponse{Entries: entries})

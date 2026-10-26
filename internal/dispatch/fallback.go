@@ -55,6 +55,10 @@ func (s *service) fallbackTarget(rec *record, evals []nomad.Evaluation, now time
 	if _, ok := s.pools[target]; !ok {
 		return "", ""
 	}
+	if len(req.Credentials) > 0 && s.pools[target].Isolated {
+		// A sealed pool's VMs can't reach the credential broker.
+		return "", ""
+	}
 
 	waited := now.Sub(rec.SubmittedAt)
 	switch {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gm2211/grove/internal/artifacts"
+	"github.com/gm2211/grove/internal/broker"
 	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
@@ -193,6 +194,12 @@ type fakeDispatch struct {
 
 	logLinesFunc func(ctx context.Context, id string, follow bool) (<-chan dispatch.LogLine, error)
 
+	// brokerEntries are served by BrokerEntries, by worker.
+	brokerEntries map[string][]broker.Entry
+	// credentialUpdates records UpdateCredentials calls; credentialErr is what they return.
+	credentialUpdates map[string][]dispatch.Credential
+	credentialErr     error
+
 	// created controls what Submit reports for its `created` return value. nil (the zero value)
 	// means "true" — most tests expect a fresh submission to report created — set it explicitly to
 	// test the idempotent-replay (created=false) path.
@@ -270,6 +277,25 @@ func (f *fakeDispatch) Cancel(ctx context.Context, id string) error {
 	if _, ok := f.jobs[id]; !ok {
 		return dispatch.ErrNotFound
 	}
+	return nil
+}
+
+func (f *fakeDispatch) BrokerEntries(ctx context.Context, worker string) ([]broker.Entry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]broker.Entry(nil), f.brokerEntries[worker]...), nil
+}
+
+func (f *fakeDispatch) UpdateCredentials(ctx context.Context, id string, creds []dispatch.Credential) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.credentialErr != nil {
+		return f.credentialErr
+	}
+	if f.credentialUpdates == nil {
+		f.credentialUpdates = map[string][]dispatch.Credential{}
+	}
+	f.credentialUpdates[id] = creds
 	return nil
 }
 

@@ -85,6 +85,7 @@ func requiredScope(r *http.Request) string {
 	}
 	if r.Method == http.MethodPost && path == "/jobs" ||
 		r.Method == http.MethodDelete && strings.HasPrefix(path, "/jobs/") ||
+		r.Method == http.MethodPut && strings.HasPrefix(path, "/jobs/") && strings.HasSuffix(path, "/credentials") ||
 		r.Method == http.MethodPost && strings.HasSuffix(path, "/cancel") {
 		return ScopeDispatch
 	}

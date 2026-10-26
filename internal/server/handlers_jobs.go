@@ -192,6 +192,51 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// UpdateJobCredentialsRequest is PUT /jobs/{id}/credentials.
+type UpdateJobCredentialsRequest struct {
+	Credentials []dispatch.Credential `json:"credentials"`
+}
+
+// handleUpdateJobCredentials puts fresh tokens behind a running job's credential placeholders:
+// the submitter refreshing a token before it expires, or sending its tokens again after a
+// control-plane restart. Like cancel, only the submitting device or an operator may.
+func (s *Server) handleUpdateJobCredentials(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	principal := principalFromContext(r.Context())
+	if !principalHasScope(principal, ScopeOperator) {
+		job, err := s.dispatch.Get(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, dispatch.ErrNotFound) {
+				http.Error(w, "job not found", http.StatusNotFound)
+				return
+			}
+			s.writeError(w, http.StatusBadGateway, err)
+			return
+		}
+		if job.Request.SubmittedBy == "" || job.Request.SubmittedBy != principal.ID {
+			http.Error(w, "only the submitting device or an operator can update this job's credentials", http.StatusForbidden)
+			return
+		}
+	}
+	var req UpdateJobCredentialsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.dispatch.UpdateCredentials(r.Context(), id, req.Credentials); err != nil {
+		switch {
+		case errors.Is(err, dispatch.ErrNotFound):
+			http.Error(w, "job not found", http.StatusNotFound)
+		case errors.Is(err, dispatch.ErrJobEnded):
+			http.Error(w, "job has ended", http.StatusConflict)
+		default:
+			s.writeError(w, http.StatusBadRequest, err)
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleJobLogs(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !s.authorizeJobRead(w, r, id) {
