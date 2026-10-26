@@ -4,6 +4,12 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **macOS clones are fenced too.** A macOS job's `source` task stays root (to hide the clone token
+  from the job) but runs every git command as a new unprivileged `_grovesrc` user, which the
+  guest's pf fence keeps off home networks alongside the job user. The token reaches git's
+  credential helper through a file only `_grovesrc` can read, removed when the task ends. A macOS
+  VM made before this release fails its clones until it is recreated with the new startup script.
+
 - **Jobs reach the internet, never home.** Every shared pool's guest now fences its jobs off
   private, tailnet (CGNAT) and link-local addresses: Linux job containers in `DOCKER-USER` (the
   sealed pools' fence, plus DNS to the guest's resolvers), macOS jobs with a pf anchor on the job
