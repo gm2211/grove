@@ -97,7 +97,7 @@ func TestGuestPassword_OnlyWhereItIsSafeAndNeeded(t *testing.T) {
 		// The worker's Orchard would lock itself out of the shutdown script.
 		"worker without the capability": {macosPool(), onlineWorker("mac1")},
 		// Linux jobs run in containers the egress fence keeps off the VM's sshd.
-		"linux pool": {basePool(), rotatingWorker("mac1")},
+		"linux pool":                 {basePool(), rotatingWorker("mac1")},
 		"pool with its own password": {custom, rotatingWorker("mac1")},
 	} {
 		t.Run(name, func(t *testing.T) {
