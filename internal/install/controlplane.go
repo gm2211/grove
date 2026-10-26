@@ -40,12 +40,15 @@ func buildControlPlaneSteps(r Runner, opts Options, out io.Writer) []Step {
 	nomadConfigChanged := new(bool)
 	// The same for the sandbox-host client agent's config (or the certificates it presents).
 	sandboxConfigChanged := new(bool)
+	// Set when the Orchard binary was rebuilt at a new OrchardForkCommit, so a running controller
+	// restarts onto it.
+	orchardRebuilt := new(bool)
 
 	var steps []Step
-	steps = append(steps, controlPlaneDependencySteps(r, opts, out, destOrchard, isDarwin)...)
+	steps = append(steps, controlPlaneDependencySteps(r, opts, out, destOrchard, isDarwin, orchardRebuilt)...)
 	steps = append(steps, controlPlaneConfigSteps(r, opts, cfgDir, destOrchard, nomadConfigChanged, sandboxConfigChanged)...)
 	steps = append(steps, controlPlaneServiceSteps(r, opts, cfgDir, destOrchard, isDarwin)...)
-	steps = append(steps, controlPlaneStartStep(r, opts, "orchard-controller", isDarwin, nil))
+	steps = append(steps, controlPlaneStartStep(r, opts, "orchard-controller", isDarwin, orchardRebuilt))
 	steps = append(steps, Step{
 		Name:        "orchard-service-account",
 		Description: "Create Orchard `grove` service account (compute:read, compute:write, compute:connect); retrieve its generated token without placing it in argv.",
@@ -200,7 +203,7 @@ func controlPlaneReloadServerStep(r Runner, opts Options, isDarwin bool) Step {
 	}}
 }
 
-func controlPlaneDependencySteps(r Runner, opts Options, out io.Writer, destOrchard string, isDarwin bool) []Step {
+func controlPlaneDependencySteps(r Runner, opts Options, out io.Writer, destOrchard string, isDarwin bool, orchardRebuilt *bool) []Step {
 	lookPath := opts.lookPath()
 	var steps []Step
 	if isDarwin {
@@ -220,20 +223,23 @@ func controlPlaneDependencySteps(r Runner, opts Options, out io.Writer, destOrch
 		},
 		Step{
 			Name:        "orchard-binary",
-			Description: fmt.Sprintf("Install the Orchard fork binary with narrow worker-credential issuance to %s (release asset if available, else build from source).", destOrchard),
+			Description: fmt.Sprintf("Build the Orchard fork at the pinned commit %s to %s.", OrchardForkCommit, destOrchard),
 			Check: func(ctx context.Context) (bool, error) {
-				candidate := destOrchard
-				if found, err := lookPath("orchard"); err == nil {
-					candidate = found
-				}
-				if _, err := os.Stat(candidate); err != nil {
+				if _, err := os.Stat(destOrchard); err != nil || !orchardBinaryAtPin(destOrchard) {
 					return false, nil
 				}
-				stdout, stderr, err := r.Run(ctx, candidate, "create", "service-account", "--help")
+				stdout, stderr, err := r.Run(ctx, destOrchard, "create", "service-account", "--help")
 				return err == nil && strings.Contains(stdout+stderr, "service-account:issue-worker"), nil
 			},
 			Apply: func(ctx context.Context) error {
-				return ensureOrchardBinary(ctx, r, opts, destOrchard, io.Discard)
+				if err := ensureOrchardBinary(ctx, r, opts, destOrchard, io.Discard); err != nil {
+					return err
+				}
+				if err := os.WriteFile(orchardCommitPath(destOrchard), []byte(OrchardForkCommit+"\n"), 0o644); err != nil {
+					return fmt.Errorf("record Orchard commit: %w", err)
+				}
+				*orchardRebuilt = true
+				return nil
 			},
 		},
 	)
@@ -818,4 +824,13 @@ func nomadServerSANs(host string) pki.ServerSANs {
 func nomadTLSConfigured(ep config.Endpoint, files pki.Files) bool {
 	return ep.CACert == files.CA && ep.ClientCert == files.CLI && ep.ClientKey == files.CLIKey &&
 		ep.NodeCert == files.Node && ep.NodeKey == files.NodeKey
+}
+
+// orchardCommitPath records which OrchardForkCommit the control plane's Orchard binary was built
+// from, beside it.
+func orchardCommitPath(binary string) string { return binary + ".grove-commit" }
+
+func orchardBinaryAtPin(binary string) bool {
+	got, err := os.ReadFile(orchardCommitPath(binary))
+	return err == nil && strings.TrimSpace(string(got)) == OrchardForkCommit
 }

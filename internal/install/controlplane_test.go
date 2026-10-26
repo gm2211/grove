@@ -585,3 +585,54 @@ func TestControlPlanePlan_NomadMutualTLS(t *testing.T) {
 		})
 	}
 }
+
+func TestControlPlanePlan_RebuildsOrchardAtThePinAndRestartsTheController(t *testing.T) {
+	home := t.TempDir()
+	domain := "gui/" + strconv.Itoa(os.Getuid())
+	destOrchard := filepath.Join(home, ".local", "bin", "orchard")
+	run := func() *FakeRunner {
+		t.Helper()
+		r := NewFakeRunner()
+		scriptWorkerEnrollmentToken(r, home)
+		scriptTailscaleUp(r)
+		r.Script(destOrchard+" create service-account --help", FakeResult{Stdout: "roles: service-account:issue-worker"})
+		opts := testControlPlaneOptions(home, "darwin")
+		scriptPinnedDownloads(r, opts)
+		steps, err := BuildPlan(r, opts, io.Discard)
+		if err != nil {
+			t.Fatalf("BuildPlan: %v", err)
+		}
+		if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
+			t.Fatalf("RunPlan: %v", err)
+		}
+		return r
+	}
+	built := func(r *FakeRunner) bool {
+		for _, c := range r.Calls {
+			if c.Name == "/bin/sh" && len(c.Args) == 2 && strings.Contains(c.Args[1], "git fetch -q --depth 1 https://github.com/gm2211/orchard "+OrchardForkCommit) {
+				return true
+			}
+		}
+		return false
+	}
+	restart := "launchctl bootout " + domain + "/com.grove.orchard-controller"
+
+	if r := run(); !built(r) {
+		t.Fatal("a fresh install must build Orchard at the pinned commit")
+	}
+	// The fake build moved nothing into place.
+	if err := os.WriteFile(destOrchard, []byte("orchard"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if r := run(); built(r) || r.CalledWith(restart) {
+		t.Error("an Orchard already at the pin was rebuilt or its controller restarted")
+	}
+
+	// Built from another commit (an older pin, or a binary from before pinning).
+	if err := os.WriteFile(orchardCommitPath(destOrchard), []byte("0000000000000000000000000000000000000000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := run(); !built(r) || !r.CalledWith(restart) {
+		t.Error("an Orchard from another commit must be rebuilt and the controller restarted onto it")
+	}
+}
