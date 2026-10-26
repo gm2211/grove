@@ -786,3 +786,99 @@ func TestNodePoolPinsSharedPoolJobs(t *testing.T) {
 		}
 	}
 }
+
+// brokerSnippet is run.sh's credential broker block, as rendered for file and pool, with HCL's
+// "$${" escape undone and the heredoc's indent removed: what the job's shell actually runs.
+func brokerSnippet(t *testing.T, file, pool string) string {
+	t.Helper()
+	out := render(t, file, renderData{Kind: strings.TrimSuffix(file, ".nomad.hcl"), Pool: pool})
+	begin := strings.Index(out, "# grove:broker begin")
+	end := strings.Index(out, "# grove:broker end")
+	if begin < 0 || end < begin {
+		t.Fatalf("%s/%s: run.sh has no broker block", file, pool)
+	}
+	var b strings.Builder
+	for _, line := range strings.Split(out[begin:end], "\n") {
+		b.WriteString(strings.TrimPrefix(line, "        "))
+		b.WriteString("\n")
+	}
+	return strings.ReplaceAll(b.String(), "$${", "${")
+}
+
+// Every shared-pool job's run.sh points its HTTP(S) proxy at the node's broker and trusts the
+// broker's CA on top of the system roots, but only when the node meta it reads looks like what
+// internal/fleet's startup script advertises; otherwise it leaves the job alone, and tells a job
+// holding placeholders why they won't work.
+func TestRunScriptsUseTheNodesBroker(t *testing.T) {
+	want := brokerSnippet(t, "build.nomad.hcl", "linux")
+	for _, file := range []string{"build.nomad.hcl", "agent.nomad.hcl", "shell.nomad.hcl"} {
+		out := render(t, file, renderData{Kind: strings.TrimSuffix(file, ".nomad.hcl"), Pool: "linux"})
+		if !strings.Contains(out, `GROVE_BROKER    = "${meta.grove_broker}"`) || !strings.Contains(out, `GROVE_BROKER_CA = "${meta.grove_broker_ca}"`) {
+			t.Errorf("%s: main task doesn't get the node's broker meta", file)
+		}
+		for _, pool := range []string{"linux", "macos"} {
+			if got := brokerSnippet(t, file, pool); got != want {
+				t.Errorf("%s/%s: broker block differs from build/linux's:\n%s", file, pool, got)
+			}
+		}
+	}
+	if out := render(t, "sandbox.nomad.hcl", renderData{Kind: "build", Pool: "linux", GroveBin: "/usr/local/bin/grove", Slots: 1}); strings.Contains(out, "grove_broker") {
+		t.Error("a sealed pool's jobs can't reach a broker")
+	}
+
+	roots := filepath.Join(t.TempDir(), "roots.pem")
+	if err := os.WriteFile(roots, []byte("SYSTEM ROOTS\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := strings.ReplaceAll(want, "/etc/ssl/certs/ca-certificates.crt", roots) + `
+for v in HTTPS_PROXY HTTP_PROXY https_proxy http_proxy NO_PROXY SSL_CERT_FILE NODE_EXTRA_CA_CERTS GIT_SSL_CAINFO REQUESTS_CA_BUNDLE CURL_CA_BUNDLE GROVE_BROKER GROVE_BROKER_CA; do
+  eval "printf '%s=%s\n' $v \"\${$v-<unset>}\""
+done
+if [ -n "${SSL_CERT_FILE:-}" ]; then cat "$SSL_CERT_FILE"; fi
+`
+	ca := strings.Repeat("QUJD", 40) // 160 base64 characters
+	run := func(env ...string) string {
+		t.Helper()
+		cmd := exec.Command("bash", "-c", "set -euo pipefail\n"+script)
+		cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "TMPDIR=" + t.TempDir()}, env...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("broker block failed: %v\n%s", err, out)
+		}
+		return string(out)
+	}
+
+	out := run("GROVE_BROKER=http://192.168.64.1:3128", "GROVE_BROKER_CA="+ca)
+	for _, line := range []string{
+		"HTTPS_PROXY=http://192.168.64.1:3128", "HTTP_PROXY=http://192.168.64.1:3128",
+		"https_proxy=http://192.168.64.1:3128", "http_proxy=http://192.168.64.1:3128", "NO_PROXY=\n",
+		"GROVE_BROKER=<unset>", "GROVE_BROKER_CA=<unset>",
+		"SYSTEM ROOTS\n-----BEGIN CERTIFICATE-----\n" + ca[:64] + "\n" + ca[64:128] + "\n" + ca[128:] + "\n-----END CERTIFICATE-----\n",
+	} {
+		if !strings.Contains(out, line) {
+			t.Errorf("with a broker, output lacks %q:\n%s", line, out)
+		}
+	}
+	for _, v := range []string{"SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "GIT_SSL_CAINFO", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"} {
+		if strings.Contains(out, v+"=<unset>") {
+			t.Errorf("with a broker, %s is unset:\n%s", v, out)
+		}
+	}
+
+	for name, env := range map[string][]string{
+		"no node meta":        {"GROVE_BROKER=${meta.grove_broker}", "GROVE_BROKER_CA=${meta.grove_broker_ca}"},
+		"another port":        {"GROVE_BROKER=http://192.168.64.1:8080", "GROVE_BROKER_CA=" + ca},
+		"https scheme":        {"GROVE_BROKER=https://192.168.64.1:3128", "GROVE_BROKER_CA=" + ca},
+		"CA not base64":       {"GROVE_BROKER=http://192.168.64.1:3128", "GROVE_BROKER_CA=" + ca + "$(id)"},
+		"no CA":               {"GROVE_BROKER=http://192.168.64.1:3128"},
+		"placeholders, no CA": {"GROVE_BROKER=http://192.168.64.1:3128", "GH_TOKEN=gph1_abc"},
+	} {
+		out := run(env...)
+		if !strings.Contains(out, "HTTPS_PROXY=<unset>") || !strings.Contains(out, "SSL_CERT_FILE=<unset>") {
+			t.Errorf("%s: proxy set up anyway:\n%s", name, out)
+		}
+		if warned := strings.Contains(out, "no credential broker"); warned != strings.Contains(name, "placeholders") {
+			t.Errorf("%s: warned=%v:\n%s", name, warned, out)
+		}
+	}
+}
