@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/gm2211/grove/internal/broker"
 	"github.com/gm2211/grove/internal/orchard"
 )
 
@@ -201,7 +202,9 @@ grove_priv rm -f ` + SealedDrainingMarkerMacOS + `
 // should Softnet ever let them through. GROVE-INGRESS keeps containers from opening connections
 // to the guest itself, whose SSH would otherwise be one hop away.
 // Creating DOCKER-USER here, if Docker hasn't yet, lets the fence run before Docker starts.
-const egressFenceScript = `#!/bin/sh
+var egressFenceScript = strings.Replace(egressFenceTemplate, "@BROKER_EXCEPTION@\n", "", 1)
+
+const egressFenceTemplate = `#!/bin/sh
 # Installed by grove's fleet startup script for pools with network: isolated, and re-run before
 # every Docker start (see /etc/systemd/system/docker.service.d/grove-egress-fence.conf).
 set -eu
@@ -210,6 +213,7 @@ iptables -w -N GROVE-EGRESS 2>/dev/null || true
 iptables -w -F GROVE-EGRESS
 iptables -w -A GROVE-EGRESS -o docker0 -j RETURN
 iptables -w -A GROVE-EGRESS -o br-+ -j RETURN
+@BROKER_EXCEPTION@
 for grove_cidr in 10.0.0.0/8 100.64.0.0/10 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16; do
   iptables -w -A GROVE-EGRESS -d "$grove_cidr" -j REJECT --reject-with icmp-admin-prohibited
 done
@@ -254,12 +258,27 @@ func homeFenceScript(pool Pool) string {
 	).Replace(linuxHomeFenceTemplate)
 }
 
-// sharedEgressFenceScript is egressFenceScript for a shared pool. A shared guest's resolver is
-// usually its host Mac, the one host service the fence would otherwise leave reachable, so there is
-// no exception for it: job containers get public resolvers instead (dns_servers in nomad/jobs).
+// sharedEgressFenceScript is egressFenceScript for a shared pool, with one exception ahead of the
+// rejects: TCP to the default gateway's broker.Port, the host's credential broker, which listens
+// only there. A sealed VM's Softnet fence can't filter by port, so a sealed VM reaches no host
+// port at all, the broker's included. The gateway is
+// read every time the fence runs (it is whatever DHCP handed out this boot); with no IPv4 default
+// route there is no exception, and jobs simply can't reach the broker. A shared guest's resolver
+// is usually its host Mac too, and there is no exception for it: job containers get public
+// resolvers instead (dns_servers in nomad/jobs).
 func sharedEgressFenceScript() string {
-	return strings.Replace(egressFenceScript, "for pools with network: isolated", "for shared pools", 1)
+	return strings.NewReplacer(
+		"for pools with network: isolated", "for shared pools",
+		"@BROKER_EXCEPTION@\n", linuxBrokerException,
+	).Replace(egressFenceTemplate)
 }
+
+var linuxBrokerException = `grove_gateway=$(ip -4 route show default 2>/dev/null | awk '$1 == "default" && $2 == "via" { print $3; exit }')
+case "$grove_gateway" in
+  "" | *[!0-9.]*) ;;
+  *) iptables -w -A GROVE-EGRESS -d "$grove_gateway/32" -p tcp --dport ` + fmt.Sprint(broker.Port) + ` -j RETURN ;;
+esac
+`
 
 const sharedEgressFenceDropIn = `# Installed by grove's fleet startup script for shared pools.
 [Service]
@@ -267,8 +286,9 @@ ExecStartPre=/usr/local/sbin/grove-egress-fence
 `
 
 const linuxHomeFenceTemplate = `# --- jobs reach the internet, not home ---
-# Job containers may not open connections to private, tailnet or link-local addresses; this VM's
-# own Nomad client and Tailscale are not affected. The fence runs before every Docker start
+# Job containers may not open connections to private, tailnet or link-local addresses, except TCP
+# to the host's credential broker on the default gateway; this VM's own Nomad client and Tailscale
+# are not affected. The fence runs before every Docker start
 # (Docker refuses to start if it fails), and right now for the Docker that is already running.
 grove_priv mkdir -p /usr/local/sbin /etc/systemd/system/docker.service.d
 grove_priv tee /usr/local/sbin/grove-egress-fence >/dev/null <<'GROVE_EGRESS_FENCE'
@@ -331,11 +351,32 @@ fi
 // hangs from), then grove's anchor, then enables pf, and fails unless the anchor's rules are live.
 // The startup script runs it inline (so a failure stops the script before Nomad takes work), and a
 // LaunchDaemon reruns it at every boot.
-const macosHomeFenceLoader = `#!/bin/sh
+//
+// Ahead of the fence it lets the job user, and only the job user, reach the default gateway's
+// broker.Port: the host's credential broker. The gateway is read when the anchor loads (at boot it
+// waits up to a minute for DHCP); with none there is no exception, and jobs can't reach the broker.
+var macosHomeFenceLoader = `#!/bin/sh
 # Installed by grove's fleet startup script for the macos pool.
 set -eu
+grove_gateway=""
+grove_waited=0
+while :; do
+  grove_gateway=$(route -n get default 2>/dev/null | awk '$1 == "gateway:" { print $2; exit }')
+  case "$grove_gateway" in
+    "" | *[!0-9.]*) grove_gateway="" ;;
+    *) break ;;
+  esac
+  [ "$grove_waited" -lt 60 ] || break
+  grove_waited=$((grove_waited + 1))
+  sleep 1
+done
 pfctl -q -f /etc/pf.conf
-pfctl -q -a com.apple/grove-jobs -f /usr/local/etc/grove/pf-jobs.conf
+{
+  if [ -n "$grove_gateway" ]; then
+    printf 'pass out quick proto tcp from any to %s port ` + fmt.Sprint(broker.Port) + ` user ` + MacOSJobUser + `\n' "$grove_gateway"
+  fi
+  cat /usr/local/etc/grove/pf-jobs.conf
+} | pfctl -q -a com.apple/grove-jobs -f -
 pfctl -q -E >/dev/null 2>&1 || pfctl -q -e >/dev/null 2>&1 || true
 pfctl -q -a com.apple/grove-jobs -s rules | grep -q 'user'
 pfctl -s info 2>/dev/null | grep -q 'Status: Enabled'
@@ -343,7 +384,8 @@ pfctl -s info 2>/dev/null | grep -q 'Status: Enabled'
 
 const macosHomeFenceTemplate = `# --- jobs reach the internet, not home ---
 # Processes of the job user, and of the user each job's clone runs as, may not open connections to
-# private, tailnet or link-local addresses; this VM's own Nomad client and Tailscale are not
+# private, tailnet or link-local addresses (the job user may reach the host's credential broker on
+# the default gateway, and nothing else there); this VM's own Nomad client and Tailscale are not
 # affected. Name lookups go to public resolvers, not the host Mac.
 @PUBLIC_DNS@
 @SOURCE_USER@

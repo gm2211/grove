@@ -174,13 +174,16 @@ pools:
 reaches, LAN and tailnet included) or `isolated`. On a shared pool only the guest's own Nomad
 client and Tailscale use that reach: a firewall in the guest (`homeFenceScript`, DOCKER-USER on
 Linux, a pf anchor on the job user on macOS) gives jobs the public internet and nothing at home,
-no private, tailnet or link-local address, with no opt-out. That includes DNS: the guest's
+no private, tailnet or link-local address, with no opt-out. The one exception is TCP to the DHCP
+default gateway's port 3128 (`broker.Port`), the host Mac's credential broker, which listens
+only there; nothing else on the host is reachable. That includes DNS: the guest's
 DHCP resolver is its host Mac, so job containers get public resolvers (`dns_servers` in
 `nomad/jobs`) and a macOS guest resolves through them VM-wide. No job gets the VM's docker socket,
 which would give it root on the guest and a way around the fence. An isolated (sealed) pool's VMs run on Softnet
 with the host blocked (`netSoftnet` + `netSoftnetBlock: ["out @host"]`), use public DNS, keep job
 containers behind an in-guest fence, and run neither Nomad nor Tailscale: they reach the public
-internet and nothing at home. Their jobs are placed on the control plane instead, on its
+internet and nothing at home, not even the broker (Softnet's rules have no ports, so the host is
+blocked whole). Their jobs are placed on the control plane instead, on its
 sandbox-host Nomad client (a second agent beside the server; node meta `grove_sandbox_host`,
 raw_exec), where `grove sandbox run`
 (`internal/sandbox`) drives each one in a sealed VM from outside through Orchard exec: push the
