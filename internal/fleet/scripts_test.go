@@ -696,7 +696,7 @@ func TestBuildStartupScript_FencesJobsOffHomeNetworks(t *testing.T) {
 		}
 	}
 	mac := homeFenceScript(Pool{Name: "macos"})
-	if !strings.Contains(mac, "user "+MacOSJobUser) || !strings.Contains(mac, "fc00::/7") || !strings.Contains(mac, "RunAtLoad") {
+	if !strings.Contains(mac, "user { "+MacOSJobUser+", "+MacOSSourceUser+" }") || !strings.Contains(mac, "/Users/"+MacOSSourceUser+" UniqueID 7461") || !strings.Contains(mac, "fc00::/7") || !strings.Contains(mac, "RunAtLoad") {
 		t.Errorf("macOS fence must match the job user, cover tailnet IPv6 and reload at boot:\n%s", mac)
 	}
 	linux := homeFenceScript(Pool{Name: "linux"})

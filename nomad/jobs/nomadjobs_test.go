@@ -609,6 +609,87 @@ func TestSourceTaskKeepsCloneTokenFromScript(t *testing.T) {
 	})
 }
 
+// TestSourceTaskMacOSClonesAsFencedUser runs the macOS source.sh: every git command must run as
+// _grovesrc (the user the guest's pf fence keeps off home networks, like the job user), and the
+// clone token must reach git only through a file that is gone once the task ends.
+func TestSourceTaskMacOSClonesAsFencedUser(t *testing.T) {
+	const token = "ghp_armed_secret"
+	job, err := jobspec2.ParseWithConfig(&jobspec2.ParseConfig{
+		Path: "job.hcl", Body: []byte(render(t, "build.nomad.hcl", renderData{Kind: "build", Pool: "macos"})),
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	sourceSH := taskScript(t, job, "build.nomad.hcl", "source")
+
+	root := t.TempDir()
+	alloc := filepath.Join(root, "alloc")
+	sourceDir := filepath.Join(root, "source", "local")
+	bin := filepath.Join(root, "bin")
+	tmp := filepath.Join(root, "tmp")
+	for _, dir := range []string{alloc, sourceDir, bin, tmp} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(path, body string) {
+		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitLog := filepath.Join(root, "git")
+	sudoLog := filepath.Join(root, "sudo.log")
+	write(filepath.Join(bin, "git"), strings.Replace(fakeGit, "#!/bin/bash\n", "#!/bin/bash\n[ -n \"${FAKE_UNDER_SUDO:-}\" ] || { echo \"git ran outside sudo: $*\" >> \"$FAKE_GIT_LOG.outside\"; }\n", 1))
+	write(filepath.Join(bin, "sudo"), `#!/bin/bash
+printf '%s\n' "$*" >> "$FAKE_SUDO_LOG"
+while [ $# -gt 0 ]; do case "$1" in -n|-H) shift ;; -u) shift 2 ;; *) break ;; esac; done
+# Like sudo's env_reset: the target command gets a fresh environment.
+exec env -i PATH="$PATH" FAKE_GIT_LOG="$FAKE_GIT_LOG" FAKE_UNDER_SUDO=1 "$@"
+`)
+	write(filepath.Join(bin, "chown"), "#!/bin/sh\nexit 0\n")
+	write(filepath.Join(sourceDir, "request"), "grove-payload/1\n"+token+"\ntrue\n")
+	write(filepath.Join(sourceDir, "source.sh"), sourceSH)
+
+	cmd := exec.Command("/bin/bash", filepath.Join(sourceDir, "source.sh"))
+	cmd.Env = append(os.Environ(),
+		"PATH="+bin+":"+os.Getenv("PATH"),
+		"TMPDIR="+tmp,
+		"NOMAD_ALLOC_DIR="+alloc,
+		"NOMAD_TASK_DIR="+sourceDir,
+		"NOMAD_META_repo=https://github.com/gm2211/private",
+		"NOMAD_META_ref=main",
+		"FAKE_GIT_LOG="+gitLog,
+		"FAKE_SUDO_LOG="+sudoLog,
+	)
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("source.sh: %v\n%s", err, b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(alloc, "data", "grove", "source.exit")); strings.TrimSpace(string(b)) != "0" {
+		log, _ := os.ReadFile(filepath.Join(alloc, "data", "grove", "source.log"))
+		t.Fatalf("source.exit = %q\n%s", b, log)
+	}
+	if b, err := os.ReadFile(gitLog + ".outside"); err == nil {
+		t.Fatalf("git must only run as _grovesrc:\n%s", b)
+	}
+	sudo, _ := os.ReadFile(sudoLog)
+	if !strings.Contains(string(sudo), "-u _grovesrc") || strings.Count(string(sudo), " git ") < 2 {
+		t.Fatalf("git did not run through sudo -u _grovesrc for every command:\n%s", sudo)
+	}
+	if strings.Contains(string(sudo), token) {
+		t.Fatalf("the token was on sudo's command line:\n%s", sudo)
+	}
+	if b, _ := os.ReadFile(gitLog + ".helper"); !strings.Contains(string(b), "password="+token) {
+		t.Fatalf("credential helper answered %q", b)
+	}
+	if b, _ := os.ReadFile(gitLog + ".env"); strings.Contains(string(b), token) {
+		t.Fatalf("the token reached git's environment through sudo")
+	}
+	entries, _ := os.ReadDir(tmp)
+	if len(entries) != 0 {
+		t.Fatalf("the token file was left behind: %v", entries)
+	}
+}
+
 // TestSandboxTemplate checks the sealed-pool template: one raw_exec task on the control plane's
 // sandbox host, running `grove sandbox run` with the pool's settings, and the only task that gets
 // the payload.

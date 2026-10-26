@@ -251,6 +251,7 @@ func homeFenceScript(pool Pool) string {
 		return strings.NewReplacer(
 			"@PF_RULES@", strings.TrimSuffix(macosHomeFenceRules, "\n"),
 			"@PF_LOADER@", strings.TrimSuffix(macosHomeFenceLoader, "\n"),
+			"@SOURCE_USER@", strings.TrimSuffix(macosSourceUserScript, "\n"),
 		).Replace(macosHomeFenceTemplate)
 	}
 	return strings.NewReplacer(
@@ -304,8 +305,31 @@ GROVE_EGRESS_FENCE_NOW
 // only for TCP and UDP, which is all a job can open without root. DNS (port 53) stays open, since
 // the guest's resolver is usually its host.
 const macosHomeFenceRules = `grove_home = "{ 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, fc00::/7, fe80::/10 }"
-pass out quick proto { tcp, udp } from any to $grove_home port 53 user ` + MacOSJobUser + `
-block return out quick proto { tcp, udp } from any to $grove_home user ` + MacOSJobUser + `
+pass out quick proto { tcp, udp } from any to $grove_home port 53 user { ` + MacOSJobUser + `, ` + MacOSSourceUser + ` }
+block return out quick proto { tcp, udp } from any to $grove_home user { ` + MacOSJobUser + `, ` + MacOSSourceUser + ` }
+`
+
+// MacOSSourceUser is the unprivileged account a macOS job's "source" task runs git as
+// (nomad/jobs/*.nomad.hcl): the task itself must be root to hide the clone token from the job, and
+// root can't be fenced, since the VM's Nomad client is root too.
+const MacOSSourceUser = "_grovesrc"
+
+// macosSourceUserScript creates MacOSSourceUser: hidden, no password, no shell, no home.
+const macosSourceUserScript = `if ! dscl . -read /Groups/` + MacOSSourceUser + ` >/dev/null 2>&1; then
+  grove_priv dscl . -create /Groups/` + MacOSSourceUser + `
+  grove_priv dscl . -create /Groups/` + MacOSSourceUser + ` PrimaryGroupID 7461
+  grove_priv dscl . -create /Groups/` + MacOSSourceUser + ` Password '*'
+fi
+if ! dscl . -read /Users/` + MacOSSourceUser + ` >/dev/null 2>&1; then
+  grove_priv dscl . -create /Users/` + MacOSSourceUser + `
+  grove_priv dscl . -create /Users/` + MacOSSourceUser + ` UniqueID 7461
+  grove_priv dscl . -create /Users/` + MacOSSourceUser + ` PrimaryGroupID 7461
+  grove_priv dscl . -create /Users/` + MacOSSourceUser + ` UserShell /usr/bin/false
+  grove_priv dscl . -create /Users/` + MacOSSourceUser + ` NFSHomeDirectory /var/empty
+  grove_priv dscl . -create /Users/` + MacOSSourceUser + ` RealName "grove source"
+  grove_priv dscl . -create /Users/` + MacOSSourceUser + ` Password '*'
+  grove_priv dscl . -create /Users/` + MacOSSourceUser + ` IsHidden 1
+fi
 `
 
 // macosHomeFenceLoader loads /etc/pf.conf (whose anchor "com.apple/*" is the hook grove's anchor
@@ -323,8 +347,10 @@ pfctl -s info 2>/dev/null | grep -q 'Status: Enabled'
 `
 
 const macosHomeFenceTemplate = `# --- jobs reach the internet, not home ---
-# Processes of the job user may not open connections to private, tailnet or link-local addresses;
-# this VM's own Nomad client and Tailscale are not affected.
+# Processes of the job user, and of the user each job's clone runs as, may not open connections to
+# private, tailnet or link-local addresses; this VM's own Nomad client and Tailscale are not
+# affected.
+@SOURCE_USER@
 grove_priv mkdir -p /usr/local/etc/grove /usr/local/sbin
 grove_priv tee /usr/local/etc/grove/pf-jobs.conf >/dev/null <<'GROVE_PF_JOBS'
 @PF_RULES@

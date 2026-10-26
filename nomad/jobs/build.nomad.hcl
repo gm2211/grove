@@ -86,8 +86,10 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         log="$state/source.log"
         : > "$log"
 
+        tokdir=""
         finish() {
           rm -f "$req"
+          [ -z "$tokdir" ] || rm -rf "$tokdir"
 {{if eq .Pool "macos"}}
           # "main" runs as the unprivileged job user (see its `user`); hand it the inputs.
           chown -R _grovejob "$state" 2>/dev/null || true
@@ -132,25 +134,43 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         export GROVE_CLONE_TOKEN="$token"
         export GIT_TERMINAL_PROMPT=0
         helper='!f() { test "$1" = get || exit 0; echo username=x-access-token; printf "password=%s\n" "$GROVE_CLONE_TOKEN"; }; f'
+{{if eq .Pool "macos"}}
+        # git runs as its own unprivileged user, which the guest's firewall keeps off home networks
+        # like the job user (root, which this task runs as, can't be fenced: the VM's Nomad client
+        # is root too). sudo drops the environment, so the token reaches git's credential helper
+        # through a file only that user can read, never argv; finish() removes it.
+        # From /, since this task's own directory is closed to that user.
+        as_src() { (cd / && sudo -n -H -u _grovesrc env HOME=/var/empty GIT_TERMINAL_PROMPT=0 "$@"); }
+        chown _grovesrc "$state"
+        if [ -n "$token" ]; then
+          tokdir="$(mktemp -d)"
+          printf '%s' "$token" > "$tokdir/token"
+          chmod 0400 "$tokdir/token"
+          chown -R _grovesrc "$tokdir"
+          helper='!f() { test "$1" = get || exit 0; echo username=x-access-token; printf "password=%s\n" "$(cat '"$tokdir"'/token)"; }; f'
+        fi
+{{else}}
+        as_src() { "$@"; }
+{{end}}
         auth=(-c credential.helper=)
         if [ -n "$token" ]; then
           auth+=(-c "credential.helper=$helper")
         fi
 
         work="$state/work"
-        if ! git "$${auth[@]}" clone --depth 50 -- "$repo" "$work" >> "$log" 2>&1; then
+        if ! as_src git "$${auth[@]}" clone --depth 50 -- "$repo" "$work" >> "$log" 2>&1; then
           finish 128
         fi
         # A shallow clone has only the default branch: fetch another branch, or a commit on no
         # branch it has (a pull request's head), before checking it out.
-        if [ "$ref" != HEAD ] && ! git -C "$work" rev-parse --verify --quiet "$ref^{commit}" > /dev/null 2>&1; then
+        if [ "$ref" != HEAD ] && ! as_src git -C "$work" rev-parse --verify --quiet "$ref^{commit}" > /dev/null 2>&1; then
           case "$ref" in
             *[!0-9a-f]*) spec="+refs/heads/$ref:refs/heads/$ref" ;;
             *) spec="$ref" ;;
           esac
-          git "$${auth[@]}" -C "$work" fetch --quiet --depth 50 origin "$spec" >> "$log" 2>&1 || true
+          as_src git "$${auth[@]}" -C "$work" fetch --quiet --depth 50 origin "$spec" >> "$log" 2>&1 || true
         fi
-        if ! git -C "$work" checkout "$ref" -- >> "$log" 2>&1; then
+        if ! as_src git -C "$work" checkout "$ref" -- >> "$log" 2>&1; then
           finish 1
         fi
         unset GROVE_CLONE_TOKEN
