@@ -160,6 +160,10 @@ tokens on the way to a fixed set of upstreams and masks the tokens on the way ba
 - In `internal/dispatch`, a `JobRequest.Credentials` token goes only into the registry: never
   `env_json`, the payload, the stored `Job.Request` (kind and env only) or an API response.
   `internal/dispatch/credentials_test.go` asserts it.
+- The broker's own credential comes from join approval (`handlers_join.go`) and lives in the
+  worker's Keychain (`config.ResolveBrokerToken`), never in arguments or the LaunchAgent
+  (`internal/install/broker.go`); `/healthz`, which job VMs can reach, says only the entry count
+  and whether the last sync worked.
 
 `internal/broker/proxy_test.go` drives the whole path end to end; keep its refusal cases passing.
 

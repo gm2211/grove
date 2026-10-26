@@ -103,22 +103,50 @@ type TailscaleGrant struct {
 
 const ServerTokenKeychainService = "com.gm2211.grove.server-client"
 
+// BrokerTokenKeychainService and BrokerTokenKeychainAccount name the Keychain item holding a
+// worker's broker credential (only the broker scope, named after the worker). `grove setup` stores
+// it in the Keychain of the account the worker runs as; `grove broker` reads it from there.
+const (
+	BrokerTokenKeychainService = "com.gm2211.grove.broker"
+	BrokerTokenKeychainAccount = "broker"
+)
+
 // ResolveServerToken returns either the control-plane token from config or an enrolled
 // device's scoped token from macOS Keychain.
 func ResolveServerToken(ctx context.Context, cfg *Config) (string, error) {
 	if cfg.Server.TokenKeychain != "" {
-		if runtime.GOOS != "darwin" {
-			return "", errors.New("server token references macOS Keychain on a non-macOS host")
+		token, err := readKeychain(ctx, cfg.Server.TokenKeychain, ServerTokenKeychainService)
+		if err != nil {
+			return "", fmt.Errorf("read Grove device credential from Keychain: %w", err)
 		}
-		cmd := exec.CommandContext(ctx, "/usr/bin/security", "find-generic-password", "-a", cfg.Server.TokenKeychain, "-s", ServerTokenKeychainService, "-w")
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout, cmd.Stderr = &stdout, &stderr
-		if err := cmd.Run(); err != nil {
-			return "", fmt.Errorf("read Grove device credential from Keychain: %w: %s", err, strings.TrimSpace(stderr.String()))
-		}
-		return strings.TrimSpace(stdout.String()), nil
+		return token, nil
 	}
 	return cfg.Server.Token, nil
+}
+
+// ResolveBrokerToken returns this worker's broker credential from macOS Keychain.
+func ResolveBrokerToken(ctx context.Context) (string, error) {
+	token, err := readKeychain(ctx, BrokerTokenKeychainAccount, BrokerTokenKeychainService)
+	if err != nil {
+		return "", fmt.Errorf("read the broker credential from Keychain (run `grove setup` on this Mac to get one): %w", err)
+	}
+	if token == "" {
+		return "", errors.New("the broker credential in Keychain is empty; run `grove setup` on this Mac")
+	}
+	return token, nil
+}
+
+func readKeychain(ctx context.Context, account, service string) (string, error) {
+	if runtime.GOOS != "darwin" {
+		return "", errors.New("credential is kept in macOS Keychain, and this host is not macOS")
+	}
+	cmd := exec.CommandContext(ctx, "/usr/bin/security", "find-generic-password", "-a", account, "-s", service, "-w")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return strings.TrimSpace(stdout.String()), nil
 }
 
 // ResolveOperatorToken returns the control-plane credential used only for enrollment and access

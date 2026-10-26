@@ -25,6 +25,9 @@ type joinRequest struct {
 	Approving                         bool
 	BootstrapToken                    string
 	ClientToken, DeviceID             string
+	// BrokerToken is the worker's credential-broker credential: only ScopeBroker, named after
+	// the worker, so its `grove broker` can pull the entries of jobs placed on it.
+	BrokerToken, BrokerDeviceID string
 }
 
 type joinStore struct {
@@ -134,7 +137,7 @@ func (s *Server) handlePollJoinRequest(w http.ResponseWriter, r *http.Request) {
 			delete(s.joins.byID, id)
 			// Enrollment finished with the new credential, so this Mac's earlier ones (from
 			// previous `grove setup` runs) are dead weight that still authenticates.
-			if revoked, err := s.opts.AccessStore.RevokeSuperseded(jr.Name, jr.DeviceID); err != nil {
+			if revoked, err := s.opts.AccessStore.RevokeSuperseded(jr.Name, jr.DeviceID, jr.BrokerDeviceID); err != nil {
 				slog.Warn("join: could not revoke superseded device credentials", "name", jr.Name, "err", err)
 			} else if len(revoked) > 0 {
 				slog.Info("join: revoked superseded device credentials", "name", jr.Name, "count", len(revoked))
@@ -147,12 +150,14 @@ func (s *Server) handlePollJoinRequest(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusOK, map[string]any{
 			"status": "approved", "controllerUrl": s.opts.ControllerURL, "bootstrapToken": jr.BootstrapToken, "serverUrl": s.opts.ServerURL,
 			"clientToken": jr.ClientToken, "deviceId": jr.DeviceID,
+			"brokerToken": jr.BrokerToken, "brokerDeviceId": jr.BrokerDeviceID,
 		})
 		return
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"status": "approved", "controllerUrl": s.opts.ControllerURL, "bootstrapToken": jr.BootstrapToken, "serverUrl": s.opts.ServerURL,
 		"clientToken": jr.ClientToken, "deviceId": jr.DeviceID,
+		"brokerToken": jr.BrokerToken, "brokerDeviceId": jr.BrokerDeviceID,
 	})
 }
 
@@ -220,18 +225,30 @@ func (s *Server) handleApproveJoinRequest(w http.ResponseWriter, r *http.Request
 		s.writeError(w, http.StatusInternalServerError, errors.New("issue device credential"))
 		return
 	}
+	brokerToken, brokerPrincipal, err := s.opts.AccessStore.IssueJoined(jr.Name, []string{ScopeBroker})
+	if err != nil {
+		_ = s.opts.AccessStore.Revoke(principal.ID)
+		s.joins.mu.Lock()
+		jr.Approving = false
+		s.joins.mu.Unlock()
+		s.writeError(w, http.StatusInternalServerError, errors.New("issue broker credential"))
+		return
+	}
 	s.joins.mu.Lock()
 	if time.Now().After(jr.ExpiresAt) {
 		jr.Approving = false
 		delete(s.joins.byID, jr.ID)
 		s.joins.mu.Unlock()
 		_ = s.opts.AccessStore.Revoke(principal.ID)
+		_ = s.opts.AccessStore.Revoke(brokerPrincipal.ID)
 		http.Error(w, "join request expired during approval", http.StatusGone)
 		return
 	}
 	jr.BootstrapToken = token
 	jr.ClientToken = clientToken
 	jr.DeviceID = principal.ID
+	jr.BrokerToken = brokerToken
+	jr.BrokerDeviceID = brokerPrincipal.ID
 	jr.Approving = false
 	jr.Approved = true
 	jr.ApprovedAt = time.Now()

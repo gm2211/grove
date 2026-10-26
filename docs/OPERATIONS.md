@@ -261,8 +261,7 @@ Entries live in memory only, on the control plane and on each broker. A control-
 forgets every token, and running jobs get them back when their submitter sends them again
 (`PUT /api/v1/jobs/{id}/credentials`). The broker pulls its worker's list every 30 seconds from
 `GET /api/v1/broker/entries`, with a device credential whose only scope is `broker` and whose name
-is the worker's (`grove access issue --name <worker> --scope broker`); no other credential,
-operator's included, can read that route. An entry leaves when its job ends (the control plane
+is the worker's; no other credential, operator's included, can read that route. An entry leaves when its job ends (the control plane
 stops listing it), when its 10-minute lease runs out without renewal, or when the broker restarts.
 At most 1,000 entries are held per worker.
 
@@ -271,8 +270,20 @@ its env and entries in the control plane's memory, and a broker is served only t
 jobs placed on its worker. They leave the control plane when the job ends or is canceled. Sealed
 pools take no credentials, since their VMs block the host and so the broker.
 
-Not wired in yet: shared VMs don't trust the CA or use the proxy, and the worker install doesn't
-run `grove broker`. Those land separately.
+`grove setup` installs the broker on every worker. When the control plane approves the Mac, it
+hands out the broker credential along with the others; setup keeps it in the worker account's
+Keychain (service `com.gm2211.grove.broker`, account `broker`) and loads the `com.grove.broker`
+LaunchAgent, which runs `grove broker --server <control plane>` and logs to
+`~/Library/Logs/grove/broker.log` and `broker.err.log`. Running setup again replaces the
+credential, revokes the old one and restarts the broker. A Mac set up against a control plane
+from before the broker gets a warning and a broker with no credential: it still serves its CA and
+plain tunnels, every sync fails, and jobs there can't use credentials until setup runs again.
+
+`grove doctor` on a worker has a `broker` row: whether the LaunchAgent is installed and loaded,
+whether the credential is in Keychain, and, once a VM has created the bridge, whether the broker
+answers and its last sync with the control plane worked, with its entry count.
+
+Not wired in yet: shared VMs don't trust the CA or use the proxy. That lands separately.
 
 ## Credentials for orchestrators and scripts
 

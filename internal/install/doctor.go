@@ -84,6 +84,9 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 		results = append(results, checkSoftnet(ctx, r, opts, cfg))
 	}
 	results = append(results, checkTrustedTaps(ctx, r, opts)...)
+	if _, err := os.Stat(filepath.Join(opts.LaunchAgentsDir(), "com.grove.orchard-worker.plist")); err == nil && opts.goos() == "darwin" {
+		results = append(results, checkBroker(ctx, r, opts))
+	}
 	if c := checkRegistryLogin(opts, cfg); c != nil {
 		results = append(results, *c)
 	}

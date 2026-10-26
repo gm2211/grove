@@ -8,22 +8,24 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
-	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/gm2211/grove/internal/apiclient"
 	"github.com/gm2211/grove/internal/broker"
 	"github.com/gm2211/grove/internal/config"
+	"github.com/gm2211/grove/internal/install"
 )
 
 var (
 	brokerListen       string
+	brokerServer       string
 	brokerCADir        string
 	brokerSyncInterval time.Duration
 )
@@ -39,9 +41,9 @@ and masks that token in the response, so a job never holds a real credential. Ev
 is tunnelled, to public internet addresses only.
 
 The broker pulls this worker's entries from the control plane with a device credential that
-has only the broker scope and is named after the worker:
-
-  grove access issue --name <worker> --scope broker
+has only the broker scope and is named after the worker. ` + "`grove setup`" + ` gets one when the
+control plane approves this Mac, keeps it in Keychain, and installs the broker as a LaunchAgent
+(com.grove.broker), so there is normally nothing to run by hand.
 
 It listens on the VM bridge address (vmnet's gateway, 192.168.64.1 by default) on port 3128,
 waits for that address to exist (vmnet creates the bridge with the first VM), and refuses any
@@ -52,6 +54,7 @@ address that isn't private.`,
 
 func init() {
 	brokerCmd.Flags().StringVar(&brokerListen, "listen", "", "IP address to listen on, always on port "+strconv.Itoa(broker.Port)+" (default: the vmnet gateway)")
+	brokerCmd.Flags().StringVar(&brokerServer, "server", "", "Grove server URL (default: server.url from the grove config)")
 	brokerCmd.Flags().StringVar(&brokerCADir, "ca-dir", "", "directory holding the broker CA (default: <grove config dir>/broker)")
 	brokerCmd.Flags().DurationVar(&brokerSyncInterval, "sync-interval", broker.DefaultSyncInterval, "how often to pull entries from the control plane")
 	Root.AddCommand(brokerCmd)
@@ -80,14 +83,19 @@ func runBroker(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	client, err := newAPIClient()
-	if err != nil {
-		return err
+	serverURL := brokerServer
+	if serverURL == "" {
+		if cfg, _, err := config.Load(); err == nil {
+			serverURL = cfg.Server.URL
+		}
+	}
+	if serverURL == "" {
+		return errors.New("no control plane to sync with: pass --server, or set server.url in the grove config")
 	}
 
 	store := broker.NewStore(0)
-	syncer := &broker.Syncer{Fetch: client.BrokerEntries, Store: store, Interval: brokerSyncInterval}
-	proxy := &broker.Proxy{Store: store, CA: ca, Resync: syncer.Sync}
+	syncer := &broker.Syncer{Fetch: brokerFetch(serverURL, config.ResolveBrokerToken), Store: store, Interval: brokerSyncInterval}
+	proxy := &broker.Proxy{Store: store, CA: ca, Resync: syncer.Sync, Synced: syncer.Synced}
 	go syncer.Run(ctx)
 
 	slog.Info("broker: starting", "listen", listen, "ca", filepath.Join(caDir, "broker-ca.pem"))
@@ -123,6 +131,29 @@ func runBroker(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+// brokerFetch pulls this worker's entries from serverURL with the broker credential token
+// returns. It reads the credential on first use and keeps it once found: until `grove setup` has
+// stored one, every sync fails (and says why) but the broker keeps serving, so job VMs still get
+// its CA and plain tunnels. Setup restarts the broker when it stores a new credential.
+func brokerFetch(serverURL string, token func(context.Context) (string, error)) func(context.Context) ([]broker.Entry, error) {
+	var mu sync.Mutex
+	var client *apiclient.Client
+	return func(ctx context.Context) ([]broker.Entry, error) {
+		mu.Lock()
+		if client == nil {
+			t, err := token(ctx)
+			if err != nil {
+				mu.Unlock()
+				return nil, err
+			}
+			client = apiclient.New(serverURL, t)
+		}
+		c := client
+		mu.Unlock()
+		return c.BrokerEntries(ctx)
+	}
+}
+
 // brokerListenAddr is --listen, or vmnet's gateway, on broker.Port. The port is fixed because the
 // job VMs' firewalls open exactly that one.
 func brokerListenAddr(ctx context.Context, flag string) (netip.AddrPort, error) {
@@ -133,29 +164,11 @@ func brokerListenAddr(ctx context.Context, flag string) (netip.AddrPort, error) 
 		}
 		return netip.AddrPortFrom(a, broker.Port), nil
 	}
-	gw, err := vmnetGateway(ctx)
+	gw, err := install.VMNetGateway(ctx, install.ExecRunner{})
 	if err != nil {
 		return netip.AddrPort{}, err
 	}
 	return netip.AddrPortFrom(gw, broker.Port), nil
-}
-
-// vmnetGateway is the host's address on vmnet's shared network: Shared_Net_Address from the Mac's
-// vmnet preferences when set, broker.DefaultGateway otherwise.
-func vmnetGateway(ctx context.Context) (netip.Addr, error) {
-	out, err := exec.CommandContext(ctx, "/usr/bin/defaults", "read", "/Library/Preferences/SystemConfiguration/com.apple.vmnet", "Shared_Net_Address").Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) || errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
-			return broker.DefaultGateway, nil
-		}
-		return netip.Addr{}, fmt.Errorf("read vmnet settings: %w", err)
-	}
-	a, err := netip.ParseAddr(strings.TrimSpace(string(out)))
-	if err != nil {
-		return netip.Addr{}, fmt.Errorf("vmnet Shared_Net_Address %q: %w", strings.TrimSpace(string(out)), err)
-	}
-	return a, nil
 }
 
 // waitForLocalAddr returns once an interface holds a, or ctx's error once it is done.
