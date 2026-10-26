@@ -4,6 +4,20 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **grove only listens on the tailnet.** `grove serve` refuses to start when `server.listen` is a
+  wildcard (`0.0.0.0`, `:6120`) or resolves to anything but loopback or a Tailscale address, and
+  `grove doctor` has a `grove-listen` row for it. Fix with `grove config set server.listen
+  <tailnet-ip>:6120`.
+
+- **No authentication configured now means refused, not open.** An API server with no token,
+  device store or Tailscale auth answers every `/api/v1` request with 503 instead of treating the
+  caller as the operator. `grove serve` always has a device store, so a normal install is
+  unaffected; this closes the path where a relocated or half-configured control plane runs open.
+
+- **Pull-request builds of the runner image get no package token.** `images.yml` builds a PR's
+  `images/runner` without pushing and with `contents: read` only; `packages: write` is now
+  limited to the push-to-main job.
+
 - **`allowDockerSocket` is gone.** Mounting the VM's docker socket gave a job root on the guest,
   and with it a way past the network fence. Every Linux job now runs in its pool's `runnerImage`;
   the per-job `image` meta is ignored on every pool. A `fleet.yaml` that still sets

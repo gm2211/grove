@@ -130,8 +130,9 @@ func tailnetHostTrusted(r *http.Request, serverURL string) bool {
 
 // withAuth requires "Authorization: Bearer <token>" matching Options.Token or a device credential,
 // or — with no Authorization header at all — a tailnet peer whose Tailscale identity is granted
-// scopes (Options.Tailscale). Nothing configured means allow-all (already warned about at
-// startup). /healthz and the public join endpoints stay reachable unauthenticated.
+// scopes (Options.Tailscale). Nothing configured means every /api/v1 request is refused with 503,
+// unless a test set Options.InsecureNoAuth. /healthz and the public join endpoints stay reachable
+// unauthenticated.
 func (s *Server) withAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		publicJoin := r.Method == http.MethodPost && r.URL.Path == "/join/requests" ||
@@ -141,6 +142,10 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			return
 		}
 		if s.opts.Token == "" && s.opts.AccessStore == nil && s.opts.Tailscale == nil {
+			if !s.opts.InsecureNoAuth {
+				http.Error(w, "grove has no authentication configured; refusing", http.StatusServiceUnavailable)
+				return
+			}
 			p := Principal{ID: "development", Name: "unauthenticated", Scopes: []string{ScopeOperator}}
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalContextKey{}, p)))
 			return

@@ -66,6 +66,9 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 	if addr == "" {
 		addr = "127.0.0.1:6120"
 	}
+	if err := tsauth.CheckListen(ctx, addr, nil); err != nil {
+		return fmt.Errorf("%w (set server.listen in config.yaml, e.g. `grove config set server.listen <tailnet-ip>:6120`)", err)
+	}
 
 	oc, err := wire.NewOrchardClient(cfg.Orchard)
 	if err != nil {

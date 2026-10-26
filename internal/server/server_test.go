@@ -18,7 +18,28 @@ func newTestServer(oc *fakeOrchard, nc *fakeNomad, ds *fakeDispatch, opts Option
 	if ds == nil {
 		ds = &fakeDispatch{jobs: map[string]*dispatch.Job{}}
 	}
+	if opts.Token == "" && opts.AccessStore == nil && opts.Tailscale == nil {
+		opts.InsecureNoAuth = true
+	}
 	return New(oc, nc, ds, nil, opts)
+}
+
+func TestAuth_NothingConfiguredRefuses(t *testing.T) {
+	srv := New(&fakeOrchard{}, &fakeNomad{}, &fakeDispatch{jobs: map[string]*dispatch.Job{}}, nil, Options{})
+	for _, path := range []string{"/api/v1/jobs", "/api/v1/vms"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s: status = %d, want 503 (fail closed with no auth configured)", path, rec.Code)
+		}
+	}
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code == http.StatusServiceUnavailable {
+		t.Fatalf("/healthz refused; it must stay reachable")
+	}
 }
 
 func TestAuth_TokenRequired(t *testing.T) {
