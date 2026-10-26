@@ -192,15 +192,14 @@ func TestWorkerPlan_AppliesCommandsAndGatesPrivilegedSteps(t *testing.T) {
 	}
 }
 
-func TestEnsureWorkerOrchardApp_MigratesExistingBinary(t *testing.T) {
+func TestEnsureWorkerOrchardApp_MigratesExistingBinaryThenRebuildsAtThePin(t *testing.T) {
 	home := t.TempDir()
 	opts := testWorkerOptions(home)
 	cliPath := filepath.Join(home, ".local", "bin", "orchard")
 	if err := os.MkdirAll(filepath.Dir(cliPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	const existing = "existing fork binary"
-	if err := os.WriteFile(cliPath, []byte(existing), 0o755); err != nil {
+	if err := os.WriteFile(cliPath, []byte("existing fork binary of unknown commit"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	r := NewFakeRunner()
@@ -208,21 +207,64 @@ func TestEnsureWorkerOrchardApp_MigratesExistingBinary(t *testing.T) {
 	if err := ensureWorkerOrchardApp(context.Background(), r, opts, cliPath, io.Discard); err != nil {
 		t.Fatalf("ensureWorkerOrchardApp: %v", err)
 	}
-	got, err := os.ReadFile(workerOrchardExecutable(opts))
-	if err != nil {
-		t.Fatalf("reading migrated binary: %v", err)
-	}
-	if string(got) != existing {
-		t.Fatalf("migrated binary = %q, want %q", got, existing)
-	}
 	if target, err := os.Readlink(cliPath); err != nil || target != workerOrchardExecutable(opts) {
 		t.Fatalf("CLI link = %q, %v; want %q", target, err, workerOrchardExecutable(opts))
 	}
+	build := orchardBuildCall(t, r)
+	if !strings.Contains(build, "git fetch -q --depth 1 https://github.com/gm2211/orchard "+OrchardForkCommit) ||
+		!strings.Contains(build, "git rev-parse HEAD") || strings.Contains(build, "git clone") {
+		t.Fatalf("Orchard must be built from the pinned commit, not the tip of main: %s", build)
+	}
+	if !workerOrchardAtPinnedCommit(opts) {
+		t.Fatal("the rebuilt bundle doesn't record the pinned commit")
+	}
+	if !r.CalledWith("launchctl kickstart -k gui/" + strconv.Itoa(os.Getuid()) + "/com.grove.orchard-worker") {
+		t.Error("a running worker must be restarted onto the rebuilt binary")
+	}
+
+	// At the pin already: nothing to build, nothing to restart.
+	r = NewFakeRunner()
+	if err := ensureWorkerOrchardApp(context.Background(), r, opts, cliPath, io.Discard); err != nil {
+		t.Fatalf("ensureWorkerOrchardApp: %v", err)
+	}
 	for _, c := range r.Calls {
-		if c.Name == "/bin/sh" && len(c.Args) > 0 && c.Args[0] == "-c" {
-			t.Fatalf("existing binary migration should not clone/build Orchard: %s", c.String())
+		if c.Name == "/bin/sh" || c.Name == "launchctl" {
+			t.Fatalf("a bundle at the pinned commit must be left alone, ran: %s", c.String())
 		}
 	}
+}
+
+func TestWorkerOrchardAppInstalled_RequiresThePinnedCommit(t *testing.T) {
+	home := t.TempDir()
+	opts := testWorkerOptions(home)
+	cliPath := filepath.Join(home, ".local", "bin", "orchard")
+	if err := ensureWorkerOrchardApp(context.Background(), NewFakeRunner(), opts, cliPath, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	// The fake build moved nothing into place.
+	if err := os.WriteFile(workerOrchardExecutable(opts), []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := workerOrchardAppInstalled(context.Background(), NewFakeRunner(), opts, cliPath); !ok {
+		t.Fatal("a bundle at the pinned commit should pass its check")
+	}
+	if err := os.WriteFile(workerOrchardCommitPath(opts), []byte("0000000000000000000000000000000000000000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := workerOrchardAppInstalled(context.Background(), NewFakeRunner(), opts, cliPath); ok {
+		t.Fatal("a bundle built from another commit must be rebuilt when the pin moves")
+	}
+}
+
+func orchardBuildCall(t *testing.T, r *FakeRunner) string {
+	t.Helper()
+	for _, c := range r.Calls {
+		if c.Name == "/bin/sh" && len(c.Args) == 2 && c.Args[0] == "-c" && strings.Contains(c.Args[1], "./cmd/orchard") {
+			return c.Args[1]
+		}
+	}
+	t.Fatal("Orchard was not built")
+	return ""
 }
 
 func TestEnsureWorkerOrchardApp_PreservesCLIPathWhenSigningFails(t *testing.T) {
@@ -268,8 +310,17 @@ func TestEnsureWorkerOrchardApp_RealCodeSign(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(cliPath, binary, 0o755); err != nil {
-		t.Fatal(err)
+	// Already at the pin, so only the signing runs for real.
+	for path, content := range map[string][]byte{
+		workerOrchardExecutable(opts): binary,
+		workerOrchardCommitPath(opts): []byte(OrchardForkCommit + "\n"),
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, content, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	if err := ensureWorkerOrchardApp(context.Background(), ExecRunner{}, opts, cliPath, io.Discard); err != nil {

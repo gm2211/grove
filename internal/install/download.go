@@ -24,6 +24,10 @@ const (
 	HomebrewInstallCommit = "35da6871c4be7d7fdab2fd505fb7fa667926a2a5"
 	// HomebrewInstallSHA256 is install.sh's digest at HomebrewInstallCommit.
 	HomebrewInstallSHA256 = "5f333bbe53bc490e51e7ccb1df8779b3dd6ee73a1a7379efda216edb08ccb148"
+	// OrchardForkCommit pins the github.com/gm2211/orchard commit workers build their Orchard
+	// from, so a push to the fork's main reaches no worker until this pin moves. It must carry
+	// the guest-password-rotation capability (gm2211/orchard#7).
+	OrchardForkCommit = "1007643f01412073828d5f169fa8a7d6f49b40be"
 )
 
 // nomadZipSHA256 is the SHA-256 of nomad_<NomadVersion>_<os>_<arch>.zip, keyed "os/arch".

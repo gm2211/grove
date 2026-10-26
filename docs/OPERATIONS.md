@@ -103,11 +103,12 @@ gm2211/orchard with that fallback advertise the `guest-password-rotation` capabi
 without it gets no macOS VM at all, because a VM left on `admin`/`admin` hands every job root:
 `grove fleet plan` and `grove serve` report the macOS pool as blocked on that worker, and any macOS
 VM already running there is deleted as `unsafe`. Linux VMs on the same Mac are unaffected. Once the
-worker is upgraded, the fleet creates its macOS VMs on the next tick. To upgrade a worker, run this
-on the Mac:
+worker is upgraded, the fleet creates its macOS VMs on the next tick. To upgrade a worker, upgrade
+grove on the Mac and re-run the worker install. It rebuilds Orchard at the pinned commit (see
+"Upgrading") and restarts the worker:
 
 ```sh
-rm -rf ~/Applications/"Grove Orchard Worker.app" && grove install --role worker
+brew upgrade grove && grove install --role worker
 ```
 
 Linux pools keep the image password: their jobs run in containers that the egress fence keeps
@@ -424,6 +425,11 @@ subcommands, or `GET /api/v1/jobs/{id}/logs?follow=1`.
 - **grove CLI**: re-run `scripts/install.sh` (or `brew upgrade grove` on macOS), then re-run
   `grove install --role <role>` to pick up any new config/unit templates — it's idempotent, so
   already-correct steps are skipped.
+- **Orchard on workers** is built from source at `OrchardForkCommit` (`internal/install/download.go`),
+  fetched by SHA, never from the tip of gm2211/orchard's main. The bundle records the commit it
+  was built from (`Contents/Resources/grove-orchard-commit`). When the pin moves, `grove install
+  --role worker` rebuilds and restarts the worker. To move it, merge to the fork, then bump the
+  constant here in a reviewed PR.
 - **Orchard / Nomad**: `grove install` re-checks each binary; bump the version pin (and
   every per-platform SHA-256 beside it, in `internal/install/download.go`) in this
   repo's install steps and re-run to pick up the change (Homebrew formulae upgrade in place;

@@ -33,6 +33,16 @@ func workerOrchardExecutable(opts Options) string {
 	return filepath.Join(workerOrchardAppDir(opts), "Contents", "MacOS", orchardBinName)
 }
 
+// workerOrchardCommitPath records which OrchardForkCommit the bundle's binary was built from.
+func workerOrchardCommitPath(opts Options) string {
+	return filepath.Join(workerOrchardAppDir(opts), "Contents", "Resources", "grove-orchard-commit")
+}
+
+func workerOrchardAtPinnedCommit(opts Options) bool {
+	got, err := os.ReadFile(workerOrchardCommitPath(opts))
+	return err == nil && strings.TrimSpace(string(got)) == OrchardForkCommit
+}
+
 func workerOrchardInfoPlistPath(opts Options) string {
 	return filepath.Join(workerOrchardAppDir(opts), "Contents", "Info.plist")
 }
@@ -132,7 +142,7 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 		Step{
 			Name: "orchard-worker-app",
 			Description: fmt.Sprintf(
-				"Install the Orchard fork in %s with a stable macOS app identity and Local Network usage description; keep %s as a symlink. Existing Grove Orchard binaries migrate in place, otherwise grove downloads a github.com/gm2211/orchard release asset or builds the fork from source.",
+				"Install the Orchard fork in %s with a stable macOS app identity and Local Network usage description; keep %s as a symlink. Existing Grove Orchard binaries migrate in place; any binary not built from the pinned github.com/gm2211/orchard commit (OrchardForkCommit) is rebuilt from source at that commit.",
 				workerOrchardAppDir(opts), cliOrchard,
 			),
 			Check: func(ctx context.Context) (bool, error) {
@@ -311,6 +321,9 @@ func workerOrchardAppInstalled(ctx context.Context, r Runner, opts Options, cliP
 	if info, err := os.Stat(executable); err != nil || !info.Mode().IsRegular() {
 		return false, nil
 	}
+	if !workerOrchardAtPinnedCommit(opts) {
+		return false, nil
+	}
 	gotPlist, err := os.ReadFile(workerOrchardInfoPlistPath(opts))
 	if err != nil || string(gotPlist) != workerOrchardInfoPlist() {
 		return false, nil
@@ -341,10 +354,21 @@ func ensureWorkerOrchardApp(ctx context.Context, r Runner, opts Options, cliPath
 		if err := os.Symlink(executable, cliPath); err != nil {
 			return fmt.Errorf("link Orchard CLI to migrated worker app: %w", err)
 		}
-	} else if _, err := os.Stat(executable); os.IsNotExist(err) {
+	}
+	// A binary from any other commit (a migrated one, or one built before the pin moved) is
+	// replaced; a running worker is restarted onto the new one below.
+	rebuilt := false
+	if !workerOrchardAtPinnedCommit(opts) {
 		if err := ensureOrchardBinary(ctx, r, opts, executable, out); err != nil {
 			return err
 		}
+		if err := os.MkdirAll(filepath.Dir(workerOrchardCommitPath(opts)), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(workerOrchardCommitPath(opts), []byte(OrchardForkCommit+"\n"), 0o644); err != nil {
+			return fmt.Errorf("record Orchard worker commit: %w", err)
+		}
+		rebuilt = true
 	}
 
 	if err := os.WriteFile(workerOrchardInfoPlistPath(opts), []byte(workerOrchardInfoPlist()), 0o644); err != nil {
@@ -353,6 +377,10 @@ func ensureWorkerOrchardApp(ctx context.Context, r Runner, opts Options, cliPath
 	if _, _, err := r.Run(ctx, "/usr/bin/codesign", "--force", "--deep", "--sign", "-",
 		"--identifier", orchardWorkerBundleID, "--timestamp=none", appDir); err != nil {
 		return fmt.Errorf("sign Orchard worker app: %w", err)
+	}
+	if rebuilt {
+		// Not loaded yet on a first install; finalization loads it.
+		_, _, _ = r.Run(ctx, "launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/com.grove.orchard-worker", os.Getuid()))
 	}
 
 	if err := os.MkdirAll(filepath.Dir(cliPath), 0o755); err != nil {
@@ -376,38 +404,27 @@ func ensureWorkerOrchardApp(ctx context.Context, r Runner, opts Options, cliPath
 	return nil
 }
 
-// ensureOrchardBinary tries a released asset first, falling back to a from-source build in a
-// scratch clone. Both paths run entirely through r so they're inert under a FakeRunner.
+// ensureOrchardBinary builds the fork at OrchardForkCommit in a scratch checkout and moves it
+// over dest. Fetching the commit by its SHA means a push to the fork's main changes nothing here.
+// It runs entirely through r so it's inert under a FakeRunner.
 func ensureOrchardBinary(ctx context.Context, r Runner, opts Options, dest string, out io.Writer) error {
-	destDir := filepath.Dir(dest)
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
 	}
-
-	if lp := opts.lookPath(); lp != nil {
-		if _, err := lp("gh"); err == nil {
-			pattern := fmt.Sprintf("*%s*%s*", opts.goos(), opts.goarch())
-			_, _, err := r.Run(ctx, "gh", "release", "download",
-				"--repo", "gm2211/orchard",
-				"--pattern", pattern,
-				"--dir", destDir,
-				"--clobber",
-			)
-			if err == nil {
-				_, _, err := r.Run(ctx, "chmod", "+x", dest)
-				return err
-			}
-			fmt.Fprintf(out, "        no gm2211/orchard release asset matching %s (%v); building from source instead\n", pattern, err)
-		}
-	}
-
 	tmp, err := os.MkdirTemp("", "grove-orchard-build-")
 	if err != nil {
 		return err
 	}
-	build := fmt.Sprintf("set -e; git clone --depth 1 https://github.com/gm2211/orchard %q && cd %q && go build -o %q ./cmd/orchard", tmp, tmp, dest)
+	defer os.RemoveAll(tmp)
+
+	fmt.Fprintf(out, "        building github.com/gm2211/orchard at %s\n", OrchardForkCommit)
+	built := filepath.Join(tmp, "orchard")
+	build := fmt.Sprintf("set -e; cd %q && git init -q src && cd src && "+
+		"git fetch -q --depth 1 https://github.com/gm2211/orchard %s && git checkout -q FETCH_HEAD && "+
+		"[ \"$(git rev-parse HEAD)\" = %s ] && go build -o %q ./cmd/orchard && mv -f %q %q",
+		tmp, OrchardForkCommit, OrchardForkCommit, built, built, dest)
 	if _, _, err := r.Run(ctx, "/bin/sh", "-c", build); err != nil {
-		return fmt.Errorf("build orchard from source: %w (see docs/INSTALL.md for the manual steps)", err)
+		return fmt.Errorf("build orchard %s from source: %w (see docs/INSTALL.md for the manual steps)", OrchardForkCommit, err)
 	}
 	return nil
 }
