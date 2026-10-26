@@ -200,6 +200,21 @@ credential:
    image (see docs/IMAGES.md "Size expectations") — the first real signal is the next VM the fleet
    reconciler creates (`grove vm ls`'s STATUS column) or the worker's Orchard log.
 
+## Where grove listens
+
+grove is only ever reachable over the tailnet. `grove serve` binds `server.listen` from
+config.yaml (default `127.0.0.1:6120`) and refuses to start if that address is a wildcard
+(`0.0.0.0:6120`, `:6120`) or resolves to anything but loopback or a Tailscale address
+(100.64.0.0/10, fd7a:115c:a1e0::/48). `grove doctor` checks the same thing (`grove-listen`). Don't
+put grove behind Tailscale Funnel or a public reverse proxy.
+
+```bash
+grove config set server.listen 100.x.y.z:6120   # this machine's tailnet IP
+```
+
+A server with no operator token, device store or Tailscale auth configured answers every
+`/api/v1` request with 503 rather than running open.
+
 ## Credentials for orchestrators and scripts
 
 An orchestrator (an agent runner, a CI script) should not hold the operator token: it can approve devices,

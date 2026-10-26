@@ -15,6 +15,7 @@ import (
 	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/fleet"
 	"github.com/gm2211/grove/internal/pki"
+	"github.com/gm2211/grove/internal/tsauth"
 	"github.com/gm2211/grove/internal/wire"
 )
 
@@ -70,6 +71,9 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 			checkNomadTLS(cfg.Nomad, time.Now()),
 			checkHTTPEndpoint(ctx, "grove-server", cfg.Server.URL, "/api/v1/healthz", cfg.Server.Token),
 		)
+		if cfg.Server.Listen != "" {
+			results = append(results, checkListen(ctx, cfg.Server.Listen))
+		}
 		results = append(results, checkMacOSCPUFingerprint(ctx, cfg))
 		results = append(results, checkSandboxHost(ctx, cfg))
 	}
@@ -483,4 +487,18 @@ func checkTartDiskFree(opts Options) CheckResult {
 		r.Remediation = "delete unused images/VMs: `tart list`, `tart delete <name>`"
 	}
 	return r
+}
+
+// checkListen fails when `grove serve` is configured to listen anywhere but loopback or the
+// tailnet; serve refuses to start in that case too (tsauth.CheckListen).
+func checkListen(ctx context.Context, listen string) CheckResult {
+	if err := tsauth.CheckListen(ctx, listen, nil); err != nil {
+		return CheckResult{
+			Name:        "grove-listen",
+			OK:          false,
+			Detail:      err.Error(),
+			Remediation: "`grove config set server.listen <tailnet-ip>:6120`, then restart grove serve",
+		}
+	}
+	return CheckResult{Name: "grove-listen", OK: true, Detail: listen + " (tailnet or loopback only)"}
 }

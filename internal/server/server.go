@@ -19,8 +19,8 @@ import (
 
 // Options configures the grove HTTP server.
 type Options struct {
-	// Token is the Bearer token clients must present under /api/v1. Empty disables auth
-	// (a loud warning is logged at startup) — useful for local dev, never for a real deployment.
+	// Token is the Bearer token clients must present under /api/v1. With no Token, AccessStore or
+	// Tailscale configured, /api/v1 refuses every request (see InsecureNoAuth).
 	Token string
 	// AccessStore authenticates revocable per-device credentials. Token remains the
 	// control-plane operator credential and always has full access.
@@ -32,6 +32,11 @@ type Options struct {
 	// such a peer is refused: its shared-pool jobs reach grove through its NAT and would carry
 	// the same identity (see workerHosts).
 	TrustWorkerHosts bool
+	// InsecureNoAuth treats every caller as the operator when no Token, AccessStore or Tailscale
+	// is configured. Only tests set it: a server with nothing configured otherwise refuses
+	// /api/v1 instead of quietly running open, so a misconfigured or relocated control plane fails
+	// closed. `grove serve` never sets it.
+	InsecureNoAuth bool
 	// Secrets holds the operator-managed named secrets jobs may request (JobRequest.Secrets). The
 	// same store is the dispatch service's resolver. Nil means no job can request one.
 	Secrets *secrets.Store
@@ -91,7 +96,11 @@ func New(oc orchard.Client, nc nomad.Client, ds dispatch.Service, ac artifacts.C
 		log = slog.Default()
 	}
 	if opts.Token == "" && opts.AccessStore == nil && opts.Tailscale == nil {
-		log.Warn("grove server: no auth token configured — /api/v1 is UNAUTHENTICATED; set server.token in config.yaml")
+		if opts.InsecureNoAuth {
+			log.Warn("grove server: InsecureNoAuth — /api/v1 is UNAUTHENTICATED")
+		} else {
+			log.Error("grove server: no authentication configured — /api/v1 refuses every request; set server.token in config.yaml")
+		}
 	}
 	if opts.RecyclePollInterval <= 0 {
 		opts.RecyclePollInterval = 5 * time.Second
