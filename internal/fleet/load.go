@@ -53,6 +53,12 @@ func (s *Spec) Validate() error {
 			)
 		}
 
+		if p.Name == "default" || p.Name == "all" {
+			// A shared pool's VMs register in a Nomad node pool of the pool's name, and Nomad keeps
+			// these two for itself.
+			return fmt.Errorf("pool %q: name is reserved by Nomad's node pools; pick another", p.Name)
+		}
+
 		if seen[p.Name] {
 			return fmt.Errorf("duplicate pool name %q", p.Name)
 		}

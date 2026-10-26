@@ -3,9 +3,11 @@ package pki
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -164,5 +166,54 @@ func TestEnsureNomadRefusesACorruptCA(t *testing.T) {
 	}
 	if _, _, err := EnsureNomad(dir, ServerSANs{}, time.Now()); err == nil {
 		t.Fatal("EnsureNomad silently replaced an unreadable CA")
+	}
+}
+
+func TestIssueNode_IsTheVMsOwnShortLivedClientCertificate(t *testing.T) {
+	now := time.Now()
+	files, _, err := EnsureNomad(filepath.Join(t.TempDir(), "tls"), ServerSANs{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca, err := LoadCA(files.CA, files.CAKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc, err := ca.IssueNode("linux-mac1-0", now, NodeCertValidity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode([]byte(nc.Cert))
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cert.Subject.CommonName != ClientName || !slices.Contains(cert.DNSNames, ClientName) {
+		t.Errorf("Nomad's role check needs %s, got CN %q, DNS %v", ClientName, cert.Subject.CommonName, cert.DNSNames)
+	}
+	if !slices.Contains(cert.DNSNames, "linux-mac1-0") || !slices.Equal(cert.Subject.OrganizationalUnit, []string{"linux-mac1-0"}) {
+		t.Errorf("the VM's name must be in the certificate, got DNS %v, OU %v", cert.DNSNames, cert.Subject.OrganizationalUnit)
+	}
+	if !nc.NotAfter.Equal(cert.NotAfter) || cert.NotAfter.After(now.Add(NodeCertValidity)) {
+		t.Errorf("NotAfter = %v (reported %v), want at most a day out", cert.NotAfter, nc.NotAfter)
+	}
+	caCert, _ := loadCert(files.CA)
+	pool := x509.NewCertPool()
+	pool.AddCert(caCert)
+	if _, err := cert.Verify(x509.VerifyOptions{Roots: pool, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); err != nil {
+		t.Errorf("does not verify as a client of grove's CA: %v", err)
+	}
+	if _, err := tls.X509KeyPair([]byte(nc.Cert), []byte(nc.Key)); err != nil {
+		t.Errorf("key does not match: %v", err)
+	}
+	other, _ := ca.IssueNode("linux-mac1-0", now, NodeCertValidity)
+	if other.Key == nc.Key {
+		t.Error("every issue must get a fresh key")
+	}
+	if _, err := ca.IssueNode("", now, NodeCertValidity); err == nil {
+		t.Error("a node certificate without a VM name must be refused")
+	}
+	if _, err := LoadCA(files.Node, files.NodeKey); err == nil {
+		t.Error("a leaf certificate must not load as a CA")
 	}
 }

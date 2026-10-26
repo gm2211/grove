@@ -182,3 +182,45 @@ func TestStableGroveBinary(t *testing.T) {
 		}
 	}
 }
+
+// poolingNomad is a fakeNomad that can also create node pools, recording the order of calls.
+type poolingNomad struct {
+	fakeNomad
+	calls []string
+}
+
+func (p *poolingNomad) EnsureNodePool(_ context.Context, name, _ string) error {
+	p.calls = append(p.calls, "pool "+name)
+	return nil
+}
+
+func (p *poolingNomad) RegisterJobFile(ctx context.Context, hcl string) error {
+	p.calls = append(p.calls, "register")
+	return p.fakeNomad.RegisterJobFile(ctx, hcl)
+}
+
+func TestEnsureJobs_NodePoolIsCreatedBeforeTheJobsPinnedToIt(t *testing.T) {
+	nc := &poolingNomad{}
+	pools := []PoolConfig{{Name: "linux", NodePool: "linux"}, {Name: "sealed", Isolated: true, NodePool: "sealed"}, {Name: "macos"}}
+	old := groveBinary
+	groveBinary = func() (string, error) { return "/usr/local/bin/grove", nil }
+	defer func() { groveBinary = old }()
+	if err := EnsureJobs(context.Background(), nc, pools); err != nil {
+		t.Fatal(err)
+	}
+	if len(nc.calls) == 0 || nc.calls[0] != "pool linux" || strings.Count(strings.Join(nc.calls, ","), "pool ") != 1 {
+		t.Fatalf("calls = %v, want node pool linux first and no other pool", nc.calls)
+	}
+	for _, hcl := range nc.registerCalls {
+		linux := strings.Contains(hcl, `-linux" {`)
+		if linux != strings.Contains(hcl, `node_pool = "linux"`) || !linux && strings.Contains(hcl, "node_pool =") {
+			t.Errorf("only the linux pool's jobs are pinned, to node pool linux:\n%s", hcl)
+		}
+	}
+}
+
+func TestEnsureJobs_NodePoolNeedsAClientThatCanCreateOne(t *testing.T) {
+	if err := EnsureJobs(context.Background(), &fakeNomad{}, []PoolConfig{{Name: "linux", NodePool: "linux"}}); err == nil {
+		t.Fatal("a job pinned to a node pool nobody can create would never be placed")
+	}
+}

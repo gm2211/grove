@@ -36,6 +36,11 @@ type PoolConfig struct {
 	// OS is a sealed pool's guest OS ("linux" or "darwin", see sandbox.Request.OS), which picks
 	// how `grove sandbox run` drives its jobs. "" means linux.
 	OS string
+	// NodePool, when set, pins this pool's jobs to the Nomad node pool of that name, which
+	// EnsureJobs creates if needed. Set it for a shared pool whose VMs enrol into their own node
+	// pool (Nomad over mutual TLS, see fleet.Reconciler.Enrol). Sealed pools ignore it: their jobs
+	// run on the control plane's own client.
+	NodePool string
 	// Fallback is the pool this pool's jobs move to when none of its nodes can place them (see
 	// fleet.Spec.FallbackFor), or "" to keep them waiting here.
 	Fallback string
@@ -57,6 +62,8 @@ type templateData struct {
 	Slots    int
 	// OS is the pool's guest OS for sandbox.nomad.hcl's --os; "" for a Linux pool.
 	OS string
+	// NodePool is the Nomad node pool the job is pinned to, "" for none.
+	NodePool string
 }
 
 const DefaultRunnerImage = "ghcr.io/gm2211/grove-runner:latest"
@@ -108,6 +115,19 @@ func EnsureJobs(ctx context.Context, nc nomad.Client, pools []PoolConfig) error 
 		}
 	}
 
+	for _, pool := range normalizedPools {
+		if pool.NodePool == "" || pool.Isolated {
+			continue
+		}
+		pools, ok := nomad.AsNodePools(nc)
+		if !ok {
+			return fmt.Errorf("nomadjobs: pool %s needs node pool %s, and this Nomad client can't create one", pool.Name, pool.NodePool)
+		}
+		if err := pools.EnsureNodePool(ctx, pool.NodePool, "grove fleet pool "+pool.Name); err != nil {
+			return fmt.Errorf("nomadjobs: %w", err)
+		}
+	}
+
 	for _, kind := range allKinds {
 		for _, pool := range normalizedPools {
 			file := fmt.Sprintf("%s.nomad.hcl", kind)
@@ -120,6 +140,9 @@ func EnsureJobs(ctx context.Context, nc nomad.Client, pools []PoolConfig) error 
 			}
 			var buf bytes.Buffer
 			data := templateData{Kind: kind, Pool: pool.Name, CPU: pool.CPU, Memory: pool.Memory, RunnerImage: pool.RunnerImage, GroveBin: groveBin, Slots: max(pool.Slots, 1), OS: pool.OS}
+			if !pool.Isolated {
+				data.NodePool = pool.NodePool
+			}
 			if err := tmpl.ExecuteTemplate(&buf, file, data); err != nil {
 				return fmt.Errorf("nomadjobs: render %s/%s: %w", kind, pool.Name, err)
 			}

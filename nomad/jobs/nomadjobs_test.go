@@ -27,6 +27,7 @@ type renderData struct {
 	GroveBin    string
 	Slots       int
 	OS          string
+	NodePool    string
 }
 
 func render(t *testing.T, file string, data renderData) string {
@@ -758,6 +759,29 @@ func TestDockerTasksUsePublicResolvers(t *testing.T) {
 			got, _ := task.Config["dns_servers"].([]interface{})
 			if len(got) != 2 || got[0] != "1.1.1.1" || got[1] != "8.8.8.8" {
 				t.Errorf("%s task %s: dns_servers = %v, want the public resolvers", kind, task.Name, task.Config["dns_servers"])
+			}
+		}
+	}
+}
+
+// TestNodePoolPinsSharedPoolJobs checks that a pool whose VMs enrol into their own node pool gets
+// jobs pinned to it, and that one without keeps Nomad's default (no node_pool at all).
+func TestNodePoolPinsSharedPoolJobs(t *testing.T) {
+	for _, file := range []string{"build.nomad.hcl", "agent.nomad.hcl", "shell.nomad.hcl"} {
+		for _, pool := range []string{"linux", "macos"} {
+			parse := func(nodePool string) *nomadapi.Job {
+				hcl := render(t, file, renderData{Kind: "build", Pool: pool, NodePool: nodePool})
+				job, err := jobspec2.ParseWithConfig(&jobspec2.ParseConfig{Path: "job.hcl", Body: []byte(hcl)})
+				if err != nil {
+					t.Fatalf("%s/%s: %v\n%s", file, pool, err, hcl)
+				}
+				return job
+			}
+			if job := parse(pool); job.NodePool == nil || *job.NodePool != pool {
+				t.Errorf("%s/%s: node_pool = %v, want %q", file, pool, job.NodePool, pool)
+			}
+			if job := parse(""); job.NodePool != nil && *job.NodePool != "" {
+				t.Errorf("%s/%s without a node pool: node_pool = %q", file, pool, *job.NodePool)
 			}
 		}
 	}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	nomadapi "github.com/hashicorp/nomad/api"
 )
 
 // NodeSummary is the part of a Nomad node that one cheap list call returns: enough to find nodes
@@ -12,6 +14,9 @@ type NodeSummary struct {
 	ID     string
 	Name   string
 	Status string // ready | down | initializing | disconnected
+	// NodePool is the pool the node registered in. Under strict client introduction that is the
+	// pool its introduction token was bound to, not something the node chose.
+	NodePool string
 }
 
 // NodePurger finds and removes Nomad client nodes. Every recycled or restarted VM boots a fresh
@@ -42,7 +47,7 @@ func (c *client) ListNodeSummaries(ctx context.Context) ([]NodeSummary, error) {
 		if s == nil {
 			continue
 		}
-		out = append(out, NodeSummary{ID: s.ID, Name: s.Name, Status: s.Status})
+		out = append(out, NodeSummary{ID: s.ID, Name: s.Name, Status: s.Status, NodePool: s.NodePool})
 	}
 	return out, nil
 }
@@ -54,6 +59,33 @@ func (c *client) PurgeNode(ctx context.Context, nodeID string) error {
 			return nil
 		}
 		return fmt.Errorf("nomad: purge node %s: %w", nodeID, wrapDenied(err))
+	}
+	return nil
+}
+
+// NodePools creates Nomad node pools. Each shared fleet pool registers its VMs in a node pool of
+// its own name (the introduction token binds a VM to it), and grove's jobs for that pool name it,
+// so a node can only ever be handed its own pool's jobs. Needs node_pool:write (the management
+// token). The concrete Client returned by New implements it; see AsNodePools.
+type NodePools interface {
+	// EnsureNodePool creates the pool if it doesn't exist. An existing pool is left as it is.
+	EnsureNodePool(ctx context.Context, name, description string) error
+}
+
+// AsNodePools returns c's NodePools implementation, if it has one.
+func AsNodePools(c Client) (NodePools, bool) {
+	p, ok := c.(NodePools)
+	return p, ok
+}
+
+func (c *client) EnsureNodePool(ctx context.Context, name, description string) error {
+	if _, _, err := c.raw.NodePools().Info(name, qOpts(ctx)); err == nil {
+		return nil
+	} else if !errors.Is(wrapNotFound(err), ErrNotFound) {
+		return fmt.Errorf("nomad: read node pool %s: %w", name, wrapDenied(err))
+	}
+	if _, err := c.raw.NodePools().Register(&nomadapi.NodePool{Name: name, Description: description}, wOpts(ctx)); err != nil {
+		return fmt.Errorf("nomad: create node pool %s: %w", name, wrapDenied(err))
 	}
 	return nil
 }

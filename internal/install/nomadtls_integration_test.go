@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -24,65 +26,39 @@ import (
 // Every machine that used to be able to join (any process that reached 4647) is refused: no
 // TLS, a certificate from another CA, and grove's own node certificate without an introduction
 // token. The sandbox-host client registers once handed a token minted for its name.
-func TestNomadMutualTLS_RealNomad(t *testing.T) {
+// nomadTestServer is a real Nomad server running grove's rendered server config, with grove's
+// management token and HTTP client.
+type nomadTestServer struct {
+	t      *testing.T
+	bin    string
+	root   string
+	files  pki.Files
+	nc     nomad.Client
+	ctx    context.Context
+	extras string // client config that keeps cloud fingerprinters out of a test agent
+}
+
+func startNomadTestServer(t *testing.T) *nomadTestServer {
 	bin := os.Getenv("GROVE_NOMAD_BIN")
 	if bin == "" {
 		t.Skip("GROVE_NOMAD_BIN not set")
 	}
-	root := t.TempDir()
-	files, _, err := pki.EnsureNomad(filepath.Join(root, "tls"), nomadServerSANs("127.0.0.1"), time.Now())
+	s := &nomadTestServer{t: t, bin: bin, root: t.TempDir()}
+	files, _, err := pki.EnsureNomad(filepath.Join(s.root, "tls"), nomadServerSANs("127.0.0.1"), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherCA, _, err := pki.EnsureNomad(filepath.Join(root, "other-ca"), pki.ServerSANs{}, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	write := func(name, content string) string {
-		t.Helper()
-		path := filepath.Join(root, name)
-		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		return path
-	}
+	s.files = files
 	// Cloud fingerprinters only slow a test agent down (or fail behind a proxy).
-	clientExtras := write("client-extras.hcl", `client {
+	s.extras = s.write("client-extras.hcl", `client {
   options {
     "fingerprint.denylist" = "env_aws,env_gce,env_azure,env_digitalocean"
   }
 }
 `)
 
-	start := func(name string, configs ...string) {
-		t.Helper()
-		args := []string{"agent"}
-		for _, c := range configs {
-			args = append(args, "-config", c)
-		}
-		cmd := exec.Command(bin, args...)
-		log, err := os.Create(filepath.Join(root, name+".log"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		cmd.Stdout, cmd.Stderr = log, log
-		if err := cmd.Start(); err != nil {
-			t.Fatalf("start %s: %v", name, err)
-		}
-		t.Cleanup(func() {
-			_ = cmd.Process.Kill()
-			_, _ = cmd.Process.Wait()
-			_ = log.Close()
-			if t.Failed() {
-				data, _ := os.ReadFile(log.Name())
-				t.Logf("--- %s log ---\n%s", name, tail(data, 40))
-			}
-		})
-	}
-
 	serverConf, err := RenderNomadServerConfig(NomadServerConfigSpec{
-		DataDir:  filepath.Join(root, "server-data"),
+		DataDir:  filepath.Join(s.root, "server-data"),
 		BindAddr: "127.0.0.1",
 		TLS:      NomadTLSFiles{CA: files.CA, Cert: files.Server, Key: files.ServerKey},
 	})
@@ -90,15 +66,16 @@ func TestNomadMutualTLS_RealNomad(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Nomad refuses to advertise loopback implicitly.
-	start("server", write("server.hcl", serverConf), write("server-advertise.hcl", `advertise {
+	s.start("server", s.write("server.hcl", serverConf), s.write("server-advertise.hcl", `advertise {
   http = "127.0.0.1:4646"
   rpc  = "127.0.0.1:4647"
   serf = "127.0.0.1:4648"
 }
 `))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	t.Cleanup(cancel)
+	s.ctx = ctx
 	url := "https://127.0.0.1:4646"
 	tlsFlags := []string{"-ca-cert=" + files.CA, "-client-cert=" + files.CLI, "-client-key=" + files.CLIKey}
 	var mgmt string
@@ -115,16 +92,139 @@ func TestNomadMutualTLS_RealNomad(t *testing.T) {
 		}
 		time.Sleep(time.Second)
 	}
-
-	// grove's own client certificate gets through verify_https_client; no certificate does not.
-	nc, err := nomad.NewTLS(url, mgmt, nomad.TLS{CACert: files.CA, ClientCert: files.CLI, ClientKey: files.CLIKey})
+	s.nc, err = nomad.NewTLS(url, mgmt, nomad.TLS{CACert: files.CA, ClientCert: files.CLI, ClientKey: files.CLIKey})
 	if err != nil {
 		t.Fatal(err)
 	}
+	return s
+}
+
+func (s *nomadTestServer) write(name, content string) string {
+	s.t.Helper()
+	path := filepath.Join(s.root, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		s.t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		s.t.Fatal(err)
+	}
+	return path
+}
+
+// nomadTestAgent is a running Nomad agent.
+type nomadTestAgent struct {
+	cmd  *exec.Cmd
+	stop func()
+}
+
+// start runs a Nomad agent with configs until the test ends (or stop is called).
+func (s *nomadTestServer) start(name string, configs ...string) *nomadTestAgent {
+	s.t.Helper()
+	args := []string{"agent"}
+	for _, c := range configs {
+		args = append(args, "-config", c)
+	}
+	cmd := exec.Command(s.bin, args...)
+	log, err := os.OpenFile(filepath.Join(s.root, name+".log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	cmd.Stdout, cmd.Stderr = log, log
+	if err := cmd.Start(); err != nil {
+		s.t.Fatalf("start %s: %v", name, err)
+	}
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+			_ = log.Close()
+		})
+	}
+	s.t.Cleanup(func() {
+		stop()
+		if s.t.Failed() {
+			data, _ := os.ReadFile(log.Name())
+			s.t.Logf("--- %s log ---\n%s", name, tail(data, 40))
+		}
+	})
+	return &nomadTestAgent{cmd: cmd, stop: stop}
+}
+
+// agentLog returns what the agent started as name has logged so far.
+func (s *nomadTestServer) agentLog(name string) string {
+	data, _ := os.ReadFile(filepath.Join(s.root, name+".log"))
+	return string(data)
+}
+
+// introToken mints an introduction token, retrying while a just-bootstrapped server has no
+// keyring yet (the install step retries too).
+func (s *nomadTestServer) introToken(name, pool string, ttl time.Duration) string {
+	s.t.Helper()
+	intros, _ := nomad.AsNodeIntros(s.nc)
+	for {
+		tok, err := intros.CreateIntroToken(s.ctx, name, pool, ttl)
+		if err == nil {
+			return tok
+		}
+		if s.ctx.Err() != nil {
+			s.t.Fatal(err)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+// node returns the registered node named name, if any (none while the server is restarting).
+func (s *nomadTestServer) node(name string) (nomad.NodeSummary, bool) {
+	s.t.Helper()
+	purger, _ := nomad.AsNodePurger(s.nc)
+	nodes, err := purger.ListNodeSummaries(s.ctx)
+	if err != nil {
+		return nomad.NodeSummary{}, false
+	}
+	for _, n := range nodes {
+		if n.Name == name {
+			return n, true
+		}
+	}
+	return nomad.NodeSummary{}, false
+}
+
+// waitReady waits for the node named name to be ready.
+func (s *nomadTestServer) waitReady(name string) nomad.NodeSummary {
+	s.t.Helper()
+	for {
+		if n, ok := s.node(name); ok && n.Status == "ready" {
+			return n
+		}
+		if s.ctx.Err() != nil {
+			s.t.Fatalf("node %s never became ready", name)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+// TestNomadMutualTLS_RealNomad runs the server and sandbox-host client configs grove renders
+// against a real Nomad agent and checks who can register. It needs a nomad binary
+// (GROVE_NOMAD_BIN, which CI sets to the pinned NomadVersion) and the default ports 4646-4648,
+// 4656-4658 and 4666-4690 free on 127.0.0.1; it is skipped otherwise.
+//
+// Every machine that used to be able to join (any process that reached 4647) is refused: no
+// TLS, a certificate from another CA, and grove's own node certificate without an introduction
+// token. The sandbox-host client registers once handed a token minted for its name.
+func TestNomadMutualTLS_RealNomad(t *testing.T) {
+	srv := startNomadTestServer(t)
+	root, files, nc, ctx, write, start, clientExtras := srv.root, srv.files, srv.nc, srv.ctx, srv.write, srv.start, srv.extras
+	otherCA, _, err := pki.EnsureNomad(filepath.Join(root, "other-ca"), pki.ServerSANs{}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// grove's own client certificate gets through verify_https_client; no certificate does not.
 	if _, err := nc.ListNodes(ctx); err != nil {
 		t.Fatalf("grove's client certificate was refused: %v", err)
 	}
-	if bare, err := nomad.NewTLS(url, mgmt, nomad.TLS{CACert: files.CA}); err != nil {
+	if bare, err := nomad.NewTLS("https://127.0.0.1:4646", "", nomad.TLS{CACert: files.CA}); err != nil {
 		t.Fatal(err)
 	} else if _, err := bare.ListNodes(ctx); err == nil {
 		t.Fatal("the HTTP API answered a caller with no client certificate")
@@ -168,21 +268,7 @@ client {
 	if err != nil {
 		t.Fatal(err)
 	}
-	intros, _ := nomad.AsNodeIntros(nc)
-	// Right after bootstrap the server may not have its keyring yet (the install step retries too).
-	var tok string
-	for {
-		if tok, err = intros.CreateIntroToken(ctx, SandboxClientNodeName, "", nomadSandboxIntroTTL); err == nil {
-			break
-		}
-		if ctx.Err() != nil {
-			t.Fatal(err)
-		}
-		time.Sleep(time.Second)
-	}
-	if err := os.MkdirAll(filepath.Join(root, "sandbox-data", "client"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	tok := srv.introToken(SandboxClientNodeName, "", nomadSandboxIntroTTL)
 	write(filepath.Join("sandbox-data", "client", "intro_token.jwt"), tok)
 	start("sandbox", write("sandbox-client.hcl", sandboxConf), clientExtras)
 
@@ -227,4 +313,131 @@ func tail(data []byte, lines int) []byte {
 		}
 		return out
 	}(), "\n"))
+}
+
+// TestNomadPerVMEnrolment_RealNomad proves what the fleet's enrolment relies on, against a real
+// Nomad: a VM's own short-lived certificate (pki.CA.IssueNode) passes the server's role check;
+// the introduction token pins the node pool, so a VM cannot register in another pool's; and a
+// renewed certificate written over the old one is what the client presents next, while one
+// nobody renewed no longer gets a client back in once it has expired.
+func TestNomadPerVMEnrolment_RealNomad(t *testing.T) {
+	srv := startNomadTestServer(t)
+	pools, _ := nomad.AsNodePools(srv.nc)
+	if err := pools.EnsureNodePool(srv.ctx, "linux", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pools.EnsureNodePool(srv.ctx, "linux", "test"); err != nil {
+		t.Fatalf("EnsureNodePool on an existing pool: %v", err)
+	}
+	ca, err := pki.LoadCA(srv.files.CA, srv.files.CAKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const shortLife = 40 * time.Second
+	// vm writes a VM's client config, certificate and (when token is set) introduction token.
+	vm := func(name string, port int, pool string, cert pki.NodeCert, token string) []string {
+		dir := "vm-" + name
+		certPath := srv.write(dir+"/node.pem", cert.Cert)
+		keyPath := srv.write(dir+"/node-key.pem", cert.Key)
+		if token != "" {
+			srv.write(dir+"/data/client/intro_token.jwt", token)
+		}
+		conf := srv.write(dir+"/client.hcl", fmt.Sprintf(`name = %q
+data_dir = %q
+bind_addr = "127.0.0.1"
+ports {
+  http = %d
+  rpc = %d
+  serf = %d
+}
+advertise {
+  http = "127.0.0.1:%d"
+  rpc = "127.0.0.1:%d"
+  serf = "127.0.0.1:%d"
+}
+client {
+  enabled = true
+  servers = ["127.0.0.1:4647"]
+  node_pool = %q
+}
+tls {
+  rpc = true
+  ca_file = %q
+  cert_file = %q
+  key_file = %q
+  verify_server_hostname = true
+}
+`, name, filepath.Join(srv.root, dir, "data"), port, port+1, port+2, port, port+1, port+2, pool,
+			srv.files.CA, certPath, keyPath))
+		return []string{conf, srv.extras}
+	}
+	issue := func(name string, life time.Duration) pki.NodeCert {
+		c, err := ca.IssueNode(name, time.Now(), life)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+
+	first0 := issue("linux-mac1-0", shortLife)
+	first1 := issue("linux-mac1-1", shortLife)
+	renewed := srv.start("renewed", vm("linux-mac1-0", 4680, "linux", first0, srv.introToken("linux-mac1-0", "linux", time.Hour))...)
+	expiring := srv.start("expiring", vm("linux-mac1-1", 4684, "linux", first1, srv.introToken("linux-mac1-1", "linux", time.Hour))...)
+	// A token for the linux pool does not let a client register in another one.
+	srv.start("wrong-pool", vm("linux-mac1-2", 4688, "default", issue("linux-mac1-2", time.Hour), srv.introToken("linux-mac1-2", "linux", time.Hour))...)
+	issuedAt := time.Now()
+
+	if n := srv.waitReady("linux-mac1-0"); n.NodePool != "linux" {
+		t.Fatalf("node pool = %q, want linux", n.NodePool)
+	}
+	srv.waitReady("linux-mac1-1")
+
+	// A connection that is already up outlives its certificate, so expiry bites only on the next
+	// handshake. Wait out the first certificates, then renew linux-mac1-0 the way the enrolment
+	// exec does (new files over the old, then SIGHUP): the reload drops its connections, and the
+	// handshake that follows can only succeed on the new certificate.
+	time.Sleep(time.Until(issuedAt.Add(shortLife + 5*time.Second)))
+	fresh := issue("linux-mac1-0", time.Hour)
+	srv.write("vm-linux-mac1-0/node-key.pem", fresh.Key)
+	srv.write("vm-linux-mac1-0/node.pem", fresh.Cert)
+	if err := renewed.cmd.Process.Signal(syscall.SIGHUP); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		log := srv.agentLog("renewed")
+		if _, after, ok := strings.Cut(log, "Reloading configuration"); ok && strings.Contains(after, "node registration complete") {
+			if strings.Contains(after, "expired certificate") {
+				t.Fatal("the renewed client handshook with its expired certificate")
+			}
+			break
+		}
+		if srv.ctx.Err() != nil {
+			t.Fatal("the renewed client never re-registered after its reload")
+		}
+		time.Sleep(time.Second)
+	}
+	// linux-mac1-1 was never renewed: once its client restarts, it is locked out.
+	expiring.stop()
+	srv.start("expiring", vm("linux-mac1-1", 4684, "linux", first1, "")...)
+	for {
+		n0, _ := srv.node("linux-mac1-0")
+		n1, _ := srv.node("linux-mac1-1")
+		if n1.Status == "down" {
+			if n0.Status != "ready" {
+				t.Fatalf("the renewed client is %q", n0.Status)
+			}
+			break
+		}
+		if srv.ctx.Err() != nil {
+			t.Fatalf("linux-mac1-1 is still %q on an expired certificate", n1.Status)
+		}
+		time.Sleep(time.Second)
+	}
+	if !strings.Contains(srv.agentLog("expiring"), "expired certificate") {
+		t.Fatal("linux-mac1-1 went down, but not for its expired certificate")
+	}
+	if n, ok := srv.node("linux-mac1-2"); ok {
+		t.Fatalf("a client registered in pool %q with a token bound to linux", n.NodePool)
+	}
 }

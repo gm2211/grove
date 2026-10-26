@@ -226,6 +226,11 @@ type fleetReconcileLoop struct {
 	tokenSweepPaused time.Time
 	nodeSweepPaused  time.Time
 
+	// enrolment is what the reconciler remembers about the VMs it has enrolled into Nomad (see
+	// fleet.Reconciler.Enrol), and warnedEnrol the enrolment error last logged.
+	enrolment   fleet.EnrolState
+	warnedEnrol string
+
 	// jobs, vmLoads and tracker feed elastic pools' autoscaling (see fleet.JobLoad); nil leaves
 	// elastic pools at their current size.
 	jobs    dispatch.Service
@@ -335,6 +340,17 @@ func (l *fleetReconcileLoop) tick(ctx context.Context) {
 		return
 	}
 
+	// Before applying the plan, whose failure ends the tick: a VM waiting for its Nomad identity
+	// must not wait on an unrelated create.
+	if err := r.Enrol(ctx, &l.enrolment); err != nil {
+		if msg := err.Error(); msg != l.warnedEnrol {
+			slog.Warn("serve: fleet reconciler: enrolling VMs into Nomad failed", "err", err)
+			l.warnedEnrol = msg
+		}
+	} else {
+		l.warnedEnrol = ""
+	}
+
 	if !plan.Empty() {
 		slog.Info("fleet: " + planSummary(plan))
 		if err := r.Apply(ctx, plan); err != nil {
@@ -433,9 +449,20 @@ func poolConfigs(cfg *config.Config) ([]dispatch.PoolConfig, error) {
 			Slots:       sealedVMSlots(p),
 			OS:          poolOS(p),
 			Fallback:    spec.FallbackFor(p),
+			NodePool:    nodePoolFor(cfg, p),
 		})
 	}
 	return pools, nil
+}
+
+// nodePoolFor is the Nomad node pool p's jobs are pinned to: its own name for a shared pool once
+// Nomad runs over mutual TLS, since only then do its VMs enrol into that node pool (see
+// fleet.Reconciler.Enrol); "" otherwise.
+func nodePoolFor(cfg *config.Config, p fleet.Pool) string {
+	if cfg.Nomad.NodeCert == "" || p.Isolated() {
+		return ""
+	}
+	return p.Name
 }
 
 // poolOS is the guest OS of p's VMs, as `grove sandbox run --os` takes it: sandbox.OSDarwin for

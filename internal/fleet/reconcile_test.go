@@ -3,6 +3,8 @@ package fleet
 import (
 	"context"
 	"errors"
+	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +18,10 @@ type fakeOrchardClient struct {
 
 	created []orchard.VMSpec
 	deleted []string
+
+	// exec, when set, answers Exec: it gets the VM, the command and its stdin, and returns the
+	// exit code and output.
+	exec func(vm string, command []string, stdin string) (int, string)
 }
 
 func (f *fakeOrchardClient) ListWorkers(context.Context) ([]orchard.Worker, error) {
@@ -53,13 +59,34 @@ func (f *fakeOrchardClient) DeleteVM(_ context.Context, name string) error {
 }
 
 func (f *fakeOrchardClient) Exec(
-	context.Context,
-	string,
-	[]string,
-	orchard.ExecOptions,
+	_ context.Context,
+	vm string,
+	command []string,
+	opts orchard.ExecOptions,
 ) (orchard.ExecSession, error) {
-	return nil, errors.New("not implemented")
+	if f.exec == nil {
+		return nil, errors.New("not implemented")
+	}
+	stdin := ""
+	if opts.Stdin != nil {
+		data, err := io.ReadAll(opts.Stdin)
+		if err != nil {
+			return nil, err
+		}
+		stdin = string(data)
+	}
+	code, out := f.exec(vm, command, stdin)
+	return &fakeExecSession{code: code, out: strings.NewReader(out)}, nil
 }
+
+type fakeExecSession struct {
+	code int
+	out  io.Reader
+}
+
+func (s *fakeExecSession) Output() io.Reader                 { return s.out }
+func (s *fakeExecSession) Wait(context.Context) (int, error) { return s.code, nil }
+func (s *fakeExecSession) Close() error                      { return nil }
 
 func (f *fakeOrchardClient) Ping(context.Context) error { return nil }
 

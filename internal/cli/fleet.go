@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"text/tabwriter"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/fleet"
 	"github.com/gm2211/grove/internal/nomad"
+	"github.com/gm2211/grove/internal/pki"
 	"github.com/gm2211/grove/internal/wire"
 	"github.com/spf13/cobra"
 )
@@ -257,11 +259,12 @@ func fleetOptions(cfg *config.Config) (fleet.Options, error) {
 			return fleet.Options{}, fmt.Errorf("nomad client cannot mint node tokens")
 		}
 		options.NodeTokens = tokens
-		// Nomad over mutual TLS (config.yaml names a node certificate): every VM gets the CA and
-		// node certificate, plus its own introduction token, without which the server's strict
-		// client introduction refuses to register it.
+		// Nomad over mutual TLS (config.yaml names a node certificate): every VM's startup script
+		// gets the CA, and the reconciler enrols each VM once it is up, with a certificate of its
+		// own signed by grove's CA and an introduction token bound to its name and pool, without
+		// which the server's strict client introduction refuses to register it.
 		if cfg.Nomad.NodeCert != "" {
-			nodeTLS, err := readNodeTLS(cfg.Nomad)
+			nodeTLS, ca, err := readNodeTLS(cfg.Nomad)
 			if err != nil {
 				return fleet.Options{}, err
 			}
@@ -269,38 +272,39 @@ func fleetOptions(cfg *config.Config) (fleet.Options, error) {
 			if !ok {
 				return fleet.Options{}, fmt.Errorf("nomad client cannot mint introduction tokens")
 			}
+			nodes, ok := nomad.AsNodePurger(client)
+			if !ok {
+				return fleet.Options{}, fmt.Errorf("nomad client cannot list nodes")
+			}
+			pools, ok := nomad.AsNodePools(client)
+			if !ok {
+				return fleet.Options{}, fmt.Errorf("nomad client cannot create node pools")
+			}
 			options.NodeTLS = nodeTLS
+			options.NodeCerts = ca
 			options.NodeIntros = intros
+			options.Nodes = nodes
+			options.NodePools = pools
 		}
 	}
 	return options, nil
 }
 
-// readNodeTLS loads the PEM files a VM's Nomad client needs from the paths in config.yaml.
-func readNodeTLS(ep config.Endpoint) (*fleet.NodeTLS, error) {
-	read := func(key, path string) (string, error) {
-		if path == "" {
-			return "", fmt.Errorf("config.yaml nomad.%s is not set; re-run `grove install --role control-plane`", key)
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return "", fmt.Errorf("read nomad.%s: %w", key, err)
-		}
-		return string(data), nil
+// readNodeTLS loads the CA certificate VMs trust and the CA that signs their own certificates,
+// from config.yaml's nomad.caCert and the key EnsureNomad keeps beside it.
+func readNodeTLS(ep config.Endpoint) (*fleet.NodeTLS, *pki.CA, error) {
+	if ep.CACert == "" {
+		return nil, nil, fmt.Errorf("config.yaml nomad.caCert is not set; re-run `grove install --role control-plane`")
 	}
-	ca, err := read("caCert", ep.CACert)
+	data, err := os.ReadFile(ep.CACert)
 	if err != nil {
-		return nil, err
+		return nil, nil, fmt.Errorf("read nomad.caCert: %w", err)
 	}
-	cert, err := read("nodeCert", ep.NodeCert)
+	ca, err := pki.LoadCA(ep.CACert, pki.NomadFiles(filepath.Dir(ep.CACert)).CAKey)
 	if err != nil {
-		return nil, err
+		return nil, nil, fmt.Errorf("nomad.caCert: %w (VMs are enrolled by the control plane, which holds the CA key)", err)
 	}
-	key, err := read("nodeKey", ep.NodeKey)
-	if err != nil {
-		return nil, err
-	}
-	return &fleet.NodeTLS{CA: ca, Cert: cert, Key: key}, nil
+	return &fleet.NodeTLS{CA: string(data)}, ca, nil
 }
 
 func printPlan(w io.Writer, plan fleet.Plan) {
