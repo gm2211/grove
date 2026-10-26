@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -238,15 +240,21 @@ func newReconciler(cfg *config.Config) (*fleet.Reconciler, error) {
 	}, nil
 }
 
+// lookupNomadHost resolves the Nomad host for fleetOptions; tests replace it.
+var lookupNomadHost = net.DefaultResolver.LookupIP
+
 func fleetOptions(cfg *config.Config) (fleet.Options, error) {
 	rpcAddress, err := fleet.NomadRPCAddressFromHTTPURL(cfg.Nomad.URL)
 	if err != nil {
 		return fleet.Options{}, err
 	}
-	options := fleet.Options{
-		TailscaleAuthKey: cfg.Tailscale.AuthKey,
-		NomadRPCAddress:  rpcAddress,
+	// The guests resolve names through public resolvers only, so they get the address the
+	// control plane resolves the Nomad host to (usually a tailnet name) instead of the name.
+	rpcAddress, err = fleet.ResolveNomadRPCAddress(context.Background(), rpcAddress, lookupNomadHost)
+	if err != nil {
+		return fleet.Options{}, err
 	}
+	options := fleet.Options{NomadRPCAddress: rpcAddress}
 	// A nomad.token means Nomad runs with ACLs on: each VM then needs its own node token to
 	// drain itself on recycle, and its Nomad client should enforce ACLs too.
 	if cfg.Nomad.URL != "" && cfg.Nomad.Token != "" {

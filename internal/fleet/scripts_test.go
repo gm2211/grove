@@ -78,9 +78,12 @@ func TestBuildStartupScript_LinuxMatchesV010(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The home fence and the broker block are the intended changes since v0.1.10: every Linux VM
-	// is recreated once to get them. Everything else must stay byte-identical.
-	got := strings.Replace(BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", ""), homeFenceScript(Pool{Name: "linux"})+"\n"+brokerScript()+"\n", "", 1)
+	// Turning Tailscale off, the home fence and the broker block are the intended changes since
+	// v0.1.10: every Linux VM is recreated once to get them. Everything else must stay
+	// byte-identical.
+	got := BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", "")
+	got = strings.Replace(got, tailscaleOffScript+"\n", "", 1)
+	got = strings.Replace(got, homeFenceScript(Pool{Name: "linux"})+"\n"+brokerScript()+"\n", "", 1)
 	if got != string(want) {
 		t.Fatalf("Linux startup script drifted from v0.1.10; this would recreate healthy Linux workers\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
@@ -168,13 +171,29 @@ esac
 	}
 }
 
-func TestBuildStartupScript_Tailscale(t *testing.T) {
-	pool := Pool{Name: "linux"}
-	script := BuildStartupScript(pool, "mac1", "linux-mac1-0", "tskey-abc")
-
-	want := `tailscale up --authkey='tskey-abc' --hostname="$grove_vm" --ssh --accept-routes`
-	if !strings.Contains(script, want) {
-		t.Errorf("startup script missing tailscale up call %q:\n%s", want, script)
+// No VM joins the tailnet any more, whatever key it is handed: a shared VM turns the image's
+// Tailscale off and reaches Nomad through its host Mac's NAT, at the address it is given.
+func TestBuildStartupScript_StaysOffTheTailnet(t *testing.T) {
+	for _, pool := range []Pool{{Name: "linux"}, {Name: "macos"}} {
+		script := buildStartupScript(pool, "mac1", pool.Name+"-mac1-0", Options{TailscaleAuthKey: "tskey-abc", NomadRPCAddress: "100.101.229.60:4647"})
+		if strings.Contains(script, "tailscale up") || strings.Contains(script, "tskey-abc") {
+			t.Errorf("%s: startup script joins the tailnet or carries the key:\n%s", pool.Name, script)
+		}
+		offAt := strings.Index(script, "systemctl disable --now tailscaled.service")
+		restartAt := strings.LastIndex(script, "systemctl restart nomad")
+		dir := "/etc/nomad.d"
+		if pool.MacOS() {
+			offAt = strings.Index(script, "launchctl bootout system/homebrew.mxcl.tailscale")
+			restartAt = strings.LastIndex(script, "launchctl kickstart -k system/com.grove.nomad")
+			dir = "/usr/local/etc/nomad.d"
+		}
+		rpcAt := strings.Index(script, "grove_priv tee "+dir+"/grove-rpc.hcl")
+		if offAt < 0 || rpcAt < 0 || restartAt < offAt || restartAt < rpcAt || !strings.Contains(script, `servers = ["100.101.229.60:4647"]`) {
+			t.Errorf("%s: Tailscale not turned off, or no RPC server, before Nomad restarts:\n%s", pool.Name, script)
+		}
+	}
+	if strings.Contains(BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", "tskey-abc"), "tskey-abc") {
+		t.Error("BuildStartupScript must ignore the tailnet key it is passed")
 	}
 }
 
@@ -646,7 +665,7 @@ func TestBuildStartupScript_MacOSCreatesJobUserBeforeNomad(t *testing.T) {
 // TestBuildStartupScript_TailscaleFailureStillRestartsNomad is the regression test for the Studio's
 // Linux VM, restarted 40,426 times: under `set -eu` a failing `tailscale up` (expired auth key)
 // ended the startup script before Nomad was restarted with the VM's meta.
-func TestBuildStartupScript_TailscaleFailureStillRestartsNomad(t *testing.T) {
+func TestBuildStartupScript_LinuxTurnsTailscaleOffThenRestartsNomad(t *testing.T) {
 	fakeBin := t.TempDir()
 	calls := filepath.Join(t.TempDir(), "calls")
 	write := func(name, body string) {
@@ -659,24 +678,22 @@ func TestBuildStartupScript_TailscaleFailureStillRestartsNomad(t *testing.T) {
 	write("uname", "#!/bin/sh\necho Linux\n")
 	write("tee", "#!/bin/sh\ncat >/dev/null\n")
 	write("mkdir", "#!/bin/sh\nexit 0\n")
-	write("tailscale", "#!/bin/sh\necho 'invalid key: unable to validate API key' >&2\nexit 1\n")
+	write("tailscale", "#!/bin/sh\necho \"tailscale $*\" >> \"$GROVE_TEST_CALLS\"\nexit 1\n")
 	write("systemctl", "#!/bin/sh\necho \"systemctl $*\" >> \"$GROVE_TEST_CALLS\"\n")
 	write("chmod", "#!/bin/sh\nexit 0\n")
 	write("iptables", "#!/bin/sh\nexit 0\n")
+	write("ip", "#!/bin/sh\nexit 0\n")
 
 	script := BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", "tskey-expired")
 	cmd := exec.Command("/bin/sh", "-c", script)
 	cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_CALLS="+calls)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("startup script must survive a failed tailscale up: %v\n%s", err, out)
+		t.Fatalf("startup script failed: %v\n%s", err, out)
 	}
 	got, _ := os.ReadFile(calls)
-	if string(got) != "systemctl daemon-reload\nsystemctl restart nomad\n" {
-		t.Fatalf("nomad restart calls = %q, want one restart", got)
-	}
-	if !strings.Contains(string(out), "tailscale up failed") {
-		t.Errorf("want a warning naming the tailscale failure, got:\n%s", out)
+	if string(got) != "systemctl disable --now tailscaled.service\nsystemctl daemon-reload\nsystemctl restart nomad\n" {
+		t.Fatalf("calls = %q, want Tailscale off, then one Nomad restart", got)
 	}
 }
 

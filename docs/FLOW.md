@@ -117,8 +117,8 @@ flowchart LR
 ```
 
 The guest drains itself — Orchard never learns Nomad exists, and Nomad never learns about VM
-lifecycle (ARCHITECTURE.md's "Recycling / hygiene"). Tailscale inside guests uses ephemeral tagged
-auth keys, so a recycled VM also vanishes and reappears on the tailnet under a fresh identity.
+lifecycle (ARCHITECTURE.md's "Recycling / hygiene"). No VM is on the tailnet: each reaches the
+control plane's Nomad through its host Mac's NAT.
 
 Same mechanism drives a forced recycle (`POST /api/v1/vms/{name}/recycle`, or the MCP
 `grove_recycle_vm` tool) — it's the TTL-expiry path run on demand instead of waiting for the
