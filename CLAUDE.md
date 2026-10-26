@@ -110,7 +110,10 @@ called every `grove serve` tick) pushes in, over Orchard exec with the secrets o
 24-hour client certificate (`pki.CA.IssueNode`, renewed after 12 with a SIGHUP) and, until it
 registers, an introduction token bound to its name and its pool's Nomad node pool; the pool's jobs
 are pinned to that node pool. The control plane's own sandbox-host client is a separate agent for
-the same reason. Keep it that way: never put a node key or an introduction token into a VM spec
+the same reason. A VM's Nomad ACL token is read-only (`grove-node-read`): the control plane drains
+nodes (before deleting a VM, before its TTL), and `Reconciler.RollCall` (`internal/fleet/rollcall.go`)
+drains every live node that no Orchard VM accounts for, that shares its VM with another node, or
+that sits outside its pool's node pool. Drain, never purge: a purged live node re-registers. Keep it that way: never put a node key or an introduction token into a VM spec
 or onto an exec's argv, never render a Nomad config without the `tls` block, never let a client
 register on a certificate alone, and keep `internal/install/nomadtls_integration_test.go` (real
 Nomad, run in CI) proving that a client with no TLS, another CA's certificate, no introduction

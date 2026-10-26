@@ -315,35 +315,16 @@ func tail(data []byte, lines int) []byte {
 	}(), "\n"))
 }
 
-// TestNomadPerVMEnrolment_RealNomad proves what the fleet's enrolment relies on, against a real
-// Nomad: a VM's own short-lived certificate (pki.CA.IssueNode) passes the server's role check;
-// the introduction token pins the node pool, so a VM cannot register in another pool's; and a
-// renewed certificate written over the old one is what the client presents next, while one
-// nobody renewed no longer gets a client back in once it has expired.
-func TestNomadPerVMEnrolment_RealNomad(t *testing.T) {
-	srv := startNomadTestServer(t)
-	pools, _ := nomad.AsNodePools(srv.nc)
-	if err := pools.EnsureNodePool(srv.ctx, "linux", "test"); err != nil {
-		t.Fatal(err)
+// vmConfigs writes a VM's client config, certificate and (when token is set) introduction token,
+// laid out as a VM's startup script and enrolment leave them, and returns the agent's configs.
+func (s *nomadTestServer) vmConfigs(name string, port int, pool string, cert pki.NodeCert, token string) []string {
+	dir := "vm-" + name
+	certPath := s.write(dir+"/node.pem", cert.Cert)
+	keyPath := s.write(dir+"/node-key.pem", cert.Key)
+	if token != "" {
+		s.write(dir+"/data/client/intro_token.jwt", token)
 	}
-	if err := pools.EnsureNodePool(srv.ctx, "linux", "test"); err != nil {
-		t.Fatalf("EnsureNodePool on an existing pool: %v", err)
-	}
-	ca, err := pki.LoadCA(srv.files.CA, srv.files.CAKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	const shortLife = 40 * time.Second
-	// vm writes a VM's client config, certificate and (when token is set) introduction token.
-	vm := func(name string, port int, pool string, cert pki.NodeCert, token string) []string {
-		dir := "vm-" + name
-		certPath := srv.write(dir+"/node.pem", cert.Cert)
-		keyPath := srv.write(dir+"/node-key.pem", cert.Key)
-		if token != "" {
-			srv.write(dir+"/data/client/intro_token.jwt", token)
-		}
-		conf := srv.write(dir+"/client.hcl", fmt.Sprintf(`name = %q
+	conf := s.write(dir+"/client.hcl", fmt.Sprintf(`name = %q
 data_dir = %q
 bind_addr = "127.0.0.1"
 ports {
@@ -368,10 +349,37 @@ tls {
   key_file = %q
   verify_server_hostname = true
 }
-`, name, filepath.Join(srv.root, dir, "data"), port, port+1, port+2, port, port+1, port+2, pool,
-			srv.files.CA, certPath, keyPath))
-		return []string{conf, srv.extras}
+`, name, filepath.Join(s.root, dir, "data"), port, port+1, port+2, port, port+1, port+2, pool,
+		s.files.CA, certPath, keyPath))
+	return []string{conf, s.extras}
+}
+
+// startVMClient runs a VM's Nomad client (see vmConfigs), logging to name.log.
+func (s *nomadTestServer) startVMClient(name string, port int, pool string, cert pki.NodeCert, token string) *nomadTestAgent {
+	return s.start(name, s.vmConfigs(name, port, pool, cert, token)...)
+}
+
+// TestNomadPerVMEnrolment_RealNomad proves what the fleet's enrolment relies on, against a real
+// Nomad: a VM's own short-lived certificate (pki.CA.IssueNode) passes the server's role check;
+// the introduction token pins the node pool, so a VM cannot register in another pool's; and a
+// renewed certificate written over the old one is what the client presents next, while one
+// nobody renewed no longer gets a client back in once it has expired.
+func TestNomadPerVMEnrolment_RealNomad(t *testing.T) {
+	srv := startNomadTestServer(t)
+	pools, _ := nomad.AsNodePools(srv.nc)
+	if err := pools.EnsureNodePool(srv.ctx, "linux", "test"); err != nil {
+		t.Fatal(err)
 	}
+	if err := pools.EnsureNodePool(srv.ctx, "linux", "test"); err != nil {
+		t.Fatalf("EnsureNodePool on an existing pool: %v", err)
+	}
+	ca, err := pki.LoadCA(srv.files.CA, srv.files.CAKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const shortLife = 40 * time.Second
+	vm := srv.vmConfigs
 	issue := func(name string, life time.Duration) pki.NodeCert {
 		c, err := ca.IssueNode(name, time.Now(), life)
 		if err != nil {
@@ -439,5 +447,59 @@ tls {
 	}
 	if n, ok := srv.node("linux-mac1-2"); ok {
 		t.Fatalf("a client registered in pool %q with a token bound to linux", n.NodePool)
+	}
+}
+
+// TestNomadRollCallControls_RealNomad proves the two Nomad behaviours the roll call and the
+// read-only node token rely on: a VM's node token can watch its own node but drain nothing, and a
+// node the control plane has drained stays ineligible after its client restarts (where a purged
+// live node would simply register again).
+func TestNomadRollCallControls_RealNomad(t *testing.T) {
+	srv := startNomadTestServer(t)
+	pools, _ := nomad.AsNodePools(srv.nc)
+	if err := pools.EnsureNodePool(srv.ctx, "linux", "test"); err != nil {
+		t.Fatal(err)
+	}
+	ca, err := pki.LoadCA(srv.files.CA, srv.files.CAKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := ca.IssueNode("linux-mac1-0", time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm := srv.startVMClient("linux-mac1-0", 4680, "linux", cert, srv.introToken("linux-mac1-0", "linux", time.Hour))
+	n := srv.waitReady("linux-mac1-0")
+
+	tokens, _ := nomad.AsNodeTokens(srv.nc)
+	tok, err := tokens.CreateNodeToken(srv.ctx, "linux-mac1-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	asVM := func(args ...string) ([]byte, error) {
+		cmd := exec.CommandContext(srv.ctx, srv.bin, args...)
+		// The VM's shutdown script talks to its own client's plain HTTP API on loopback.
+		cmd.Env = append(os.Environ(), "NOMAD_ADDR=http://127.0.0.1:4680", "NOMAD_TOKEN="+tok.SecretID)
+		return cmd.CombinedOutput()
+	}
+	if out, err := asVM("node", "status", "-self", "-json"); err != nil {
+		t.Fatalf("the node token can't watch its own node: %v\n%s", err, out)
+	}
+	if out, err := asVM("node", "drain", "-self", "-enable", "-yes", "-deadline", "1m"); err == nil || !strings.Contains(string(out), "Permission denied") {
+		t.Fatalf("want the node token refused a drain (Permission denied), got %v:\n%s", err, out)
+	}
+	if out, err := asVM("node", "eligibility", "-disable", n.ID); err == nil || !strings.Contains(string(out), "Permission denied") {
+		t.Fatalf("want the node token refused an eligibility change (Permission denied), got %v:\n%s", err, out)
+	}
+
+	if err := srv.nc.DrainNode(srv.ctx, n.ID, true, 2*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	vm.stop()
+	srv.startVMClient("linux-mac1-0", 4680, "linux", cert, "")
+	time.Sleep(15 * time.Second)
+	got := srv.waitReady("linux-mac1-0")
+	if got.Eligible {
+		t.Fatal("a drained node came back eligible after its client restarted")
 	}
 }

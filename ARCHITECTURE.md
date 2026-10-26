@@ -76,9 +76,11 @@ accounts with exactly `compute:write` and `compute:connect`.
 Nothing long-lived is cleaned, only replaced:
 
 1. Every worker VM has an Orchard **TTL** (fork feature) — e.g. 12h.
-2. When it expires, Orchard deletes it via the normal path, which runs the VM's **ShutdownScript**
-   (fork feature) *inside the guest*: `nomad node drain -self -enable -deadline 2h` then wait for zero
-   allocations. The guest drains itself; Orchard never learns Nomad exists.
+2. Just before it expires, grove drains the VM's Nomad node from the control plane (the VM's own
+   Nomad token is read-only). Orchard then deletes it via the normal path, which runs the VM's
+   **ShutdownScript** (fork feature) *inside the guest*: wait for zero allocations. Orchard never
+   learns Nomad exists. Every reconciler tick also takes a roll call of Nomad's nodes against
+   Orchard's VMs and drains any node no VM accounts for (docs/OPERATIONS.md).
 3. grove's fleet reconciler notices the VM is gone and recreates it from the (freshly pulled) image.
 
 Tailscale inside guests uses **ephemeral tagged auth keys**, so recycled VMs vanish from the tailnet.
