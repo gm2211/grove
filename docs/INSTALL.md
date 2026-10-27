@@ -108,21 +108,22 @@ web UI. A worker that can't authenticate to a private registry fails to pull the
    the organization/user that owns the package, **Packages -> `grove-macos-worker`** (and
    `grove-linux-worker`) **-> Package settings -> Change visibility -> Public**. Do this once per
    package; every worker can then pull without logging in.
-2. **Log each worker in to the registry**, via `grove setup`:
+2. **Log each worker in to the registry.** Make a classic personal access token with only the
+   `read:packages` scope, copy it, and on each worker, as the macOS user the worker runs as:
 
    ```bash
-   GROVE_REGISTRY_TOKEN=<PAT> grove setup --registry-user <github-username>
+   pbpaste | grove registry login --user <github-username>
    ```
 
-   The token needs at minimum the `read:packages` scope (a fine-grained PAT scoped to just the
-   package, or a classic PAT with `read:packages`, both work).
+   A Mac that hasn't joined yet can do it while joining instead:
+   `GROVE_REGISTRY_TOKEN=<PAT> grove setup --registry-user <github-username>`.
 
-   `--registry` defaults to `ghcr.io` and rarely needs overriding. This runs an idempotent
-   "registry-login" step (`tart login <registry> --username <user> --password-stdin`, token piped
-   over stdin — never in argv, never logged) and records a marker file
-   (`~/.config/grove/registry-login.<registry>`, containing only the username and registry, never
-  the token) so re-running `grove install` doesn't log in again. Omitting `--registry-token`
-   entirely skips this step and prints a NOTE that the images must be public instead.
+   Either runs `tart login <registry> --username <user> --password-stdin` with the token over
+   stdin (never in argv, never logged), so Tart keeps it in that user's keychain, and records a
+   marker file (`~/.config/grove/registry-login.<registry>`, containing only the username and
+   registry, never the token) that `grove doctor` checks. `--registry` defaults to `ghcr.io` and
+   rarely needs overriding. Without a token, `grove install`/`grove setup` skip this and print a
+   NOTE that the images must be public instead.
 
 ### Control plane (the always-on machine, Linux or a Mac)
 
@@ -192,8 +193,7 @@ zero exit if anything's red.
 
 If `fleet.yaml` has any pool pulling a `ghcr.io` image and this machine has no recorded `tart login
 ghcr.io` (see "Registry access for private worker images" above), doctor also warns with a
-`registry-login` check: make the packages public, or re-run `grove install --role worker
---registry-token …`.
+`registry-login` check: make the packages public, or run `grove registry login` on each worker.
 
 ## Failure modes
 
@@ -228,8 +228,8 @@ ghcr.io` (see "Registry access for private worker images" above), doctor also wa
   pool's image is a private `ghcr.io` package and the worker isn't logged in. Check `grove vm ls`'s
   STATUS column and the Orchard worker's own log (`~/Library/Logs/grove/orchard-worker.err.log` —
   see docs/OPERATIONS.md's Log locations table) for a `401`/`403`/"unauthorized" pulling the image.
-  Fix by either making the package public or re-running `grove install --role worker
-  --registry-token …` (see "Registry access for private worker images" above); `grove doctor`'s
+  Fix by either making the package public or running `grove registry login` on the worker
+  (see "Registry access for private worker images" above); `grove doctor`'s
   `registry-login` check flags this proactively.
 - **First `grove install --role worker` run is slow**: if no `gm2211/orchard` release asset
   matches your OS/arch yet, it falls back to `git clone` + `go build ./cmd/orchard`, which needs a

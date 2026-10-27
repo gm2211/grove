@@ -2,10 +2,12 @@ package install
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -156,6 +158,12 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 			Name:        "worker-bootstrap-keychain",
 			Description: "Store worker-only Orchard credential in macOS Keychain; credential never appears in process arguments or LaunchAgent files.",
 			Check: func(ctx context.Context) (bool, error) {
+				if opts.Token == "" {
+					// A re-run without --token keeps the credential this worker already has. Without
+					// -w, security prints the item's attributes, never the secret.
+					_, _, err := r.Run(ctx, "/usr/bin/security", "find-generic-password", "-a", host, "-s", orchardWorkerKeychainService)
+					return err == nil, nil
+				}
 				stdout, _, err := r.Run(ctx, "/usr/bin/security", "find-generic-password", "-a", host, "-s", orchardWorkerKeychainService, "-w")
 				return err == nil && strings.TrimSpace(stdout) == opts.Token, nil
 			},
@@ -256,7 +264,7 @@ func registryLoginStep(r Runner, opts Options, out io.Writer) *Step {
 		fmt.Fprintf(out, "        NOTE: no --registry-token (or GROVE_REGISTRY_TOKEN) given; %s "+
 			"images must be public or workers will fail to pull them — make the packages public "+
 			"(GitHub -> Packages -> grove-*-worker -> Package settings -> Change visibility) or "+
-			"re-run `grove install --role worker --registry-token …`.\n", registry)
+			"run `grove registry login` on this worker.\n", registry)
 		return nil
 	}
 
@@ -295,6 +303,17 @@ func registryLoginStep(r Runner, opts Options, out io.Writer) *Step {
 	}
 }
 
+// RegistryLogin is `grove registry login`: it runs registryLoginStep's Apply even when the marker
+// already matches, because the reason to run it on an installed worker is usually a new or
+// rotated token for the same user. Re-running `grove install --role worker` for that would need
+// the worker's controller URL and bootstrap credential again.
+func RegistryLogin(ctx context.Context, r Runner, opts Options) error {
+	if opts.RegistryToken == "" {
+		return errors.New("registry login: no token given")
+	}
+	return registryLoginStep(r, opts, io.Discard).Apply(ctx)
+}
+
 // workerLaunchAgentPlist renders the LaunchAgent that supervises `orchard worker run`.
 func workerLaunchAgentPlist(opts Options, wrapper string) (string, error) {
 	return RenderLaunchAgent(LaunchAgentSpec{
@@ -307,6 +326,30 @@ func workerLaunchAgentPlist(opts Options, wrapper string) (string, error) {
 		StdoutPath:                  filepath.Join(opts.LogDir(), "orchard-worker.log"),
 		StderrPath:                  filepath.Join(opts.LogDir(), "orchard-worker.err.log"),
 	})
+}
+
+// installedWorkerController is the controller URL in this Mac's existing worker wrapper, or "" if
+// there is none or it can't be read. It lets `grove install --role worker` re-run (to upgrade, or
+// to add a registry login) without the --controller that `grove setup` supplied the first time.
+func installedWorkerController(opts Options) string {
+	b, err := os.ReadFile(workerWrapperPath(opts))
+	if err != nil {
+		return ""
+	}
+	const flag = "--bootstrap-token-stdin "
+	i := strings.Index(string(b), flag)
+	if i < 0 {
+		return ""
+	}
+	quoted, err := strconv.QuotedPrefix(string(b)[i+len(flag):])
+	if err != nil {
+		return ""
+	}
+	controller, err := strconv.Unquote(quoted)
+	if err != nil {
+		return ""
+	}
+	return controller
 }
 
 func workerWrapper(opts Options, orchardBin string) string {

@@ -204,8 +204,8 @@ for jobs").
 
 - only live-tested on a single-host smoke stack, not a multi-Mac fleet
 - worker images (`ghcr.io/gm2211/grove-linux-worker`, `ghcr.io/gm2211/grove-macos-worker`, tags
-  `latest` + date) are published but private by default — make the GitHub packages public or pass
-  `grove install --role worker --registry-token …` (see [docs/IMAGES.md](docs/IMAGES.md))
+  `latest` + date) are published but private by default — make the GitHub packages public or run
+  `grove registry login` on each worker (see [docs/IMAGES.md](docs/IMAGES.md))
 - per-dispatch CPU/memory sizing (`JobRequest.Resources`) is validated but not yet applied to the
   running job — see [docs/JOBS.md](docs/JOBS.md) "Per-job resource sizing"
 
@@ -219,7 +219,7 @@ See [CHANGELOG.md](CHANGELOG.md) for what shipped in each release.
 | **OS** | macOS 15+ (for the Local Network permission worker Macs need) |
 | **Tailscale** | standalone variant, already authenticated — **not** the Mac App Store build (it doesn't start before login) |
 | **Homebrew** | grove is its own tap; on recent Homebrew you may need `brew trust openai/tools` before Tart will install |
-| **Registry access** | grove's worker images on `ghcr.io` are private by default — make the GitHub packages public, or `grove install --role worker --registry-token …` (see [docs/INSTALL.md](docs/INSTALL.md)) |
+| **Registry access** | grove's worker images on `ghcr.io` are private by default — make the GitHub packages public, or run `grove registry login` on each worker (see [docs/INSTALL.md](docs/INSTALL.md)) |
 
 grove installs everything else itself (Tart, Nomad, Orchard).
 

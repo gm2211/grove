@@ -341,8 +341,8 @@ func TestRunDoctor_WarnsOnUnauthenticatedGHCRImages(t *testing.T) {
 	if r.OK {
 		t.Error("expected registry-login to fail: ghcr.io image with no login marker recorded")
 	}
-	if !strings.Contains(r.Remediation, "Change visibility") || !strings.Contains(r.Remediation, "--registry-token") {
-		t.Errorf("Remediation = %q, want both the public-visibility and --registry-token options", r.Remediation)
+	if !strings.Contains(r.Remediation, "Change visibility") || !strings.Contains(r.Remediation, "grove registry login") {
+		t.Errorf("Remediation = %q, want both the public-visibility and `grove registry login` options", r.Remediation)
 	}
 }
 

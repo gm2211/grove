@@ -137,10 +137,10 @@ change a package's visibility** — it's a UI-only setting. Every worker that pu
 1. **The packages made public** (one-time, per package, simplest for a fleet with several
    workers): on GitHub, go to **Packages -> `grove-macos-worker`** (and `grove-linux-worker`
    separately) **-> Package settings -> Change visibility -> Public**.
-2. **Each worker logged in to the registry**: `grove install --role worker --registry-user
-   <github-username> --registry-token <PAT>` (PAT needs at least `read:packages`; also readable
-   from `$GROVE_REGISTRY_TOKEN` so it doesn't have to sit in shell history) — see docs/INSTALL.md's
-   "Registry access for private worker images". This runs `tart login <registry>
+2. **Each worker logged in to the registry**: `pbpaste | grove registry login --user
+   <github-username>` with a PAT that has only `read:packages` copied (or in
+   `$GROVE_REGISTRY_TOKEN`; never an argument) — see docs/INSTALL.md's "Registry access for
+   private worker images". This runs `tart login <registry>
    --password-stdin`, caching the credential in the worker's own keychain the same way a manual
    `tart login` would, and records a marker (`~/.config/grove/registry-login.<registry>`, never the
    token) so it's idempotent across re-runs.
