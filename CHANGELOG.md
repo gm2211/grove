@@ -4,6 +4,13 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **The control-plane install no longer takes the control plane down.** Its launchd plists and
+  systemd units named `nomad` and `grove` bare, and launchd/systemd start jobs with a PATH that
+  has neither `~/.local/bin` nor Homebrew, so Nomad exited 78 and `grove serve` never started.
+  Units now name the absolute path (this shell's PATH, then `~/.local/bin`, then where the
+  install puts it). Relaunching a service also waits for launchd to finish unloading it before
+  `launchctl bootstrap`, which failed with "5: Input/output error" on a still-loaded job.
+
 - **`grove registry login` logs an installed worker in to the image registry.** `pbpaste | grove
   registry login --user <github-username>` runs `tart login` with the token over stdin (or from
   `$GROVE_REGISTRY_TOKEN`, never an argument) and logs in again even for the same user, so it is
