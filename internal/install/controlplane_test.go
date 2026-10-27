@@ -2,6 +2,7 @@ package install
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,6 +14,11 @@ import (
 	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/nomad"
 )
+
+func init() {
+	// FakeRunner answers `launchctl print` successfully forever; don't wait for an unload.
+	launchdRelaunchWait = 0
+}
 
 func testControlPlaneOptions(home string, goos string) Options {
 	return testControlPlaneOptionsWith(home, goos, &fakeNomadAdmin{})
@@ -635,4 +641,81 @@ func TestControlPlanePlan_RebuildsOrchardAtThePinAndRestartsTheController(t *tes
 	if r := run(); !built(r) || !r.CalledWith(restart) {
 		t.Error("an Orchard from another commit must be rebuilt and the controller restarted onto it")
 	}
+}
+
+func TestControlPlanePlan_ServicesNameAbsolutePrograms(t *testing.T) {
+	for _, goos := range []string{"darwin", "linux"} {
+		t.Run(goos, func(t *testing.T) {
+			home := t.TempDir()
+			r := NewFakeRunner()
+			scriptWorkerEnrollmentToken(r, home)
+			scriptTailscaleUp(r)
+			opts := testControlPlaneOptions(home, goos)
+			scriptPinnedDownloads(r, opts)
+			steps, err := BuildPlan(r, opts, io.Discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
+				t.Fatal(err)
+			}
+			var files []string
+			if goos == "darwin" {
+				files, _ = filepath.Glob(filepath.Join(opts.LaunchAgentsDir(), "com.grove.*.plist"))
+			} else {
+				files, _ = filepath.Glob(filepath.Join(opts.SystemdUserDir(), "grove-*.service"))
+			}
+			if len(files) == 0 {
+				t.Fatal("no service files rendered")
+			}
+			for _, f := range files {
+				b, _ := os.ReadFile(f)
+				body := string(b)
+				for _, bare := range []string{"<string>nomad</string>", "<string>grove</string>", "ExecStart=nomad ", "ExecStart=grove "} {
+					if strings.Contains(body, bare) {
+						t.Errorf("%s names a bare program (%q); launchd/systemd can't find it on their PATH:\n%s", f, bare, body)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestRelaunchAgent_WaitsForUnloadBeforeBootstrap(t *testing.T) {
+	saved := launchdRelaunchWait
+	launchdRelaunchWait, launchdPoll = time.Second, time.Millisecond
+	defer func() { launchdRelaunchWait = saved }()
+
+	r := &unloadingRunner{loadedFor: 3}
+	if err := relaunchAgent(context.Background(), r, "gui/502", "com.grove.nomad", "/p.plist"); err != nil {
+		t.Fatal(err)
+	}
+	if r.prints != 4 || !r.bootstrappedUnloaded {
+		t.Fatalf("bootstrap must wait for launchd to unload the job: prints=%d bootstrappedUnloaded=%v", r.prints, r.bootstrappedUnloaded)
+	}
+}
+
+// unloadingRunner models launchd's asynchronous bootout: the job stays loaded for loadedFor
+// `launchctl print` calls after bootout.
+type unloadingRunner struct {
+	FakeRunner
+	loadedFor            int
+	prints               int
+	bootstrappedUnloaded bool
+}
+
+func (u *unloadingRunner) Run(_ context.Context, name string, args ...string) (string, string, error) {
+	if name == "launchctl" && len(args) > 0 {
+		switch args[0] {
+		case "print":
+			u.prints++
+			if u.prints <= u.loadedFor {
+				return "", "", nil
+			}
+			return "", "", errors.New("Could not find service")
+		case "bootstrap":
+			u.bootstrappedUnloaded = u.prints > u.loadedFor
+		}
+	}
+	return "", "", nil
 }

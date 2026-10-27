@@ -134,9 +134,7 @@ func controlPlaneStartStep(r Runner, opts Options, service string, isDarwin bool
 				return err == nil, nil
 			},
 			Apply: func(ctx context.Context) error {
-				_, _, _ = r.Run(ctx, "launchctl", "bootout", domain+"/"+label)
-				_, _, err := r.Run(ctx, "launchctl", "bootstrap", domain, plist)
-				return err
+				return relaunchAgent(ctx, r, domain, label, plist)
 			}}
 	}
 	unit := "grove-" + service + ".service"
@@ -188,9 +186,7 @@ func controlPlaneReloadServerStep(r Runner, opts Options, isDarwin bool) Step {
 		domain := fmt.Sprintf("gui/%d", os.Getuid())
 		plist := filepath.Join(opts.LaunchAgentsDir(), label+".plist")
 		return Step{Name: "service-reload:server", Description: "Reload Grove server so new enrollment settings take effect.", Check: func(context.Context) (bool, error) { return false, nil }, Apply: func(ctx context.Context) error {
-			_, _, _ = r.Run(ctx, "launchctl", "bootout", domain+"/"+label)
-			_, _, err := r.Run(ctx, "launchctl", "bootstrap", domain, plist)
-			return err
+			return relaunchAgent(ctx, r, domain, label, plist)
 		}}
 	}
 	return Step{Name: "service-reload:server", Description: "Reload Grove server so new enrollment settings take effect.", Check: func(context.Context) (bool, error) { return false, nil }, Apply: func(ctx context.Context) error {
@@ -465,7 +461,6 @@ func controlPlaneConfigSteps(r Runner, opts Options, cfgDir, destOrchard string,
 // controlPlaneServiceSteps render the process supervisors (launchd on macOS, systemd --user on
 // Linux) for orchard controller, nomad and `grove serve`.
 func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string, isDarwin bool) []Step {
-	groveBin := "grove" // resolved via PATH at runtime by the supervisor
 	nomadConf := filepath.Join(cfgDir, "nomad", "server.hcl")
 	nomadDataDir := filepath.Join(cfgDir, "nomad", "data")
 	orchardHome := controlPlaneOrchardHome(cfgDir)
@@ -474,8 +469,11 @@ func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string
 		name        string
 		label       string
 		description string
-		program     string
-		args        []string
+		// program is an absolute path, or a bare name resolved by supervisorProgram when the
+		// unit is rendered: launchd and systemd --user start jobs with a minimal PATH that
+		// holds neither ~/.local/bin nor Homebrew, so a bare name never starts.
+		program string
+		args    []string
 		env         map[string]string
 		workingDir  string
 	}{
@@ -506,7 +504,7 @@ func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string
 			name:        "server",
 			label:       "com.grove.server",
 			description: "grove server (API + UI)",
-			program:     groveBin,
+			program:     "grove",
 			args:        []string{"serve"},
 		},
 	}
@@ -521,16 +519,18 @@ func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string
 				Name:        "launchagent:" + u.name,
 				Description: fmt.Sprintf("Render %s for %s (KeepAlive+RunAtLoad, logs under %s).", plistPath, u.description, logDir),
 				Check: fileHasContent(plistPath, func() (string, error) {
+					program := supervisorProgram(opts, u.program)
 					return RenderLaunchAgent(LaunchAgentSpec{
-						Label: u.label, Program: u.program, Args: u.args, Env: u.env,
+						Label: u.label, Program: program, Args: u.args, Env: u.env,
 						WorkingDir: u.workingDir, KeepAlive: true, RunAtLoad: true,
 						StdoutPath: filepath.Join(logDir, u.name+".log"),
 						StderrPath: filepath.Join(logDir, u.name+".err.log"),
 					})
 				}),
 				Apply: func(ctx context.Context) error {
+					program := supervisorProgram(opts, u.program)
 					content, err := RenderLaunchAgent(LaunchAgentSpec{
-						Label: u.label, Program: u.program, Args: u.args, Env: u.env,
+						Label: u.label, Program: program, Args: u.args, Env: u.env,
 						WorkingDir: u.workingDir, KeepAlive: true, RunAtLoad: true,
 						StdoutPath: filepath.Join(logDir, u.name+".log"),
 						StderrPath: filepath.Join(logDir, u.name+".err.log"),
@@ -553,14 +553,16 @@ func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string
 				Name:        "systemd-unit:" + u.name,
 				Description: fmt.Sprintf("Render %s for %s (`systemctl --user enable --now grove-%s`).", unitPath, u.description, u.name),
 				Check: fileHasContent(unitPath, func() (string, error) {
+					program := supervisorProgram(opts, u.program)
 					return RenderSystemdUnit(SystemdUnitSpec{
-						Description: u.description, Program: u.program, Args: u.args,
+						Description: u.description, Program: program, Args: u.args,
 						Env: u.env, WorkingDir: u.workingDir,
 					})
 				}),
 				Apply: func(ctx context.Context) error {
+					program := supervisorProgram(opts, u.program)
 					content, err := RenderSystemdUnit(SystemdUnitSpec{
-						Description: u.description, Program: u.program, Args: u.args,
+						Description: u.description, Program: program, Args: u.args,
 						Env: u.env, WorkingDir: u.workingDir,
 					})
 					if err != nil {
@@ -575,6 +577,68 @@ func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string
 		}
 	}
 	return steps
+}
+
+// supervisorProgram resolves a unit's program to the absolute path its launchd/systemd unit must
+// name: launchd and systemd --user start jobs with a minimal PATH that holds neither ~/.local/bin
+// nor Homebrew, so a bare name never starts. It runs when the unit is rendered, after this plan's
+// earlier steps installed the binary, and tries in turn: this shell's PATH, ~/.local/bin, and
+// where the install itself puts the program (grove: the binary running the install; nomad:
+// ~/.local/bin on Linux, Homebrew's prefix on macOS).
+func supervisorProgram(opts Options, program string) string {
+	if filepath.IsAbs(program) {
+		return program
+	}
+	if program == "grove" {
+		if p := groveExecutable(opts); filepath.IsAbs(p) {
+			return p
+		}
+	}
+	if p, err := opts.lookPath()(program); err == nil {
+		if abs, aerr := filepath.Abs(p); aerr == nil {
+			return abs
+		}
+	}
+	local := filepath.Join(orchardBinDir(opts), program)
+	if opts.exists()(local) || opts.goos() != "darwin" {
+		return local
+	}
+	if opts.goarch() == "amd64" {
+		return filepath.Join("/usr/local/bin", program)
+	}
+	return filepath.Join("/opt/homebrew/bin", program)
+}
+
+// launchdRelaunchWait bounds how long relaunchAgent waits for launchd to finish unloading a job
+// before loading it again, and launchdPoll how often it checks. Overridable in tests.
+var (
+	launchdRelaunchWait = 10 * time.Second
+	launchdPoll         = 250 * time.Millisecond
+)
+
+// relaunchAgent (re)loads label from plist in domain: bootout, wait until launchd has actually
+// unloaded it (bootout returns before it has, and bootstrapping a still-loaded job fails with
+// "5: Input/output error"), then bootstrap.
+func relaunchAgent(ctx context.Context, r Runner, domain, label, plist string) error {
+	target := domain + "/" + label
+	_, _, _ = r.Run(ctx, "launchctl", "bootout", target)
+	deadline := time.Now().Add(launchdRelaunchWait)
+	// Past the deadline, bootstrap anyway: its own error then says what's wrong.
+	for time.Now().Before(deadline) {
+		if _, _, err := r.Run(ctx, "launchctl", "print", target); err != nil {
+			break // unloaded
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(launchdPoll):
+		}
+	}
+	_, stderr, err := r.Run(ctx, "launchctl", "bootstrap", domain, plist)
+	if err != nil {
+		return fmt.Errorf("launchctl bootstrap %s %s: %w: %s", domain, plist, err, strings.TrimSpace(stderr))
+	}
+	return nil
 }
 
 // artifactStoreDir is where a fresh control plane keeps job artifacts: next to grove serve's job
