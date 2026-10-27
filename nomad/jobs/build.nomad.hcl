@@ -305,7 +305,7 @@ job "grove-{{.Kind}}-{{.Pool}}" {
           export NO_PROXY="" no_proxy=""
           export SSL_CERT_FILE="$grove_bundle" CURL_CA_BUNDLE="$grove_bundle" GIT_SSL_CAINFO="$grove_bundle"
           export REQUESTS_CA_BUNDLE="$grove_bundle" NODE_EXTRA_CA_CERTS="$grove_bundle"
-        elif env | grep -q 'gph1_'; then
+        elif case "$(env)" in *gph1_*) true ;; *) false ;; esac; then
           echo "grove: this job's environment holds credential placeholders (gph1_...), but this VM has no credential broker, so calls that need them will fail" >&2
         fi
         # grove:broker end

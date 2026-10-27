@@ -52,6 +52,9 @@ type Options struct {
 	Home     string // test override; defaults to os.UserHomeDir()
 	GOOS     string // test override; defaults to runtime.GOOS
 	GOARCH   string // test override; defaults to runtime.GOARCH
+	// LaunchDaemons is where system LaunchDaemons live. Test override; defaults to
+	// /Library/LaunchDaemons.
+	LaunchDaemons string
 
 	// LookPath resolves a binary name to a path like exec.LookPath. Test override.
 	LookPath func(name string) (string, error)
@@ -137,6 +140,14 @@ func (o Options) ConfigDir() string {
 // LaunchAgentsDir is where macOS per-user launchd agents are rendered.
 func (o Options) LaunchAgentsDir() string {
 	return filepath.Join(o.homeDir(), "Library", "LaunchAgents")
+}
+
+// launchDaemonsDir is where system (root) LaunchDaemons are installed.
+func (o Options) launchDaemonsDir() string {
+	if o.LaunchDaemons != "" {
+		return o.LaunchDaemons
+	}
+	return "/Library/LaunchDaemons"
 }
 
 // LogDir is where grove-supervised process logs are written.

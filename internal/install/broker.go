@@ -122,7 +122,7 @@ func brokerSteps(r Runner, opts Options) []Step {
 // Shared_Net_Address from the Mac's vmnet preferences when set, broker.DefaultGateway otherwise.
 func VMNetGateway(ctx context.Context, r Runner) (netip.Addr, error) {
 	out, _, err := r.Run(ctx, "/usr/bin/defaults", "read", "/Library/Preferences/SystemConfiguration/com.apple.vmnet", "Shared_Net_Address")
-	if err != nil {
+	if err != nil || strings.TrimSpace(out) == "" {
 		return broker.DefaultGateway, nil // not set: vmnet uses its default
 	}
 	a, err := netip.ParseAddr(strings.TrimSpace(out))

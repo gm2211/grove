@@ -93,9 +93,11 @@ grove setup
   identity. The LaunchAgent is loaded automatically. When the worker first connects to a Tart VM
   on macOS 15+, approve the one-time **Local Network** alert for **Grove Orchard Worker**. That
   approval belongs to this user and worker app, and covers later worker restarts and VMs.
-- The remaining **privileged checklist** contains only `sudo pmset` to prevent worker sleep. Grove
-  does not add system-wide private-network allowlists and does not run Orchard or a companion as
-  root.
+- The remaining **privileged checklist** has `sudo pmset`, which keeps the worker from sleeping,
+  and the `host-firewall` step. That step installs the `com.grove.pf-vm` LaunchDaemon, which keeps
+  VMs off this Mac's ports and its networks except DHCP, DNS, the credential broker and Nomad RPC
+  (docs/OPERATIONS.md "The worker Mac's own firewall"). Grove does not add system-wide
+  private-network allowlists and does not run Orchard or a companion as root.
 
 #### Registry access for private worker images
 

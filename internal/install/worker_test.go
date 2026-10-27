@@ -57,6 +57,8 @@ func testWorkerOptions(home string) Options {
 		GOARCH:     "arm64",
 		LookPath:   lookPathOnly("tailscale"),
 		Exists:     alwaysFalseExists,
+		// Never the real /Library/LaunchDaemons.
+		LaunchDaemons: filepath.Join(home, "LaunchDaemons"),
 	}
 }
 
