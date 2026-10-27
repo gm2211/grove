@@ -204,7 +204,7 @@ func TestHostFirewallLoader_RealPF(t *testing.T) {
 		t.Skip("needs macOS and GROVE_PF_TEST=1 (it changes this Mac's pf)")
 	}
 	if err := exec.Command("sudo", "-n", "true").Run(); err != nil {
-		t.Skip("needs passwordless sudo")
+		t.Fatal("GROVE_PF_TEST=1 needs passwordless sudo")
 	}
 	info, _ := exec.Command("sudo", "-n", "/sbin/pfctl", "-s", "info").CombinedOutput()
 	wasEnabled := strings.Contains(string(info), "Status: Enabled")
