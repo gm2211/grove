@@ -89,10 +89,11 @@ grove setup
   assigned VMs and open watch connections. Registration remains allowed, and existing privileged
   legacy credentials remain compatible.
 - Grove installs Orchard as `~/Applications/Grove Orchard Worker.app`, gives it a stable bundle
-  identity and Local Network usage description, and associates the per-user LaunchAgent with that
-  identity. The LaunchAgent is loaded automatically. When the worker first connects to a Tart VM
-  on macOS 15+, approve the one-time **Local Network** alert for **Grove Orchard Worker**. That
-  approval belongs to this user and worker app, and covers later worker restarts and VMs.
+  identity, and associates the per-user LaunchAgent with that identity. The LaunchAgent is loaded
+  automatically. The worker runs with `--guest-agent-transport`: it reaches each VM's SSH through
+  `tart exec` and the Tart Guest Agent on the VM's control socket, never over the network, so it
+  needs no macOS **Local Network** permission. Leave that permission off for **Grove Orchard
+  Worker**. Every VM image must run the Tart Guest Agent (both of grove's images do).
 - The remaining **privileged checklist** has `sudo pmset`, which keeps the worker from sleeping,
   and the `host-firewall` step. That step installs the `com.grove.pf-vm` LaunchDaemon, which keeps
   VMs off this Mac's ports and its networks except DHCP, DNS, the credential broker and Nomad RPC
@@ -199,15 +200,16 @@ ghcr.io` (see "Registry access for private worker images" above), doctor also wa
 
 ## Failure modes
 
-- **"Local Network" permission blocks the worker (macOS 15+)**: start one fleet VM while logged in
-  to the worker Mac, then approve the visible alert for **Grove Orchard Worker**. macOS may reject
-  the first connection while the alert is open; Orchard retries it. If access was previously
-  denied, macOS will not show another alert: open **System Settings → Privacy & Security → Local
-  Network** and enable **Grove Orchard Worker**, then retry the VM. Grove deliberately does not
-  write `AllowedEthernetLocalNetworkAddresses` / `AllowedWiFiLocalNetworkAddresses`, because those
-  settings exempt matching networks for every process on the Mac. It also does not require the
-  privileged Orchard helper. macOS records this choice per user and app identity, so restarts and
-  later VMs do not prompt again.
+- **A VM restarts every few minutes and the worker log says `no route to host`**: the worker is
+  dialing the VM over the network, which macOS 15+ refuses without Local Network permission. It
+  runs a wrapper from before `--guest-agent-transport`: re-run `grove install --role worker` (it
+  rebuilds Orchard at the pinned commit and rewrites the wrapper). Grove deliberately never asks
+  for that permission, never writes `AllowedEthernetLocalNetworkAddresses` /
+  `AllowedWiFiLocalNetworkAddresses` (they exempt matching networks for every process on the Mac)
+  and never uses the privileged Orchard helper.
+- **The worker log says `guest agent transport to <vm> ...`**: the VM's image doesn't run the Tart
+  Guest Agent (`tart exec <vm> true` on the worker fails the same way). Use one of grove's images,
+  or a Cirrus Labs base image, all of which ship it.
 - **FileVault blocks auto-login**: a worker Mac that reboots (power blip, macOS update) needs to
   log in before launchd can start user LaunchAgents. If FileVault is on, either disable it on
   worker Macs or enable automatic login for the worker's user account — otherwise the worker

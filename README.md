@@ -67,7 +67,7 @@ device. Each device has its own revocable `read + build + agent` credential; raw
 (operator or an explicit `dispatch:shell` credential) and named secrets remain privileged. Only control-plane
 operator credentials can approve/revoke devices or change worker/VM state.
 
-Full walkthrough (roles, flags, failure modes like the macOS 15+ Local Network permission popup):
+Full walkthrough (roles, flags, failure modes like FileVault blocking auto-login):
 [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Use from Claude Code / Codex
@@ -216,7 +216,7 @@ See [CHANGELOG.md](CHANGELOG.md) for what shipped in each release.
 | | |
 |---|---|
 | **Hardware** | Apple Silicon Mac for any `worker`; macOS or Linux for `control-plane`; anything for `client` |
-| **OS** | macOS 15+ (for the Local Network permission worker Macs need) |
+| **OS** | macOS 15+ on worker Macs |
 | **Tailscale** | standalone variant, already authenticated — **not** the Mac App Store build (it doesn't start before login) |
 | **Homebrew** | grove is its own tap; on recent Homebrew you may need `brew trust openai/tools` before Tart will install |
 | **Registry access** | grove's worker images on `ghcr.io` are private by default — make the GitHub packages public, or run `grove registry login` on each worker (see [docs/INSTALL.md](docs/INSTALL.md)) |

@@ -4,6 +4,15 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Workers reach their VMs without Local Network permission.** On macOS 15+ the worker's SSH to
+  a VM (startup script, exec, enrolment) needs Local Network permission, which grove's worker
+  Macs keep off, so every startup script failed with `no route to host` and Orchard restarted
+  the VM every few minutes. The worker now runs Orchard (gm2211/orchard#9) with
+  `--guest-agent-transport`, which carries those connections through `tart exec` and the Tart
+  Guest Agent on the VM's control socket instead of the network. Re-run `grove install --role
+  worker` on each worker Mac to pick it up. The Linux image installs `netcat-openbsd` and checks
+  that the guest agent is enabled.
+
 - **The control-plane install no longer takes the control plane down.** Its launchd plists and
   systemd units named `nomad` and `grove` bare, and launchd/systemd start jobs with a PATH that
   has neither `~/.local/bin` nor Homebrew, so Nomad exited 78 and `grove serve` never started.

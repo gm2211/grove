@@ -27,7 +27,7 @@ const (
 	// OrchardForkCommit pins the github.com/gm2211/orchard commit the control plane and workers
 	// build their Orchard from, so a push to the fork's main reaches neither until this pin moves.
 	// It must carry the guest password fallback on every login path (gm2211/orchard#7, #8).
-	OrchardForkCommit = "e26dc4bbbced82e81e9166486dd4ad8b0d56b26f"
+	OrchardForkCommit = "316f0c6736fb24a136907df4583e67a060ec9de5"
 )
 
 // nomadZipSHA256 is the SHA-256 of nomad_<NomadVersion>_<os>_<arch>.zip, keyed "os/arch".
