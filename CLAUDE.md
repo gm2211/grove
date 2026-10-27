@@ -169,6 +169,20 @@ tokens on the way to a fixed set of upstreams and masks the tokens on the way ba
 
 `internal/broker/proxy_test.go` drives the whole path end to end; keep its refusal cases passing.
 
+## The worker Mac's VM firewall
+
+`internal/install/hostfirewall.go` renders the `com.grove.pf-vm` LaunchDaemon. It loads the pf
+anchor `com.apple/grove-vm`, which lets VMs on vmnet's bridges reach only DHCP, DNS, the broker
+(3128) on the gateway, and Nomad RPC (4647) of the Mac and its networks. Installing it is a
+privileged step, printed for an admin. Keep it that way:
+
+- The plist carries its whole loader inline and runs only `/bin/sh` and `/sbin/pfctl`: a root job
+  must never run anything this user or Homebrew could rewrite.
+- The install check and `grove doctor` compare the installed plist with what grove renders,
+  never with the staged copy.
+- Every pass comes before the block. `hostfirewall_test.go` loads the anchor on the macOS CI
+  runner's real pf (`GROVE_PF_TEST=1`).
+
 ## Local socket (`server.socket`)
 
 `internal/server/localsock.go` lets a client on the control-plane Mac (Argos) reach the API

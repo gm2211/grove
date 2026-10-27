@@ -460,9 +460,10 @@ the control plane on 4647; nothing needs to allow VMs as tailnet devices any mor
 the image's Tailscale daemon off. To get a shell in a VM, use `orchard ssh vm <name>` from the
 control plane rather than tailnet SSH.
 
-By default a worker VM shares its host Mac's network through Tart's NAT, so the VM can reach
-whatever that Mac reaches: your LAN, services the Mac itself runs, and every device on your
-tailnet, through the Mac's own Tailscale login. Its jobs can't: a firewall in the guest
+A worker VM shares its host Mac's network through Tart's NAT. Left to that alone, the VM could
+reach whatever that Mac reaches: your LAN, services the Mac itself runs, and every device on your
+tailnet, through the Mac's own Tailscale login. The worker Mac's own firewall (below) stops the
+VM itself from doing so. Its jobs are held back twice: a firewall in the guest
 (`grove-egress-fence` in DOCKER-USER for Linux containers, the `com.apple/grove-jobs` pf anchor
 for the macOS job user) refuses every private, tailnet and link-local address, with exactly one
 exception, TCP to the default gateway the guest got from DHCP on port 3128: the host Mac's
@@ -561,6 +562,40 @@ Limits:
   image is on ghcr.io): the guest can't pull from a registry on your LAN or tailnet.
 - A job can't call home while it runs (the grove API, your orchestrator, anything on your tailnet). Whatever
   it needs goes in with it; whatever it produces comes out as its log, exit code and artifacts.
+
+### The worker Mac's own firewall
+
+The guest fences run inside the VM, so a job that gets root in its VM could take them down. The
+`com.apple/grove-vm` pf anchor on each worker Mac holds the same line from outside, for every VM
+on vmnet's NAT bridges (`bridge100`–`bridge109`), shared or sealed, Softnet or not. A VM reaches
+the internet, and of the Mac and its networks only:
+
+- DHCP (UDP 67) and DNS (UDP/TCP 53) on the vmnet gateway,
+- the credential broker on the gateway, TCP 3128,
+- Nomad RPC, TCP 4647 on any address: the control plane, on this Mac or across the tailnet.
+
+Everything else bound for a private, tailnet, link-local or multicast address, or for any of
+the Mac's own addresses, is refused, and so is all IPv6 apart from neighbour discovery. The Mac's
+own connections to its VMs (Orchard's SSH, port forwards) still work, because their replies match
+the state they opened.
+
+`grove install --role worker` stages the LaunchDaemon `com.grove.pf-vm` in
+`~/.config/grove/pf/` and prints the privileged step that installs it, which an admin runs once
+per Mac, and again whenever an upgrade changes the rules (`grove doctor` says so):
+
+```
+sudo install -o root -g wheel -m 0644 ~/.config/grove/pf/com.grove.pf-vm.plist /Library/LaunchDaemons/com.grove.pf-vm.plist \
+  && { sudo launchctl bootout system/com.grove.pf-vm 2>/dev/null; sudo launchctl bootstrap system /Library/LaunchDaemons/com.grove.pf-vm.plist; }
+```
+
+The LaunchDaemon carries its whole loader, rules included, and runs only `/bin/sh` and
+`/sbin/pfctl`, so nothing this user (or Homebrew) can rewrite runs as root. It loads the anchor
+at boot and every five minutes, which also refreshes the Mac's own addresses, reloads
+`/etc/pf.conf` only if pf has lost its `com.apple/*` hook, and turns pf on if it's off. The
+`host-firewall` check in `grove doctor` passes when the installed plist is the one this grove
+renders and its last run loaded the anchor. To look at the live rules:
+`sudo pfctl -a com.apple/grove-vm -s rules`. To take it out:
+`sudo launchctl bootout system/com.grove.pf-vm && sudo pfctl -a com.apple/grove-vm -F all`.
 
 ### Sealed macOS pools
 

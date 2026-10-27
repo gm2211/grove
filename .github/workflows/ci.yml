@@ -38,6 +38,12 @@ jobs:
           unzip -o -q "$RUNNER_TEMP/nomad.zip" nomad -d "$RUNNER_TEMP"
           echo "GROVE_NOMAD_BIN=$RUNNER_TEMP/nomad" >> "$GITHUB_ENV"
 
+      # The worker Mac's VM firewall test (internal/install) loads its pf anchor on the macOS
+      # runner for real, and takes it out again; it skips without GROVE_PF_TEST.
+      - name: Allow the real-pf test
+        if: runner.os == 'macOS'
+        run: echo "GROVE_PF_TEST=1" >> "$GITHUB_ENV"
+
       - run: go test ./...
 
   ui:
