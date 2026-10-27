@@ -43,9 +43,9 @@ type EnrollmentConfig struct {
 }
 
 type TailscaleConfig struct {
-	// AuthKey is an ephemeral, tagged Tailscale auth key used by shared-network worker VMs'
-	// StartupScript to join the tailnet (see ARCHITECTURE.md → "Recycling / hygiene"). VMs of an
-	// isolated pool (fleet.yaml network: isolated) never join the tailnet and never get it.
+	// AuthKey is no longer used: no worker VM joins the tailnet. A shared VM reaches the control
+	// plane's Nomad through its host Mac's NAT, and a key in a VM's startup script was readable by
+	// anything that could list Orchard's VMs. Kept so existing config files still load.
 	AuthKey string `yaml:"authKey,omitempty"`
 }
 
@@ -77,6 +77,13 @@ type ServerConfig struct {
 	// Tailscale lets tailnet peers call the API with no token at all, authenticated by their
 	// Tailscale identity (see internal/tsauth). Bearer tokens keep working alongside it.
 	Tailscale ServerTailscaleConfig `yaml:"tailscale,omitempty"`
+	// Socket, when set, makes `grove serve` also listen on this Unix socket, for a client on the
+	// same Mac (Argos on the Studio), e.g. "/Users/Shared/grove/api.sock". Only SocketUsers may
+	// connect, checked against the user the kernel reports for each connection, and every
+	// request still needs a bearer token.
+	Socket string `yaml:"socket,omitempty"`
+	// SocketUsers are the macOS user names (or uids) allowed to connect to Socket.
+	SocketUsers []string `yaml:"socketUsers,omitempty"`
 }
 
 // ServerTailscaleConfig is server.tailscale. Identity auth is on whenever the control plane has a

@@ -157,9 +157,13 @@ func (c *Client) Devices(ctx context.Context) ([]server.DeviceCredential, error)
 
 // IssueDevice mints a new device credential with the given scopes (operator only) and returns
 // its raw token, which the server never discloses again, alongside the device's public identity.
-func (c *Client) IssueDevice(ctx context.Context, name string, scopes []string) (string, server.Principal, error) {
+func (c *Client) IssueDevice(ctx context.Context, name string, scopes []string, expiresIn time.Duration) (string, server.Principal, error) {
+	req := server.IssueDeviceRequest{Name: name, Scopes: scopes}
+	if expiresIn > 0 {
+		req.ExpiresIn = expiresIn.String()
+	}
 	var out server.IssueDeviceResponse
-	if err := c.doJSON(ctx, http.MethodPost, "/access/devices", server.IssueDeviceRequest{Name: name, Scopes: scopes}, &out); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, "/access/devices", req, &out); err != nil {
 		return "", server.Principal{}, err
 	}
 	return out.Token, out.Device, nil

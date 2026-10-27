@@ -2,7 +2,9 @@ package cli
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -37,8 +39,13 @@ func init() {
 			}
 			for _, device := range devices {
 				state := "active"
-				if device.RevokedAt != nil {
+				switch {
+				case device.RevokedAt != nil:
 					state = "revoked"
+				case device.ExpiresAt != nil && !time.Now().Before(*device.ExpiresAt):
+					state = "expired " + device.ExpiresAt.Format(time.DateOnly)
+				case device.ExpiresAt != nil:
+					state = "active, expires " + device.ExpiresAt.Format(time.DateOnly)
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", device.ID, device.Name, strings.Join(device.Scopes, ","), state)
 			}
@@ -69,7 +76,7 @@ func init() {
 // nothing else does, so `TOKEN=$(grove access issue ...)` captures just the token); the device id
 // needed to revoke it goes to stderr.
 func newAccessIssueCmd() *cobra.Command {
-	var name string
+	var name, expiresIn string
 	var scopes []string
 	cmd := &cobra.Command{
 		Use:   "issue --name NAME --scope SCOPE [--scope SCOPE ...]",
@@ -78,7 +85,9 @@ func newAccessIssueCmd() *cobra.Command {
 			"to stdout exactly once; the control plane keeps only a hash, so store it now.\n\n" +
 			"Scopes: read, dispatch (build + agent jobs), dispatch:build, dispatch:agent,\n" +
 			"dispatch:shell (raw shell jobs), operator. Example, for an orchestrator:\n\n" +
-			"  grove access issue --name ci-bot --scope read --scope dispatch",
+			"  grove access issue --name ci-bot --scope read --scope dispatch\n\n" +
+			"--expires-in makes it stop working after that long (\"180d\", \"720h\"); its holder sees\n" +
+			"when in GET /api/v1/whoami.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if strings.TrimSpace(name) == "" {
@@ -87,21 +96,54 @@ func newAccessIssueCmd() *cobra.Command {
 			if len(scopes) == 0 {
 				return fmt.Errorf("at least one --scope is required")
 			}
+			var ttl time.Duration
+			if expiresIn != "" {
+				var err error
+				if ttl, err = parseTTL(expiresIn); err != nil {
+					return fmt.Errorf("--expires-in: %w", err)
+				}
+			}
 			client, err := newOperatorAPIClient()
 			if err != nil {
 				return err
 			}
-			token, device, err := client.IssueDevice(cmd.Context(), name, scopes)
+			token, device, err := client.IssueDevice(cmd.Context(), name, scopes, ttl)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.ErrOrStderr(), "Issued %s (%s) with scopes %s; revoke with `grove access revoke %s`.\n",
-				device.ID, device.Name, strings.Join(device.Scopes, ","), device.ID)
+			expiry := ""
+			if device.ExpiresAt != nil {
+				expiry = ", expiring " + device.ExpiresAt.Format(time.DateOnly)
+			}
+			fmt.Fprintf(cmd.ErrOrStderr(), "Issued %s (%s) with scopes %s%s; revoke with `grove access revoke %s`.\n",
+				device.ID, device.Name, strings.Join(device.Scopes, ","), expiry, device.ID)
 			fmt.Fprintln(cmd.OutOrStdout(), token)
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "label for the credential, shown by `grove access list`")
 	cmd.Flags().StringArrayVar(&scopes, "scope", nil, "scope to grant (repeatable)")
+	cmd.Flags().StringVar(&expiresIn, "expires-in", "", `stop working after this long, e.g. "180d" or "720h" (default: never)`)
 	return cmd
+}
+
+// parseTTL reads a Go duration, or a whole number of days ("180d").
+func parseTTL(s string) (time.Duration, error) {
+	var d time.Duration
+	if days, ok := strings.CutSuffix(s, "d"); ok {
+		n, err := strconv.Atoi(days)
+		if err != nil {
+			return 0, fmt.Errorf("%q: want a number of days like \"180d\" or a duration like \"720h\"", s)
+		}
+		d = time.Duration(n) * 24 * time.Hour
+	} else {
+		var err error
+		if d, err = time.ParseDuration(s); err != nil {
+			return 0, err
+		}
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("%q is not in the future", s)
+	}
+	return d, nil
 }

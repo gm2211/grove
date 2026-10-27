@@ -133,8 +133,8 @@ func tailnetHostTrusted(r *http.Request, serverURL string) bool {
 }
 
 // withAuth requires "Authorization: Bearer <token>" matching Options.Token or a device credential,
-// or — with no Authorization header at all — a tailnet peer whose Tailscale identity is granted
-// scopes (Options.Tailscale). Nothing configured means every /api/v1 request is refused with 503,
+// or — with no Authorization header at all, and not on the local socket (ListenLocal) — a tailnet
+// peer whose Tailscale identity is granted scopes (Options.Tailscale). Nothing configured means every /api/v1 request is refused with 503,
 // unless a test set Options.InsecureNoAuth. /healthz and the public join endpoints stay reachable
 // unauthenticated.
 func (s *Server) withAuth(next http.Handler) http.Handler {
@@ -167,6 +167,8 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			} else if s.opts.AccessStore != nil {
 				principal, _ = s.opts.AccessStore.Authenticate(token)
 			}
+		case viaLocalSocket(r.Context()):
+			// The local socket has no Tailscale identity: a token or nothing.
 		case auth == "" && s.opts.Tailscale != nil:
 			if !tailnetHostTrusted(r, s.opts.ServerURL) {
 				http.Error(w, "tailnet identity is only accepted on the control plane's own host name", http.StatusForbidden)

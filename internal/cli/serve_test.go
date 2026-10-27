@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +17,23 @@ import (
 	"github.com/gm2211/grove/internal/server"
 )
 
+// fakeNomadHosts answers lookupNomadHost from a fixed table for the rest of the test.
+func fakeNomadHosts(t *testing.T, hosts map[string][]net.IP) {
+	t.Helper()
+	prev := lookupNomadHost
+	lookupNomadHost = func(_ context.Context, _, host string) ([]net.IP, error) {
+		if ips, ok := hosts[host]; ok {
+			return ips, nil
+		}
+		return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+	}
+	t.Cleanup(func() { lookupNomadHost = prev })
+}
+
+// The guests resolve only through public resolvers, so they get the Nomad host's address, never
+// its name; and no VM gets a tailnet key any more, configured or not.
 func TestFleetOptionsCarryConfiguredNomadRPCAddress(t *testing.T) {
+	fakeNomadHosts(t, map[string][]net.IP{"nomad.cp.example": {net.ParseIP("fd7a:115c:a1e0::60"), net.ParseIP("100.101.229.60")}})
 	options, err := fleetOptions(&config.Config{
 		Nomad:     config.Endpoint{URL: "https://nomad.cp.example:4646"},
 		Tailscale: config.TailscaleConfig{AuthKey: "tskey-test"},
@@ -24,11 +41,14 @@ func TestFleetOptionsCarryConfiguredNomadRPCAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if options.NomadRPCAddress != "nomad.cp.example:4647" {
-		t.Errorf("NomadRPCAddress = %q, want nomad.cp.example:4647", options.NomadRPCAddress)
+	if options.NomadRPCAddress != "100.101.229.60:4647" {
+		t.Errorf("NomadRPCAddress = %q, want 100.101.229.60:4647", options.NomadRPCAddress)
 	}
-	if options.TailscaleAuthKey != "tskey-test" {
-		t.Errorf("TailscaleAuthKey = %q, want to preserve configured auth key", options.TailscaleAuthKey)
+	if options.TailscaleAuthKey != "" {
+		t.Errorf("TailscaleAuthKey = %q, want none", options.TailscaleAuthKey)
+	}
+	if _, err := fleetOptions(&config.Config{Nomad: config.Endpoint{URL: "https://gone.example:4646"}}); err == nil {
+		t.Error("an unresolvable Nomad host must stop the tick, not fall back to the name")
 	}
 }
 
@@ -73,7 +93,7 @@ func TestFleetReconcileLoop_IsolatedPool_CreatesOnceThenNoOp(t *testing.T) {
 	oc := &fakeReconcileOrchard{workers: []orchard.Worker{{Name: "mac1", Capabilities: []string{fleet.WorkerCapabilityGuestPasswordRotation}}}}
 	cfg := &config.Config{
 		Fleet: writeIsolatedFleet(t, "linux"),
-		Nomad: config.Endpoint{URL: "http://cp.local:4646"},
+		Nomad: config.Endpoint{URL: "http://100.64.0.1:4646"},
 	}
 	loop := newFleetReconcileLoop(cfg, oc, &server.FleetReconcileStatus{})
 

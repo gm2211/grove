@@ -303,6 +303,30 @@ jobs; never implied by `dispatch`), `operator` (everything). A non-operator cred
 sees and cancels its own jobs, and job `env` values come back `[redacted]` to everyone. The same
 thing over HTTP is `POST /api/v1/access/devices` with `{"name": ..., "scopes": [...]}`.
 
+`--expires-in 180d` (or any Go duration, `"expiresIn": "4320h"` over HTTP) makes a credential stop
+working after that long. `grove access list` shows the date, and its holder sees it in
+`GET /api/v1/whoami` (`expiresAt`), so it can ask for a new one in time.
+
+### Argos on the control-plane Mac: the local socket
+
+When the orchestrator runs on the control-plane Mac itself (Argos on the Studio), it shouldn't
+use Tailscale identity: that Mac is usually also a worker, and its job VMs reach the network
+through its address. Give it the local socket instead, and an expiring token on top:
+
+```bash
+grove config set server.socket /Users/Shared/grove/api.sock
+grove config set server.socketUsers giulio      # the macOS user Argos runs as
+# restart grove serve, then:
+grove access issue --name argos --scope read --scope dispatch --expires-in 180d
+```
+
+`grove serve` then also listens on that socket. Requests on it never touch the network, so
+nothing on the tailnet and no job VM can reach them. Only the listed users can connect: grove
+checks the user the kernel reports for each connection, not the socket's file mode, and closes
+anyone else's connection unread. Every request on the socket still needs a bearer token, and
+Tailscale identity counts for nothing there. So if Argos ever moves off this Mac, it carries
+its token with it and is never left with no authentication.
+
 Re-running `grove setup` on a Mac gives it a new credential. Once that Mac is back online, grove
 revokes the Mac's earlier setup credentials (same name, read/dispatch scopes only), so
 `grove access list` holds one live credential per Mac. Credentials issued with `grove access issue`
@@ -365,8 +389,15 @@ it: `"secrets": ["CLAUDE_CODE_OAUTH_TOKEN"]`. The value lives on the control pla
 (`secrets.json` next to `config.yaml`, mode 0600) and is exported into the job under that name at
 dispatch; the submitter never sends or sees it, and job history keeps only the name.
 
+The job itself does hold the real value, so prefer a per-job credential for anything the broker can
+swap (see "The credential broker" above): there the job holds only a placeholder. Argos sends its
+own Claude sign-in that way, so a fleet it dispatches to needs no `CLAUDE_CODE_OAUTH_TOKEN` secret
+here. Named secrets stay the way for the rest: Codex's `auth.json`, which its CLI parses instead of
+sending as a header, and any value whose service the broker does not know.
+
 ```bash
 # on any machine with the operator credential; the value comes from stdin or an env var, never argv
+# (only for a dispatcher that does not send its Claude sign-in as a credential)
 claude setup-token | grove secret set CLAUDE_CODE_OAUTH_TOKEN --allow tag:argos
 grove secret set CODEX_AUTH_JSON --allow tag:argos < ~/.codex/auth.json
 grove secret set OPENAI_API_KEY --from-env OPENAI_API_KEY --allow DEVICE_ID
@@ -412,9 +443,39 @@ while a job runs — is in [docs/JOBS.md](JOBS.md#private-repositories).
 
 ## Isolating a pool's network
 
-By default a worker VM shares its host Mac's network through Tart's NAT, so a job can reach
+No worker VM joins the tailnet. A shared VM's Nomad client dials the control plane's RPC
+address (port 4647 on the host of `nomad.url`, which the control plane resolves to an IP, since
+guests resolve names through public resolvers only) through its host Mac's NAT, and the host's
+own Tailscale carries it the rest of the way. So the tailnet's ACLs must let each worker Mac reach
+the control plane on 4647; nothing needs to allow VMs as tailnet devices any more, and
+`tailscale.authKey` is no longer used (`grove config set` refuses it). The startup script turns
+the image's Tailscale daemon off. To get a shell in a VM, use `orchard ssh vm <name>` from the
+control plane rather than tailnet SSH.
+
+By default a worker VM shares its host Mac's network through Tart's NAT, so the VM can reach
 whatever that Mac reaches: your LAN, services the Mac itself runs, and every device on your
-tailnet, through the Mac's own Tailscale login. `network: isolated` seals a pool's VMs instead:
+tailnet, through the Mac's own Tailscale login. Its jobs can't: a firewall in the guest
+(`grove-egress-fence` in DOCKER-USER for Linux containers, the `com.apple/grove-jobs` pf anchor
+for the macOS job user) refuses every private, tailnet and link-local address, with exactly one
+exception, TCP to the default gateway the guest got from DHCP on port 3128: the host Mac's
+credential broker, which listens only on that address. The gateway is read each time the fence
+loads; a guest with no IPv4 default route gets no exception.
+
+At boot a shared VM fetches the broker's CA from `http://<gateway>:3128/ca.pem` and keeps it only
+if it is a single CA certificate (pathlen 0) whose critical name constraints permit only the
+broker's hosts (github.com, api.github.com, api.anthropic.com, api.openai.com, chatgpt.com, or
+some of them) and exclude every IP address; even a forged CA that passes can vouch for no other
+site. The VM then
+advertises the broker as Nomad node meta (`grove_broker`, `grove_broker_ca`, in
+`grove-broker.hcl`), and each build/agent/shell job's `run.sh` sets `HTTPS_PROXY`/`HTTP_PROXY` to
+it and `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `REQUESTS_CA_BUNDLE` and
+`NODE_EXTRA_CA_CERTS` to the system roots plus that CA. Tools that trust only the macOS keychain
+won't accept the broker's certificates. With no broker (none answering within two minutes of
+boot, or a CA that fails the check, reported in the startup script's output) jobs run without
+one, and a job whose environment holds `gph1_` placeholders says so in its log. After installing
+the broker on a worker, recycle its VMs so they pick it up.
+
+`network: isolated` seals a pool's VMs instead:
 
 ```yaml
 pools:
@@ -433,7 +494,8 @@ What changes for that pool's VMs:
 - **Softnet, host blocked.** Each VM runs on Softnet instead of Tart's NAT, with
   `--net-softnet-block "out @host"`. The guest reaches public internet addresses only. The host
   can still open connections into the guest, which is how Orchard runs the startup script and how
-  grove drives each job.
+  grove drives each job. Softnet's rules match addresses, not ports, so there is no hole for the
+  host's credential broker: a sealed job gets no broker credentials.
 - **No Nomad, no Tailscale, no credentials.** The startup script turns off the image's Nomad client
   and Tailscale (on macOS it disables and boots out their launchd jobs, `com.grove.nomad` and
   `homebrew.mxcl.tailscale`). The VM holds no tailnet key, no Nomad token, no artifact store key

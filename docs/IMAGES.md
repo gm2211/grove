@@ -256,10 +256,10 @@ Both images install the **standalone** (non–App-Store) Tailscale build:
 - Linux: the official `tailscale.com/install.sh` script (adds HashiCorp-adjacent apt repo,
   installs the same standalone daemon).
 
-Neither image joins the tailnet (`tailscale up`) — that's the fleet startup script's job, using an
-**ephemeral tagged auth key** per VM (see ARCHITECTURE.md: "Tailscale inside guests uses ephemeral
-tagged auth keys, so recycled VMs vanish from the tailnet"). Baking a real auth key into an image
-would mean every VM cloned from it shares one identity and one key that never expires.
+No VM joins the tailnet: the fleet startup script turns the image's Tailscale daemon off in every
+guest, shared or sealed. A shared VM's Nomad client reaches the control plane through its host
+Mac's NAT (the host is on the tailnet), at the address the control plane resolved its Nomad host
+to. The images still carry Tailscale only because removing it is a separate image change.
 
 ## Rosetta (linux-worker only)
 

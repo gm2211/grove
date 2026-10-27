@@ -74,6 +74,9 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 		if cfg.Server.Listen != "" {
 			results = append(results, checkListen(ctx, cfg.Server.Listen))
 		}
+		if cfg.Server.Socket != "" {
+			results = append(results, checkLocalSocket(cfg.Server.Socket, cfg.Server.SocketUsers))
+		}
 		results = append(results, checkMacOSCPUFingerprint(ctx, cfg))
 		results = append(results, checkSandboxHost(ctx, cfg))
 	}
@@ -504,4 +507,18 @@ func checkListen(ctx context.Context, listen string) CheckResult {
 		}
 	}
 	return CheckResult{Name: "grove-listen", OK: true, Detail: listen + " (tailnet or loopback only)"}
+}
+
+// checkLocalSocket reports whether grove serve's local socket (server.socket) is up.
+func checkLocalSocket(path string, users []string) CheckResult {
+	const name = "grove-socket"
+	if len(users) == 0 {
+		return CheckResult{Name: name, OK: false, Detail: "server.socket is set but server.socketUsers is empty, so grove serve won't start",
+			Remediation: "`grove config set server.socketUsers <macOS user Argos runs as>`"}
+	}
+	fi, err := os.Lstat(path)
+	if err != nil || fi.Mode()&os.ModeSocket == 0 {
+		return CheckResult{Name: name, OK: false, Detail: path + " is not a socket yet", Remediation: "restart grove serve"}
+	}
+	return CheckResult{Name: name, OK: true, Detail: fmt.Sprintf("%s, for %s only, token required", path, strings.Join(users, ", "))}
 }
