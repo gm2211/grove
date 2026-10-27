@@ -70,6 +70,8 @@ func sealedMacOSStartupScript() string {
 		"@GROVE_PRIV@", strings.TrimSuffix(grovePrivFunc, "\n"),
 		"@PUBLIC_DNS@", strings.TrimSuffix(macosPublicDNSScript, "\n"),
 		"@JOB_USER@", strings.TrimSuffix(macosJobUserScript, "\n"),
+		"@LOCKDOWN@", strings.TrimSuffix(macosLockdownScript, "\n"),
+		"@SSH_FENCE@", strings.TrimSuffix(macosPFInstall(sealedMacOSFenceRules, macosFenceLoader(false)), "\n"),
 	).Replace(sealedMacOSStartupScriptTemplate)
 }
 
@@ -191,6 +193,11 @@ grove_priv rm -f ` + SealedDrainingMarkerMacOS + `
 @PUBLIC_DNS@
 
 @JOB_USER@
+
+@LOCKDOWN@
+
+# The job user may not open SSH connections, to this VM or anywhere else.
+@SSH_FENCE@
 `
 
 // egressFenceScript is installed in isolated guests as /usr/local/sbin/grove-egress-fence. It is
@@ -247,8 +254,7 @@ func homeFenceScript(pool Pool) string {
 	if pool.MacOS() {
 		return strings.NewReplacer(
 			"@PUBLIC_DNS@", strings.TrimSuffix(macosPublicDNSScript, "\n"),
-			"@PF_RULES@", strings.TrimSuffix(macosHomeFenceRules, "\n"),
-			"@PF_LOADER@", strings.TrimSuffix(macosHomeFenceLoader, "\n"),
+			"@PF_INSTALL@", strings.TrimSuffix(macosPFInstall(macosHomeFenceRules, macosHomeFenceLoader), "\n"),
 			"@SOURCE_USER@", strings.TrimSuffix(macosSourceUserScript, "\n"),
 		).Replace(macosHomeFenceTemplate)
 	}
@@ -307,9 +313,21 @@ GROVE_EGRESS_FENCE_NOW
 // macosHomeFenceRules is the pf anchor that fences the job user. pf can match a socket's owner
 // only for TCP and UDP, which is all a job can open without root. There is no DNS exception: the
 // guest resolves through public resolvers (macosPublicDNSScript), never its host Mac.
-const macosHomeFenceRules = `grove_home = "{ 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, fc00::/7, fe80::/10 }"
+//
+// It also keeps both users off SSH anywhere, the VM itself included: an SSH login as admin is the
+// one way a process without root could use admin's password, should it ever learn it.
+var macosHomeFenceRules = `grove_home = "{ 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, fc00::/7, fe80::/10 }"
 block return out quick proto { tcp, udp } from any to $grove_home user { ` + MacOSJobUser + `, ` + MacOSSourceUser + ` }
-`
+` + macosSSHBlockRule(MacOSJobUser, MacOSSourceUser)
+
+// macosSSHBlockRule is the pf rule that keeps users off SSH (TCP port 22), to any address.
+func macosSSHBlockRule(users ...string) string {
+	return "block return out quick proto tcp from any to any port 22 user { " + strings.Join(users, ", ") + " }\n"
+}
+
+// sealedMacOSFenceRules is a sealed macOS guest's whole pf anchor: Softnet already keeps it off
+// home, so all that is left for the guest to fence is SSH.
+var sealedMacOSFenceRules = macosSSHBlockRule(MacOSJobUser)
 
 // macosPublicDNSScript points every network service of a macOS guest at isolatedDNSServers instead
 // of the DHCP-provided resolver, which is the host Mac. A job's lookups go through mDNSResponder
@@ -347,18 +365,19 @@ if ! dscl . -read /Users/` + MacOSSourceUser + ` >/dev/null 2>&1; then
 fi
 `
 
-// macosHomeFenceLoader loads /etc/pf.conf (whose anchor "com.apple/*" is the hook grove's anchor
+// macosFenceLoader loads /etc/pf.conf (whose anchor "com.apple/*" is the hook grove's anchor
 // hangs from), then grove's anchor, then enables pf, and fails unless the anchor's rules are live.
 // The startup script runs it inline (so a failure stops the script before Nomad takes work), and a
 // LaunchDaemon reruns it at every boot.
 //
-// Ahead of the fence it lets the job user, and only the job user, reach the default gateway's
-// broker.Port: the host's credential broker. The gateway is read when the anchor loads (at boot it
-// waits up to a minute for DHCP); with none there is no exception, and jobs can't reach the broker.
-var macosHomeFenceLoader = `#!/bin/sh
-# Installed by grove's fleet startup script for the macos pool.
-set -eu
-grove_gateway=""
+// withBroker (shared pools) lets the job user, and only the job user, reach the default gateway's
+// broker.Port ahead of the fence: the host's credential broker. The gateway is read when the
+// anchor loads (at boot it waits up to a minute for DHCP); with none there is no exception, and
+// jobs can't reach the broker. A sealed guest can't reach its host at all, so it gets no exception.
+func macosFenceLoader(withBroker bool) string {
+	gateway, pass := "", ""
+	if withBroker {
+		gateway = `grove_gateway=""
 grove_waited=0
 while :; do
   grove_gateway=$(route -n get default 2>/dev/null | awk '$1 == "gateway:" { print $2; exit }')
@@ -370,17 +389,36 @@ while :; do
   grove_waited=$((grove_waited + 1))
   sleep 1
 done
-pfctl -q -f /etc/pf.conf
-{
-  if [ -n "$grove_gateway" ]; then
+`
+		pass = `  if [ -n "$grove_gateway" ]; then
     printf 'pass out quick proto tcp from any to %s port ` + fmt.Sprint(broker.Port) + ` user ` + MacOSJobUser + `\n' "$grove_gateway"
   fi
-  cat /usr/local/etc/grove/pf-jobs.conf
+`
+	}
+	return `#!/bin/sh
+# Installed by grove's fleet startup script for macOS guests.
+set -eu
+` + gateway + `pfctl -q -f /etc/pf.conf
+{
+` + pass + `  cat /usr/local/etc/grove/pf-jobs.conf
 } | pfctl -q -a com.apple/grove-jobs -f -
 pfctl -q -E >/dev/null 2>&1 || pfctl -q -e >/dev/null 2>&1 || true
 pfctl -q -a com.apple/grove-jobs -s rules | grep -q 'user'
 pfctl -s info 2>/dev/null | grep -q 'Status: Enabled'
 `
+}
+
+// macosHomeFenceLoader is a shared macOS guest's loader.
+var macosHomeFenceLoader = macosFenceLoader(true)
+
+// macosPFInstall renders the part of a macOS startup script that installs a pf anchor's rules and
+// loader, a LaunchDaemon that reloads it at every boot, and loads it now.
+func macosPFInstall(rules, loader string) string {
+	return strings.NewReplacer(
+		"@PF_RULES@", strings.TrimSuffix(rules, "\n"),
+		"@PF_LOADER@", strings.TrimSuffix(loader, "\n"),
+	).Replace(macosPFInstallTemplate)
+}
 
 const macosHomeFenceTemplate = `# --- jobs reach the internet, not home ---
 # Processes of the job user, and of the user each job's clone runs as, may not open connections to
@@ -389,7 +427,10 @@ const macosHomeFenceTemplate = `# --- jobs reach the internet, not home ---
 # affected. Name lookups go to public resolvers, not the host Mac.
 @PUBLIC_DNS@
 @SOURCE_USER@
-grove_priv mkdir -p /usr/local/etc/grove /usr/local/sbin
+@PF_INSTALL@
+`
+
+const macosPFInstallTemplate = `grove_priv mkdir -p /usr/local/etc/grove /usr/local/sbin
 grove_priv tee /usr/local/etc/grove/pf-jobs.conf >/dev/null <<'GROVE_PF_JOBS'
 @PF_RULES@
 GROVE_PF_JOBS

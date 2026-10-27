@@ -413,7 +413,8 @@ case "$body" in
 esac
 `)
 
-			guestScript := strings.ReplaceAll(script, shQuote(guestHostXcodeMountPath), shQuote(appPath))
+			guestScript, _, _ := fakeMacOSLockdown(t, fakeBin, script, true)
+			guestScript = strings.ReplaceAll(guestScript, shQuote(guestHostXcodeMountPath), shQuote(appPath))
 			guestScript = strings.ReplaceAll(guestScript, "/usr/libexec/PlistBuddy", plistBuddy)
 			cmd := exec.Command("/bin/sh", "-c", guestScript)
 			cmd.Env = append(os.Environ(),
@@ -550,7 +551,8 @@ printf 'pfctl %s\\n' "$*" >> "$GROVE_TEST_COMMAND_LOG"
 case "$*" in *"-s rules"*) echo 'block return out quick proto tcp from any to 10.0.0.0/8 user = 7460' ;; *"-s info"*) echo 'Status: Enabled' ;; esac
 `)
 
-			cmd := exec.Command("/bin/sh", "-c", BuildStartupScript(Pool{Name: "macos"}, "mac1", "macos-mac1-0", ""))
+			script, _, _ := fakeMacOSLockdown(t, fakeBin, BuildStartupScript(Pool{Name: "macos"}, "mac1", "macos-mac1-0", ""), true)
+			cmd := exec.Command("/bin/sh", "-c", script)
 			cmd.Env = append(os.Environ(),
 				"PATH="+fakeBin+":"+os.Getenv("PATH"),
 				"GROVE_TEST_COMMAND_LOG="+logPath,

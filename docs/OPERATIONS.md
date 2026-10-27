@@ -171,6 +171,20 @@ the image's, and is left alone.
 A VM that reboots comes up at the login window, because the image's auto-login password no longer
 matches. Nothing grove runs needs a GUI session.
 
+The password is not the only lock. Before any job can start, every macOS guest, shared or sealed,
+also closes the ways a job user could use it (`macosLockdownScript`, `internal/fleet/lockdown.go`):
+
+- **su and login** authenticate only a caller already in the admin group: a `pam_group ... ruser`
+  line (`# grove`) goes ahead of the other auth modules in `/etc/pam.d/su` (after `pam_rootok`, so
+  root still su's) and `/etc/pam.d/login`. `sudo`, which Orchard and grove use as admin, has its
+  own PAM file and is untouched.
+- **SSH**: the job users' pf anchor (`com.apple/grove-jobs`) refuses their TCP connections to port
+  22 anywhere, the VM itself included. A sealed guest gets an anchor with just that rule.
+- **Privilege prompts**: the `system.privilege.admin` authorization right (`osascript ... with
+  administrator privileges`, `AuthorizationExecuteWithPrivileges`) is set to `deny`.
+
+A step that fails stops the startup script, so the VM takes no job, and Orchard restarts it.
+
 ## Rolling a new image
 
 Pool images (`ghcr.io/gm2211/grove-{linux,macos}-worker:latest`) are Packer-built under `images/`.

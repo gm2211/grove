@@ -72,6 +72,8 @@ func buildStartupScript(pool Pool, worker, vmName string, opts Options) string {
 	if pool.MacOS() {
 		b.WriteString(macosJobUserScript)
 		b.WriteString("\n")
+		b.WriteString(macosLockdownScript)
+		b.WriteString("\n")
 		// The image binds Nomad to loopback. Nomad rejects implicit loopback
 		// advertisement, even for a client, so declare it before restarting.
 		b.WriteString(macosNomadAdvertiseScript)
