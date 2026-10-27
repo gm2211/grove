@@ -21,6 +21,12 @@ func BuildPlan(r Runner, opts Options, out io.Writer) ([]Step, error) {
 
 	switch opts.Role {
 	case RoleWorker:
+		if opts.Controller == "" {
+			opts.Controller = installedWorkerController(opts)
+		}
+		if opts.Controller == "" {
+			return nil, errors.New("this Mac has no worker installed yet, so it needs --controller and --token; `grove setup` supplies both when it joins")
+		}
 		steps = append(steps, buildWorkerSteps(r, opts, out)...)
 	case RoleControlPlane:
 		steps = append(steps, buildControlPlaneSteps(r, opts, out)...)

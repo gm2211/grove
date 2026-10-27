@@ -4,6 +4,18 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **`grove registry login` logs an installed worker in to the image registry.** `pbpaste | grove
+  registry login --user <github-username>` runs `tart login` with the token over stdin (or from
+  `$GROVE_REGISTRY_TOKEN`, never an argument) and logs in again even for the same user, so it is
+  also how a token is rotated. Re-running `grove install --role worker` for that would skip the
+  login once the marker matched.
+
+- **Re-running `grove install --role worker` keeps the installed worker.** Without
+  `--controller`/`--token` it reuses the controller URL in the existing wrapper and the credential
+  already in Keychain. Before, it rewrote the wrapper with an empty controller and restarted the
+  worker, which then couldn't reach Orchard. With no worker installed, it now refuses and asks for
+  `--controller`.
+
 - **Credentials can expire, and a local client can use a Unix socket.** `grove access issue
   --expires-in 180d` (`expiresIn` over HTTP) issues a credential that stops working after that
   long; `grove access list` and `GET /api/v1/whoami` show when. `server.socket` and

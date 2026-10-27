@@ -184,7 +184,7 @@ func checkRegistryLogin(opts Options, cfg *config.Config) *CheckResult {
 		OK:     false,
 		Detail: "fleet.yaml has pool image(s) on ghcr.io, which are private by default, and no `tart login ghcr.io` was recorded on this machine",
 		Remediation: "images on ghcr.io may be private; either make the packages public (GitHub -> Packages -> " +
-			"grove-*-worker -> Package settings -> Change visibility) or re-run `grove install --role worker --registry-token …`",
+			"grove-*-worker -> Package settings -> Change visibility) or run `pbpaste | grove registry login --user <github-username>` on each worker",
 	}
 }
 

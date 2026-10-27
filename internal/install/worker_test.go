@@ -695,3 +695,133 @@ func TestWorkerPlan_RegistryLoginIdempotent(t *testing.T) {
 		t.Error("`tart login` should not run again once the marker already matches")
 	}
 }
+
+// TestWorkerPlan_RerunKeepsInstalledControllerAndCredential covers `grove install --role worker`
+// with no --controller/--token on a Mac that already runs a worker (the documented upgrade path,
+// or adding a registry login): it keeps the controller in the existing wrapper and the credential
+// already in Keychain, instead of rewriting the wrapper with an empty controller.
+func TestWorkerPlan_RerunKeepsInstalledControllerAndCredential(t *testing.T) {
+	home := t.TempDir()
+	first := testWorkerOptions(home)
+	r := NewFakeRunner()
+	scriptTailscaleUp(r)
+	scriptPinnedDownloads(r, first)
+	steps, err := BuildPlan(r, first, io.Discard)
+	if err != nil {
+		t.Fatalf("BuildPlan (install): %v", err)
+	}
+	if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
+		t.Fatalf("RunPlan (install): %v", err)
+	}
+	before, err := os.ReadFile(workerWrapperPath(first))
+	if err != nil {
+		t.Fatalf("reading the installed wrapper: %v", err)
+	}
+
+	rerun := testWorkerOptions(home)
+	rerun.Controller, rerun.Token = "", ""
+	rerun.RegistryUser, rerun.RegistryToken = "gm2211", "ghp_supersecrettoken"
+	r = NewFakeRunner()
+	scriptTailscaleUp(r)
+	scriptPinnedDownloads(r, rerun)
+	steps, err = BuildPlan(r, rerun, io.Discard)
+	if err != nil {
+		t.Fatalf("BuildPlan (re-run): %v", err)
+	}
+	if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
+		t.Fatalf("RunPlan (re-run): %v", err)
+	}
+
+	after, err := os.ReadFile(workerWrapperPath(rerun))
+	if err != nil {
+		t.Fatalf("reading the wrapper after the re-run: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("re-run rewrote the wrapper:\nbefore: %s\nafter:  %s", before, after)
+	}
+	if !strings.Contains(string(after), first.Controller) {
+		t.Errorf("wrapper lost the controller %q: %s", first.Controller, after)
+	}
+	for _, c := range r.Calls {
+		if c.Name == "/usr/bin/expect" || (len(c.Args) > 0 && c.Args[0] == "delete-generic-password") {
+			t.Errorf("re-run touched the worker's Keychain credential: %s", c)
+		}
+	}
+	if !r.CalledWith("tart login ghcr.io --username gm2211 --password-stdin") {
+		t.Errorf("re-run with a registry token should log in, calls: %v", r.Calls)
+	}
+}
+
+// TestWorkerPlan_FirstInstallNeedsController: with no worker installed there is no controller to
+// reuse, so the plan refuses rather than render a wrapper that points nowhere.
+func TestWorkerPlan_FirstInstallNeedsController(t *testing.T) {
+	r := NewFakeRunner()
+	scriptTailscaleUp(r)
+	opts := testWorkerOptions(t.TempDir())
+	opts.Controller, opts.Token = "", ""
+	if _, err := BuildPlan(r, opts, io.Discard); err == nil || !strings.Contains(err.Error(), "--controller") {
+		t.Fatalf("BuildPlan with no controller and no installed worker: err = %v, want one naming --controller", err)
+	}
+}
+
+// TestWorkerPlan_RerunWithoutKeychainCredentialAsksForSetup: a re-run without --token on a worker
+// whose Keychain item is gone can't make one up, and says to run `grove setup`.
+func TestWorkerPlan_RerunWithoutKeychainCredentialAsksForSetup(t *testing.T) {
+	home := t.TempDir()
+	opts := testWorkerOptions(home)
+	if err := os.MkdirAll(filepath.Dir(workerWrapperPath(opts)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(workerWrapperPath(opts), []byte(workerWrapper(opts, "/x/orchard")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	opts.Controller, opts.Token = "", ""
+	r := NewFakeRunner()
+	scriptTailscaleUp(r)
+	scriptPinnedDownloads(r, opts)
+	r.Script("/usr/bin/security find-generic-password -a test-worker -s "+orchardWorkerKeychainService,
+		FakeResult{Err: errors.New("exit status 44")})
+	steps, err := BuildPlan(r, opts, io.Discard)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err == nil || !strings.Contains(err.Error(), "grove setup") {
+		t.Fatalf("RunPlan: err = %v, want one pointing at `grove setup`", err)
+	}
+}
+
+// TestRegistryLogin_LogsInEvenWhenRecorded covers `grove registry login`: it logs in again for the
+// same user (a rotated token), feeds the token only over stdin, and records only user and registry.
+func TestRegistryLogin_LogsInEvenWhenRecorded(t *testing.T) {
+	home := t.TempDir()
+	opts := Options{Role: RoleWorker, Home: home, RegistryUser: "gm2211", RegistryToken: "ghp_rotatedtoken"}
+	marker := registryLoginMarkerPath(opts, "ghcr.io")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("gm2211 ghcr.io\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewFakeRunner()
+	if err := RegistryLogin(context.Background(), r, opts); err != nil {
+		t.Fatalf("RegistryLogin: %v", err)
+	}
+	const wantCmd = "tart login ghcr.io --username gm2211 --password-stdin"
+	if stdin, ok := r.StdinFor(wantCmd); !ok || stdin != opts.RegistryToken {
+		t.Fatalf("expected %q with the token on stdin, calls: %v", wantCmd, r.Calls)
+	}
+	for _, c := range r.Calls {
+		if strings.Contains(c.String(), opts.RegistryToken) {
+			t.Errorf("token leaked into a command line: %s", c)
+		}
+	}
+	if got, _ := os.ReadFile(marker); string(got) != "gm2211 ghcr.io\n" {
+		t.Errorf("marker = %q, want only user and registry", got)
+	}
+
+	opts.RegistryToken = ""
+	if err := RegistryLogin(context.Background(), NewFakeRunner(), opts); err == nil {
+		t.Error("RegistryLogin with no token should fail")
+	}
+}
