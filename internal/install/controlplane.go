@@ -472,10 +472,10 @@ func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string
 		// program is an absolute path, or a bare name resolved by supervisorProgram when the
 		// unit is rendered: launchd and systemd --user start jobs with a minimal PATH that
 		// holds neither ~/.local/bin nor Homebrew, so a bare name never starts.
-		program string
-		args    []string
-		env         map[string]string
-		workingDir  string
+		program    string
+		args       []string
+		env        map[string]string
+		workingDir string
 	}{
 		{
 			name:        "orchard-controller",
