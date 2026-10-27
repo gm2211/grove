@@ -11,9 +11,10 @@ import (
 	"strings"
 )
 
-// The worker runs Orchard from an app bundle so macOS can attribute Local Network consent to a
-// stable, named responsible-code identity. The ~/.local/bin entry remains a symlink for operators
-// and scripts that invoke Orchard directly.
+// The worker runs Orchard from an app bundle so macOS attributes it to a stable, named
+// responsible-code identity. It reaches its VMs through the Tart Guest Agent
+// (--guest-agent-transport), not the network, so it needs no Local Network consent. The
+// ~/.local/bin entry remains a symlink for operators and scripts that invoke Orchard directly.
 const (
 	orchardBinName               = "orchard"
 	orchardWorkerAppName         = "Grove Orchard Worker.app"
@@ -357,7 +358,7 @@ func workerWrapper(opts Options, orchardBin string) string {
 	return fmt.Sprintf(`#!/bin/zsh
 set -eu
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-exec %q worker run --name %q --labels %q --bootstrap-token-stdin %q < <(/usr/bin/security find-generic-password -a %q -s %q -w)
+exec %q worker run --name %q --labels %q --guest-agent-transport --bootstrap-token-stdin %q < <(/usr/bin/security find-generic-password -a %q -s %q -w)
 `, orchardBin, opts.hostname(), fmt.Sprintf("host=%s,arch=arm64", opts.hostname()), opts.Controller, opts.hostname(), orchardWorkerKeychainService)
 }
 
@@ -498,7 +499,7 @@ func workerFinalizationSteps(r Runner, opts Options, plistPath, workerOrchard st
 		},
 		{
 			Name:        "launchagent-load",
-			Description: fmt.Sprintf("Reload %s in gui/%s so macOS associates the worker with %s and can present its one-time Local Network consent alert.", plistPath, uid, orchardWorkerBundleID),
+			Description: fmt.Sprintf("Reload %s in gui/%s so macOS attributes the worker to %s.", plistPath, uid, orchardWorkerBundleID),
 			Check: func(ctx context.Context) (bool, error) {
 				stdout, _, err := r.Run(ctx, "launchctl", "print", label)
 				return err == nil && strings.Contains(stdout, workerOrchard), nil

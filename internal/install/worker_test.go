@@ -141,6 +141,9 @@ func TestWorkerPlan_AppliesCommandsAndGatesPrivilegedSteps(t *testing.T) {
 	if strings.Contains(string(wrapper), opts.Token) || !strings.Contains(string(wrapper), "--bootstrap-token-stdin") {
 		t.Fatalf("worker wrapper must use Keychain/stdin without embedding credential: %s", wrapper)
 	}
+	if !strings.Contains(string(wrapper), " --guest-agent-transport ") {
+		t.Fatalf("worker must reach its VMs through the Tart Guest Agent, not the network: %s", wrapper)
+	}
 	if !strings.Contains(string(wrapper), `export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"`) {
 		t.Fatal("worker wrapper must expose Homebrew Tart to its LaunchAgent")
 	}

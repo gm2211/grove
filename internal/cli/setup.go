@@ -112,7 +112,7 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if err := waitForWorker(cmd.Context(), result.ServerURL, start); err != nil {
-		return fmt.Errorf("worker installed but not yet visible: %w. If macOS shows Local Network access for Grove Orchard Worker, click Allow; setup will finish after rerun", err)
+		return fmt.Errorf("worker installed but not yet visible: %w. Check ~/Library/Logs/grove/orchard-worker.err.log; setup will finish after rerun", err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "\nGrove worker %q is online and discoverable. This device can view and dispatch jobs. Run `grove ui` to open Map.\n", host)
 	return nil

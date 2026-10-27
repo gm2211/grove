@@ -72,7 +72,10 @@ build {
     inline = [
       "set -eu",
       "sudo apt-get update -y",
-      "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl gnupg lsb-release git jq build-essential",
+      "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl gnupg lsb-release git jq build-essential netcat-openbsd",
+      # The worker reaches this VM only through the Tart Guest Agent (orchard --guest-agent-transport),
+      # which the Cirrus Labs base image ships; nc relays the agent's streams to the guest's sshd.
+      "systemctl is-enabled tart-guest-agent",
       "sudo install -m 0755 -d /etc/apt/keyrings",
     ]
   }

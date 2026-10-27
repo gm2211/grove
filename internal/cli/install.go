@@ -30,8 +30,8 @@ var installCmd = &cobra.Command{
 Tart/Orchard/Nomad dependencies, launchd agents or systemd --user units, and ~/.config/grove/
 config.yaml. Re-running it is safe — steps that are already satisfied are skipped.
 
-Steps that need sudo or touch system-wide settings (disabling sleep, the macOS 15+ local-network
-permission, loading a LaunchAgent) are never applied automatically: grove prints the exact command
+Steps that need sudo or touch system-wide settings (disabling sleep, the VM firewall,
+loading a LaunchAgent) are never applied automatically: grove prints the exact command
 for a human (or Claude Code) to run. Use --dry-run to see the whole plan without changing anything.`,
 	RunE: runInstall,
 }
