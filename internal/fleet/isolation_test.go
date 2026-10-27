@@ -603,7 +603,7 @@ func TestBuildStartupScript_IsolatedMacOSRunsThroughFakeSudo(t *testing.T) {
 		}
 	}
 
-	script := buildStartupScript(isolatedMacOSPool(), "mac1", "macos-mac1-0", isolatedOptions())
+	script, _, _ := fakeMacOSLockdown(t, fakeBin, buildStartupScript(isolatedMacOSPool(), "mac1", "macos-mac1-0", isolatedOptions()), true)
 	cmd := exec.Command("/bin/sh", "-c", script)
 	cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_SUDO_LOG="+logPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
@@ -633,7 +633,8 @@ func TestBuildStartupScript_IsolatedMacOSRunsThroughFakeSudo(t *testing.T) {
 		t.Fatalf("privileged steps:\n%s\nwant them to start with:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 	tail := strings.Join(got[len(want):], "\n")
-	for _, step := range []string{"dscl . -create /Users/_grovejob UniqueID 7460", "mkdir -p /private/var/grove-job", "chmod 0700 /private/var/grove-job"} {
+	for _, step := range []string{"dscl . -create /Users/_grovejob UniqueID 7460", "mkdir -p /private/var/grove-job", "chmod 0700 /private/var/grove-job",
+		"security authorizationdb write system.privilege.admin deny", "tee /usr/local/etc/grove/pf-jobs.conf", "tee /Library/LaunchDaemons/com.grove.pf-jobs.plist"} {
 		if !strings.Contains(tail, step) {
 			t.Errorf("privileged steps miss %q:\n%s", step, tail)
 		}

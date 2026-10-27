@@ -128,7 +128,9 @@ password is root. Every macOS VM therefore gets its own random admin password, g
 before `CreateVM` (`internal/fleet/guestpassword.go`, the `@GROVE_GUEST_PASSWORD@` placeholder,
 like intro tokens: a planned spec never holds one). The value goes into the VM spec's `Password`
 and into the startup script's first block. That block sets it via `dscl` stdin, never argv, and
-fails closed if `admin`/`admin` still works. A worker that doesn't advertise
+fails closed if `admin`/`admin` still works. Every macOS guest also locks down before any job
+(`internal/fleet/lockdown.go`): su and login gated to admin-group callers (pam_group), the job
+users kept off SSH (pf), and `system.privilege.admin` denied. A worker that doesn't advertise
 `guest-password-rotation` (the gm2211/orchard fallback to the image password) gets no macOS VM:
 the pool is reported blocked there and any existing VM is deleted as unsafe. Keep it that way:
 never put the password on a command line, in the API or in a planned spec. Details:
