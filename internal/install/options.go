@@ -48,7 +48,9 @@ type Options struct {
 	// so a Mac that never runs an isolated pool doesn't get a root-capable binary.
 	Softnet bool
 
-	Hostname string // test override; defaults to os.Hostname()
+	// Hostname names this machine to grove: the worker's Orchard name (`grove install --name`).
+	// Empty means the worker name already installed on this Mac, else os.Hostname().
+	Hostname string
 	Home     string // test override; defaults to os.UserHomeDir()
 	GOOS     string // test override; defaults to runtime.GOOS
 	GOARCH   string // test override; defaults to runtime.GOARCH

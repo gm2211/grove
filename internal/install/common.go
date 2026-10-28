@@ -17,6 +17,10 @@ func BuildPlan(r Runner, opts Options, out io.Writer) ([]Step, error) {
 		}
 	}
 
+	if opts.Role == RoleWorker && opts.Hostname == "" {
+		opts.Hostname = installedWorkerName(opts)
+	}
+
 	steps := buildCommonSteps(r, opts, out)
 
 	switch opts.Role {

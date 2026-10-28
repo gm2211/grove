@@ -830,3 +830,94 @@ func TestRegistryLogin_LogsInEvenWhenRecorded(t *testing.T) {
 		t.Error("RegistryLogin with no token should fail")
 	}
 }
+
+// TestInstalledWorkerName reads the worker name from grove's wrapper, else from a LaunchAgent
+// written before the wrapper existed, so a re-run keeps a name that isn't the hostname.
+func TestInstalledWorkerName(t *testing.T) {
+	writeLegacyPlist := func(t *testing.T, opts Options, args string) {
+		t.Helper()
+		if err := os.MkdirAll(opts.LaunchAgentsDir(), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		plist := `<plist version="1.0"><dict><key>ProgramArguments</key><array>
+		<string>/Users/argos/Applications/Grove Orchard Worker.app/Contents/MacOS/orchard</string>
+		<string>worker</string><string>run</string>` + args + `
+		<string>http://100.101.229.60:6120</string></array></dict></plist>`
+		if err := os.WriteFile(filepath.Join(opts.LaunchAgentsDir(), "com.grove.orchard-worker.plist"), []byte(plist), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("none installed", func(t *testing.T) {
+		if got := installedWorkerName(testWorkerOptions(t.TempDir())); got != "" {
+			t.Errorf("installedWorkerName = %q, want empty", got)
+		}
+	})
+	t.Run("wrapper", func(t *testing.T) {
+		opts := testWorkerOptions(t.TempDir())
+		opts.Hostname = "studio"
+		if err := os.MkdirAll(filepath.Dir(workerWrapperPath(opts)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(workerWrapperPath(opts), []byte(workerWrapper(opts, "/x/orchard")), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeLegacyPlist(t, opts, `<string>--name</string><string>ignored</string>`)
+		if got := installedWorkerName(opts); got != "studio" {
+			t.Errorf("installedWorkerName = %q, want the wrapper's %q", got, "studio")
+		}
+	})
+	t.Run("legacy LaunchAgent", func(t *testing.T) {
+		opts := testWorkerOptions(t.TempDir())
+		writeLegacyPlist(t, opts, `<string>--name</string>
+		<string>studio</string>`)
+		if got := installedWorkerName(opts); got != "studio" {
+			t.Errorf("installedWorkerName = %q, want %q", got, "studio")
+		}
+	})
+	t.Run("legacy LaunchAgent, --name=", func(t *testing.T) {
+		opts := testWorkerOptions(t.TempDir())
+		writeLegacyPlist(t, opts, `<string>--name=studio</string>`)
+		if got := installedWorkerName(opts); got != "studio" {
+			t.Errorf("installedWorkerName = %q, want %q", got, "studio")
+		}
+	})
+}
+
+// TestWorkerPlan_KeepsLegacyWorkerName: a Mac whose worker predates grove's wrapper (and runs
+// under a name that isn't its hostname) keeps that name when the install takes it over, so the
+// pools whose workerSelector matches it still land there.
+func TestWorkerPlan_KeepsLegacyWorkerName(t *testing.T) {
+	opts := testWorkerOptions(t.TempDir())
+	if err := os.MkdirAll(opts.LaunchAgentsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `<array><string>orchard</string><string>worker</string><string>run</string><string>--name</string><string>studio</string></array>`
+	if err := os.WriteFile(filepath.Join(opts.LaunchAgentsDir(), "com.grove.orchard-worker.plist"), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts.Hostname = ""
+	r := NewFakeRunner()
+	scriptTailscaleUp(r)
+	scriptPinnedDownloads(r, opts)
+	steps, err := BuildPlan(r, opts, io.Discard)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+	wrapper, err := os.ReadFile(workerWrapperPath(opts))
+	if err != nil {
+		t.Fatalf("reading the wrapper: %v", err)
+	}
+	if !strings.Contains(string(wrapper), `--name "studio"`) || !strings.Contains(string(wrapper), `host=studio,`) {
+		t.Errorf("wrapper doesn't keep the installed worker name: %s", wrapper)
+	}
+
+	// --name wins over the installed name
+	opts.Hostname = "studio-2"
+	if got := workerWrapper(opts, "/x/orchard"); !strings.Contains(got, `--name "studio-2"`) {
+		t.Errorf("--name not used: %s", got)
+	}
+}
