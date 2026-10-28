@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -353,6 +355,36 @@ func installedWorkerController(opts Options) string {
 	}
 	return controller
 }
+
+// installedWorkerName is the Orchard worker name this Mac already runs under, or "" if there is
+// none: the --name in grove's worker wrapper, else in a LaunchAgent written before the wrapper
+// existed (which ran Orchard with its arguments inline). Re-running the install keeps that name,
+// so fleet.yaml's workerSelector and the VMs pinned to it still match, even when it isn't this
+// Mac's hostname.
+func installedWorkerName(opts Options) string {
+	if b, err := os.ReadFile(workerWrapperPath(opts)); err == nil {
+		const flag = "--name "
+		if i := strings.Index(string(b), flag); i >= 0 {
+			if quoted, err := strconv.QuotedPrefix(string(b)[i+len(flag):]); err == nil {
+				if name, err := strconv.Unquote(quoted); err == nil {
+					return name
+				}
+			}
+		}
+	}
+	b, err := os.ReadFile(filepath.Join(opts.LaunchAgentsDir(), "com.grove.orchard-worker.plist"))
+	if err != nil {
+		return ""
+	}
+	if m := legacyWorkerNameRE.FindSubmatch(b); m != nil {
+		return html.UnescapeString(string(m[1]))
+	}
+	return ""
+}
+
+// legacyWorkerNameRE finds `--name <name>` or `--name=<name>` in a LaunchAgent's
+// ProgramArguments.
+var legacyWorkerNameRE = regexp.MustCompile(`<string>--name(?:</string>\s*<string>|=)([^<]+)</string>`)
 
 func workerWrapper(opts Options, orchardBin string) string {
 	return fmt.Sprintf(`#!/bin/zsh

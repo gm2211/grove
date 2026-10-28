@@ -171,6 +171,7 @@ manually provisioned environments.
 | `--registry` | container registry a worker authenticates to (worker role; default `ghcr.io`) |
 | `--registry-user` | registry username for `tart login` (worker role) |
 | `--registry-token` | registry password/PAT for `tart login` (worker role); also read from `$GROVE_REGISTRY_TOKEN` |
+| `--name` | the worker's Orchard name, which fleet.yaml's `workerSelector` matches (worker role). Default: the name this Mac's worker is already installed under (grove's wrapper, or an older `com.grove.orchard-worker` LaunchAgent), else the hostname |
 | `--softnet` | also install Softnet and print its one-time root step (worker role; only for Macs that run `network: isolated` pools, see [OPERATIONS.md](OPERATIONS.md#isolating-a-pools-network)) |
 | `--yes` | apply privileged steps too, **only takes effect when also running as root** |
 | `--dry-run` | print the whole plan, change nothing |

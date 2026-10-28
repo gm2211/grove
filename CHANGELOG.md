@@ -4,6 +4,13 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Re-running the worker install keeps the worker's name.** `grove install --role worker` named
+  the worker after the hostname, so it renamed a worker installed under another name. That
+  includes a Mac whose worker LaunchAgent predates grove's wrapper, which takes its name
+  from `--name` inline. Its pools' `workerSelector` then matched nothing. The install now keeps
+  the name already installed (from the wrapper, else the old LaunchAgent), and `--name` sets it
+  explicitly.
+
 - **Workers reach their VMs without Local Network permission.** On macOS 15+ the worker's SSH to
   a VM (startup script, exec, enrolment) needs Local Network permission, which grove's worker
   Macs keep off, so every startup script failed with `no route to host` and Orchard restarted
