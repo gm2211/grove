@@ -224,7 +224,9 @@ If workers log in to `ghcr.io` (rather than the packages being made public — s
    ```
 
    It always logs in again, even when the user hasn't changed: `tart login` overwrites the
-   previous credential in that user's keychain. The token comes from stdin (or
+   previous credential in that user's keychain, and grove rewrites the worker's own copy
+   (`~/.config/grove/credentials/registry`, 0600) and restarts the running worker onto it. The
+   token comes from stdin (or
    `$GROVE_REGISTRY_TOKEN`), never an argument. The marker
    (`~/.config/grove/registry-login.ghcr.io`) records only the user and registry, not the token or
    its age, so nothing nudges you to rotate on a schedule.
@@ -281,17 +283,23 @@ jobs placed on its worker. They leave the control plane when the job ends or is 
 pools take no credentials, since their VMs block the host and so the broker.
 
 `grove setup` installs the broker on every worker. When the control plane approves the Mac, it
-hands out the broker credential along with the others; setup keeps it in the worker account's
-Keychain (service `com.gm2211.grove.broker`, account `broker`) and loads the `com.grove.broker`
-LaunchAgent, which runs `grove broker --server <control plane>` and logs to
-`~/Library/Logs/grove/broker.log` and `broker.err.log`. Running setup again replaces the
-credential, revokes the old one and restarts the broker. A Mac set up against a control plane
+hands out the broker credential along with the others; setup keeps it in a 0600 file,
+`~/.config/grove/credentials/broker`, owned by the worker account (no Keychain: the broker starts
+at boot, before anyone logs in), and stages the `com.grove.broker` LaunchDaemon, which the
+`worker-daemons` step of the privileged checklist installs into `/Library/LaunchDaemons` with
+`UserName` set to the worker account and loads. It runs `grove broker --server <control plane>`
+and logs to `~/Library/Logs/grove/broker.log` and `broker.err.log`. A worker set up by an earlier
+grove has the credential in Keychain (service `com.gm2211.grove.broker`, account `broker`); the
+broker still falls back to that item, and re-running the install copies it into the file. Running
+setup again replaces the credential, revokes the old one and restarts the broker. A Mac set up against a control plane
 from before the broker gets a warning and a broker with no credential: it still serves its CA and
 plain tunnels, every sync fails, and jobs there can't use credentials until setup runs again.
 
-`grove doctor` on a worker has a `broker` row: whether the LaunchAgent is installed and loaded,
-whether the credential is in Keychain, and, once a VM has created the bridge, whether the broker
-answers and its last sync with the control plane worked, with its entry count.
+`grove doctor` on a worker has a `worker-daemon` row (the Orchard worker's LaunchDaemon is the one
+grove renders, loaded in the system domain, with no leftover LaunchAgent) and a `broker` row:
+whether the LaunchDaemon is installed and loaded, whether the credential file exists, is 0600 and
+is the user's, and, once a VM has created the bridge, whether the broker answers and its last sync
+with the control plane worked, with its entry count.
 
 Not wired in yet: shared VMs don't trust the CA or use the proxy. That lands separately.
 
@@ -665,8 +673,11 @@ subcommands, or `GET /api/v1/jobs/{id}/logs?follow=1`.
   fixes it — it re-trusts `openai/tools`/`cirruslabs/cli`/`hashicorp/tap` as needed
   before touching anything that installs from them — or run `grove doctor` first to see exactly
   which tap it is and the `brew trust <tap>` command to run by hand.
-- **Restart a supervised service** after a config change: macOS —
-  `launchctl kickstart -k gui/$(id -u)/com.grove.<name>`; Linux —
+- **Restart a supervised service** after a config change: macOS control plane —
+  `launchctl kickstart -k gui/$(id -u)/com.grove.<name>`; macOS worker (its Orchard worker and
+  broker are system LaunchDaemons) — `sudo launchctl kickstart -k system/com.grove.<name>`, or,
+  without sudo, as the worker user, `kill -TERM` the `pid` that
+  `launchctl print system/com.grove.<name>` shows (KeepAlive starts it again); Linux —
   `systemctl --user restart grove-<name>`.
 
 ## Artifacts

@@ -42,7 +42,8 @@ is tunnelled, to public internet addresses only.
 
 The broker pulls this worker's entries from the control plane with a device credential that
 has only the broker scope and is named after the worker. ` + "`grove setup`" + ` gets one when the
-control plane approves this Mac, keeps it in Keychain, and installs the broker as a LaunchAgent
+control plane approves this Mac, keeps it in a 0600 file under ~/.config/grove/credentials, and
+installs the broker as a boot-time LaunchDaemon that runs as the installing user
 (com.grove.broker), so there is normally nothing to run by hand.
 
 It listens on the VM bridge address (vmnet's gateway, 192.168.64.1 by default) on port 3128,

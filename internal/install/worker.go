@@ -18,9 +18,12 @@ import (
 // (--guest-agent-transport), not the network, so it needs no Local Network consent. The
 // ~/.local/bin entry remains a symlink for operators and scripts that invoke Orchard directly.
 const (
-	orchardBinName               = "orchard"
-	orchardWorkerAppName         = "Grove Orchard Worker.app"
-	orchardWorkerBundleID        = "com.gm2211.grove.orchard-worker"
+	orchardBinName        = "orchard"
+	orchardWorkerAppName  = "Grove Orchard Worker.app"
+	orchardWorkerBundleID = "com.gm2211.grove.orchard-worker"
+	orchardWorkerLabel    = "com.grove.orchard-worker"
+	// orchardWorkerKeychainService names the Keychain item an older grove kept the worker's bootstrap
+	// credential in. It is only a migration source now: the credential lives in a 0600 file.
 	orchardWorkerKeychainService = "com.gm2211.grove.orchard-worker.bootstrap"
 )
 
@@ -85,9 +88,6 @@ func workerOrchardInfoPlist() string {
 func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 	lookPath := opts.lookPath()
 	host := opts.hostname()
-	agentsDir := opts.LaunchAgentsDir()
-	logDir := opts.LogDir()
-	plistPath := filepath.Join(agentsDir, "com.grove.orchard-worker.plist")
 	cliOrchard := filepath.Join(orchardBinDir(opts), orchardBinName)
 	workerOrchard := workerOrchardExecutable(opts)
 	wrapper := workerWrapperPath(opts)
@@ -158,35 +158,37 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 			},
 		},
 		Step{
-			Name:        "worker-bootstrap-keychain",
-			Description: "Store worker-only Orchard credential in macOS Keychain; credential never appears in process arguments or LaunchAgent files.",
+			Name:        "worker-bootstrap-credential",
+			Description: fmt.Sprintf("Store the worker-only Orchard credential in %s (0600, this user's); it never appears in process arguments, the wrapper or a launchd plist. A re-run without --token keeps it, moving it out of the login Keychain if that is where an older grove put it.", credentialPath(opts, workerBootstrapCredentialName)),
 			Check: func(ctx context.Context) (bool, error) {
-				if opts.Token == "" {
-					// A re-run without --token keeps the credential this worker already has. Without
-					// -w, security prints the item's attributes, never the secret.
-					_, _, err := r.Run(ctx, "/usr/bin/security", "find-generic-password", "-a", host, "-s", orchardWorkerKeychainService)
-					return err == nil, nil
-				}
-				stdout, _, err := r.Run(ctx, "/usr/bin/security", "find-generic-password", "-a", host, "-s", orchardWorkerKeychainService, "-w")
-				return err == nil && strings.TrimSpace(stdout) == opts.Token, nil
+				return secretFileIs(credentialPath(opts, workerBootstrapCredentialName), opts.Token), nil
 			},
 			Apply: func(ctx context.Context) error {
-				if opts.Token == "" {
-					return fmt.Errorf("worker bootstrap credential missing; run `grove setup`")
+				token := opts.Token
+				if token == "" {
+					// Migrate the credential an older grove kept in the login Keychain. That needs
+					// this user's Keychain unlocked, which a `su -` shell leaves locked.
+					stdout, _, err := r.Run(ctx, "/usr/bin/security", "find-generic-password", "-a", host, "-s", orchardWorkerKeychainService, "-w")
+					token = strings.TrimSpace(stdout)
+					if err != nil || token == "" {
+						return fmt.Errorf("worker bootstrap credential missing; run `grove setup` (if it is only in the login Keychain, unlock it first with `security unlock-keychain`)")
+					}
 				}
-				if err := StoreKeychainSecret(ctx, r, host, orchardWorkerKeychainService, opts.Token); err != nil {
+				if err := secretLine("the worker bootstrap credential", token); err != nil {
+					return err
+				}
+				if err := writeSecretFile(credentialPath(opts, workerBootstrapCredentialName), token+"\n"); err != nil {
 					return err
 				}
 				// A running worker already consumed its previous credential from stdin. Restart it
-				// so enrollment uses the replacement immediately; first installs are handled later.
-				label := fmt.Sprintf("gui/%d/com.grove.orchard-worker", os.Getuid())
-				_, _, _ = r.Run(ctx, "launchctl", "kickstart", "-k", label)
+				// so enrollment uses the replacement immediately; first installs are loaded later.
+				restartDaemon(ctx, r, orchardWorkerLabel)
 				return nil
 			},
 		},
 		Step{
 			Name:        "orchard-worker-wrapper",
-			Description: fmt.Sprintf("Render %s; reads bootstrap credential from Keychain and feeds Orchard over stdin.", wrapper),
+			Description: fmt.Sprintf("Render %s; it feeds Orchard the bootstrap credential file over stdin, and exports the registry credentials from their file, if there is one, for Tart.", wrapper),
 			Check:       fileHasContent(wrapper, func() (string, error) { return workerWrapper(opts, workerOrchard), nil }),
 			Apply: func(ctx context.Context) error {
 				if err := writeFile(wrapper, workerWrapper(opts, workerOrchard)); err != nil {
@@ -195,51 +197,19 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 				if err := os.Chmod(wrapper, 0o700); err != nil {
 					return err
 				}
-				// Existing workers keep the old wrapper environment until restarted. Best-effort:
-				// initial installs have no loaded job yet and the later launchagent-load step handles it.
-				label := fmt.Sprintf("gui/%d/com.grove.orchard-worker", os.Getuid())
-				_, _, _ = r.Run(ctx, "launchctl", "kickstart", "-k", label)
+				// A running worker keeps the old wrapper's environment until it restarts. Initial
+				// installs have nothing running yet.
+				restartDaemon(ctx, r, orchardWorkerLabel)
 				return nil
-			},
-		},
-		Step{
-			Name: "launchagent:orchard-worker",
-			Description: fmt.Sprintf(
-				"Render %s (KeepAlive+RunAtLoad, logs under %s) running `orchard worker run --name %s --labels host=%s,arch=arm64 %s`.",
-				plistPath, logDir, host, host, opts.Controller,
-			),
-			Check: func(ctx context.Context) (bool, error) {
-				want, err := workerLaunchAgentPlist(opts, wrapper)
-				if err != nil {
-					return false, err
-				}
-				got, err := os.ReadFile(plistPath)
-				if err != nil {
-					if os.IsNotExist(err) {
-						return false, nil
-					}
-					return false, err
-				}
-				return string(got) == want, nil
-			},
-			Apply: func(ctx context.Context) error {
-				content, err := workerLaunchAgentPlist(opts, wrapper)
-				if err != nil {
-					return err
-				}
-				if err := os.MkdirAll(agentsDir, 0o755); err != nil {
-					return err
-				}
-				if err := os.MkdirAll(logDir, 0o755); err != nil {
-					return err
-				}
-				return os.WriteFile(plistPath, []byte(content), 0o644)
 			},
 		},
 	)
 
-	steps = append(steps, workerFinalizationSteps(r, opts, plistPath, wrapper)...)
-	steps = append(steps, brokerSteps(r, opts)...)
+	daemons := workerDaemons(opts)
+	steps = append(steps, daemonStageStep(opts, daemons[0]))
+	steps = append(steps, workerSleepStep(r))
+	steps = append(steps, brokerSteps(r, opts, daemons[1])...)
+	steps = append(steps, workerDaemonsStep(r, opts, daemons), retireLaunchAgentsStep(r, opts, daemons))
 	steps = append(steps, hostFirewallSteps(r, opts)...)
 	return steps
 }
@@ -274,12 +244,14 @@ func registryLoginStep(r Runner, opts Options, out io.Writer) *Step {
 
 	markerPath := registryLoginMarkerPath(opts, registry)
 	marker := opts.RegistryUser + " " + registry + "\n"
+	credPath := credentialPath(opts, registryCredentialName)
+	credContent := opts.RegistryUser + "\n" + opts.RegistryToken + "\n"
 
 	return &Step{
 		Name: "registry-login:" + registry,
 		Description: fmt.Sprintf(
-			"tart login %s --username %s --password-stdin  (token from --registry-token / GROVE_REGISTRY_TOKEN)",
-			registry, opts.RegistryUser,
+			"tart login %s --username %s --password-stdin  (token from --registry-token / GROVE_REGISTRY_TOKEN), and keep the login in %s (0600) for the worker daemon, which can't read this user's Keychain before anyone logs in",
+			registry, opts.RegistryUser, credPath,
 		),
 		Check: func(ctx context.Context) (bool, error) {
 			got, err := os.ReadFile(markerPath)
@@ -289,20 +261,41 @@ func registryLoginStep(r Runner, opts Options, out io.Writer) *Step {
 				}
 				return false, err
 			}
-			return string(got) == marker, nil
+			if string(got) != marker {
+				return false, nil
+			}
+			cred, err := readSecretFileRaw(credPath)
+			return err == nil && cred == credContent, nil
 		},
 		Apply: func(ctx context.Context) error {
 			if opts.RegistryUser == "" {
 				return fmt.Errorf("registry-login: --registry-user is required when --registry-token is set")
 			}
+			if err := secretLine("the registry username", opts.RegistryUser); err != nil {
+				return err
+			}
+			if err := secretLine("the registry token", opts.RegistryToken); err != nil {
+				return err
+			}
+			// `tart login` keeps the login in the Keychain, which serves a person at the Mac. The
+			// worker daemon starts before anyone has logged in, so it gets the same login from a
+			// file, through the TART_REGISTRY_* variables its wrapper exports.
 			if _, _, err := r.RunWithStdin(ctx, opts.RegistryToken, "tart", "login", registry,
 				"--username", opts.RegistryUser, "--password-stdin"); err != nil {
 				return fmt.Errorf("tart login %s: %w", registry, err)
 			}
+			if err := writeSecretFile(credPath, credContent); err != nil {
+				return err
+			}
 			if err := os.MkdirAll(opts.ConfigDir(), 0o755); err != nil {
 				return err
 			}
-			return os.WriteFile(markerPath, []byte(marker), 0o644)
+			if err := os.WriteFile(markerPath, []byte(marker), 0o644); err != nil {
+				return err
+			}
+			// The running worker's environment predates this login.
+			restartDaemon(ctx, r, orchardWorkerLabel)
+			return nil
 		},
 	}
 }
@@ -318,10 +311,11 @@ func RegistryLogin(ctx context.Context, r Runner, opts Options) error {
 	return registryLoginStep(r, opts, io.Discard).Apply(ctx)
 }
 
-// workerLaunchAgentPlist renders the LaunchAgent that supervises `orchard worker run`.
-func workerLaunchAgentPlist(opts Options, wrapper string) (string, error) {
-	return RenderLaunchAgent(LaunchAgentSpec{
-		Label:                       "com.grove.orchard-worker",
+// workerDaemonPlist renders the LaunchDaemon, run as the worker user, that supervises `orchard
+// worker run`.
+func workerDaemonPlist(opts Options, wrapper string) (string, error) {
+	return daemonPlist(opts, LaunchAgentSpec{
+		Label:                       orchardWorkerLabel,
 		Program:                     wrapper,
 		WorkingDir:                  opts.homeDir(),
 		AssociatedBundleIdentifiers: []string{orchardWorkerBundleID},
@@ -386,12 +380,22 @@ func installedWorkerName(opts Options) string {
 // ProgramArguments.
 var legacyWorkerNameRE = regexp.MustCompile(`<string>--name(?:</string>\s*<string>|=)([^<]+)</string>`)
 
+// workerWrapper is what the LaunchDaemon runs. It holds no secret: it points Orchard's stdin at the
+// bootstrap credential file, and, when there is a registry login, reads the registry file's two
+// lines (user, token) into the variables Tart takes registry credentials from, so neither is ever
+// in argv or in this text. HOME is set by launchd for a daemon with a UserName.
 func workerWrapper(opts Options, orchardBin string) string {
 	return fmt.Sprintf(`#!/bin/zsh
 set -eu
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-exec %q worker run --name %q --labels %q --guest-agent-transport --bootstrap-token-stdin %q < <(/usr/bin/security find-generic-password -a %q -s %q -w)
-`, orchardBin, opts.hostname(), fmt.Sprintf("host=%s,arch=arm64", opts.hostname()), opts.Controller, opts.hostname(), orchardWorkerKeychainService)
+registry_credential=%q
+if [ -f "$registry_credential" ]; then
+  { IFS= read -r TART_REGISTRY_USERNAME; IFS= read -r TART_REGISTRY_PASSWORD; } < "$registry_credential"
+  export TART_REGISTRY_USERNAME TART_REGISTRY_PASSWORD
+fi
+exec %q worker run --name %q --labels %q --guest-agent-transport --bootstrap-token-stdin %q < %q
+`, credentialPath(opts, registryCredentialName), orchardBin, opts.hostname(), fmt.Sprintf("host=%s,arch=arm64", opts.hostname()), opts.Controller,
+		credentialPath(opts, workerBootstrapCredentialName))
 }
 
 func workerOrchardAppInstalled(ctx context.Context, r Runner, opts Options, cliPath string) (bool, error) {
@@ -457,8 +461,8 @@ func ensureWorkerOrchardApp(ctx context.Context, r Runner, opts Options, cliPath
 		return fmt.Errorf("sign Orchard worker app: %w", err)
 	}
 	if rebuilt {
-		// Not loaded yet on a first install; finalization loads it.
-		_, _, _ = r.Run(ctx, "launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/com.grove.orchard-worker", os.Getuid()))
+		// Not loaded yet on a first install; the worker-daemons step loads it.
+		restartDaemon(ctx, r, orchardWorkerLabel)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(cliPath), 0o755); err != nil {
@@ -507,42 +511,22 @@ func ensureOrchardBinary(ctx context.Context, r Runner, opts Options, dest strin
 	return nil
 }
 
-// workerFinalizationSteps prevent sleep (a privileged, opt-in host setting) and load the current
-// user's worker agent (an ordinary-user operation performed during installation).
-func workerFinalizationSteps(r Runner, opts Options, plistPath, workerOrchard string) []Step {
-	uid := fmt.Sprint(os.Getuid())
-	label := "gui/" + uid + "/com.grove.orchard-worker"
-	return []Step{
-		{
-			Name:        "disable-sleep",
-			Privileged:  true,
-			Description: "sudo pmset -a disablesleep 1   # a worker Mac that sleeps stops accepting jobs",
-			Check: func(ctx context.Context) (bool, error) {
-				stdout, _, err := r.Run(ctx, "pmset", "-g")
-				if err != nil {
-					return false, err
-				}
-				return containsDisableSleep1(stdout), nil
-			},
-			Apply: func(ctx context.Context) error {
-				_, _, err := r.Run(ctx, "sudo", "pmset", "-a", "disablesleep", "1")
-				return err
-			},
+// workerSleepStep keeps the Mac awake: a privileged, opt-in host setting.
+func workerSleepStep(r Runner) Step {
+	return Step{
+		Name:        "disable-sleep",
+		Privileged:  true,
+		Description: "sudo pmset -a disablesleep 1   # a worker Mac that sleeps stops accepting jobs",
+		Check: func(ctx context.Context) (bool, error) {
+			stdout, _, err := r.Run(ctx, "pmset", "-g")
+			if err != nil {
+				return false, err
+			}
+			return containsDisableSleep1(stdout), nil
 		},
-		{
-			Name:        "launchagent-load",
-			Description: fmt.Sprintf("Reload %s in gui/%s so macOS attributes the worker to %s.", plistPath, uid, orchardWorkerBundleID),
-			Check: func(ctx context.Context) (bool, error) {
-				stdout, _, err := r.Run(ctx, "launchctl", "print", label)
-				return err == nil && strings.Contains(stdout, workerOrchard), nil
-			},
-			Apply: func(ctx context.Context) error {
-				// bootout returns non-zero when the job is not loaded; bootstrap is still the right
-				// next action in that case, so this is deliberately best-effort.
-				_, _, _ = r.Run(ctx, "launchctl", "bootout", label)
-				_, _, err := r.Run(ctx, "launchctl", "bootstrap", "gui/"+uid, plistPath)
-				return err
-			},
+		Apply: func(ctx context.Context) error {
+			_, _, err := r.Run(ctx, "sudo", "pmset", "-a", "disablesleep", "1")
+			return err
 		},
 	}
 }

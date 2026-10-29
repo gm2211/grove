@@ -27,8 +27,11 @@ var registryLoginCmd = &cobra.Command{
 	Short: "Log this worker in to a private image registry (`tart login`, token over stdin).",
 	Long: `grove registry login logs the macOS user running this worker in to a container registry, so
 the worker can pull grove's private VM images (ghcr.io by default). Run it as the user the worker
-runs as. Tart keeps the token in that user's keychain; grove records only the user and registry
-(~/.config/grove/registry-login.<registry>).
+runs as. Tart keeps the token in that user's keychain. The worker runs as a boot-time daemon that
+can't read that keychain before anyone logs in, so grove also keeps the login in a 0600 file
+(~/.config/grove/credentials/registry), which the worker's wrapper hands Tart through
+TART_REGISTRY_USERNAME and TART_REGISTRY_PASSWORD, and restarts a running worker onto it. Beside
+those, grove records only the user and registry (~/.config/grove/registry-login.<registry>).
 
 The token is read from $GROVE_REGISTRY_TOKEN, or else from stdin, never from an argument. On a
 Mac, copy the token and pipe it in so it stays out of your shell history:

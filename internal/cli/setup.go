@@ -108,11 +108,11 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	if result.ClientToken == "" || result.DeviceID == "" {
 		return errors.New("control plane approved join but returned incomplete dispatcher credentials")
 	}
-	if err := saveJoinedServer(cmd.Context(), r, result.ServerURL, result.DeviceID, result.ClientToken); err != nil {
+	if err := saveJoinedServer(cmd.Context(), r, cmd.ErrOrStderr(), result.ServerURL, result.DeviceID, result.ClientToken); err != nil {
 		return err
 	}
 	if err := waitForWorker(cmd.Context(), result.ServerURL, start); err != nil {
-		return fmt.Errorf("worker installed but not yet visible: %w. Check ~/Library/Logs/grove/orchard-worker.err.log; setup will finish after rerun", err)
+		return fmt.Errorf("worker installed but not yet visible: %w. If the worker-daemons step above is still waiting for an admin to run its sudo command, run it; otherwise check ~/Library/Logs/grove/orchard-worker.err.log. Setup will finish after rerun", err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "\nGrove worker %q is online and discoverable. This device can view and dispatch jobs. Run `grove ui` to open Map.\n", host)
 	return nil
@@ -318,7 +318,12 @@ func runJoinApprove(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func saveJoinedServer(ctx context.Context, r install.Runner, serverURL, deviceID, token string) error {
+// saveJoinedServer records the control plane and this device's dispatch credential. The credential
+// goes in the login Keychain, which a shell reached with `su - <user>` doesn't have (no default
+// keychain, nothing to authorize with). That is not worth failing a worker setup over: the worker
+// and broker use files, so it warns and leaves the device without dispatch rights until `grove
+// setup` runs again from a login session.
+func saveJoinedServer(ctx context.Context, r install.Runner, warn io.Writer, serverURL, deviceID, token string) error {
 	cfg, path, err := config.Load()
 	if err != nil {
 		if !errors.Is(err, config.ErrNotFound) {
@@ -331,9 +336,12 @@ func saveJoinedServer(ctx context.Context, r install.Runner, serverURL, deviceID
 		}
 	}
 	cfg.Server.URL = serverURL
-	cfg.Server.TokenKeychain = deviceID
 	if err := install.StoreKeychainSecret(ctx, r, deviceID, config.ServerTokenKeychainService, token); err != nil {
-		return fmt.Errorf("store dispatcher credential in Keychain: %w", err)
+		fmt.Fprintf(warn, "warning: could not store this device's dispatch credential in Keychain (%v).\n"+
+			"The worker is unaffected, but `grove ui` and job dispatch from this Mac need it: run `grove setup` again from a login session (Terminal on the Mac itself, not `su -`) to add it.\n", err)
+		cfg.Server.TokenKeychain = ""
+	} else {
+		cfg.Server.TokenKeychain = deviceID
 	}
 	return config.Save(path, cfg)
 }

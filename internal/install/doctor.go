@@ -87,7 +87,8 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 		results = append(results, checkSoftnet(ctx, r, opts, cfg))
 	}
 	results = append(results, checkTrustedTaps(ctx, r, opts)...)
-	if _, err := os.Stat(filepath.Join(opts.LaunchAgentsDir(), "com.grove.orchard-worker.plist")); err == nil && opts.goos() == "darwin" {
+	if workerInstalled(opts) && opts.goos() == "darwin" {
+		results = append(results, checkWorkerDaemon(ctx, r, opts))
 		results = append(results, checkBroker(ctx, r, opts))
 		results = append(results, checkHostFirewall(ctx, r, opts))
 	}
@@ -395,23 +396,44 @@ func checkNomadTLS(ep config.Endpoint, now time.Time) CheckResult {
 	return CheckResult{Name: name, OK: true, Detail: "mutual TLS on; certificates valid until " + soonest.Format(time.DateOnly)}
 }
 
-// checkServiceUnits reports whether grove's launchd agents (macOS) or systemd --user units
-// (Linux) are present on disk. It doesn't require knowing the role: it just lists what it finds.
+// workerInstalled reports whether this Mac has a worker: its LaunchDaemon, a LaunchAgent from an
+// earlier grove, or the wrapper either runs.
+func workerInstalled(opts Options) bool {
+	for _, p := range []string{
+		filepath.Join(opts.launchDaemonsDir(), orchardWorkerLabel+".plist"),
+		legacyAgentPlist(opts, orchardWorkerLabel),
+		workerWrapperPath(opts),
+	} {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// checkServiceUnits reports whether grove's launchd jobs (macOS: per-user agents, and system
+// daemons such as the worker's) or systemd --user units (Linux) are present on disk. It doesn't
+// require knowing the role: it just lists what it finds.
 func checkServiceUnits(opts Options) CheckResult {
-	var dir, pattern string
+	var dirs []string
+	var pattern string
 	if opts.goos() == "darwin" {
-		dir = opts.LaunchAgentsDir()
+		dirs = []string{opts.LaunchAgentsDir(), opts.launchDaemonsDir()}
 		pattern = "com.grove.*.plist"
 	} else {
-		dir = opts.SystemdUserDir()
+		dirs = []string{opts.SystemdUserDir()}
 		pattern = "grove-*.service"
 	}
-	matches, _ := filepath.Glob(filepath.Join(dir, pattern))
+	var matches []string
+	for _, dir := range dirs {
+		found, _ := filepath.Glob(filepath.Join(dir, pattern))
+		matches = append(matches, found...)
+	}
 	if len(matches) == 0 {
 		return CheckResult{
 			Name:        "service-units",
 			OK:          false,
-			Detail:      fmt.Sprintf("none found under %s", dir),
+			Detail:      fmt.Sprintf("none found under %s", strings.Join(dirs, " or ")),
 			Remediation: "run `grove install --role worker|control-plane`",
 		}
 	}

@@ -25,6 +25,9 @@ func BuildPlan(r Runner, opts Options, out io.Writer) ([]Step, error) {
 
 	switch opts.Role {
 	case RoleWorker:
+		if _, err := opts.workerUser(); err != nil {
+			return nil, err
+		}
 		if opts.Controller == "" {
 			opts.Controller = installedWorkerController(opts)
 		}
