@@ -167,8 +167,10 @@ func TestGuestPassword_SealedMacOSPoolsToo(t *testing.T) {
 }
 
 // fakeDscl stands in for macOS's dscl over a one-account password file: -authonly checks it, and
-// interactive mode (no arguments) runs "passwd /Users/<user> <password>" lines from stdin. Every
-// invocation's argv is logged, so the test can tell the password never reached one.
+// interactive mode (no arguments) runs "passwd /Users/<user> <old> <new>" lines from stdin. Like
+// the real one for a SecureToken user (Tart's admin), it refuses a change that doesn't name the
+// current password, even for root. Every invocation's argv is logged, so the test can tell the
+// password never reached one.
 const fakeDscl = `#!/bin/sh
 echo "dscl $*" >> "$GROVE_TEST_DIR/argv"
 db="$GROVE_TEST_DIR/password"
@@ -177,8 +179,8 @@ if [ "$#" -eq 4 ] && [ "$2" = -authonly ]; then
   exit
 fi
 if [ "$#" -eq 1 ]; then
-  while read -r cmd user pw; do
-    if [ "$cmd" = passwd ] && [ "$GROVE_TEST_DSCL_BROKEN" != 1 ]; then
+  while read -r cmd user old pw; do
+    if [ "$cmd" = passwd ] && [ -n "$pw" ] && [ "$old" = "$(cat "$db")" ] && [ "$GROVE_TEST_DSCL_BROKEN" != 1 ]; then
       printf '%s' "$pw" > "$db"
     fi
   done

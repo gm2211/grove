@@ -144,7 +144,9 @@ users) and able to read the Nomad node key, the introduction token and other job
 So every macOS VM gets its own admin password. Right before `CreateVM` the reconciler generates a
 random one (24 bytes from `crypto/rand`), hands it to Orchard as the VM's `Password`, and fills it
 into the first block of the startup script (`# grove:guest-password`). That block sets it through
-`dscl .` on stdin (sudo logs argv, and `ps` shows argv to every user), then fails the script, so
+`dscl .` on stdin (sudo logs argv, and `ps` shows argv to every user), naming the old password as
+well, since `admin` holds the image's SecureToken and macOS refuses even root that change without
+it (`eDSAuthFailed`). It then fails the script, so
 the VM never takes a job, if `admin`/`admin` still authenticates. A planned spec never holds the
 password, the API never returns it (`orchard.VM` has no password field), and drift detection
 ignores its value. The only copies are in Orchard's VM record and the guest's own account
