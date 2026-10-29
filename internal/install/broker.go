@@ -3,6 +3,7 @@ package install
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/netip"
@@ -14,10 +15,10 @@ import (
 	"github.com/gm2211/grove/internal/config"
 )
 
-// brokerLabel is the LaunchAgent that runs a worker's credential broker (`grove broker`).
+// brokerLabel is the LaunchDaemon that runs a worker's credential broker (`grove broker`).
 const brokerLabel = "com.grove.broker"
 
-// groveExecutable is the grove binary the broker's LaunchAgent runs: grove on PATH (a Homebrew
+// groveExecutable is the grove binary the broker's LaunchDaemon runs: grove on PATH (a Homebrew
 // symlink, which keeps working across upgrades), or else the binary running the install.
 func groveExecutable(opts Options) string {
 	if p, err := opts.lookPath()("grove"); err == nil {
@@ -29,13 +30,13 @@ func groveExecutable(opts Options) string {
 	return "grove"
 }
 
-// brokerLaunchAgentPlist renders the LaunchAgent that supervises `grove broker`.
-func brokerLaunchAgentPlist(opts Options, groveBin string) (string, error) {
+// brokerDaemonPlist renders the LaunchDaemon, run as the worker user, that supervises `grove broker`.
+func brokerDaemonPlist(opts Options, groveBin string) (string, error) {
 	args := []string{"broker"}
 	if opts.ServerURL != "" {
 		args = append(args, "--server", opts.ServerURL)
 	}
-	return RenderLaunchAgent(LaunchAgentSpec{
+	return daemonPlist(opts, LaunchAgentSpec{
 		Label:      brokerLabel,
 		Program:    groveBin,
 		Args:       args,
@@ -47,75 +48,55 @@ func brokerLaunchAgentPlist(opts Options, groveBin string) (string, error) {
 	})
 }
 
-// brokerSteps install a worker's credential broker: its credential in Keychain, when setup brought
-// one, and the LaunchAgent that runs it. Without a credential the broker still runs (job VMs get
-// its CA and plain tunnels) and says in its log, and in `grove doctor`, that it can't sync.
-func brokerSteps(r Runner, opts Options) []Step {
-	uid := fmt.Sprint(os.Getuid())
-	label := "gui/" + uid + "/" + brokerLabel
-	plistPath := filepath.Join(opts.LaunchAgentsDir(), brokerLabel+".plist")
-	groveBin := groveExecutable(opts)
-
-	var steps []Step
-	if opts.BrokerToken != "" {
-		steps = append(steps, Step{
-			Name:        "broker-keychain",
-			Description: "Store the broker's credential (broker scope only) in macOS Keychain; it never appears in process arguments or LaunchAgent files.",
+// brokerSteps install a worker's credential broker: its credential in a 0600 file, when setup
+// brought one (or an older grove left one in Keychain), and the LaunchDaemon plist that runs it,
+// staged for the worker-daemons step to install. Without a credential the broker still runs (job
+// VMs get its CA and plain tunnels) and says in its log, and in `grove doctor`, that it can't sync.
+func brokerSteps(r Runner, opts Options, d daemon) []Step {
+	path := credentialPath(opts, brokerCredentialName)
+	return []Step{
+		{
+			Name:        "broker-credential",
+			Description: fmt.Sprintf("Store the broker's credential (broker scope only) in %s (0600, this user's); it never appears in process arguments or launchd plists. A re-run without one keeps it, moving it out of the login Keychain if that is where an older grove put it.", path),
 			Check: func(ctx context.Context) (bool, error) {
-				stdout, _, err := r.Run(ctx, "/usr/bin/security", "find-generic-password", "-a", config.BrokerTokenKeychainAccount, "-s", config.BrokerTokenKeychainService, "-w")
-				return err == nil && strings.TrimSpace(stdout) == opts.BrokerToken, nil
+				if secretFileIs(path, opts.BrokerToken) {
+					return true, nil
+				}
+				if opts.BrokerToken != "" {
+					return false, nil
+				}
+				// Nothing given, nothing stored: satisfied unless an older grove left one in Keychain.
+				token, err := keychainBrokerToken(ctx, r)
+				return err != nil || token == "", nil
 			},
 			Apply: func(ctx context.Context) error {
-				if err := StoreKeychainSecret(ctx, r, config.BrokerTokenKeychainAccount, config.BrokerTokenKeychainService, opts.BrokerToken); err != nil {
+				token := opts.BrokerToken
+				if token == "" {
+					var err error
+					if token, err = keychainBrokerToken(ctx, r); err != nil || token == "" {
+						return fmt.Errorf("move the broker credential out of Keychain: %v (run `grove setup` again, or unlock the login Keychain with `security unlock-keychain`)", err)
+					}
+				}
+				if err := secretLine("the broker credential", token); err != nil {
+					return err
+				}
+				if err := writeSecretFile(path, token+"\n"); err != nil {
 					return err
 				}
 				// A running broker keeps the credential it read; restart it onto the new one. First
-				// installs have nothing loaded yet, and launchagent-load:broker starts it.
-				_, _, _ = r.Run(ctx, "launchctl", "kickstart", "-k", label)
+				// installs have nothing running yet, and the worker-daemons step starts it.
+				restartDaemon(ctx, r, brokerLabel)
 				return nil
 			},
-		})
+		},
+		daemonStageStep(opts, d),
 	}
-	return append(steps,
-		Step{
-			Name: "launchagent:broker",
-			Description: fmt.Sprintf("Render %s (KeepAlive+RunAtLoad, logs under %s) running `%s broker`, the proxy job VMs use: it swaps their placeholders for real tokens.",
-				plistPath, opts.LogDir(), groveBin),
-			Check: fileHasContent(plistPath, func() (string, error) { return brokerLaunchAgentPlist(opts, groveBin) }),
-			Apply: func(ctx context.Context) error {
-				content, err := brokerLaunchAgentPlist(opts, groveBin)
-				if err != nil {
-					return err
-				}
-				if err := os.MkdirAll(opts.LaunchAgentsDir(), 0o755); err != nil {
-					return err
-				}
-				if err := os.MkdirAll(opts.LogDir(), 0o755); err != nil {
-					return err
-				}
-				if err := os.WriteFile(plistPath, []byte(content), 0o644); err != nil {
-					return err
-				}
-				// Unload the old definition, if there is one, so launchagent-load:broker starts the
-				// new one. Not loaded is fine.
-				_, _, _ = r.Run(ctx, "launchctl", "bootout", label)
-				return nil
-			},
-		},
-		Step{
-			Name:        "launchagent-load:broker",
-			Description: fmt.Sprintf("Load %s in gui/%s.", plistPath, uid),
-			Check: func(ctx context.Context) (bool, error) {
-				stdout, _, err := r.Run(ctx, "launchctl", "print", label)
-				return err == nil && strings.Contains(stdout, groveBin), nil
-			},
-			Apply: func(ctx context.Context) error {
-				_, _, _ = r.Run(ctx, "launchctl", "bootout", label)
-				_, _, err := r.Run(ctx, "launchctl", "bootstrap", "gui/"+uid, plistPath)
-				return err
-			},
-		},
-	)
+}
+
+// keychainBrokerToken reads the broker credential an older grove stored in the login Keychain.
+func keychainBrokerToken(ctx context.Context, r Runner) (string, error) {
+	stdout, _, err := r.Run(ctx, "/usr/bin/security", "find-generic-password", "-a", config.BrokerTokenKeychainAccount, "-s", config.BrokerTokenKeychainService, "-w")
+	return strings.TrimSpace(stdout), err
 }
 
 // VMNetGateway is the host's address on vmnet's shared network, where the broker listens:
@@ -132,20 +113,35 @@ func VMNetGateway(ctx context.Context, r Runner) (netip.Addr, error) {
 	return a, nil
 }
 
-// checkBroker reports on a worker's credential broker: its LaunchAgent, its credential and, once
+// checkBroker reports on a worker's credential broker: its LaunchDaemon, its credential and, once
 // the VM bridge exists, whether it answers and has synced with the control plane.
 func checkBroker(ctx context.Context, r Runner, opts Options) CheckResult {
 	const name = "broker"
 	setup := "run `grove setup` on this Mac"
-	if _, err := os.Stat(filepath.Join(opts.LaunchAgentsDir(), brokerLabel+".plist")); err != nil {
+	d := workerDaemons(opts)[1]
+	_, installed := daemonPaths(opts, d.Label)
+	if _, err := os.Stat(installed); err != nil {
+		if _, agentErr := os.Stat(legacyAgentPlist(opts, d.Label)); agentErr == nil {
+			return CheckResult{Name: name, OK: false, Detail: "still a LaunchAgent, which stops when this user logs out and does not start at boot", Remediation: daemonsRemediation(opts)}
+		}
 		return CheckResult{Name: name, OK: false, Detail: "not installed, so jobs here can't use credentials", Remediation: setup}
 	}
-	// Without -w, security prints the item's attributes, never the secret.
-	if _, _, err := r.Run(ctx, "/usr/bin/security", "find-generic-password", "-a", config.BrokerTokenKeychainAccount, "-s", config.BrokerTokenKeychainService); err != nil {
-		return CheckResult{Name: name, OK: false, Detail: "no broker credential in Keychain", Remediation: setup}
+	credential := credentialPath(opts, brokerCredentialName)
+	switch token, err := readSecretFile(credential); {
+	case errors.Is(err, os.ErrNotExist):
+		return CheckResult{Name: name, OK: false, Detail: "no broker credential file (" + credential + ")", Remediation: setup}
+	case err != nil:
+		return CheckResult{Name: name, OK: false, Detail: err.Error(), Remediation: "run `chmod 600 " + credential + "`, or " + setup}
+	case token == "":
+		return CheckResult{Name: name, OK: false, Detail: "the broker credential file " + credential + " is empty", Remediation: setup}
 	}
-	if _, _, err := r.Run(ctx, "launchctl", "print", fmt.Sprintf("gui/%d/%s", os.Getuid(), brokerLabel)); err != nil {
-		return CheckResult{Name: name, OK: false, Detail: brokerLabel + " is not loaded", Remediation: setup}
+	if info, err := os.Lstat(credential); err == nil {
+		if err := checkOwnedByUs(credential, info); err != nil {
+			return CheckResult{Name: name, OK: false, Detail: err.Error(), Remediation: setup}
+		}
+	}
+	if !daemonLoaded(ctx, r, d) {
+		return CheckResult{Name: name, OK: false, Detail: brokerLabel + " is not loaded in the system domain", Remediation: daemonsRemediation(opts)}
 	}
 	gw, err := VMNetGateway(ctx, r)
 	if err != nil {

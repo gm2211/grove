@@ -110,9 +110,10 @@ type TailscaleGrant struct {
 
 const ServerTokenKeychainService = "com.gm2211.grove.server-client"
 
-// BrokerTokenKeychainService and BrokerTokenKeychainAccount name the Keychain item holding a
-// worker's broker credential (only the broker scope, named after the worker). `grove setup` stores
-// it in the Keychain of the account the worker runs as; `grove broker` reads it from there.
+// BrokerTokenKeychainService and BrokerTokenKeychainAccount name the Keychain item an older grove
+// kept a worker's broker credential in (only the broker scope, named after the worker). It now
+// lives in a 0600 file (CredentialsDir/BrokerCredentialFile), because the broker runs as a boot-time
+// LaunchDaemon with no login Keychain to read; the item is only a migration source and fallback.
 const (
 	BrokerTokenKeychainService = "com.gm2211.grove.broker"
 	BrokerTokenKeychainAccount = "broker"
@@ -131,17 +132,37 @@ func ResolveServerToken(ctx context.Context, cfg *Config) (string, error) {
 	return cfg.Server.Token, nil
 }
 
-// ResolveBrokerToken returns this worker's broker credential from macOS Keychain.
+// ResolveBrokerToken returns this worker's broker credential: the 0600 file `grove setup` writes
+// under CredentialsDir, else (a worker set up before that, not yet re-installed) the Keychain item
+// an older grove stored. A file group or world can read is refused, not skipped over.
 func ResolveBrokerToken(ctx context.Context) (string, error) {
-	token, err := readKeychain(ctx, BrokerTokenKeychainAccount, BrokerTokenKeychainService)
+	dir, err := CredentialsDir()
 	if err != nil {
-		return "", fmt.Errorf("read the broker credential from Keychain (run `grove setup` on this Mac to get one): %w", err)
+		return "", err
+	}
+	path := filepath.Join(dir, BrokerCredentialFile)
+	token, err := readCredentialFile(path)
+	switch {
+	case err == nil:
+		if token == "" {
+			return "", fmt.Errorf("the broker credential file %s is empty; run `grove setup` on this Mac", path)
+		}
+		return token, nil
+	case !errors.Is(err, os.ErrNotExist):
+		return "", fmt.Errorf("read the broker credential: %w", err)
+	}
+	token, err = keychainReader(ctx, BrokerTokenKeychainAccount, BrokerTokenKeychainService)
+	if err != nil {
+		return "", fmt.Errorf("no broker credential at %s, and none in Keychain (run `grove setup` on this Mac to get one): %w", path, err)
 	}
 	if token == "" {
 		return "", errors.New("the broker credential in Keychain is empty; run `grove setup` on this Mac")
 	}
 	return token, nil
 }
+
+// keychainReader reads a Keychain item; a variable so tests don't touch the real Keychain.
+var keychainReader = readKeychain
 
 func readKeychain(ctx context.Context, account, service string) (string, error) {
 	if runtime.GOOS != "darwin" {

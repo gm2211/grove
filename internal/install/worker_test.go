@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -52,6 +51,7 @@ func testWorkerOptions(home string) Options {
 		Controller: "https://cp.tailnet.ts.net:6120",
 		Token:      "worker-secret-6f32f988",
 		Hostname:   "test-worker",
+		User:       "worker-user",
 		Home:       home,
 		GOOS:       "darwin",
 		GOARCH:     "arm64",
@@ -74,7 +74,8 @@ func TestWorkerPlan_AppliesCommandsAndGatesPrivilegedSteps(t *testing.T) {
 		t.Fatalf("BuildPlan: %v", err)
 	}
 
-	if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
+	results, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard})
+	if err != nil {
 		t.Fatalf("RunPlan: %v", err)
 	}
 
@@ -101,78 +102,86 @@ func TestWorkerPlan_AppliesCommandsAndGatesPrivilegedSteps(t *testing.T) {
 		t.Error("expected the orchard clone+build fallback to run since neither a release asset nor `orchard` on PATH")
 	}
 
-	// The sudo-only checklist must never actually execute without --yes as root. Loading this
-	// user's own LaunchAgent is intentionally non-privileged and happens during normal install.
-	for _, forbidden := range []string{
-		"sudo pmset -a disablesleep 1",
-	} {
-		if r.CalledWith(forbidden) {
-			t.Errorf("privileged command ran without --yes as root: %q", forbidden)
-		}
-	}
-	if !r.CalledWith("launchctl bootstrap gui/" + strconv.Itoa(os.Getuid()) + " " + filepath.Join(home, "Library", "LaunchAgents", "com.grove.orchard-worker.plist")) {
-		t.Error("expected normal install to load the current user's Orchard LaunchAgent")
-	}
+	// Nothing that needs root runs without --yes as root, and the unprivileged install loads no
+	// launchd job itself: the daemons are the admin's step.
 	for _, c := range r.Calls {
 		if c.Name == "sudo" {
 			t.Errorf("no `sudo` command should run without --yes as root, got: %s", c.String())
 		}
+		if c.Name == "launchctl" && len(c.Args) > 0 && (c.Args[0] == "bootstrap" || c.Args[0] == "bootout" || c.Args[0] == "kickstart") {
+			t.Errorf("the unprivileged install must not (re)load launchd jobs, got: %s", c.String())
+		}
+	}
+	for _, res := range results {
+		if res.Step == "worker-daemons" && (res.Applied || !res.Skipped) {
+			t.Errorf("worker-daemons must be printed for an admin, got %+v", res)
+		}
 	}
 
-	plistPath := filepath.Join(home, "Library", "LaunchAgents", "com.grove.orchard-worker.plist")
-	got, err := os.ReadFile(plistPath)
+	// The worker's LaunchDaemon is staged, for the admin's install command to copy.
+	staged, _ := daemonPaths(opts, orchardWorkerLabel)
+	got, err := os.ReadFile(staged)
 	if err != nil {
-		t.Fatalf("reading rendered plist: %v", err)
+		t.Fatalf("reading staged plist: %v", err)
 	}
-	want, err := workerLaunchAgentPlist(opts, workerWrapperPath(opts))
+	want, err := workerDaemonPlist(opts, workerWrapperPath(opts))
 	if err != nil {
-		t.Fatalf("workerLaunchAgentPlist: %v", err)
+		t.Fatalf("workerDaemonPlist: %v", err)
 	}
 	if string(got) != want {
-		t.Errorf("rendered plist mismatch:\n--- got ---\n%s\n--- want ---\n%s", got, want)
+		t.Errorf("staged plist mismatch:\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+	if !strings.Contains(string(got), "<key>UserName</key>\n\t<string>"+opts.User+"</string>") {
+		t.Errorf("worker LaunchDaemon must run as the worker user (a daemon without UserName is root):\n%s", got)
 	}
 	if strings.Contains(string(got), opts.Token) {
-		t.Fatal("worker bootstrap credential leaked into LaunchAgent")
+		t.Fatal("worker bootstrap credential leaked into the LaunchDaemon")
 	}
+	if _, err := os.Stat(legacyAgentPlist(opts, orchardWorkerLabel)); !os.IsNotExist(err) {
+		t.Errorf("no LaunchAgent should be written any more, stat err = %v", err)
+	}
+
+	// The credential is a 0600 file in a 0700 directory, not a Keychain item.
+	credFile := credentialPath(opts, workerBootstrapCredentialName)
+	if b, err := os.ReadFile(credFile); err != nil || string(b) != opts.Token+"\n" {
+		t.Fatalf("worker credential file = %q, %v", b, err)
+	}
+	if info, err := os.Stat(credFile); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("worker credential file mode = %v, %v; want 0600", info.Mode(), err)
+	}
+	if info, err := os.Stat(credentialsDir(opts)); err != nil || info.Mode().Perm() != 0o700 {
+		t.Errorf("credentials dir mode = %v, %v; want 0700", info.Mode(), err)
+	}
+	for _, c := range r.Calls {
+		if c.Name == "/usr/bin/expect" || strings.Contains(c.String(), "add-generic-password") {
+			t.Errorf("worker credential must not go through Keychain: %s", c.String())
+		}
+		for _, arg := range c.Args {
+			if strings.Contains(arg, opts.Token) {
+				t.Fatalf("worker credential leaked into argv: %s", c.String())
+			}
+		}
+	}
+
 	wrapper, err := os.ReadFile(workerWrapperPath(opts))
 	if err != nil {
 		t.Fatalf("reading worker wrapper: %v", err)
 	}
 	if strings.Contains(string(wrapper), opts.Token) || !strings.Contains(string(wrapper), "--bootstrap-token-stdin") {
-		t.Fatalf("worker wrapper must use Keychain/stdin without embedding credential: %s", wrapper)
+		t.Fatalf("worker wrapper must feed the credential over stdin without embedding it: %s", wrapper)
+	}
+	if !strings.Contains(string(wrapper), `< "`+credFile+`"`) || strings.Contains(string(wrapper), "security") {
+		t.Fatalf("worker wrapper must read the credential file, not Keychain: %s", wrapper)
 	}
 	if !strings.Contains(string(wrapper), " --guest-agent-transport ") {
 		t.Fatalf("worker must reach its VMs through the Tart Guest Agent, not the network: %s", wrapper)
 	}
 	if !strings.Contains(string(wrapper), `export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"`) {
-		t.Fatal("worker wrapper must expose Homebrew Tart to its LaunchAgent")
-	}
-	if !r.CalledWith("launchctl kickstart -k gui/" + strconv.Itoa(os.Getuid()) + "/com.grove.orchard-worker") {
-		t.Fatal("updated worker wrapper must restart an already-loaded worker")
-	}
-	deleteKeychainCmd := "/usr/bin/security delete-generic-password -a test-worker -s " + orchardWorkerKeychainService
-	if !r.CalledWith(deleteKeychainCmd) {
-		t.Fatal("worker credential replacement must delete stale Keychain item before adding")
-	}
-	var keychainCall *Call
-	for i := range r.Calls {
-		if r.Calls[i].Name == "/usr/bin/expect" {
-			keychainCall = &r.Calls[i]
-		}
-	}
-	if keychainCall == nil || keychainCall.Stdin != "test-worker\n"+orchardWorkerKeychainService+"\n"+opts.Token+"\n" {
-		t.Fatal("worker credential was not stored through Keychain stdin")
-	}
-	for _, call := range r.Calls {
-		for _, arg := range call.Args {
-			if strings.Contains(arg, opts.Token) {
-				t.Fatalf("worker credential leaked into argv: %s", call.String())
-			}
-		}
+		t.Fatal("worker wrapper must expose Homebrew Tart to its LaunchDaemon")
 	}
 	if !strings.Contains(string(got), "<key>AssociatedBundleIdentifiers</key>") ||
 		!strings.Contains(string(got), orchardWorkerBundleID) {
-		t.Error("worker LaunchAgent must identify the Orchard app as responsible code for Local Network consent")
+		t.Error("worker LaunchDaemon must identify the Orchard app as responsible code for Local Network consent")
 	}
 	infoPlist, err := os.ReadFile(workerOrchardInfoPlistPath(opts))
 	if err != nil {
@@ -208,6 +217,7 @@ func TestEnsureWorkerOrchardApp_MigratesExistingBinaryThenRebuildsAtThePin(t *te
 		t.Fatal(err)
 	}
 	r := NewFakeRunner()
+	r.Script("launchctl print system/"+orchardWorkerLabel, FakeResult{Stdout: "com.grove.orchard-worker = {\n\tpid = 4242\n}\n"})
 
 	if err := ensureWorkerOrchardApp(context.Background(), r, opts, cliPath, io.Discard); err != nil {
 		t.Fatalf("ensureWorkerOrchardApp: %v", err)
@@ -223,7 +233,7 @@ func TestEnsureWorkerOrchardApp_MigratesExistingBinaryThenRebuildsAtThePin(t *te
 	if !workerOrchardAtPinnedCommit(opts) {
 		t.Fatal("the rebuilt bundle doesn't record the pinned commit")
 	}
-	if !r.CalledWith("launchctl kickstart -k gui/" + strconv.Itoa(os.Getuid()) + "/com.grove.orchard-worker") {
+	if !r.CalledWith("kill -TERM 4242") {
 		t.Error("a running worker must be restarted onto the rebuilt binary")
 	}
 
@@ -525,9 +535,11 @@ func TestWorkerPlan_DryRunAppliesNothing(t *testing.T) {
 	}
 
 	// Nothing should have been written to disk either.
-	plistPath := filepath.Join(home, "Library", "LaunchAgents", "com.grove.orchard-worker.plist")
-	if _, err := os.Stat(plistPath); !os.IsNotExist(err) {
-		t.Errorf("expected no plist written during --dry-run, stat err = %v", err)
+	staged, _ := daemonPaths(opts, orchardWorkerLabel)
+	for _, p := range []string{staged, credentialPath(opts, workerBootstrapCredentialName), workerWrapperPath(opts)} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("expected %s not to be written during --dry-run, stat err = %v", p, err)
+		}
 	}
 }
 
@@ -579,6 +591,31 @@ func TestWorkerPlan_RegistryLoginRunsOnlyWithToken(t *testing.T) {
 	}
 	if strings.Contains(string(got), opts.RegistryToken) {
 		t.Errorf("token leaked into the marker file: %q", got)
+	}
+
+	// The daemon can't read the Keychain `tart login` writes to before anyone logs in, so the login
+	// is also a 0600 file, handed to Tart by the wrapper through its environment variables.
+	credFile := credentialPath(opts, registryCredentialName)
+	if b, err := os.ReadFile(credFile); err != nil || string(b) != "gm2211\n"+opts.RegistryToken+"\n" {
+		t.Errorf("registry credential file = %q, %v", b, err)
+	}
+	if info, err := os.Stat(credFile); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("registry credential file mode = %v, %v; want 0600", info.Mode(), err)
+	}
+	wrapper, err := os.ReadFile(workerWrapperPath(opts))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{credFile, "TART_REGISTRY_USERNAME", "TART_REGISTRY_PASSWORD", "read -r"} {
+		if !strings.Contains(string(wrapper), want) {
+			t.Errorf("wrapper lacks %q:\n%s", want, wrapper)
+		}
+	}
+	plist, _ := os.ReadFile(func() string { s, _ := daemonPaths(opts, orchardWorkerLabel); return s }())
+	for name, text := range map[string]string{"wrapper": string(wrapper), "plist": string(plist)} {
+		if strings.Contains(text, opts.RegistryToken) {
+			t.Errorf("registry token leaked into the %s", name)
+		}
 	}
 }
 
@@ -687,6 +724,9 @@ func TestWorkerPlan_RegistryLoginIdempotent(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(markerDir, "registry-login.ghcr.io"), []byte("gm2211 ghcr.io\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
+	if err := writeSecretFile(credentialPath(opts, registryCredentialName), "gm2211\n"+opts.RegistryToken+"\n"); err != nil {
+		t.Fatalf("writeSecretFile: %v", err)
+	}
 
 	steps, err := BuildPlan(r, opts, io.Discard)
 	if err != nil {
@@ -784,7 +824,7 @@ func TestWorkerPlan_RerunWithoutKeychainCredentialAsksForSetup(t *testing.T) {
 	r := NewFakeRunner()
 	scriptTailscaleUp(r)
 	scriptPinnedDownloads(r, opts)
-	r.Script("/usr/bin/security find-generic-password -a test-worker -s "+orchardWorkerKeychainService,
+	r.Script("/usr/bin/security find-generic-password -a test-worker -s "+orchardWorkerKeychainService+" -w",
 		FakeResult{Err: errors.New("exit status 44")})
 	steps, err := BuildPlan(r, opts, io.Discard)
 	if err != nil {

@@ -4,6 +4,25 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Worker Macs serve jobs with nobody logged in.** The Orchard worker and the credential broker
+  ran as per-user LaunchAgents, so a worker Mac did nothing after a reboot until someone logged
+  in, and `grove setup` over `su - <user>` had no GUI session to load them into. They are now
+  LaunchDaemons with `UserName` set to the installing user: they start at boot, and a dedicated
+  standard user such as `argos` can run the worker (verified: Tart boots a macOS guest from a
+  `UserName` daemon with no GUI session). The install stages the plists and a new privileged
+  `worker-daemons` step, printed for an admin like the VM firewall, installs them root-owned into
+  `/Library/LaunchDaemons`, checks they run as the worker user, loads them and removes the old
+  LaunchAgents (`retire-launchagents` removes any that remain). The install refuses to run as
+  root. Re-run `grove install --role worker` on each worker and do the printed `worker-daemons`
+  command; `grove doctor` has a new `worker-daemon` row and checks the broker's daemon.
+  The worker's bootstrap credential, the broker's credential and the registry login move from the
+  login Keychain, which a boot-time daemon can't unlock, to 0600 files under
+  `~/.config/grove/credentials` (re-running the install migrates them; the Keychain items are left
+  in place and `grove broker` falls back to its item). Tart gets the registry login from
+  `TART_REGISTRY_USERNAME`/`TART_REGISTRY_PASSWORD`, set by the worker's wrapper from that file. Restart a worker's
+  services with `sudo launchctl kickstart -k system/com.grove.<name>`. `grove setup` from a shell
+  with no Keychain warns instead of failing.
+
 - **macOS VMs replace admin/admin again.** The startup script's first block changed `admin`'s
   password with `dscl . passwd /Users/admin <new>`. `admin` holds the image's SecureToken, and
   macOS (26.6 here) refuses even root that change without the old password (`eDSAuthFailed`), so

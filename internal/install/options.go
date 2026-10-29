@@ -1,8 +1,11 @@
 package install
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 
@@ -30,8 +33,8 @@ type Options struct {
 	ServerURL  string // grove server URL (client role, and recorded on control-plane/worker too)
 	Token      string // bootstrap / server token, meaning depends on Role
 	// BrokerToken is a worker's broker credential (only the broker scope, named after the
-	// worker), from `grove setup`. Install keeps it in Keychain for `grove broker`; it never
-	// appears in arguments, LaunchAgent files or the plan's output.
+	// worker), from `grove setup`. Install keeps it in a 0600 file under ~/.config/grove/credentials
+	// for `grove broker`; it never appears in arguments, launchd plists or the plan's output.
 	BrokerToken string
 
 	// Registry/RegistryUser/RegistryToken configure `tart login` for a worker's private image
@@ -51,9 +54,12 @@ type Options struct {
 	// Hostname names this machine to grove: the worker's Orchard name (`grove install --name`).
 	// Empty means the worker name already installed on this Mac, else os.Hostname().
 	Hostname string
-	Home     string // test override; defaults to os.UserHomeDir()
-	GOOS     string // test override; defaults to runtime.GOOS
-	GOARCH   string // test override; defaults to runtime.GOARCH
+	// User is the account a worker's LaunchDaemons run as (their UserName). Test override;
+	// defaults to the user running the install, who must not be root.
+	User   string
+	Home   string // test override; defaults to os.UserHomeDir()
+	GOOS   string // test override; defaults to runtime.GOOS
+	GOARCH string // test override; defaults to runtime.GOARCH
 	// LaunchDaemons is where system LaunchDaemons live. Test override; defaults to
 	// /Library/LaunchDaemons.
 	LaunchDaemons string
@@ -85,6 +91,27 @@ func (o Options) hostname() string {
 		return h
 	}
 	return "grove-host"
+}
+
+// workerUser is the account the worker's LaunchDaemons run as. A daemon without a UserName runs as
+// root, and the worker's wrapper, Orchard and the jobs it starts are this user's files, so root is
+// refused here, once, rather than checked at each place a plist is rendered.
+func (o Options) workerUser() (string, error) {
+	name := o.User
+	if name == "" {
+		u, err := user.Current()
+		if err != nil {
+			return "", fmt.Errorf("find the user running this install: %w", err)
+		}
+		name = u.Username
+		if u.Uid == "0" {
+			name = "root"
+		}
+	}
+	if name == "root" {
+		return "", errors.New("the worker must run as an ordinary user, not root: run `grove install --role worker` (or `grove setup`) as the account the worker should run as, such as `su - argos`, and do its printed sudo steps as an admin")
+	}
+	return name, nil
 }
 
 func (o Options) homeDir() string {

@@ -8,9 +8,13 @@ import (
 	"github.com/gm2211/grove/internal/nomad"
 )
 
-// LaunchAgentSpec renders a macOS launchd agent plist.
+// LaunchAgentSpec renders a macOS launchd plist: a per-user LaunchAgent, or, with UserName, a
+// system LaunchDaemon that runs as that user.
 type LaunchAgentSpec struct {
-	Label                       string
+	Label string
+	// UserName is the account a LaunchDaemon runs as. Without it a daemon runs as root, so grove's
+	// worker daemons always set it (see daemonPlist) and never to root.
+	UserName                    string
 	Program                     string
 	Args                        []string
 	WorkingDir                  string
@@ -35,6 +39,10 @@ var launchAgentTemplate = template.Must(template.New("launchagent").Parse(`<?xml
 		<string>{{.}}</string>
 {{- end}}
 	</array>
+{{- if .UserName}}
+	<key>UserName</key>
+	<string>{{.UserName}}</string>
+{{- end}}
 {{- if .WorkingDir}}
 	<key>WorkingDirectory</key>
 	<string>{{.WorkingDir}}</string>

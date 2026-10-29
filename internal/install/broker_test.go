@@ -7,14 +7,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/gm2211/grove/internal/config"
 )
 
-func TestWorkerPlan_InstallsTheBrokerWithItsCredentialInKeychain(t *testing.T) {
+func TestWorkerPlan_InstallsTheBrokerWithItsCredentialInAFile(t *testing.T) {
 	home := t.TempDir()
 	r := NewFakeRunner()
 	scriptTailscaleUp(r)
@@ -32,34 +31,49 @@ func TestWorkerPlan_InstallsTheBrokerWithItsCredentialInKeychain(t *testing.T) {
 		t.Fatalf("RunPlan: %v", err)
 	}
 
-	var stored bool
 	for _, c := range r.Calls {
-		if c.Name == "/usr/bin/expect" && c.Stdin == config.BrokerTokenKeychainAccount+"\n"+config.BrokerTokenKeychainService+"\n"+opts.BrokerToken+"\n" {
-			stored = true
+		if strings.Contains(strings.Join(c.Args, " "), opts.BrokerToken) || strings.Contains(c.Stdin, opts.BrokerToken) {
+			t.Errorf("broker credential reached a command: %s", c.String())
 		}
-		if strings.Contains(strings.Join(c.Args, " "), opts.BrokerToken) {
-			t.Errorf("broker credential appeared in a command's arguments: %s", c.String())
+		if c.Name == "/usr/bin/expect" {
+			t.Errorf("the broker credential no longer goes through Keychain: %s", c.String())
 		}
 	}
-	if !stored {
-		t.Error("expected the broker credential to be stored in Keychain over stdin")
+	credFile := credentialPath(opts, brokerCredentialName)
+	if b, err := os.ReadFile(credFile); err != nil || string(b) != opts.BrokerToken+"\n" {
+		t.Fatalf("broker credential file = %q, %v", b, err)
+	}
+	if info, err := os.Stat(credFile); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("broker credential file mode = %v, %v; want 0600", info.Mode(), err)
+	}
+	// grove broker reads the same file, from where the install wrote it.
+	if filepath.Base(credFile) != config.BrokerCredentialFile {
+		t.Errorf("install writes %s but grove broker reads %s", filepath.Base(credFile), config.BrokerCredentialFile)
 	}
 
-	plistPath := filepath.Join(home, "Library", "LaunchAgents", "com.grove.broker.plist")
-	got, err := os.ReadFile(plistPath)
+	staged, installed := daemonPaths(opts, brokerLabel)
+	got, err := os.ReadFile(staged)
 	if err != nil {
-		t.Fatalf("reading broker plist: %v", err)
+		t.Fatalf("reading staged broker plist: %v", err)
 	}
 	if strings.Contains(string(got), opts.BrokerToken) {
-		t.Fatal("broker credential leaked into its LaunchAgent")
+		t.Fatal("broker credential leaked into its LaunchDaemon")
 	}
-	for _, want := range []string{"<string>/usr/bin/grove</string>", "<string>broker</string>", "<string>--server</string>", "<string>" + opts.ServerURL + "</string>", "broker.err.log"} {
+	for _, want := range []string{
+		"<string>/usr/bin/grove</string>", "<string>broker</string>", "<string>--server</string>", "<string>" + opts.ServerURL + "</string>",
+		"broker.err.log", "<key>UserName</key>\n\t<string>worker-user</string>",
+	} {
 		if !strings.Contains(string(got), want) {
 			t.Errorf("broker plist lacks %q:\n%s", want, got)
 		}
 	}
-	if !r.CalledWith("launchctl bootstrap gui/" + strconv.Itoa(os.Getuid()) + " " + plistPath) {
-		t.Error("expected install to load the broker LaunchAgent")
+	if installed != filepath.Join(home, "LaunchDaemons", "com.grove.broker.plist") {
+		t.Errorf("broker daemon installs to %s", installed)
+	}
+	for _, l := range []string{"broker.log", "broker.err.log", "orchard-worker.log", "orchard-worker.err.log"} {
+		if _, err := os.Stat(filepath.Join(opts.LogDir(), l)); err != nil {
+			t.Errorf("log %s should exist before launchd opens it as root: %v", l, err)
+		}
 	}
 }
 
@@ -74,38 +88,93 @@ func TestWorkerPlan_InstallsTheBrokerWithoutACredential(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildPlan: %v", err)
 	}
-	var names []string
-	for _, s := range steps {
-		names = append(names, s.Name)
+	if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
+		t.Fatalf("RunPlan: %v", err)
 	}
-	plan := strings.Join(names, " ")
-	if strings.Contains(plan, "broker-keychain") {
-		t.Error("with no broker credential there is nothing to store")
+	// The broker runs without a credential too (it says it can't sync): nothing is made up.
+	if _, err := os.Stat(credentialPath(opts, brokerCredentialName)); !os.IsNotExist(err) {
+		t.Errorf("no broker credential file should exist, stat err = %v", err)
 	}
-	if !strings.Contains(plan, "launchagent:broker") || !strings.Contains(plan, "launchagent-load:broker") {
-		t.Errorf("the broker runs without a credential too (it says it can't sync); plan: %s", plan)
+	if staged, _ := daemonPaths(opts, brokerLabel); func() bool { _, err := os.Stat(staged); return err != nil }() {
+		t.Error("the broker's LaunchDaemon is staged without a credential too")
+	}
+}
+
+func TestWorkerPlan_MovesTheBrokerCredentialOutOfKeychain(t *testing.T) {
+	home := t.TempDir()
+	r := NewFakeRunner()
+	scriptTailscaleUp(r)
+	opts := testWorkerOptions(home)
+	scriptPinnedDownloads(r, opts)
+	r.Script("/usr/bin/security find-generic-password -a broker -s com.gm2211.grove.broker -w", FakeResult{Stdout: "grove_old-keychain-credential\n"})
+
+	steps, err := BuildPlan(r, opts, io.Discard)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+	if b, err := os.ReadFile(credentialPath(opts, brokerCredentialName)); err != nil || string(b) != "grove_old-keychain-credential\n" {
+		t.Fatalf("broker credential file = %q, %v; want the Keychain item's value", b, err)
+	}
+	// The Keychain item is left where it is: it is a migration source, never deleted.
+	for _, c := range r.Calls {
+		if strings.Contains(c.String(), "delete-generic-password") && strings.Contains(c.String(), "broker") {
+			t.Errorf("the old Keychain item must be left alone: %s", c.String())
+		}
 	}
 }
 
 func TestCheckBroker(t *testing.T) {
 	home := t.TempDir()
-	opts := Options{Home: home, GOOS: "darwin"}
+	opts := Options{Home: home, GOOS: "darwin", User: "worker-user", LaunchDaemons: filepath.Join(home, "LaunchDaemons"), LookPath: lookPathOnly("grove")}
 	r := NewFakeRunner()
 	if c := checkBroker(context.Background(), r, opts); c.OK || !strings.Contains(c.Detail, "not installed") {
-		t.Fatalf("no LaunchAgent: %+v", c)
+		t.Fatalf("no LaunchDaemon: %+v", c)
 	}
+
+	// An earlier grove's LaunchAgent only runs while the user is logged in.
 	if err := os.MkdirAll(opts.LaunchAgentsDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(opts.LaunchAgentsDir(), "com.grove.broker.plist"), []byte("x"), 0o644); err != nil {
+	if err := os.WriteFile(legacyAgentPlist(opts, brokerLabel), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r.Script("/usr/bin/security find-generic-password -a broker -s com.gm2211.grove.broker", FakeResult{Err: os.ErrNotExist})
-	if c := checkBroker(context.Background(), r, opts); c.OK || !strings.Contains(c.Detail, "no broker credential") {
+	if c := checkBroker(context.Background(), r, opts); c.OK || !strings.Contains(c.Detail, "LaunchAgent") || !strings.Contains(c.Remediation, "sudo install") {
+		t.Fatalf("legacy LaunchAgent: %+v", c)
+	}
+
+	_, installed := daemonPaths(opts, brokerLabel)
+	if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(installed, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if c := checkBroker(context.Background(), r, opts); c.OK || !strings.Contains(c.Detail, "no broker credential file") {
 		t.Fatalf("no credential: %+v", c)
 	}
-	delete(r.Results, "/usr/bin/security find-generic-password -a broker -s com.gm2211.grove.broker")
+
+	if err := writeSecretFile(credentialPath(opts, brokerCredentialName), "grove_secret\n"); err != nil {
+		t.Fatal(err)
+	}
+	if c := checkBroker(context.Background(), r, opts); c.OK || !strings.Contains(c.Detail, "not loaded") {
+		t.Fatalf("not loaded: %+v", c)
+	}
+	// Readable by others: refused.
+	if err := os.Chmod(credentialPath(opts, brokerCredentialName), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if c := checkBroker(context.Background(), r, opts); c.OK || !strings.Contains(c.Detail, "readable by other users") {
+		t.Fatalf("mode 0644: %+v", c)
+	}
+	if err := os.Chmod(credentialPath(opts, brokerCredentialName), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	// Loaded, and this test machine has no vmnet bridge, so the broker is waiting for it.
+	r.Script("launchctl print system/com.grove.broker", FakeResult{Stdout: "program = /usr/bin/grove\n"})
 	r.Script("/usr/bin/defaults read /Library/Preferences/SystemConfiguration/com.apple.vmnet Shared_Net_Address", FakeResult{Stdout: "192.0.2.77\n"})
 	if c := checkBroker(context.Background(), r, opts); !c.OK || !strings.Contains(c.Detail, "192.0.2.77:3128") {
 		t.Fatalf("waiting for the bridge: %+v", c)

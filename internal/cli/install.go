@@ -28,12 +28,16 @@ var installCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Bootstrap this machine into one of grove's roles (worker, control-plane, client).",
 	Long: `grove install renders an idempotent plan for the given --role and applies it: Homebrew/
-Tart/Orchard/Nomad dependencies, launchd agents or systemd --user units, and ~/.config/grove/
+Tart/Orchard/Nomad dependencies, launchd jobs or systemd --user units, and ~/.config/grove/
 config.yaml. Re-running it is safe — steps that are already satisfied are skipped.
 
+Run it as the account the worker should run as (a dedicated standard user is fine, including from
+a ` + "`su - <user>`" + ` shell with nobody logged in at the Mac), never as root: the worker and its
+credential broker become LaunchDaemons that run as that user from boot.
+
 Steps that need sudo or touch system-wide settings (disabling sleep, the VM firewall,
-loading a LaunchAgent) are never applied automatically: grove prints the exact command
-for a human (or Claude Code) to run. Use --dry-run to see the whole plan without changing anything.`,
+installing the worker's LaunchDaemons) are never applied automatically: grove prints the exact
+command for a human (or Claude Code) to run. Use --dry-run to see the whole plan without changing anything.`,
 	RunE: runInstall,
 }
 

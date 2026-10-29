@@ -72,6 +72,22 @@ calls, returns scripted results) is for tests. This is what makes `--dry-run` ac
 - Templates (launchd plists, systemd units, Nomad/Orchard config) live in `render.go` as
   `text/template`s over typed spec structs — keep them deterministic (no map iteration order
   surprises; Go's `text/template` sorts map keys, so that's safe) so golden tests stay meaningful.
+- A worker Mac's Orchard worker and credential broker are **LaunchDaemons that run as the
+  installing user** (`daemon.go`), so they start at boot with nobody logged in and the install
+  works from `su - <user>`. Like `hostfirewall.go`, the unprivileged install only *stages* each
+  plist (`daemon-stage:*`, under `~/.config/grove/launchd`); one privileged `worker-daemons` step
+  installs them root-owned into `/Library/LaunchDaemons` and loads them into the system domain.
+  Keep it that way: every daemon plist carries `UserName` and never root (`daemonPlist`,
+  `Options.workerUser`; the install refuses a root user, and the printed command re-checks the
+  root-owned copy is byte-identical to the rendered plist, by SHA-256, before loading it); never `launchctl bootstrap gui/…` for these;
+  restart one with `restartDaemon` (SIGTERM its pid, KeepAlive does the rest), not `kickstart`.
+  The installed plist is compared with what grove renders, never with the staged copy.
+- A worker's secrets (Orchard bootstrap token, broker credential, registry login) are 0600 files
+  in `~/.config/grove/credentials` (`credfile.go`: atomic write, refuses symlinks and foreign
+  owners), because a boot-time daemon has no unlocked login Keychain. The Keychain items of an
+  older grove are only a migration source. A secret never appears in argv, a plist, the wrapper's
+  text, a step description or a log: the wrapper reads the files (`< file`, or `read` into
+  `TART_REGISTRY_USERNAME`/`TART_REGISTRY_PASSWORD`). `daemon_test.go` asserts it.
 
 Adding a step: add it to the relevant `build<Role>Steps` function in `worker.go` /
 `controlplane.go` / `client.go`, keep `Check`/`Apply` going through `Runner`, and add a
@@ -162,10 +178,11 @@ tokens on the way to a fixed set of upstreams and masks the tokens on the way ba
 - In `internal/dispatch`, a `JobRequest.Credentials` token goes only into the registry: never
   `env_json`, the payload, the stored `Job.Request` (kind and env only) or an API response.
   `internal/dispatch/credentials_test.go` asserts it.
-- The broker's own credential comes from join approval (`handlers_join.go`) and lives in the
-  worker's Keychain (`config.ResolveBrokerToken`), never in arguments or the LaunchAgent
-  (`internal/install/broker.go`); `/healthz`, which job VMs can reach, says only the entry count
-  and whether the last sync worked.
+- The broker's own credential comes from join approval (`handlers_join.go`) and lives in a 0600
+  file under `~/.config/grove/credentials` (`config.ResolveBrokerToken`; the login Keychain item
+  of an older grove is only a migration source and read fallback), never in arguments or the
+  LaunchDaemon plist (`internal/install/broker.go`); `/healthz`, which job VMs can reach, says
+  only the entry count and whether the last sync worked.
 
 `internal/broker/proxy_test.go` drives the whole path end to end; keep its refusal cases passing.
 
@@ -221,9 +238,11 @@ Decision tree:
    - Just wants to submit/watch jobs from here → `client`.
 3. **Preview first**: `grove install --role <role> [flags] --dry-run` and read the plan before
    applying it.
-4. **Apply**: drop `--dry-run`. Do the printed privileged checklist (worker role only — sudo
-   pmset, local-network `defaults write`, `launchctl bootstrap`) yourself; grove never runs those
-   for you.
+4. **Apply**: drop `--dry-run`. Run it as the ordinary account the worker should run as (never
+   root; `su - <user>` works, no GUI session needed). Do the printed privileged checklist (worker
+   role only — `sudo pmset`, the `worker-daemons` install of the Orchard worker and broker
+   LaunchDaemons, the `host-firewall` step) yourself from an admin account; grove never runs
+   those for you.
 5. **Verify**: `grove doctor`.
 
 Full walkthrough, flags, and failure modes (Local Network permission popup, FileVault blocking

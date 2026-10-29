@@ -80,25 +80,68 @@ grove setup
   revocable credentials: an Orchard credential limited to worker registration/connect rights,
   plus a Grove `read + build + agent` credential for this device. Raw shell jobs (operator or an
   explicit `dispatch:shell` credential) and named secrets remain privileged.
-- The Mac stores both credentials in macOS Keychain and feeds worker credential to Orchard over
-  stdin. Neither appears in shell history, process arguments, `config.yaml`, or LaunchAgent plist.
+- The Mac keeps the worker credential and the broker credential as 0600 files owned by the
+  installing user, in `~/.config/grove/credentials/` (a 0700 directory), and the worker's wrapper
+  feeds the first to Orchard over stdin. Neither appears in shell history, process arguments,
+  `config.yaml`, a launchd plist or the wrapper script. They are files rather than Keychain items
+  because the worker runs at boot with nobody logged in, and a login Keychain is locked, or doesn't
+  exist, until someone logs in. A worker installed by an earlier grove keeps working: re-running
+  the install copies its credentials out of the Keychain into files (the Keychain items are left
+  alone). The control plane's dispatch credential for `grove ui` still goes in the Keychain; from
+  a shell with no Keychain (`su -`), setup warns and skips it instead of failing.
 - Re-run the same command any time — steps that are already satisfied are skipped.
 - After upgrading to a control plane that issues per-worker Orchard credentials, workers with
   restricted credentials issued before worker binding need to enroll again with `grove setup` and
   be approved. This binds the credential to the worker's exact name so Grove can synchronize its
   assigned VMs and open watch connections. Registration remains allowed, and existing privileged
   legacy credentials remain compatible.
-- Grove installs Orchard as `~/Applications/Grove Orchard Worker.app`, gives it a stable bundle
-  identity, and associates the per-user LaunchAgent with that identity. The LaunchAgent is loaded
-  automatically. The worker runs with `--guest-agent-transport`: it reaches each VM's SSH through
-  `tart exec` and the Tart Guest Agent on the VM's control socket, never over the network, so it
-  needs no macOS **Local Network** permission. Leave that permission off for **Grove Orchard
-  Worker**. Every VM image must run the Tart Guest Agent (both of grove's images do).
-- The remaining **privileged checklist** has `sudo pmset`, which keeps the worker from sleeping,
-  and the `host-firewall` step. That step installs the `com.grove.pf-vm` LaunchDaemon, which keeps
-  VMs off this Mac's ports and its networks except DHCP, DNS, the credential broker and Nomad RPC
-  (docs/OPERATIONS.md "The worker Mac's own firewall"). Grove does not add system-wide
-  private-network allowlists and does not run Orchard or a companion as root.
+- Grove installs Orchard as `~/Applications/Grove Orchard Worker.app` and gives it a stable bundle
+  identity. The worker and the credential broker run as **LaunchDaemons with `UserName` set to the
+  user that ran the install** (`com.grove.orchard-worker`, `com.grove.broker`), so they start at
+  boot and serve jobs with nobody logged in, and they and the VMs they boot are that user's
+  processes, never root's. The install stages their plists under `~/.config/grove/launchd/`;
+  installing them into `/Library/LaunchDaemons` takes root, so it is the `worker-daemons` step of
+  the privileged checklist (below). Run the install as an ordinary user: it refuses root, because
+  a daemon without a `UserName` would run as root. The worker runs with `--guest-agent-transport`:
+  it reaches each VM's SSH through `tart exec` and the Tart Guest Agent on the VM's control socket,
+  never over the network, so it needs no macOS **Local Network** permission. Leave that permission
+  off for **Grove Orchard Worker**. Every VM image must run the Tart Guest Agent (both of grove's
+  images do).
+- The **privileged checklist** has three steps. `worker-daemons` is one command: it copies each
+  staged plist into `/Library/LaunchDaemons` as root's (`sudo install -o root -g wheel`), checks
+  by SHA-256 that the copy is exactly the plist grove renders (the staged one is the worker user's file) and removes it if not, then loads it into
+  the system domain (`sudo launchctl bootstrap system ...`). It also unloads and removes the
+  per-user LaunchAgents of an earlier grove, so a second worker doesn't start at the next login;
+  `retire-launchagents` removes any that remain once the daemons are loaded. Run it from an admin
+  account (the worker user need not be an admin), and again after a grove upgrade changes the
+  plists. `sudo pmset` keeps the worker from sleeping. `host-firewall` installs the
+  `com.grove.pf-vm` LaunchDaemon, which keeps VMs off this Mac's ports and its networks except
+  DHCP, DNS, the credential broker and Nomad RPC (docs/OPERATIONS.md "The worker Mac's own
+  firewall"). Grove does not add system-wide private-network allowlists and does not run Orchard
+  or a companion as root.
+
+#### A dedicated user for the worker (for example `argos`)
+
+A worker does not need anyone logged in at the Mac, and the user it runs as does not need to be an
+admin, so a dedicated standard user keeps the worker and its jobs apart from the Mac's owner:
+
+1. Create the user (System Settings -> Users & Groups -> **Standard**, or `sysadminctl`), once.
+   Homebrew, Tailscale and Tart must be usable by it; `grove install` installs Tart and Orchard
+   into the user's own home.
+2. From an admin account's Terminal (or ssh), switch to it and run setup there. No GUI session for
+   `argos` is needed:
+
+   ```bash
+   su - argos
+   grove setup --server http://<control-plane>:6130
+   ```
+
+   The install is the same as above, and everything it needs sudo for is printed. It cannot use
+   `sudo` as `argos` unless `argos` is an admin: run the printed `worker-daemons`, `pmset` and
+   `host-firewall` commands from the admin account instead, then `grove doctor` as `argos`.
+3. Setup warns that it could not store the dispatch credential in the Keychain (a `su -` shell has
+   none). That is expected; the worker is unaffected. Run `grove setup` once from a login session
+   of that user if you also want to use `grove ui` or dispatch jobs as it.
 
 #### Registry access for private worker images
 
@@ -122,9 +165,13 @@ web UI. A worker that can't authenticate to a private registry fails to pull the
    `GROVE_REGISTRY_TOKEN=<PAT> grove setup --registry-user <github-username>`.
 
    Either runs `tart login <registry> --username <user> --password-stdin` with the token over
-   stdin (never in argv, never logged), so Tart keeps it in that user's keychain, and records a
-   marker file (`~/.config/grove/registry-login.<registry>`, containing only the username and
-   registry, never the token) that `grove doctor` checks. `--registry` defaults to `ghcr.io` and
+   stdin (never in argv, never logged), so Tart keeps it in that user's keychain. The worker
+   daemon starts before anyone logs in and can't read that keychain, so grove also keeps the login
+   in `~/.config/grove/credentials/registry` (0600, two lines: user, token). The worker's wrapper
+   reads it into `TART_REGISTRY_USERNAME` and `TART_REGISTRY_PASSWORD`, which Tart honours, so the
+   token is never in a plist, argv or the wrapper's text; a running worker is restarted onto it.
+   It also records a marker file (`~/.config/grove/registry-login.<registry>`, containing only the
+   username and registry, never the token) that `grove doctor` checks. `--registry` defaults to `ghcr.io` and
    rarely needs overriding. Without a token, `grove install`/`grove setup` skip this and print a
    NOTE that the images must be public instead.
 
@@ -211,10 +258,15 @@ ghcr.io` (see "Registry access for private worker images" above), doctor also wa
 - **The worker log says `guest agent transport to <vm> ...`**: the VM's image doesn't run the Tart
   Guest Agent (`tart exec <vm> true` on the worker fails the same way). Use one of grove's images,
   or a Cirrus Labs base image, all of which ship it.
-- **FileVault blocks auto-login**: a worker Mac that reboots (power blip, macOS update) needs to
-  log in before launchd can start user LaunchAgents. If FileVault is on, either disable it on
-  worker Macs or enable automatic login for the worker's user account — otherwise the worker
-  silently stops rejoining the fleet after a reboot.
+- **FileVault and reboots**: the worker and broker are LaunchDaemons, so a worker Mac needs no
+  login or auto-login to rejoin the fleet after a reboot. What FileVault still needs is the disk
+  unlocked: after a power loss or a macOS update, a FileVault Mac waits at the pre-boot unlock
+  screen for a password, and nothing runs until someone types it. Either leave FileVault off on
+  worker Macs, or use `sudo fdesetup authrestart` for planned restarts (it unlocks the disk for
+  one reboot); an unplanned power loss still needs a person at the Mac.
+- **`grove doctor` says `worker-daemon` is not installed, or a LaunchAgent remains**: the
+  `worker-daemons` step of the privileged checklist has not been run (or is stale after an
+  upgrade). `grove doctor` prints the command; run it from an admin account.
 - **Mac App Store Tailscale**: its CLI doesn't run before login, so a headless worker Mac never
   reconnects to the tailnet unattended. `grove install` detects this (App Store bundle present,
   no working CLI) and refuses with an explanation instead of half-configuring things. Fix: install
