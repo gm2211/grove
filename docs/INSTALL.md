@@ -109,7 +109,7 @@ grove setup
   images do).
 - The **privileged checklist** has three steps. `worker-daemons` is one command: it copies each
   staged plist into `/Library/LaunchDaemons` as root's (`sudo install -o root -g wheel`), checks
-  with PlistBuddy that the copy runs as the worker user and removes it if not, then loads it into
+  by SHA-256 that the copy is exactly the plist grove renders (the staged one is the worker user's file) and removes it if not, then loads it into
   the system domain (`sudo launchctl bootstrap system ...`). It also unloads and removes the
   per-user LaunchAgents of an earlier grove, so a second worker doesn't start at the next login;
   `retire-launchagents` removes any that remain once the daemons are loaded. Run it from an admin

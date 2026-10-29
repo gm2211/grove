@@ -84,9 +84,9 @@ func TestWorkerPlan_RootWithYesInstallsAndLoadsTheDaemons(t *testing.T) {
 	r := NewFakeRunner()
 	opts := testWorkerOptions(home)
 	steps := planWorker(t, r, opts)
+	// The fake runner copies nothing: put what `sudo install` of an untouched staged plist leaves.
 	for _, d := range workerDaemons(opts) {
-		_, installed := daemonPaths(opts, d.Label)
-		r.Script("/usr/libexec/PlistBuddy -c Print :UserName "+installed, FakeResult{Stdout: "worker-user\n"})
+		placeInstalled(t, opts, d, "")
 	}
 
 	if _, err := RunPlan(context.Background(), steps, PlanOptions{Yes: true, IsRoot: true, Out: io.Discard}); err != nil {
@@ -140,32 +140,67 @@ func TestWorkerPlan_NoSudoWithoutRootAndYes(t *testing.T) {
 	}
 }
 
-func TestWorkerDaemons_RefuseAPlistThatWouldRunAsRoot(t *testing.T) {
-	r := NewFakeRunner()
+// placeInstalled writes d's installed plist: what grove renders, plus extra.
+func placeInstalled(t *testing.T, opts Options, d daemon, extra string) {
+	t.Helper()
+	plist, err := d.Render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, installed := daemonPaths(opts, d.Label)
+	if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(installed, []byte(plist+extra), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The staged plist is the worker user's file: extra keys (GroupName wheel, another Label,
+// SessionCreate), or any other changed byte, must never get loaded from the root-owned copy.
+func TestWorkerDaemons_RefuseAPlistThatIsNotWhatGroveRenders(t *testing.T) {
 	opts := testWorkerOptions(t.TempDir())
+	d := workerDaemons(opts)[0]
+	_, installed := daemonPaths(opts, d.Label)
+	for name, mutate := range map[string]func(string) string{
+		"GroupName": func(p string) string {
+			return strings.Replace(p, "</dict>", "\t<key>GroupName</key>\n\t<string>wheel</string>\n</dict>", 1)
+		},
+		"another Label": func(p string) string { return strings.Replace(p, orchardWorkerLabel, "com.apple.other", 1) },
+		"no UserName":   func(p string) string { return strings.Replace(p, "<key>UserName</key>", "<key>Nope</key>", 1) },
+		"one byte":      func(p string) string { return p + " " },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := NewFakeRunner()
+			steps := planWorker(t, r, opts)
+			plist, _ := d.Render()
+			if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(installed, []byte(mutate(plist)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			err := stepNamed(t, steps, "worker-daemons").Apply(context.Background())
+			if err == nil || !strings.Contains(err.Error(), "not the plist grove renders") {
+				t.Fatalf("Apply: err = %v, want a refusal", err)
+			}
+			if !r.CalledWith("sudo rm -f " + installed) {
+				t.Error("the rejected copy must be removed")
+			}
+			for _, c := range r.Calls {
+				if strings.Contains(c.String(), "launchctl bootstrap") {
+					t.Errorf("a tampered daemon was loaded: %s", c.String())
+				}
+			}
+		})
+	}
+
+	// A missing copy (the install did not happen) is refused too, and root is never a user.
+	r := NewFakeRunner()
 	steps := planWorker(t, r, opts)
-	_, installed := daemonPaths(opts, orchardWorkerLabel)
-	// The installed (root-owned) copy has no UserName: what an edited staged plist would give.
-	r.Script("/usr/libexec/PlistBuddy -c Print :UserName "+installed, FakeResult{Err: errors.New("Print: Entry, \":UserName\", Does Not Exist")})
-
-	err := stepNamed(t, steps, "worker-daemons").Apply(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "does not run as") {
-		t.Fatalf("Apply: err = %v, want a refusal", err)
-	}
-	if !r.CalledWith("sudo rm -f " + installed) {
-		t.Error("the rejected copy must be removed")
-	}
-	for _, c := range r.Calls {
-		if strings.Contains(c.String(), "launchctl bootstrap") {
-			t.Errorf("a daemon that might run as root was loaded: %s", c.String())
-		}
-	}
-
-	// Root as the printed user is refused too, whatever PlistBuddy says.
-	r = NewFakeRunner()
-	r.Script("/usr/libexec/PlistBuddy -c Print :UserName "+installed, FakeResult{Stdout: "root\n"})
-	if err := stepNamed(t, planWorker(t, r, opts), "worker-daemons").Apply(context.Background()); err == nil {
-		t.Error("a daemon running as root must be refused")
+	os.Remove(installed)
+	if err := stepNamed(t, steps, "worker-daemons").Apply(context.Background()); err == nil {
+		t.Error("no installed copy must be refused")
 	}
 }
 
@@ -176,8 +211,8 @@ func TestWorkerDaemonsInstallCommand(t *testing.T) {
 		staged, installed := daemonPaths(opts, d.Label)
 		for _, want := range []string{
 			"sudo install -o root -g wheel -m 0644 \"" + staged + "\" \"" + installed + "\"",
-			"PlistBuddy -c 'Print :UserName' \"" + installed + "\"",
-			"= \"worker-user\"",
+			"shasum -a 256 < \"" + installed + "\" | cut -d' ' -f1)\" = \"" + plistSHA256(d) + "\"",
+			"|| { sudo rm -f \"" + installed + "\"; false; }",
 			"sudo launchctl bootout " + gui(d.Label),
 			"sudo launchctl bootout system/" + d.Label,
 			"sudo launchctl bootstrap system \"" + installed + "\"",
@@ -189,8 +224,13 @@ func TestWorkerDaemonsInstallCommand(t *testing.T) {
 		}
 	}
 	// One command: the first daemon is installed and checked before anything is loaded.
-	if strings.Index(desc, "launchctl bootstrap") < strings.LastIndex(desc, "PlistBuddy") {
-		t.Errorf("a daemon is loaded before the UserName check of the last one:\n%s", desc)
+	if strings.Index(desc, "launchctl bootstrap") < strings.LastIndex(desc, "shasum") {
+		t.Errorf("a daemon is loaded before the hash check of the last one:\n%s", desc)
+	}
+	for _, d := range workerDaemons(opts) {
+		if len(plistSHA256(d)) != 64 {
+			t.Errorf("%s: no expected hash", d.Label)
+		}
 	}
 }
 

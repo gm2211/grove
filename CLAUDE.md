@@ -79,7 +79,7 @@ calls, returns scripted results) is for tests. This is what makes `--dry-run` ac
   installs them root-owned into `/Library/LaunchDaemons` and loads them into the system domain.
   Keep it that way: every daemon plist carries `UserName` and never root (`daemonPlist`,
   `Options.workerUser`; the install refuses a root user, and the printed command re-checks the
-  root-owned copy with PlistBuddy before loading it); never `launchctl bootstrap gui/…` for these;
+  root-owned copy is byte-identical to the rendered plist, by SHA-256, before loading it); never `launchctl bootstrap gui/…` for these;
   restart one with `restartDaemon` (SIGTERM its pid, KeepAlive does the rest), not `kickstart`.
   The installed plist is compared with what grove renders, never with the staged copy.
 - A worker's secrets (Orchard bootstrap token, broker credential, registry login) are 0600 files

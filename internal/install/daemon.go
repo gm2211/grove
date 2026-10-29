@@ -2,6 +2,8 @@ package install
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -108,20 +110,31 @@ func daemonStageStep(opts Options, d daemon) Step {
 	}
 }
 
+// plistSHA256 is the hex SHA-256 of the plist grove renders for d, or "" if it can't render one.
+func plistSHA256(d daemon) string {
+	plist, err := d.Render()
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(plist))
+	return hex.EncodeToString(sum[:])
+}
+
 // daemonsInstallCommand is the one command an admin runs to install and (re)load the daemons: for
-// each, copy the staged plist into place as root's and check the copy runs as the worker user (the
-// copy is root's, so nothing can change it between the check and the load; a failing check removes
-// it), then boot out the same job if it was a LaunchAgent in the user's session or already a
-// daemon, bootstrap it into the system domain, and remove the user's old agent plist so it can't
-// run a second worker at the next login.
+// each, copy the staged plist into place as root's and check the copy is byte-identical to the
+// plist grove renders (its SHA-256 is in the command). The staged file belongs to the worker user,
+// who could add keys such as GroupName or a different Label; the root-owned copy can't change
+// between the check and the load, and a failing check removes it. Then boot out the same job if it
+// was a LaunchAgent in the user's session or already a daemon, bootstrap it into the system
+// domain, and remove the user's old agent plist so it can't run a second worker at the next login.
 func daemonsInstallCommand(opts Options, user string, ds []daemon) string {
 	uid := os.Getuid()
 	var installs, loads []string
 	for _, d := range ds {
 		staged, installed := daemonPaths(opts, d.Label)
 		installs = append(installs, fmt.Sprintf("sudo install -o root -g wheel -m 0644 %q %q && "+
-			"{ [ \"$(/usr/libexec/PlistBuddy -c 'Print :UserName' %q)\" = %q ] || { sudo rm -f %q; false; }; }",
-			staged, installed, installed, user, installed))
+			"{ [ \"$(shasum -a 256 < %q | cut -d' ' -f1)\" = %q ] || { sudo rm -f %q; false; }; }",
+			staged, installed, installed, plistSHA256(d), installed))
 		loads = append(loads, fmt.Sprintf("{ sudo launchctl bootout gui/%d/%s 2>/dev/null; sudo launchctl bootout system/%s 2>/dev/null; "+
 			"sudo launchctl bootstrap system %q && sudo rm -f %q; }",
 			uid, d.Label, d.Label, installed, legacyAgentPlist(opts, d.Label)))
@@ -164,10 +177,11 @@ func workerDaemonsStep(r Runner, opts Options, ds []daemon) Step {
 				if _, _, err := r.Run(ctx, "sudo", "install", "-o", "root", "-g", "wheel", "-m", "0644", staged, installed); err != nil {
 					return err
 				}
-				got, _, err := r.Run(ctx, "/usr/libexec/PlistBuddy", "-c", "Print :UserName", installed)
-				if err != nil || strings.TrimSpace(got) != user || user == "" || user == "root" {
+				want, err := d.Render()
+				got, readErr := os.ReadFile(installed) // root's copy, world-readable
+				if err != nil || readErr != nil || string(got) != want || user == "" || user == "root" {
 					_, _, _ = r.Run(ctx, "sudo", "rm", "-f", installed)
-					return fmt.Errorf("%s does not run as %q; removed it rather than load a daemon that might run as root", installed, user)
+					return fmt.Errorf("%s is not the plist grove renders for %s (the staged copy was changed?); removed it rather than load it", installed, user)
 				}
 			}
 			for _, d := range ds {
