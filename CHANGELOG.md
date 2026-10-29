@@ -4,6 +4,12 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **macOS VMs replace admin/admin again.** The startup script's first block changed `admin`'s
+  password with `dscl . passwd /Users/admin <new>`. `admin` holds the image's SecureToken, and
+  macOS (26.6 here) refuses even root that change without the old password (`eDSAuthFailed`), so
+  the image password stayed, the block failed closed, and Orchard restarted the VM every few
+  seconds. The line now names the old password too (still on stdin, never argv).
+
 - **Re-running the worker install keeps the worker's name.** `grove install --role worker` named
   the worker after the hostname, so it renamed a worker installed under another name. That
   includes a Mac whose worker LaunchAgent predates grove's wrapper, which takes its name

@@ -31,7 +31,9 @@ const guestPasswordPlaceholder = "@GROVE_GUEST_PASSWORD@"
 // guestPasswordScript replaces the image's admin password with the VM's own. admin is a
 // passwordless sudoer, so a job that knows the password (su, ssh to localhost, Screen Sharing, an
 // osascript administrator prompt) is root, past the pf fence that only matches the job users. The
-// password reaches dscl on stdin, never argv: sudo logs argv, and ps shows it to every user. A rerun
+// password reaches dscl on stdin, never argv: sudo logs argv, and ps shows it to every user. The
+// line names the old password too: admin holds the image's SecureToken, and macOS refuses even
+// root a SecureToken user's password change without the old one (eDSAuthFailed). A rerun
 // after a restart finds the image password already gone and leaves the account alone. It runs
 // first, before Nomad can register, and fails the script if the image password still works.
 //
@@ -41,7 +43,7 @@ const guestPasswordScript = `# grove:guest-password begin
 ` + grovePrivFunc + `grove_guest_user=$(id -un)
 if dscl . -authonly "$grove_guest_user" ` + imageGuestPassword + ` >/dev/null 2>&1; then
   grove_guest_password=` + guestPasswordPlaceholder + `
-  printf 'passwd /Users/%s %s\n' "$grove_guest_user" "$grove_guest_password" | grove_priv dscl . >/dev/null
+  printf 'passwd /Users/%s %s %s\n' "$grove_guest_user" ` + imageGuestPassword + ` "$grove_guest_password" | grove_priv dscl . >/dev/null
   unset grove_guest_password
   if dscl . -authonly "$grove_guest_user" ` + imageGuestPassword + ` >/dev/null 2>&1; then
     echo "grove: $grove_guest_user still accepts the image password; refusing to take jobs" >&2
