@@ -1,9 +1,9 @@
 package install
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"context"
 	"encoding/xml"
 	"errors"
 	"io"

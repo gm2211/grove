@@ -17,7 +17,9 @@ func rootSteps(ok *bool) []Step {
 		{Name: "disable-sleep", Privileged: true, Check: check,
 			Root: func(context.Context) (string, error) { return "/usr/bin/pmset -a disablesleep 1\n", nil }},
 		{Name: "worker-daemons", Privileged: true, Check: check,
-			Root: func(context.Context) (string, error) { return "/bin/launchctl bootstrap system '/Library/LaunchDaemons/x.plist'\n", nil }},
+			Root: func(context.Context) (string, error) {
+				return "/bin/launchctl bootstrap system '/Library/LaunchDaemons/x.plist'\n", nil
+			}},
 	}
 }
 
