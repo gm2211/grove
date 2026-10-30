@@ -19,7 +19,7 @@ import (
 //
 // Installing a daemon needs root, so it is staged and installed like the VM firewall
 // (hostfirewall.go): the user's install writes ConfigDir()/launchd/<label>.plist, and one
-// privileged step prints (or, as root with --yes, runs) the command that copies the staged plists
+// privileged step runs (or, without sudo, prints for an admin) the script that copies the staged plists
 // into /Library/LaunchDaemons as root's and loads them.
 
 // daemon is one of the worker Mac's LaunchDaemons.
@@ -120,26 +120,37 @@ func plistSHA256(d daemon) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// daemonsInstallCommand is the one command an admin runs to install and (re)load the daemons: for
-// each, copy the staged plist into place as root's and check the copy is byte-identical to the
-// plist grove renders (its SHA-256 is in the command). The staged file belongs to the worker user,
-// who could add keys such as GroupName or a different Label; the root-owned copy can't change
-// between the check and the load, and a failing check removes it. Then boot out the same job if it
+// daemonsRootScript is the root script that installs and (re)loads the daemons: for each, copy the
+// staged plist into place as root's and check the copy is byte-identical to the plist grove renders
+// (its SHA-256 is in the script). The staged file belongs to the worker user, who could add keys
+// such as GroupName or a different Label; the root-owned copy can't change between the check and
+// the load, and a failing check removes it and stops the script. Then boot out the same job if it
 // was a LaunchAgent in the user's session or already a daemon, bootstrap it into the system
 // domain, and remove the user's old agent plist so it can't run a second worker at the next login.
-func daemonsInstallCommand(opts Options, user string, ds []daemon) string {
+func daemonsRootScript(opts Options, user string, ds []daemon) (string, error) {
+	if user == "" || user == "root" {
+		return "", fmt.Errorf("the worker user must not be root")
+	}
 	uid := os.Getuid()
 	var installs, loads []string
 	for _, d := range ds {
 		staged, installed := daemonPaths(opts, d.Label)
-		installs = append(installs, fmt.Sprintf("sudo install -o root -g wheel -m 0644 %q %q && "+
-			"{ [ \"$(shasum -a 256 < %q | cut -d' ' -f1)\" = %q ] || { sudo rm -f %q; false; }; }",
-			staged, installed, installed, plistSHA256(d), installed))
-		loads = append(loads, fmt.Sprintf("{ sudo launchctl bootout gui/%d/%s 2>/dev/null; sudo launchctl bootout system/%s 2>/dev/null; "+
-			"sudo launchctl bootstrap system %q && sudo rm -f %q; }",
-			uid, d.Label, d.Label, installed, legacyAgentPlist(opts, d.Label)))
+		sum := plistSHA256(d)
+		if len(sum) != 64 {
+			return "", fmt.Errorf("cannot render the %s plist to pin it", d.Label)
+		}
+		installs = append(installs,
+			fmt.Sprintf("/usr/bin/install -o root -g wheel -m 0644 %s %s", shQuote(staged), shQuote(installed)),
+			fmt.Sprintf("[ \"$(/usr/bin/shasum -a 256 < %s | /usr/bin/cut -d' ' -f1)\" = %s ] || { /bin/rm -f %s; echo %s >&2; exit 1; }",
+				shQuote(installed), shQuote(sum), shQuote(installed),
+				shQuote(installed+" is not the plist grove renders for "+user+"; removed it rather than load it")))
+		loads = append(loads,
+			fmt.Sprintf("/bin/launchctl bootout gui/%d/%s 2>/dev/null || true", uid, d.Label),
+			fmt.Sprintf("/bin/launchctl bootout system/%s 2>/dev/null || true", d.Label),
+			fmt.Sprintf("/bin/launchctl bootstrap system %s", shQuote(installed)),
+			fmt.Sprintf("/bin/rm -f %s", shQuote(legacyAgentPlist(opts, d.Label))))
 	}
-	return strings.Join(append(installs, loads...), " && ")
+	return strings.Join(append(installs, loads...), "\n") + "\n", nil
 }
 
 // daemonLoaded reports whether launchd has d loaded in the system domain running its program.
@@ -149,15 +160,15 @@ func daemonLoaded(ctx context.Context, r Runner, d daemon) bool {
 }
 
 // workerDaemonsStep installs and loads the daemons. It is privileged, so without root and --yes it
-// is printed for an admin, like pmset and the VM firewall. Its check compares what is installed
+// is run as part of the root script, like pmset and the VM firewall. Its check compares what is installed
 // with what grove renders, never with the staged copy.
 func workerDaemonsStep(r Runner, opts Options, ds []daemon) Step {
 	user, _ := opts.workerUser() // BuildPlan has already refused a root user
 	return Step{
-		Name:       "worker-daemons",
-		Privileged: true,
-		Description: daemonsInstallCommand(opts, user, ds) +
-			"   # runs the worker and the broker at boot as " + user + ", with nobody logged in; redo after an upgrade that changes them",
+		Name:        "worker-daemons",
+		Privileged:  true,
+		Description: "Install the worker and broker LaunchDaemons as root's, pinned by SHA-256, and load them (they run at boot as " + user + ", with nobody logged in).",
+		Root:        func(context.Context) (string, error) { return daemonsRootScript(opts, user, ds) },
 		Check: func(ctx context.Context) (bool, error) {
 			for _, d := range ds {
 				_, installed := daemonPaths(opts, d.Label)
@@ -233,8 +244,7 @@ func retireLaunchAgentsStep(r Runner, opts Options, ds []daemon) Step {
 // daemonsRemediation is what `grove doctor` tells an operator to do about a daemon that isn't
 // installed or loaded.
 func daemonsRemediation(opts Options) string {
-	user, _ := opts.workerUser()
-	return "run `grove install --role worker` and do its printed worker-daemons step: " + daemonsInstallCommand(opts, user, workerDaemons(opts))
+	return "run `grove setup` (or `grove install --role worker`) again: it runs the worker-daemons root step with one sudo prompt, or prints one block for an admin"
 }
 
 // checkWorkerDaemon reports on the Orchard worker's LaunchDaemon: that it is the one this grove

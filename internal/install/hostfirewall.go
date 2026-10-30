@@ -2,6 +2,8 @@ package install
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/netip"
 	"os"
@@ -101,16 +103,24 @@ func hostFirewallPaths(opts Options) (staged, installed string) {
 		filepath.Join(opts.launchDaemonsDir(), hostFirewallLabel+".plist")
 }
 
-// hostFirewallInstallCommand is what the admin runs, once per worker Mac and again after a grove
-// upgrade changes the rules: copy the staged plist into place as root's, and (re)load it.
-func hostFirewallInstallCommand(staged, installed string) string {
-	return fmt.Sprintf("sudo install -o root -g wheel -m 0644 %q %q && "+
-		"{ sudo launchctl bootout system/%s 2>/dev/null; sudo launchctl bootstrap system %q; }",
-		staged, installed, hostFirewallLabel, installed)
+// hostFirewallRootScript is what runs as root, once per worker Mac and again after a grove
+// upgrade changes the rules: copy the staged plist into place as root's, check the copy is
+// byte-identical to the plist grove renders (the staged file is the user's to change, so it is
+// pinned by SHA-256 like the daemons; a mismatch removes it and stops), and (re)load it.
+func hostFirewallRootScript(staged, installed, plist string) string {
+	sum := sha256.Sum256([]byte(plist))
+	return fmt.Sprintf("/usr/bin/install -o root -g wheel -m 0644 %s %s\n"+
+		"[ \"$(/usr/bin/shasum -a 256 < %s | /usr/bin/cut -d' ' -f1)\" = %s ] || { /bin/rm -f %s; echo %s >&2; exit 1; }\n"+
+		"/bin/launchctl bootout system/%s 2>/dev/null || true\n"+
+		"/bin/launchctl bootstrap system %s\n",
+		shQuote(staged), shQuote(installed),
+		shQuote(installed), shQuote(hex.EncodeToString(sum[:])), shQuote(installed),
+		shQuote(installed+" is not the plist grove renders; removed it rather than load it"),
+		hostFirewallLabel, shQuote(installed))
 }
 
 // hostFirewallSteps stage the VM firewall's LaunchDaemon and then install it. Installing is
-// privileged, so it is printed for an admin like pmset; the staged copy is only ever an input to
+// privileged, so it goes into the root script like pmset; the staged copy is only ever an input to
 // that command, and both the install step's check and `grove doctor` compare what is installed
 // with what grove renders, never with the staged file.
 func hostFirewallSteps(r Runner, opts Options) []Step {
@@ -141,10 +151,16 @@ func hostFirewallSteps(r Runner, opts Options) []Step {
 			},
 		},
 		{
-			Name:       "host-firewall",
-			Privileged: true,
-			Description: hostFirewallInstallCommand(staged, installed) +
-				"   # VMs reach only DHCP, DNS, the broker and Nomad RPC on this Mac and its networks; redo after an upgrade that changes it",
+			Name:        "host-firewall",
+			Privileged:  true,
+			Description: "Install and load the VM firewall (pinned by SHA-256) so VMs reach only DHCP, DNS, the broker and Nomad RPC on this Mac and its networks.",
+			Root: func(ctx context.Context) (string, error) {
+				plist, err := render(ctx)
+				if err != nil {
+					return "", err
+				}
+				return hostFirewallRootScript(staged, installed, plist), nil
+			},
 			Check: func(ctx context.Context) (bool, error) {
 				ok, _, err := hostFirewallInstalled(ctx, r, opts, render)
 				return ok, err
@@ -202,9 +218,8 @@ func checkHostFirewall(ctx context.Context, r Runner, opts Options) CheckResult 
 	}
 	result := CheckResult{Name: name, OK: ok, Detail: detail}
 	if !ok {
-		staged, installed := hostFirewallPaths(opts)
 		result.Detail += ", so a VM whose root removes its own fence reaches every port on this Mac"
-		result.Remediation = "run `grove install --role worker` and do its printed host-firewall step: " + hostFirewallInstallCommand(staged, installed)
+		result.Remediation = "run `grove setup` (or `grove install --role worker`) again: it runs the host-firewall root step with one sudo prompt, or prints one block for an admin"
 	}
 	return result
 }

@@ -204,33 +204,44 @@ func TestWorkerDaemons_RefuseAPlistThatIsNotWhatGroveRenders(t *testing.T) {
 	}
 }
 
-func TestWorkerDaemonsInstallCommand(t *testing.T) {
+func TestWorkerDaemonsRootScript(t *testing.T) {
 	opts := testWorkerOptions(t.TempDir())
-	desc := stepNamed(t, planWorker(t, NewFakeRunner(), opts), "worker-daemons").Description
+	step := stepNamed(t, planWorker(t, NewFakeRunner(), opts), "worker-daemons")
+	script, err := step.Root(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, d := range workerDaemons(opts) {
 		staged, installed := daemonPaths(opts, d.Label)
 		for _, want := range []string{
-			"sudo install -o root -g wheel -m 0644 \"" + staged + "\" \"" + installed + "\"",
-			"shasum -a 256 < \"" + installed + "\" | cut -d' ' -f1)\" = \"" + plistSHA256(d) + "\"",
-			"|| { sudo rm -f \"" + installed + "\"; false; }",
-			"sudo launchctl bootout " + gui(d.Label),
-			"sudo launchctl bootout system/" + d.Label,
-			"sudo launchctl bootstrap system \"" + installed + "\"",
-			"sudo rm -f \"" + legacyAgentPlist(opts, d.Label) + "\"",
+			"/usr/bin/install -o root -g wheel -m 0644 " + shQuote(staged) + " " + shQuote(installed),
+			"/usr/bin/shasum -a 256 < " + shQuote(installed) + " | /usr/bin/cut -d' ' -f1)\" = " + shQuote(plistSHA256(d)),
+			"{ /bin/rm -f " + shQuote(installed) + "; echo",
+			"/bin/launchctl bootout " + gui(d.Label),
+			"/bin/launchctl bootout system/" + d.Label,
+			"/bin/launchctl bootstrap system " + shQuote(installed),
+			"/bin/rm -f " + shQuote(legacyAgentPlist(opts, d.Label)),
 		} {
-			if !strings.Contains(desc, want) {
-				t.Errorf("install command lacks %q:\n%s", want, desc)
+			if !strings.Contains(script, want) {
+				t.Errorf("root script lacks %q:\n%s", want, script)
 			}
 		}
-	}
-	// One command: the first daemon is installed and checked before anything is loaded.
-	if strings.Index(desc, "launchctl bootstrap") < strings.LastIndex(desc, "shasum") {
-		t.Errorf("a daemon is loaded before the hash check of the last one:\n%s", desc)
-	}
-	for _, d := range workerDaemons(opts) {
 		if len(plistSHA256(d)) != 64 {
 			t.Errorf("%s: no expected hash", d.Label)
 		}
+	}
+	if strings.Contains(script, "sudo") {
+		t.Errorf("sudo inside the root script:\n%s", script)
+	}
+	// All daemons are installed and checked before anything is loaded.
+	if strings.Index(script, "launchctl bootstrap") < strings.LastIndex(script, "shasum") {
+		t.Errorf("a daemon is loaded before the hash check of the last one:\n%s", script)
+	}
+	// A root user is never rendered into a script.
+	rootOpts := opts
+	rootOpts.User = "root"
+	if _, err := daemonsRootScript(rootOpts, "root", workerDaemons(opts)); err == nil {
+		t.Error("a script for user root must be refused")
 	}
 }
 

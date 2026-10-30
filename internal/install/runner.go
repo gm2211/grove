@@ -27,6 +27,9 @@ type Runner interface {
 	// caller's macOS authorization session. The bridge must prevent stdin from reaching or being
 	// echoed by the child command directly. StoreKeychainSecret supplies that bridge with expect.
 	RunWithStdinAttached(ctx context.Context, stdin string, name string, args ...string) (stdout string, stderr string, err error)
+	// RunAttached runs name with the process's own stdin, stdout and stderr, so a child such as
+	// sudo can prompt on the terminal. Nothing is captured.
+	RunAttached(ctx context.Context, name string, args ...string) error
 }
 
 // ExecRunner is the real Runner, shelling out via os/exec.
@@ -61,6 +64,15 @@ func (ExecRunner) RunWithStdinAttached(ctx context.Context, stdin string, name s
 	return "", "", nil
 }
 
+func (ExecRunner) RunAttached(ctx context.Context, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	return nil
+}
+
 func execRun(ctx context.Context, stdin string, detach bool, name string, args ...string) (string, string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	if stdin != "" {
@@ -89,6 +101,8 @@ type Call struct {
 	Name  string
 	Args  []string
 	Stdin string
+	// Attached marks a RunAttached call.
+	Attached bool
 }
 
 // String renders the call the way it would appear on a shell line, e.g. "brew install tart".
@@ -140,6 +154,11 @@ func (f *FakeRunner) RunWithStdin(_ context.Context, stdin string, name string, 
 
 func (f *FakeRunner) RunWithStdinAttached(_ context.Context, stdin string, name string, args ...string) (string, string, error) {
 	return f.run(Call{Name: name, Args: args, Stdin: stdin})
+}
+
+func (f *FakeRunner) RunAttached(_ context.Context, name string, args ...string) error {
+	_, _, err := f.run(Call{Name: name, Args: args, Attached: true})
+	return err
 }
 
 func (f *FakeRunner) run(call Call) (string, string, error) {

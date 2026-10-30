@@ -516,7 +516,8 @@ func workerSleepStep(r Runner) Step {
 	return Step{
 		Name:        "disable-sleep",
 		Privileged:  true,
-		Description: "sudo pmset -a disablesleep 1   # a worker Mac that sleeps stops accepting jobs",
+		Description: "Keep this Mac awake (pmset disablesleep): a worker Mac that sleeps stops accepting jobs.",
+		Root:        func(context.Context) (string, error) { return "/usr/bin/pmset -a disablesleep 1\n", nil },
 		Check: func(ctx context.Context) (bool, error) {
 			stdout, _, err := r.Run(ctx, "pmset", "-g")
 			if err != nil {

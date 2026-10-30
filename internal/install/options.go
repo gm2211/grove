@@ -109,7 +109,7 @@ func (o Options) workerUser() (string, error) {
 		}
 	}
 	if name == "root" {
-		return "", errors.New("the worker must run as an ordinary user, not root: run `grove install --role worker` (or `grove setup`) as the account the worker should run as, such as `su - argos`, and do its printed sudo steps as an admin")
+		return "", errors.New("the worker must run as an ordinary user, not root: run `grove install --role worker` (or `grove setup`) as the account the worker should run as, such as `su - argos`, and let an admin run its root steps (it prints one block for them)")
 	}
 	return name, nil
 }

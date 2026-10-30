@@ -4,6 +4,19 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Joining a worker Mac is one command with at most one password prompt.** `grove setup` and
+  `grove install --role worker` used to print the privileged steps (`disable-sleep`,
+  `worker-daemons`, `host-firewall`, and `softnet-root`) as separate `[manual]` sudo commands for an
+  admin to paste, then needed a re-run. They are now collected into ONE root script that runs
+  through a single `sudo` when the user is an admin on a terminal and answers yes (`--yes` skips the
+  question; without a terminal it needs cached sudo credentials). If sudo isn't possible or is
+  declined (a standard user such as `argos`, no terminal, or the new `--no-sudo`), grove prints the
+  same script as one copy-pasteable `sudo /bin/sh -e <<'GROVE_ROOT_STEPS'` block for an admin, and
+  you re-run the same grove command afterwards (`grove setup` stops there instead of waiting for a
+  worker that can't be online yet). The script uses only absolute system binaries and carries no
+  secret; the host-firewall plist is now SHA-256 pinned after the root-owned copy, like the
+  daemons'. `grove doctor` remediations point at re-running setup instead of printing sudo lines.
+
 ## v0.1.18
 
 - **Worker Macs serve jobs with nobody logged in.** The Orchard worker and the credential broker

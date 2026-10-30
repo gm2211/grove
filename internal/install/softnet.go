@@ -11,12 +11,6 @@ import (
 	"github.com/gm2211/grove/internal/fleet"
 )
 
-// softnetRootCommand is what an admin runs once per worker Mac so Softnet can become root by
-// itself, the way `tart run --net-softnet` sets it up when run from a terminal. A
-// `brew upgrade softnet` installs a fresh binary without the bit, so it has to be redone then.
-const softnetRootCommand = `sudo chown root:wheel "$(realpath "$(command -v softnet)")" && ` +
-	`sudo chmod u+s "$(realpath "$(command -v softnet)")"`
-
 // softnetSteps install Softnet, the VM network filter fleet.yaml pools with network: isolated run
 // on, and let it start as root. Orchard's worker starts it through Tart with no terminal to ask
 // for a password, so without the second step every isolated VM on this Mac fails to boot.
@@ -43,7 +37,14 @@ func softnetSteps(r Runner, lookPath func(string) (string, error), out io.Writer
 		{
 			Name:        "softnet-root",
 			Privileged:  true,
-			Description: softnetRootCommand + "   # isolated pools: Orchard starts Softnet with no terminal, so it must become root by itself; redo after `brew upgrade softnet`",
+			Description: "Make Softnet setuid root so Orchard can start it with no terminal (isolated pools); redo after `brew upgrade softnet`.",
+			Root: func(ctx context.Context) (string, error) {
+				resolved, err := softnetResolved(ctx, r, lookPath)
+				if err != nil {
+					return "", err
+				}
+				return fmt.Sprintf("/usr/sbin/chown root:wheel %s && /bin/chmod u+s %s\n", shQuote(resolved), shQuote(resolved)), nil
+			},
 			// Only the SUID bit this step sets counts here: probing sudo belongs to `grove doctor`,
 			// and the planner runs no sudo at all unless it is root with --yes.
 			Check: func(ctx context.Context) (bool, error) {
@@ -51,15 +52,10 @@ func softnetSteps(r Runner, lookPath func(string) (string, error), out io.Writer
 				return err == nil && softnetSUIDRoot(ctx, r, path), nil
 			},
 			Apply: func(ctx context.Context) error {
-				path, err := lookPath("softnet")
+				resolved, err := softnetResolved(ctx, r, lookPath)
 				if err != nil {
-					return fmt.Errorf("softnet is not installed: %w", err)
+					return err
 				}
-				resolved, _, err := r.Run(ctx, "realpath", path)
-				if err != nil {
-					return fmt.Errorf("resolve %s: %w", path, err)
-				}
-				resolved = strings.TrimSpace(resolved)
 				if _, _, err := r.Run(ctx, "sudo", "chown", "root:wheel", resolved); err != nil {
 					return err
 				}
@@ -68,6 +64,20 @@ func softnetSteps(r Runner, lookPath func(string) (string, error), out io.Writer
 			},
 		},
 	}
+}
+
+// softnetResolved is the real path of the softnet binary on PATH (brew's bin/ entry is a symlink
+// into the Cellar, and it is the Cellar file that gets the setuid bit).
+func softnetResolved(ctx context.Context, r Runner, lookPath func(string) (string, error)) (string, error) {
+	path, err := lookPath("softnet")
+	if err != nil {
+		return "", fmt.Errorf("softnet is not installed: %w", err)
+	}
+	resolved, _, err := r.Run(ctx, "realpath", path)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %w", path, err)
+	}
+	return strings.TrimSpace(resolved), nil
 }
 
 // softnetReady reports whether Softnet can start as root without a password prompt: either its
@@ -116,8 +126,8 @@ func checkSoftnet(ctx context.Context, r Runner, opts Options, cfg *config.Confi
 		result.Detail += " (only needed for fleet.yaml pools with network: isolated)"
 	}
 	if !ready {
-		result.Remediation = "run `grove install --role worker --softnet` and do its printed softnet-root step " +
-			"(an admin password, once per Mac): " + softnetRootCommand + "; redo it after `brew upgrade softnet`"
+		result.Remediation = "run `grove install --role worker --softnet` again: it runs the softnet-root step with one sudo prompt, " +
+			"or prints one block for an admin; redo it after `brew upgrade softnet`"
 	}
 	return result
 }

@@ -1,6 +1,8 @@
 package install
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"context"
 	"encoding/xml"
 	"errors"
@@ -123,8 +125,8 @@ func TestWorkerPlan_StagesTheHostFirewallAndLeavesInstallingToAnAdmin(t *testing
 	for _, res := range results {
 		if res.Step == "host-firewall" {
 			manual = res.Skipped && !res.Applied
-			if !strings.Contains(res.Desc, hostFirewallInstallCommand(staged, installed)) {
-				t.Errorf("manual step doesn't print the install command: %s", res.Desc)
+			if !strings.Contains(res.Desc, "VM firewall") {
+				t.Errorf("root step doesn't describe itself: %s", res.Desc)
 			}
 		}
 	}
@@ -188,7 +190,7 @@ func TestCheckHostFirewall(t *testing.T) {
 			if got.OK != tc.ok || !strings.Contains(got.Detail, tc.detail) {
 				t.Errorf("= %+v, want OK=%v and %q", got, tc.ok, tc.detail)
 			}
-			if !got.OK && !strings.Contains(got.Remediation, "sudo install -o root") {
+			if !got.OK && !strings.Contains(got.Remediation, "grove setup") {
 				t.Errorf("remediation doesn't say what to run: %q", got.Remediation)
 			}
 		})
@@ -241,5 +243,38 @@ func TestHostFirewallLoader_RealPF(t *testing.T) {
 	}
 	if info, _ := exec.Command("sudo", "-n", "/sbin/pfctl", "-s", "info").CombinedOutput(); !strings.Contains(string(info), "Status: Enabled") {
 		t.Error("pf is not enabled after the loader ran")
+	}
+}
+
+func TestHostFirewallRootScript_PinsTheInstalledCopy(t *testing.T) {
+	r := NewFakeRunner()
+	r.Script("/usr/bin/defaults read /Library/Preferences/SystemConfiguration/com.apple.vmnet Shared_Net_Address", FakeResult{Stdout: "192.168.70.1\n"})
+	opts := testWorkerOptions(t.TempDir())
+	staged, installed := hostFirewallPaths(opts)
+	var step Step
+	for _, s := range hostFirewallSteps(r, opts) {
+		if s.Name == "host-firewall" {
+			step = s
+		}
+	}
+	script, err := step.Root(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(hostFirewallPlist(netip.MustParseAddr("192.168.70.1"))))
+	for _, want := range []string{
+		"/usr/bin/install -o root -g wheel -m 0644 " + shQuote(staged) + " " + shQuote(installed),
+		"/usr/bin/shasum -a 256 < " + shQuote(installed),
+		shQuote(hex.EncodeToString(sum[:])),
+		"/bin/rm -f " + shQuote(installed) + "; echo",
+		"/bin/launchctl bootout system/" + hostFirewallLabel,
+		"/bin/launchctl bootstrap system " + shQuote(installed),
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("script lacks %q:\n%s", want, script)
+		}
+	}
+	if strings.Contains(script, "sudo") {
+		t.Errorf("sudo inside the root script:\n%s", script)
 	}
 }

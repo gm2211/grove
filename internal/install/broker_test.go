@@ -141,7 +141,7 @@ func TestCheckBroker(t *testing.T) {
 	if err := os.WriteFile(legacyAgentPlist(opts, brokerLabel), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if c := checkBroker(context.Background(), r, opts); c.OK || !strings.Contains(c.Detail, "LaunchAgent") || !strings.Contains(c.Remediation, "sudo install") {
+	if c := checkBroker(context.Background(), r, opts); c.OK || !strings.Contains(c.Detail, "LaunchAgent") || !strings.Contains(c.Remediation, "grove setup") {
 		t.Fatalf("legacy LaunchAgent: %+v", c)
 	}
 
