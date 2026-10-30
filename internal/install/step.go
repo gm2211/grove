@@ -15,10 +15,15 @@ type Step struct {
 	// Description is a human sentence describing what Apply does, shown in --dry-run and normal
 	// output ("Install tart via `brew install openai/tools/tart`.").
 	Description string
-	// Privileged steps (sudo, launchctl bootstrap of a LaunchDaemon, disablesleep, …) are never
-	// run automatically: Apply only prints the commands for a human (or Claude) to run, even with
-	// --yes, unless the process is actually root. See Step.Privileged.
+	// Privileged steps (launchctl bootstrap of a LaunchDaemon, disablesleep, …) need root. RunPlan
+	// only Applies one when the process is actually root and --yes was given; otherwise it leaves
+	// the step for RunRootSteps, which runs every such step's Root text through one sudo (or
+	// prints it as one block for an admin).
 	Privileged bool
+	// Root is, for a Privileged step, the POSIX sh lines that apply it when run AS ROOT. No sudo in
+	// it, only absolute system binaries, every path through shQuote, never a secret. Anything that
+	// needs resolving (a realpath) is resolved here, at plan time, through the Runner.
+	Root func(ctx context.Context) (string, error)
 	// Check reports whether the step is already satisfied (Apply would be a no-op).
 	Check func(ctx context.Context) (bool, error)
 	// Apply performs the step. Only called when Check returned false and (dry-run is off).
@@ -31,7 +36,7 @@ type StepResult struct {
 	Desc    string
 	Needed  bool // Check() returned false, i.e. Apply would do something
 	Applied bool // Apply was actually invoked
-	Skipped bool // needed but not applied (dry-run, or privileged without --yes/root)
+	Skipped bool // needed but not applied (dry-run, or privileged without --yes/root: left to RunRootSteps)
 	Err     error
 }
 
@@ -43,7 +48,8 @@ type PlanOptions struct {
 	// with IsRoot).
 	Yes bool
 	// IsRoot should reflect whether the current process is running as root (uid 0). Privileged
-	// steps only ever Apply when both Yes and IsRoot are true; otherwise they print instructions.
+	// steps only ever Apply here when both Yes and IsRoot are true; otherwise they are listed as
+	// [root] and left to RunRootSteps.
 	IsRoot bool
 	Out    io.Writer
 }
@@ -79,7 +85,7 @@ func RunPlan(ctx context.Context, steps []Step, opts PlanOptions) ([]StepResult,
 		}
 		if s.Privileged && !(opts.Yes && opts.IsRoot) {
 			r.Skipped = true
-			fmt.Fprintf(opts.Out, "[manual]%-28s %s\n", s.Name, s.Description)
+			fmt.Fprintf(opts.Out, "[root]  %-28s %s\n", s.Name, s.Description)
 			results = append(results, r)
 			continue
 		}

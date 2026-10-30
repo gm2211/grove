@@ -4,6 +4,18 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Joining a worker Mac is one command with at most one password prompt.** `grove setup` and
+  `grove install --role worker` used to print the privileged steps (`disable-sleep`,
+  `worker-daemons`, `host-firewall`, and `softnet-root`) as separate `[manual]` sudo commands for an
+  admin to paste, then needed a re-run. They are now collected into ONE root script that runs
+  through a single `sudo` when the user is an admin on a terminal and answers yes (`--yes` skips the
+  question; without a terminal it needs cached sudo credentials). If sudo isn't possible or is
+  declined (a standard user such as `argos`, no terminal, or the new `--no-sudo`), grove prints the
+  same script as one copy-pasteable `sudo /bin/sh -e <<'GROVE_ROOT_STEPS'` block for an admin, and
+  you re-run the same grove command afterwards (`grove setup` stops there instead of waiting for a
+  worker that can't be online yet). The script uses only absolute system binaries and carries no
+  secret; the host-firewall plist is now SHA-256 pinned after the root-owned copy, like the
+  daemons'. `grove doctor` remediations point at re-running setup instead of printing sudo lines.
 - **A second macOS user can run the worker install (`su - argos`).** The `brew-trust:<tap>` check
   now asks `brew tap-info` with `HOMEBREW_NO_AUTO_UPDATE=1` and `HOMEBREW_NO_INSTALL_FROM_API=1`,
   so a user who does not own Homebrew no longer fails on its lock files and mistakes a trusted tap

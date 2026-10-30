@@ -27,6 +27,7 @@ import (
 var setupServer string
 var setupRegistryUser string
 var setupYes bool
+var setupNoSudo bool
 
 type joinStart struct {
 	ID, Secret, Code string
@@ -49,7 +50,8 @@ func init() {
 		RunE: runSetup,
 	}
 	setupCmd.Flags().StringVar(&setupServer, "server", "", "Grove server URL; normally discovered over Tailscale")
-	setupCmd.Flags().BoolVar(&setupYes, "yes", false, "join the discovered control plane without asking, when exactly one answers (several always need --server)")
+	setupCmd.Flags().BoolVar(&setupYes, "yes", false, "join the discovered control plane without asking, when exactly one answers (several always need --server), and run the root steps through sudo without asking")
+	setupCmd.Flags().BoolVar(&setupNoSudo, "no-sudo", false, "never run sudo; print the root steps for an admin")
 	setupCmd.Flags().StringVar(&setupRegistryUser, "registry-user", "", "registry username; password/PAT is read from GROVE_REGISTRY_TOKEN")
 	Root.AddCommand(setupCmd)
 
@@ -102,7 +104,8 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	if result.BrokerToken == "" {
 		fmt.Fprintln(cmd.ErrOrStderr(), "warning: the control plane sent no broker credential, so jobs on this Mac can't use credentials yet. Update Grove on the control plane, then run `grove setup` here again.")
 	}
-	if err := applyInstall(cmd, opts, false, false); err != nil {
+	rootOutcome, err := applyInstall(cmd, opts, false, setupYes, setupNoSudo)
+	if err != nil {
 		return err
 	}
 	if result.ClientToken == "" || result.DeviceID == "" {
@@ -111,8 +114,11 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	if err := saveJoinedServer(cmd.Context(), r, cmd.ErrOrStderr(), result.ServerURL, result.DeviceID, result.ClientToken); err != nil {
 		return err
 	}
+	if rootOutcome == install.RootPrinted {
+		return errors.New("the root steps are not done yet: an admin must run the block printed above, then run `grove setup` again to finish (the worker cannot come online before that)")
+	}
 	if err := waitForWorker(cmd.Context(), result.ServerURL, start); err != nil {
-		return fmt.Errorf("worker installed but not yet visible: %w. If the worker-daemons step above is still waiting for an admin to run its sudo command, run it; otherwise check ~/Library/Logs/grove/orchard-worker.err.log. Setup will finish after rerun", err)
+		return fmt.Errorf("worker installed but not yet visible: %w. Check ~/Library/Logs/grove/orchard-worker.err.log; if the root steps block above was not run, an admin must run it first. Setup will finish after rerun", err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "\nGrove worker %q is online and discoverable. This device can view and dispatch jobs. Run `grove ui` to open Map.\n", host)
 	return nil

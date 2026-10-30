@@ -21,6 +21,7 @@ var installFlags struct {
 	softnet       bool
 	name          string
 	yes           bool
+	noSudo        bool
 	dryRun        bool
 }
 
@@ -35,9 +36,12 @@ Run it as the account the worker should run as (a dedicated standard user is fin
 a ` + "`su - <user>`" + ` shell with nobody logged in at the Mac), never as root: the worker and its
 credential broker become LaunchDaemons that run as that user from boot.
 
-Steps that need sudo or touch system-wide settings (disabling sleep, the VM firewall,
-installing the worker's LaunchDaemons) are never applied automatically: grove prints the exact
-command for a human (or Claude Code) to run. Use --dry-run to see the whole plan without changing anything.`,
+Steps that need root or touch system-wide settings (disabling sleep, the VM firewall, installing
+the worker's LaunchDaemons) run last, together, as ONE script through a single sudo: if you are an
+admin on a terminal grove shows the script, asks, and sudo asks for your password once. Otherwise
+(not an admin, no terminal, declined, or --no-sudo) grove prints the same script as one block for
+an admin to paste, and you re-run the same grove command afterwards. Use --dry-run to see the
+whole plan without changing anything.`,
 	RunE: runInstall,
 }
 
@@ -52,7 +56,8 @@ func init() {
 	installCmd.Flags().StringVar(&installFlags.registryToken, "registry-token", "", "registry password/PAT for `tart login` (worker role); also read from $GROVE_REGISTRY_TOKEN so it needn't be in shell history")
 	installCmd.Flags().BoolVar(&installFlags.softnet, "softnet", false, "also install Softnet and print its one-time root step (worker role; needed on Macs that run fleet.yaml pools with network: isolated)")
 	installCmd.Flags().StringVar(&installFlags.name, "name", "", "this worker's Orchard name, which fleet.yaml's workerSelector matches (worker role; default: the name it is already installed under, else the hostname)")
-	installCmd.Flags().BoolVar(&installFlags.yes, "yes", false, "apply privileged steps too, when running as root")
+	installCmd.Flags().BoolVar(&installFlags.yes, "yes", false, "run the root steps through sudo without asking (or, as root, apply them directly)")
+	installCmd.Flags().BoolVar(&installFlags.noSudo, "no-sudo", false, "never run sudo; print the root steps for an admin")
 	installCmd.Flags().BoolVar(&installFlags.dryRun, "dry-run", false, "print the plan; change nothing")
 	_ = installCmd.MarkFlagRequired("role")
 	Root.AddCommand(installCmd)
@@ -87,15 +92,18 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		Hostname:      installFlags.name,
 	}
 
-	return applyInstall(cmd, opts, installFlags.dryRun, installFlags.yes)
+	_, err := applyInstall(cmd, opts, installFlags.dryRun, installFlags.yes, installFlags.noSudo)
+	return err
 }
 
-func applyInstall(cmd *cobra.Command, opts install.Options, dryRun, yes bool) error {
+// applyInstall runs the role's plan, then the privileged steps it left (root script, one sudo).
+// The outcome says whether those ran, or were printed for an admin and are still to do.
+func applyInstall(cmd *cobra.Command, opts install.Options, dryRun, yes, noSudo bool) (install.RootOutcome, error) {
 	out := cmd.OutOrStdout()
 	runner := install.ExecRunner{}
 	steps, err := install.BuildPlan(runner, opts, out)
 	if err != nil {
-		return err
+		return install.RootNone, err
 	}
 
 	fmt.Fprintf(out, "grove install --role %s (%d steps%s)\n", opts.Role, len(steps), dryRunSuffix(dryRun))
@@ -105,20 +113,38 @@ func applyInstall(cmd *cobra.Command, opts install.Options, dryRun, yes bool) er
 		IsRoot: os.Geteuid() == 0,
 		Out:    out,
 	})
-	manual := 0
-	for _, r := range results {
-		if r.Skipped && !dryRun {
-			manual++
+	if err != nil {
+		return install.RootNone, fmt.Errorf("install: %w", err)
+	}
+	outcome := install.RootNone
+	if !dryRun {
+		var rootSteps []install.Step
+		for _, res := range results {
+			if !res.Skipped {
+				continue
+			}
+			for _, s := range steps {
+				if s.Name == res.Step && s.Privileged {
+					rootSteps = append(rootSteps, s)
+				}
+			}
+		}
+		outcome, err = install.RunRootSteps(cmd.Context(), runner, rootSteps, install.RootOptions{
+			Interactive: stdinIsTerminal(),
+			Yes:         yes,
+			NoSudo:      noSudo,
+			In:          cmd.InOrStdin(),
+			Out:         out,
+		})
+		if err != nil {
+			return outcome, fmt.Errorf("install: %w", err)
 		}
 	}
-	if manual > 0 {
-		fmt.Fprintf(out, "\n%d step(s) need manual action (see [manual] above); re-run with --yes as root once you've done them, or do them and re-run grove install to pick up where it left off.\n", manual)
-	}
-	if err != nil {
-		return fmt.Errorf("install: %w", err)
+	if outcome == install.RootPrinted {
+		return outcome, nil
 	}
 	fmt.Fprintln(out, "\nrun `grove doctor` to verify.")
-	return nil
+	return outcome, nil
 }
 
 func dryRunSuffix(dryRun bool) string {

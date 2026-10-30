@@ -10,7 +10,7 @@ modes that come up on real Macs.
   `client`.
 - **Tailscale**, standalone variant, already authenticated (`tailscale up` run at least once).
   Do **not** use the Mac App Store build — see [Failure modes](#failure-modes) below.
-- Admin (sudo) access, for the worker role's privileged checklist.
+- Admin (sudo) access for the worker role's root steps, or an admin to paste one block for you.
 - Go 1.21+ only if you expect `grove install` to fall back to building the Orchard fork from
   source (it tries a prebuilt release asset first).
 
@@ -100,25 +100,29 @@ grove setup
   user that ran the install** (`com.grove.orchard-worker`, `com.grove.broker`), so they start at
   boot and serve jobs with nobody logged in, and they and the VMs they boot are that user's
   processes, never root's. The install stages their plists under `~/.config/grove/launchd/`;
-  installing them into `/Library/LaunchDaemons` takes root, so it is the `worker-daemons` step of
-  the privileged checklist (below). Run the install as an ordinary user: it refuses root, because
+  installing them into `/Library/LaunchDaemons` takes root, so it is the `worker-daemons` root step
+  (below). Run the install as an ordinary user: it refuses root, because
   a daemon without a `UserName` would run as root. The worker runs with `--guest-agent-transport`:
   it reaches each VM's SSH through `tart exec` and the Tart Guest Agent on the VM's control socket,
   never over the network, so it needs no macOS **Local Network** permission. Leave that permission
   off for **Grove Orchard Worker**. Every VM image must run the Tart Guest Agent (both of grove's
   images do).
-- The **privileged checklist** has three steps. `worker-daemons` is one command: it copies each
-  staged plist into `/Library/LaunchDaemons` as root's (`sudo install -o root -g wheel`), checks
-  by SHA-256 that the copy is exactly the plist grove renders (the staged one is the worker user's file) and removes it if not, then loads it into
-  the system domain (`sudo launchctl bootstrap system ...`). It also unloads and removes the
-  per-user LaunchAgents of an earlier grove, so a second worker doesn't start at the next login;
-  `retire-launchagents` removes any that remain once the daemons are loaded. Run it from an admin
-  account (the worker user need not be an admin), and again after a grove upgrade changes the
-  plists. `sudo pmset` keeps the worker from sleeping. `host-firewall` installs the
-  `com.grove.pf-vm` LaunchDaemon, which keeps VMs off this Mac's ports and its networks except
-  DHCP, DNS, the credential broker and Nomad RPC (docs/OPERATIONS.md "The worker Mac's own
-  firewall"). Grove does not add system-wide private-network allowlists and does not run Orchard
-  or a companion as root.
+- The **root steps** (`worker-daemons`, `disable-sleep`, `host-firewall`, and `softnet-root` with
+  `--softnet`) run last, together, as ONE script through ONE `sudo`. If the user is an admin and on a
+  terminal, grove shows the script, asks `[Y/n]`, and macOS asks for the password once (`--yes`
+  skips the question; without a terminal it needs sudo credentials already cached). If not (a
+  standard user such as `argos`, no terminal, a "no", or `--no-sudo`), grove prints the same
+  script as one `sudo /bin/sh -e <<'GROVE_ROOT_STEPS'` block for an admin to paste; then re-run the
+  same grove command, which skips what is done. The script uses only absolute system binaries, no
+  secrets. Each plist the user staged is copied into `/Library/LaunchDaemons` as root's and checked
+  by SHA-256 against the plist grove renders (removed if it differs) before it is loaded; the
+  daemons always run as the worker user, never root. `worker-daemons` also removes the per-user
+  LaunchAgents of an earlier grove (`retire-launchagents` removes any that remain);
+  `disable-sleep` keeps the worker awake; `host-firewall` installs the `com.grove.pf-vm`
+  LaunchDaemon, which keeps VMs off this Mac's ports and its networks except DHCP, DNS, the
+  credential broker and Nomad RPC (docs/OPERATIONS.md "The worker Mac's own firewall"). Redo after a
+  grove upgrade changes the plists. Grove does not add system-wide private-network allowlists and
+  does not run Orchard or a companion as root.
 
 #### A dedicated user for the worker (for example `argos`)
 
@@ -136,9 +140,9 @@ admin, so a dedicated standard user keeps the worker and its jobs apart from the
    grove setup --server http://<control-plane>:6130
    ```
 
-   The install is the same as above, and everything it needs sudo for is printed. It cannot use
-   `sudo` as `argos` unless `argos` is an admin: run the printed `worker-daemons`, `pmset` and
-   `host-firewall` commands from the admin account instead, then `grove doctor` as `argos`.
+   The install is the same as above. `argos` cannot use `sudo` unless it is an admin, so setup
+   prints the root steps as one block: paste it in the admin account's Terminal, then run
+   `grove setup` again as `argos` (and `grove doctor`).
    If Homebrew belongs to another user (the Mac's owner), `argos` can read its taps but not change
    them: if the `brew-trust:<tap>` step fails, run the `brew tap X && brew trust X` it prints as
    Homebrew's owner, then re-run setup. A `--registry-token` login also cannot reach the Keychain
@@ -224,8 +228,9 @@ manually provisioned environments.
 | `--registry-user` | registry username for `tart login` (worker role) |
 | `--registry-token` | registry password/PAT for `tart login` (worker role); also read from `$GROVE_REGISTRY_TOKEN` |
 | `--name` | the worker's Orchard name, which fleet.yaml's `workerSelector` matches (worker role). Default: the name this Mac's worker is already installed under (grove's wrapper, or an older `com.grove.orchard-worker` LaunchAgent), else the hostname |
-| `--softnet` | also install Softnet and print its one-time root step (worker role; only for Macs that run `network: isolated` pools, see [OPERATIONS.md](OPERATIONS.md#isolating-a-pools-network)) |
-| `--yes` | apply privileged steps too, **only takes effect when also running as root** |
+| `--softnet` | also install Softnet and add its one-time root step (worker role; only for Macs that run `network: isolated` pools, see [OPERATIONS.md](OPERATIONS.md#isolating-a-pools-network)) |
+| `--yes` | run the root steps through sudo without asking (needs a terminal, or cached sudo credentials); as root, apply them directly |
+| `--no-sudo` | never run sudo; print the root steps as one block for an admin |
 | `--dry-run` | print the whole plan, change nothing |
 
 Always safe to preview first:
@@ -270,8 +275,8 @@ ghcr.io` (see "Registry access for private worker images" above), doctor also wa
   worker Macs, or use `sudo fdesetup authrestart` for planned restarts (it unlocks the disk for
   one reboot); an unplanned power loss still needs a person at the Mac.
 - **`grove doctor` says `worker-daemon` is not installed, or a LaunchAgent remains**: the
-  `worker-daemons` step of the privileged checklist has not been run (or is stale after an
-  upgrade). `grove doctor` prints the command; run it from an admin account.
+  `worker-daemons` root step has not been run (or is stale after an
+  upgrade). Re-run `grove setup` (or `grove install --role worker`) as an admin, or paste the block it prints.
 - **Mac App Store Tailscale**: its CLI doesn't run before login, so a headless worker Mac never
   reconnects to the tailnet unattended. `grove install` detects this (App Store bundle present,
   no working CLI) and refuses with an explanation instead of half-configuring things. Fix: install
@@ -280,8 +285,7 @@ ghcr.io` (see "Registry access for private worker images" above), doctor also wa
   guests per physical Mac (Linux guests aren't capped). `grove doctor` reports current usage;
   `fleet.yaml`'s `perWorker` for the `macos` pool should respect this.
 - **MacBook lid / thermal notes**: a worker Mac needs to stay awake with the lid open (or on a
-  stand that keeps it from sleeping) — `sudo pmset -a disablesleep 1` (in the privileged
-  checklist) stops the OS from sleeping, but a clamshell Mac without an external display can still
+  stand that keeps it from sleeping) — `sudo pmset -a disablesleep 1` (one of the root steps) stops the OS from sleeping, but a clamshell Mac without an external display can still
   throttle or the lid-closed sleep policy can override it on some macOS versions. Prefer running
   worker Macs with the lid open or on a dock, and keep an eye on thermals if it's doing sustained
   macOS VM builds (fanless MacBooks throttle hard).

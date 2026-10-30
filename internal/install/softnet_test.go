@@ -40,7 +40,7 @@ func TestWorkerPlan_InstallsSoftnetAndLeavesRootStepToAHuman(t *testing.T) {
 	if root == nil {
 		t.Fatal("worker plan has no softnet-root step")
 	}
-	if !root.Privileged || !strings.Contains(root.Description, softnetRootCommand) {
+	if !root.Privileged || root.Root == nil {
 		t.Fatalf("softnet-root must be a privileged, printed step, got %+v", *root)
 	}
 	for _, c := range r.Calls {
@@ -160,8 +160,8 @@ func TestCheckSoftnet(t *testing.T) {
 			if got.OK != tt.wantOK || !strings.Contains(got.Detail, tt.wantDetail) {
 				t.Fatalf("checkSoftnet() = %+v, want OK=%v with detail containing %q", got, tt.wantOK, tt.wantDetail)
 			}
-			if !got.OK && !strings.Contains(got.Remediation, softnetRootCommand) {
-				t.Errorf("remediation should give the command to run, got %q", got.Remediation)
+			if !got.OK && !strings.Contains(got.Remediation, "grove install --role worker --softnet") {
+				t.Errorf("remediation should say what to run, got %q", got.Remediation)
 			}
 		})
 	}
@@ -191,5 +191,19 @@ func TestRunDoctor_ChecksSoftnetOnlyOnMacWorkers(t *testing.T) {
 				t.Fatalf("softnet row present = %v, want %v: %+v", found, tt.want, results)
 			}
 		})
+	}
+}
+
+func TestSoftnetRootStep_RootScriptUsesTheResolvedBinary(t *testing.T) {
+	r := NewFakeRunner()
+	r.Script("realpath /opt/homebrew/bin/softnet", FakeResult{Stdout: "/opt/homebrew/Cellar/it's $x/softnet\n"})
+	lookPath := func(string) (string, error) { return "/opt/homebrew/bin/softnet", nil }
+	script, err := softnetSteps(r, lookPath, io.Discard)[1].Root(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := `'/opt/homebrew/Cellar/it'\''s $x/softnet'`
+	if want := "/usr/sbin/chown root:wheel " + q + " && /bin/chmod u+s " + q + "\n"; script != want {
+		t.Errorf("script = %q, want %q", script, want)
 	}
 }

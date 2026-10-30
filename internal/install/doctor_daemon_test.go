@@ -14,7 +14,7 @@ func TestCheckWorkerDaemon(t *testing.T) {
 	opts := testWorkerOptions(t.TempDir())
 	d := workerDaemons(opts)[0]
 
-	if c := checkWorkerDaemon(ctx, r, opts); c.OK || !strings.Contains(c.Detail, "does not start at boot") || !strings.Contains(c.Remediation, "sudo install") {
+	if c := checkWorkerDaemon(ctx, r, opts); c.OK || !strings.Contains(c.Detail, "does not start at boot") || !strings.Contains(c.Remediation, "grove setup") {
 		t.Fatalf("not installed: %+v", c)
 	}
 

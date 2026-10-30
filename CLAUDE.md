@@ -65,8 +65,12 @@ calls, returns scripted results) is for tests. This is what makes `--dry-run` ac
 
 - `BuildPlan(runner, opts, out) ([]Step, error)` assembles the step list for a role.
 - Each `Step` has `Check` (idempotency test) and `Apply` (do the thing); `Privileged` steps only
-  ever `Apply` for real when running as root with `--yes` — otherwise they're printed as a manual
-  checklist.
+  ever `Apply` for real when running as root with `--yes`. Otherwise `RunPlan` lists them as
+  `[root]` and `RunRootSteps` (`root.go`) runs their `Root` texts as ONE script through ONE
+  `sudo /bin/sh -e -c` (admin user, terminal and a yes, or `--yes` with cached credentials), or
+  prints that script as a single heredoc block for an admin (`--no-sudo`, not an admin, declined).
+  A `Root` text has no `sudo`, only absolute system binaries, every path through `shQuote`, never a
+  secret, and anything to resolve (softnet's realpath) is resolved at plan time through `Runner`.
 - `RunPlan` walks the list, never stopping early on a failed step, and returns the first error
   alongside the full per-step results.
 - Templates (launchd plists, systemd units, Nomad/Orchard config) live in `render.go` as
@@ -239,10 +243,10 @@ Decision tree:
 3. **Preview first**: `grove install --role <role> [flags] --dry-run` and read the plan before
    applying it.
 4. **Apply**: drop `--dry-run`. Run it as the ordinary account the worker should run as (never
-   root; `su - <user>` works, no GUI session needed). Do the printed privileged checklist (worker
-   role only — `sudo pmset`, the `worker-daemons` install of the Orchard worker and broker
-   LaunchDaemons, the `host-firewall` step) yourself from an admin account; grove never runs
-   those for you.
+   root; `su - <user>` works, no GUI session needed). The worker role's root steps (`pmset`, the `worker-daemons`
+   install of the Orchard worker and broker LaunchDaemons, the `host-firewall` step) run as one
+   script through one `sudo` when the user is an admin on a terminal and says yes; otherwise grove
+   prints one block for an admin to paste, and you re-run the same command.
 5. **Verify**: `grove doctor`.
 
 Full walkthrough, flags, and failure modes (Local Network permission popup, FileVault blocking
