@@ -4,6 +4,8 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+## v0.1.19
+
 - **Joining a worker Mac is one command with at most one password prompt.** `grove setup` and
   `grove install --role worker` used to print the privileged steps (`disable-sleep`,
   `worker-daemons`, `host-firewall`, and `softnet-root`) as separate `[manual]` sudo commands for an
