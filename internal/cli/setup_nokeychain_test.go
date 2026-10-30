@@ -25,7 +25,7 @@ func TestSaveJoinedServerWarnsWhenThereIsNoKeychain(t *testing.T) {
 	t.Setenv("GROVE_CONFIG", path)
 	var warn strings.Builder
 	runner := noKeychainRunner{install.NewFakeRunner()}
-	if err := saveJoinedServer(context.Background(), runner, &warn, "http://100.64.0.1:6130", "device-1", "fake-device-secret"); err != nil {
+	if err := saveJoinedServer(context.Background(), runner, &warn, "http://100.64.0.1:6130", "device-1", "fake-device-secret", true); err != nil {
 		t.Fatalf("saveJoinedServer: %v", err)
 	}
 	cfg, err := config.LoadFrom(path)

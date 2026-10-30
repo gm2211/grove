@@ -109,6 +109,33 @@ func RunRootSteps(ctx context.Context, r Runner, steps []Step, opts RootOptions)
 	return RootRan, nil
 }
 
+// PendingRootSteps builds opts's plan and returns its privileged steps that are not yet satisfied,
+// in plan order, for RunRootSteps. It is how an admin's `grove setup --user` gets the root script
+// for another user without running anything that user's process produced: every Root text comes
+// from this process's own rendering of opts (that user's name and home, the controller and server
+// the admin's join returned), and the plists in it are pinned by the SHA-256 of what this process
+// renders. Nothing else in the plan is checked or applied.
+func PendingRootSteps(ctx context.Context, r Runner, opts Options) ([]Step, error) {
+	steps, err := BuildPlan(r, opts, io.Discard)
+	if err != nil {
+		return nil, err
+	}
+	var pending []Step
+	for _, s := range steps {
+		if !s.Privileged {
+			continue
+		}
+		ok, err := s.Check(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("check %s: %w", s.Name, err)
+		}
+		if !ok {
+			pending = append(pending, s)
+		}
+	}
+	return pending, nil
+}
+
 // sudoUsable reports whether the root script can go through sudo, and if not, why in a sentence.
 func sudoUsable(ctx context.Context, r Runner, opts RootOptions) (bool, string) {
 	if opts.NoSudo {

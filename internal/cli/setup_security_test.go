@@ -19,7 +19,7 @@ func TestSaveJoinedServerKeepsDeviceTokenOutOfConfigAndArgv(t *testing.T) {
 	if err := config.Save(path, &config.Config{Server: config.ServerConfig{Token: "existing-operator-token"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveJoinedServer(context.Background(), runner, io.Discard, "http://100.64.0.1:6130", "device-1", fakeSecret); err != nil {
+	if err := saveJoinedServer(context.Background(), runner, io.Discard, "http://100.64.0.1:6130", "device-1", fakeSecret, true); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := config.LoadFrom(path)

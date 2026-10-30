@@ -8,6 +8,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 
 	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/nomad"
@@ -56,10 +57,14 @@ type Options struct {
 	Hostname string
 	// User is the account a worker's LaunchDaemons run as (their UserName). Test override;
 	// defaults to the user running the install, who must not be root.
-	User   string
-	Home   string // test override; defaults to os.UserHomeDir()
-	GOOS   string // test override; defaults to runtime.GOOS
-	GOARCH string // test override; defaults to runtime.GOARCH
+	User string
+	// GroveBin is the grove binary the broker's LaunchDaemon runs. Empty means grove on PATH, else
+	// this binary. `grove setup --user` sets it on both sides (the admin's grove, which pins the
+	// plist, and the worker user's, which stages it) so they render the same plist.
+	GroveBin string
+	Home     string // test override; defaults to os.UserHomeDir()
+	GOOS     string // test override; defaults to runtime.GOOS
+	GOARCH   string // test override; defaults to runtime.GOARCH
 	// LaunchDaemons is where system LaunchDaemons live. Test override; defaults to
 	// /Library/LaunchDaemons.
 	LaunchDaemons string
@@ -112,6 +117,19 @@ func (o Options) workerUser() (string, error) {
 		return "", errors.New("the worker must run as an ordinary user, not root: run `grove install --role worker` (or `grove setup`) as the account the worker should run as, such as `su - argos`, and let an admin run its root steps (it prints one block for them)")
 	}
 	return name, nil
+}
+
+// workerUID is the worker user's uid: User's when it names an account on this machine (the admin's
+// `grove setup --user` renders the root script for another user), else this process's.
+func (o Options) workerUID() int {
+	if o.User != "" {
+		if u, err := user.Lookup(o.User); err == nil {
+			if uid, err := strconv.Atoi(u.Uid); err == nil {
+				return uid
+			}
+		}
+	}
+	return os.Getuid()
 }
 
 func (o Options) homeDir() string {

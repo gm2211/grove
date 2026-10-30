@@ -220,7 +220,8 @@ func TestWorkerDaemonsRootScript(t *testing.T) {
 	for _, d := range workerDaemons(opts) {
 		staged, installed := daemonPaths(opts, d.Label)
 		for _, want := range []string{
-			"/usr/bin/install -o root -g wheel -m 0644 " + shQuote(staged) + " " + shQuote(installed),
+			"/usr/bin/install -o root -g wheel -m 0600 " + shQuote(staged) + " " + shQuote(installed),
+			"/bin/chmod 0644 " + shQuote(installed),
 			"/usr/bin/shasum -a 256 < " + shQuote(installed) + " | /usr/bin/cut -d' ' -f1)\" = " + shQuote(plistSHA256(d)),
 			"{ /bin/rm -f " + shQuote(installed) + "; echo",
 			"/bin/launchctl bootout " + gui(d.Label),

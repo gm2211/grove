@@ -4,6 +4,19 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **An admin sets a worker up for a standard user in one command: `grove setup --user argos`.**
+  Run from an admin account, it asks for the admin's sudo password once (and keeps the sudo
+  session alive through the join-approval wait), joins, runs the worker install as `argos` through
+  `sudo -n -u argos` with the join result and registry token on stdin (never argv), then shows and
+  runs the root script and waits for the worker. No `su`, no block to paste, no second run. The
+  admin's grove renders that root script itself from `argos`'s name and home, the grove binary and
+  its own join result; nothing `argos`'s process prints or stages becomes root script text, and the
+  staged plists stay SHA-256 pinned.
+- **Root-owned plist copies stay private until they pass their hash check.** The root script now
+  copies each staged LaunchDaemon plist in with mode 0600 and makes it 0644 only after its SHA-256
+  matches, so a staged plist that is a symlink to a root-only file can no longer expose that file's
+  contents, even briefly.
+
 ## v0.1.19
 
 - **Joining a worker Mac is one command with at most one password prompt.** `grove setup` and

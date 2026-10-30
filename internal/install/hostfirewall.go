@@ -106,17 +106,19 @@ func hostFirewallPaths(opts Options) (staged, installed string) {
 // hostFirewallRootScript is what runs as root, once per worker Mac and again after a grove
 // upgrade changes the rules: copy the staged plist into place as root's, check the copy is
 // byte-identical to the plist grove renders (the staged file is the user's to change, so it is
-// pinned by SHA-256 like the daemons; a mismatch removes it and stops), and (re)load it.
+// pinned by SHA-256 like the daemons, and the copy stays 0600 until it passes; a mismatch removes it
+// and stops), and (re)load it.
 func hostFirewallRootScript(staged, installed, plist string) string {
 	sum := sha256.Sum256([]byte(plist))
-	return fmt.Sprintf("/usr/bin/install -o root -g wheel -m 0644 %s %s\n"+
+	return fmt.Sprintf("/usr/bin/install -o root -g wheel -m 0600 %s %s\n"+
 		"[ \"$(/usr/bin/shasum -a 256 < %s | /usr/bin/cut -d' ' -f1)\" = %s ] || { /bin/rm -f %s; echo %s >&2; exit 1; }\n"+
+		"/bin/chmod 0644 %s\n"+
 		"/bin/launchctl bootout system/%s 2>/dev/null || true\n"+
 		"/bin/launchctl bootstrap system %s\n",
 		shQuote(staged), shQuote(installed),
 		shQuote(installed), shQuote(hex.EncodeToString(sum[:])), shQuote(installed),
 		shQuote(installed+" is not the plist grove renders; removed it rather than load it"),
-		hostFirewallLabel, shQuote(installed))
+		shQuote(installed), hostFirewallLabel, shQuote(installed))
 }
 
 // hostFirewallSteps stage the VM firewall's LaunchDaemon and then install it. Installing is

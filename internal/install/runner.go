@@ -30,6 +30,10 @@ type Runner interface {
 	// RunAttached runs name with the process's own stdin, stdout and stderr, so a child such as
 	// sudo can prompt on the terminal. Nothing is captured.
 	RunAttached(ctx context.Context, name string, args ...string) error
+	// RunStreaming feeds stdin (a secret, say) to the process and passes its stdout and stderr
+	// straight through to this process's, for a long child whose progress the operator should
+	// watch. Nothing is captured.
+	RunStreaming(ctx context.Context, stdin string, name string, args ...string) error
 }
 
 // ExecRunner is the real Runner, shelling out via os/exec.
@@ -73,6 +77,16 @@ func (ExecRunner) RunAttached(ctx context.Context, name string, args ...string) 
 	return nil
 }
 
+func (ExecRunner) RunStreaming(ctx context.Context, stdin string, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = strings.NewReader(stdin)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	return nil
+}
+
 func execRun(ctx context.Context, stdin string, detach bool, name string, args ...string) (string, string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	if stdin != "" {
@@ -103,6 +117,8 @@ type Call struct {
 	Stdin string
 	// Attached marks a RunAttached call.
 	Attached bool
+	// Streamed marks a RunStreaming call.
+	Streamed bool
 }
 
 // String renders the call the way it would appear on a shell line, e.g. "brew install tart".
@@ -158,6 +174,11 @@ func (f *FakeRunner) RunWithStdinAttached(_ context.Context, stdin string, name 
 
 func (f *FakeRunner) RunAttached(_ context.Context, name string, args ...string) error {
 	_, _, err := f.run(Call{Name: name, Args: args, Attached: true})
+	return err
+}
+
+func (f *FakeRunner) RunStreaming(_ context.Context, stdin string, name string, args ...string) error {
+	_, _, err := f.run(Call{Name: name, Args: args, Stdin: stdin, Streamed: true})
 	return err
 }
 

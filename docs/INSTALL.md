@@ -113,7 +113,8 @@ grove setup
   skips the question; without a terminal it needs sudo credentials already cached). If not (a
   standard user such as `argos`, no terminal, a "no", or `--no-sudo`), grove prints the same
   script as one `sudo /bin/sh -e <<'GROVE_ROOT_STEPS'` block for an admin to paste; then re-run the
-  same grove command, which skips what is done. The script uses only absolute system binaries, no
+  same grove command, which skips what is done. (For a standard user, an admin can instead run
+  `grove setup --user argos`, below: one password prompt, no block to paste.) The script uses only absolute system binaries, no
   secrets. Each plist the user staged is copied into `/Library/LaunchDaemons` as root's and checked
   by SHA-256 against the plist grove renders (removed if it differs) before it is loaded; the
   daemons always run as the worker user, never root. `worker-daemons` also removes the per-user
@@ -132,25 +133,39 @@ admin, so a dedicated standard user keeps the worker and its jobs apart from the
 1. Create the user (System Settings -> Users & Groups -> **Standard**, or `sysadminctl`), once.
    Homebrew, Tailscale and Tart must be usable by it; `grove install` installs Tart and Orchard
    into the user's own home.
-2. From an admin account's Terminal (or ssh), switch to it and run setup there. No GUI session for
-   `argos` is needed:
+2. From an admin account's Terminal (or ssh), run setup **for** it. No GUI session for `argos` is
+   needed, and nobody has to `su`:
 
    ```bash
-   su - argos
-   grove setup --server http://<control-plane>:6130
+   grove setup --user argos --server http://<control-plane>:6130
    ```
 
-   The install is the same as above. `argos` cannot use `sudo` unless it is an admin, so setup
-   prints the root steps as one block: paste it in the admin account's Terminal, then run
-   `grove setup` again as `argos` (and `grove doctor`).
+   sudo asks for the admin's password once, before the join request; grove keeps that sudo
+   session alive while you run `grove join approve <CODE>` on the control plane (up to 10
+   minutes). Then the admin's grove runs the worker install as `argos` (`sudo -n -u argos -H grove
+   setup --from-admin`; the join result and any `GROVE_REGISTRY_TOKEN` go to it on stdin, never on
+   the command line), shows the root script, asks `[Y/n]`, runs it through the same sudo, and waits
+   for the worker to come online. `--yes` skips the questions (without a terminal it needs sudo
+   credentials already cached).
+
+   `argos` is not trusted with root, so the admin's grove never runs anything `argos`'s process
+   printed or wrote: it renders the root script itself from `argos`'s name and home, the grove
+   binary, and the controller and server its own join returned. The plists `argos` staged are
+   copied into `/Library/LaunchDaemons` as root's, private (0600) until their SHA-256 matches the
+   plist the admin's grove renders, and removed instead of loaded if it doesn't.
+
    If Homebrew belongs to another user (the Mac's owner), `argos` can read its taps but not change
    them: if the `brew-trust:<tap>` step fails, run the `brew tap X && brew trust X` it prints as
-   Homebrew's owner, then re-run setup. A `--registry-token` login also cannot reach the Keychain
-   from `su -`; setup warns and keeps the login in `credentials/registry`, which is all the
-   worker needs.
-3. Setup warns that it could not store the dispatch credential in the Keychain (a `su -` shell has
-   none). That is expected; the worker is unaffected. Run `grove setup` once from a login session
-   of that user if you also want to use `grove ui` or dispatch jobs as it.
+   Homebrew's owner, then re-run setup. A registry login also cannot reach `argos`'s Keychain; setup
+   warns and keeps the login in `credentials/registry`, which is all the worker needs.
+
+   Without an admin at hand you can still do it the long way: `su - argos`, `grove setup --server
+   ...`; `argos` cannot use `sudo`, so setup prints the root steps as one block for an admin to
+   paste, and then `grove setup` runs again as `argos`.
+3. Setup does not store this device's dispatch credential for `argos` (there is no Keychain to put
+   it in from `sudo -u` or `su -`). That is expected; the worker is unaffected. Run `grove setup`
+   once from a login session of that user if you also want to use `grove ui` or dispatch jobs as
+   it.
 
 #### Registry access for private worker images
 

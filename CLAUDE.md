@@ -243,7 +243,9 @@ Decision tree:
 3. **Preview first**: `grove install --role <role> [flags] --dry-run` and read the plan before
    applying it.
 4. **Apply**: drop `--dry-run`. Run it as the ordinary account the worker should run as (never
-   root; `su - <user>` works, no GUI session needed). The worker role's root steps (`pmset`, the `worker-daemons`
+   root; `su - <user>` works, no GUI session needed), or, from an admin account, `grove setup --user
+   <user>` (one sudo prompt; the admin's grove renders the root script itself and never runs
+   anything the worker user's process produced — `internal/cli/setup_user.go`). The worker role's root steps (`pmset`, the `worker-daemons`
    install of the Orchard worker and broker LaunchDaemons, the `host-firewall` step) run as one
    script through one `sudo` when the user is an admin on a terminal and says yes; otherwise grove
    prints one block for an admin to paste, and you re-run the same command.
