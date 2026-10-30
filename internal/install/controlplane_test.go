@@ -298,7 +298,7 @@ func TestControlPlanePlan_LinuxDoesNotTrustTaps(t *testing.T) {
 	if _, err := RunPlan(context.Background(), steps, PlanOptions{Out: io.Discard}); err != nil {
 		t.Fatalf("RunPlan: %v", err)
 	}
-	if r.CalledWith("brew tap-info --json=v1 hashicorp/tap") {
+	if r.CalledWith("env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_FROM_API=1 brew tap-info --json=v1 hashicorp/tap") {
 		t.Error("no brew command should run at all on Linux")
 	}
 }

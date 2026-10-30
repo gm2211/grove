@@ -5,13 +5,56 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"strings"
 	"testing"
 )
+
+func TestTrustTap_RefusesWhenHomebrewBelongsToAnotherUser(t *testing.T) {
+	r := NewFakeRunner()
+	r.Script("brew --prefix", FakeResult{Stdout: "/opt/homebrew\n"})
+	r.Script("stat -f %Su /opt/homebrew", FakeResult{Stdout: "someone-else-entirely\n"})
+
+	err := trustTap(context.Background(), r, tapOpenAITools, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("expected an error when the Homebrew prefix belongs to another user")
+	}
+	for _, want := range []string{"/opt/homebrew", "someone-else-entirely", "brew tap openai/tools && brew trust openai/tools"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+	if r.CalledWith("brew tap openai/tools") || r.CalledWith("brew trust openai/tools") {
+		t.Errorf("brew tap/trust must not run on a Homebrew this user doesn't own: %v", r.Calls)
+	}
+}
+
+func TestTrustTap_ProceedsWhenPrefixOwnerUnknown(t *testing.T) {
+	r := NewFakeRunner() // brew --prefix prints nothing: the owner can't be determined
+	if err := trustTap(context.Background(), r, tapOpenAITools, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if !r.CalledWith("brew tap openai/tools") || !r.CalledWith("brew trust openai/tools") {
+		t.Errorf("expected brew tap and trust to run, calls: %v", r.Calls)
+	}
+}
+
+func TestTrustTapStep_CheckQueriesWithoutRefreshingHomebrew(t *testing.T) {
+	r := NewFakeRunner()
+	scriptTapInfo(r, "openai/tools", true, true)
+	ok, err := trustTapStep(r, tapOpenAITools, io.Discard).Check(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("Check = %v, %v; want satisfied", ok, err)
+	}
+	if len(r.Calls) != 1 || r.Calls[0].Name != "env" {
+		t.Errorf("calls = %v, want one `env HOMEBREW_NO_AUTO_UPDATE=1 ... brew tap-info`", r.Calls)
+	}
+}
 
 // scriptTapInfo scripts `brew tap-info --json=v1 <tap>` on r the way the real Homebrew command
 // renders it: a one-element JSON array (see the "installed"/"trusted" fields taps.go reads).
 func scriptTapInfo(r *FakeRunner, tap string, installed, trusted bool) {
-	r.Script(fmt.Sprintf("brew tap-info --json=v1 %s", tap), FakeResult{
+	r.Script(fmt.Sprintf("env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_FROM_API=1 brew tap-info --json=v1 %s", tap), FakeResult{
 		Stdout: fmt.Sprintf(`[{"name":%q,"installed":%t,"trusted":%t}]`, tap, installed, trusted),
 	})
 }
@@ -31,7 +74,7 @@ func TestFetchTapInfo_ParsesInstalledAndTrusted(t *testing.T) {
 
 func TestFetchTapInfo_ErrorsOnRunnerFailure(t *testing.T) {
 	r := NewFakeRunner()
-	r.Script("brew tap-info --json=v1 openai/tools", FakeResult{Err: errors.New("brew: command not found (fake)")})
+	r.Script("env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_FROM_API=1 brew tap-info --json=v1 openai/tools", FakeResult{Err: errors.New("brew: command not found (fake)")})
 
 	if _, err := fetchTapInfo(context.Background(), r, "openai/tools"); err == nil {
 		t.Error("expected fetchTapInfo to surface the runner error")
@@ -40,7 +83,7 @@ func TestFetchTapInfo_ErrorsOnRunnerFailure(t *testing.T) {
 
 func TestFetchTapInfo_ErrorsOnUnparsableOutput(t *testing.T) {
 	r := NewFakeRunner()
-	r.Script("brew tap-info --json=v1 openai/tools", FakeResult{Stdout: "not json"})
+	r.Script("env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_FROM_API=1 brew tap-info --json=v1 openai/tools", FakeResult{Stdout: "not json"})
 
 	if _, err := fetchTapInfo(context.Background(), r, "openai/tools"); err == nil {
 		t.Error("expected fetchTapInfo to error on unparsable output")
@@ -160,7 +203,7 @@ func TestTrustTapStep_CheckNotSatisfiedWhenUntrusted(t *testing.T) {
 
 func TestTrustTapStep_CheckNotSatisfiedWhenTapInfoFails(t *testing.T) {
 	r := NewFakeRunner()
-	r.Script("brew tap-info --json=v1 openai/tools", FakeResult{Err: errors.New("brew: command not found (fake)")})
+	r.Script("env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_FROM_API=1 brew tap-info --json=v1 openai/tools", FakeResult{Err: errors.New("brew: command not found (fake)")})
 
 	step := trustTapStep(r, tapOpenAITools, &bytes.Buffer{})
 	ok, err := step.Check(context.Background())
