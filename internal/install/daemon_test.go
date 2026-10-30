@@ -15,9 +15,15 @@ import (
 // planWorker builds the worker plan for opts on r.
 func planWorker(t *testing.T, r *FakeRunner, opts Options) []Step {
 	t.Helper()
+	return planWorkerOut(t, r, opts, io.Discard)
+}
+
+// planWorkerOut is planWorker with the plan's progress output sent to out.
+func planWorkerOut(t *testing.T, r *FakeRunner, opts Options, out io.Writer) []Step {
+	t.Helper()
 	scriptTailscaleUp(r)
 	scriptPinnedDownloads(r, opts)
-	steps, err := BuildPlan(r, opts, io.Discard)
+	steps, err := BuildPlan(r, opts, out)
 	if err != nil {
 		t.Fatalf("BuildPlan: %v", err)
 	}

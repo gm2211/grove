@@ -310,7 +310,7 @@ func TestRunDoctor_SkipsTapTrustChecksOnNonDarwin(t *testing.T) {
 			t.Errorf("did not expect any brew-trust check on non-darwin, got %+v", res)
 		}
 	}
-	if r.CalledWith("brew tap-info --json=v1 openai/tools") {
+	if r.CalledWith("env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_FROM_API=1 brew tap-info --json=v1 openai/tools") {
 		t.Error("no brew command should run on non-darwin")
 	}
 }

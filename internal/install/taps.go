@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os/user"
 	"strings"
 )
 
@@ -66,7 +67,11 @@ type tapInfo struct {
 // returns an error for anything that stops it from getting a confident answer — brew missing,
 // unexpected output, and so on — callers decide how to treat that.
 func fetchTapInfo(ctx context.Context, r Runner, tap string) (tapInfo, error) {
-	stdout, _, err := r.Run(ctx, "brew", "tap-info", "--json=v1", tap)
+	// A read-only query must not try to refresh Homebrew's API data or its taps: on a shared
+	// Homebrew (owned by another user) that needs write access to the prefix's locks and fails for
+	// everyone but the owner, which made a trusted tap look untrusted.
+	stdout, _, err := r.Run(ctx, "env", "HOMEBREW_NO_AUTO_UPDATE=1", "HOMEBREW_NO_INSTALL_FROM_API=1",
+		"brew", "tap-info", "--json=v1", tap)
 	if err != nil {
 		return tapInfo{}, fmt.Errorf("brew tap-info --json=v1 %s: %w", tap, err)
 	}
@@ -94,6 +99,9 @@ func isUnknownBrewCommand(err error) bool {
 // grove is about to mutate Homebrew's trust store. It treats `brew trust` being unknown entirely
 // (older Homebrew, no trust gate to satisfy) as success rather than a failure.
 func trustTap(ctx context.Context, r Runner, tap thirdPartyTap, out io.Writer) error {
+	if err := checkBrewWritable(ctx, r, tap); err != nil {
+		return err
+	}
 	fmt.Fprintf(out, "        Homebrew requires explicit trust for third-party taps; trusting %s (%s).\n",
 		tap.Name, tap.Reason)
 	if _, _, err := r.Run(ctx, "brew", "tap", tap.Name); err != nil {
@@ -106,6 +114,30 @@ func trustTap(ctx context.Context, r Runner, tap thirdPartyTap, out io.Writer) e
 		return fmt.Errorf("brew trust %s: %w", tap.Name, err)
 	}
 	return nil
+}
+
+// checkBrewWritable refuses to run `brew tap`/`brew trust` when the Homebrew prefix belongs to
+// another user: those commands write to the prefix and could only fail halfway with a permission
+// error. It is lenient the other way too: if the prefix or its owner can't be determined, it
+// lets brew try.
+func checkBrewWritable(ctx context.Context, r Runner, tap thirdPartyTap) error {
+	prefixOut, _, err := r.Run(ctx, "brew", "--prefix")
+	prefix := strings.TrimSpace(prefixOut)
+	if err != nil || prefix == "" {
+		return nil
+	}
+	ownerOut, _, err := r.Run(ctx, "stat", "-f", "%Su", prefix)
+	owner := strings.TrimSpace(ownerOut)
+	if err != nil || owner == "" {
+		return nil
+	}
+	cur, err := user.Current()
+	if err != nil || cur.Username == owner {
+		return nil
+	}
+	return fmt.Errorf("Homebrew at %s belongs to %s, not %s, so grove cannot tap or trust %s here; "+
+		"as %s run: brew tap %s && brew trust %s",
+		prefix, owner, cur.Username, tap.Name, owner, tap.Name, tap.Name)
 }
 
 // trustTapStep returns the idempotent "trust this tap" Step that a planner inserts immediately

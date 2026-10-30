@@ -282,7 +282,13 @@ func registryLoginStep(r Runner, opts Options, out io.Writer) *Step {
 			// file, through the TART_REGISTRY_* variables its wrapper exports.
 			if _, _, err := r.RunWithStdin(ctx, opts.RegistryToken, "tart", "login", registry,
 				"--username", opts.RegistryUser, "--password-stdin"); err != nil {
-				return fmt.Errorf("tart login %s: %w", registry, err)
+				if !isKeychainUnavailable(err) {
+					return fmt.Errorf("tart login %s: %w", registry, err)
+				}
+				// No Keychain session (a `su - user` shell, ssh): the Keychain copy is only a
+				// convenience for someone at this Mac, so the file below is enough for the daemon.
+				fmt.Fprintf(out, "        WARNING: tart login could not use the Keychain here (no GUI session); "+
+					"keeping the %s login in %s only, which is what the worker daemon reads.\n", registry, credPath)
 			}
 			if err := writeSecretFile(credPath, credContent); err != nil {
 				return err
@@ -300,6 +306,18 @@ func registryLoginStep(r Runner, opts Options, out io.Writer) *Step {
 	}
 }
 
+// isKeychainUnavailable reports whether a `tart login` failure is the Keychain refusing to
+// work in this session ("User interaction is not allowed"), as opposed to the registry rejecting
+// the credentials. Only the former is survivable: the daemon reads the login from a file.
+func isKeychainUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "User interaction is not allowed") ||
+		(strings.Contains(msg, "Keychain") && strings.Contains(msg, "failed to add item"))
+}
+
 // RegistryLogin is `grove registry login`: it runs registryLoginStep's Apply even when the marker
 // already matches, because the reason to run it on an installed worker is usually a new or
 // rotated token for the same user. Re-running `grove install --role worker` for that would need
@@ -308,7 +326,7 @@ func RegistryLogin(ctx context.Context, r Runner, opts Options) error {
 	if opts.RegistryToken == "" {
 		return errors.New("registry login: no token given")
 	}
-	return registryLoginStep(r, opts, io.Discard).Apply(ctx)
+	return registryLoginStep(r, opts, os.Stderr).Apply(ctx)
 }
 
 // workerDaemonPlist renders the LaunchDaemon, run as the worker user, that supervises `orchard

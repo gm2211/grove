@@ -180,6 +180,12 @@ func checkRegistryLogin(opts Options, cfg *config.Config) *CheckResult {
 	if _, err := os.Stat(marker); err == nil {
 		return &CheckResult{Name: "registry-login", OK: true, Detail: "tart login ghcr.io recorded (" + marker + ")"}
 	}
+	// The worker daemon reads its login from this file, so it is enough even where the Keychain
+	// login failed (a `su -` shell has no Keychain).
+	credPath := credentialPath(opts, registryCredentialName)
+	if _, err := readSecretFileRaw(credPath); err == nil {
+		return &CheckResult{Name: "registry-login", OK: true, Detail: "ghcr.io login kept in " + credPath}
+	}
 
 	return &CheckResult{
 		Name:   "registry-login",

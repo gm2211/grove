@@ -16,6 +16,15 @@ All notable changes to grove are documented here.
   worker that can't be online yet). The script uses only absolute system binaries and carries no
   secret; the host-firewall plist is now SHA-256 pinned after the root-owned copy, like the
   daemons'. `grove doctor` remediations point at re-running setup instead of printing sudo lines.
+- **A second macOS user can run the worker install (`su - argos`).** The `brew-trust:<tap>` check
+  now asks `brew tap-info` with `HOMEBREW_NO_AUTO_UPDATE=1` and `HOMEBREW_NO_INSTALL_FROM_API=1`,
+  so a user who does not own Homebrew no longer fails on its lock files and mistakes a trusted tap
+  for an untrusted one. When a tap does need tapping or trusting and Homebrew belongs to another
+  user, the step stops with the exact `brew tap X && brew trust X` to run as that user, instead of
+  a permission error halfway through. `registry-login` no longer fails when `tart login` cannot
+  use the Keychain ("User interaction is not allowed", as in a `su -` shell): it warns and keeps
+  the login in the 0600 credentials file the worker daemon reads. Other `tart login` errors, such
+  as rejected credentials, still fail. `grove doctor` accepts that file as the registry login.
 
 ## v0.1.18
 
