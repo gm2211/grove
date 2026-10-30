@@ -28,6 +28,9 @@ var setupServer string
 var setupRegistryUser string
 var setupYes bool
 var setupNoSudo bool
+var setupUser string
+var setupFromAdmin bool
+var setupGroveBin string
 
 type joinStart struct {
 	ID, Secret, Code string
@@ -53,6 +56,13 @@ func init() {
 	setupCmd.Flags().BoolVar(&setupYes, "yes", false, "join the discovered control plane without asking, when exactly one answers (several always need --server), and run the root steps through sudo without asking")
 	setupCmd.Flags().BoolVar(&setupNoSudo, "no-sudo", false, "never run sudo; print the root steps for an admin")
 	setupCmd.Flags().StringVar(&setupRegistryUser, "registry-user", "", "registry username; password/PAT is read from GROVE_REGISTRY_TOKEN")
+	setupCmd.Flags().StringVar(&setupUser, "user", "", "run from an admin account: set this Mac up as a worker that runs as this (standard) user, with one sudo password prompt and no `su`")
+	// --from-admin and --grove-bin are how `grove setup --user` runs the worker user's half; the
+	// join result arrives on stdin.
+	setupCmd.Flags().BoolVar(&setupFromAdmin, "from-admin", false, "")
+	setupCmd.Flags().StringVar(&setupGroveBin, "grove-bin", "", "")
+	_ = setupCmd.Flags().MarkHidden("from-admin")
+	_ = setupCmd.Flags().MarkHidden("grove-bin")
 	Root.AddCommand(setupCmd)
 
 	joinCmd := &cobra.Command{Use: "join", Short: "Approve Grove enrollment requests."}
@@ -63,10 +73,23 @@ func init() {
 }
 
 func runSetup(cmd *cobra.Command, _ []string) error {
+	if setupFromAdmin {
+		return runSetupFromAdmin(cmd)
+	}
 	if runtimeOS() != "darwin" {
 		return errors.New("`grove setup` currently joins Apple Silicon worker Macs; use `grove install --role control-plane` to create a control plane")
 	}
 	r := install.ExecRunner{}
+	var target *workerTarget
+	if setupUser != "" {
+		if setupNoSudo {
+			return errors.New("--user runs the root steps through sudo; drop --no-sudo, or run `grove setup` as that user")
+		}
+		var err error
+		if target, err = lookupWorkerTarget(cmd.Context(), r, setupUser); err != nil {
+			return err
+		}
+	}
 	bin, err := install.FindTailscale(nil, nil)
 	if err != nil {
 		return fmt.Errorf("Tailscale setup required: %w", err)
@@ -83,6 +106,14 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 	}
+	if target != nil {
+		// The one password prompt, before the approval wait; kept alive until setup returns.
+		stop, err := startSudoSession(cmd.Context(), r, stdinIsTerminal(), setupYes)
+		if err != nil {
+			return err
+		}
+		defer stop()
+	}
 	host, _ := os.Hostname()
 	start, err := createJoin(cmd.Context(), serverURL, host, st.TailnetIP())
 	if err != nil {
@@ -95,6 +126,25 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	}
 	if result.ControllerURL == "" || result.BootstrapToken == "" {
 		return errors.New("control plane approved join but returned incomplete worker credentials")
+	}
+	if target != nil {
+		if result.BrokerToken == "" {
+			fmt.Fprintln(cmd.ErrOrStderr(), "warning: the control plane sent no broker credential, so jobs on this Mac can't use credentials yet. Update Grove on the control plane, then run `grove setup --user` again.")
+		}
+		outcome, err := setupForUser(cmd.Context(), r, target.options(), result, setupRegistryUser, os.Getenv("GROVE_REGISTRY_TOKEN"), install.RootOptions{
+			Interactive: stdinIsTerminal(), Yes: setupYes, In: cmd.InOrStdin(), Out: cmd.OutOrStdout(),
+		})
+		if err != nil {
+			return err
+		}
+		if outcome == install.RootPrinted {
+			return fmt.Errorf("the root steps are not done yet: run the block printed above, then `grove setup --user %s` again to finish", target.User)
+		}
+		if err := waitForWorker(cmd.Context(), result.ServerURL, start); err != nil {
+			return fmt.Errorf("worker installed but not yet visible: %w. Check %s/Library/Logs/grove/orchard-worker.err.log, then run `grove setup --user %s` again", err, target.Home, target.User)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "\nGrove worker %q (running as %s) is online and discoverable.\n", host, target.User)
+		return nil
 	}
 	opts := install.Options{
 		Role: install.RoleWorker, Controller: result.ControllerURL, ServerURL: result.ServerURL,
@@ -111,7 +161,7 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	if result.ClientToken == "" || result.DeviceID == "" {
 		return errors.New("control plane approved join but returned incomplete dispatcher credentials")
 	}
-	if err := saveJoinedServer(cmd.Context(), r, cmd.ErrOrStderr(), result.ServerURL, result.DeviceID, result.ClientToken); err != nil {
+	if err := saveJoinedServer(cmd.Context(), r, cmd.ErrOrStderr(), result.ServerURL, result.DeviceID, result.ClientToken, true); err != nil {
 		return err
 	}
 	if rootOutcome == install.RootPrinted {
@@ -329,7 +379,10 @@ func runJoinApprove(cmd *cobra.Command, args []string) error {
 // keychain, nothing to authorize with). That is not worth failing a worker setup over: the worker
 // and broker use files, so it warns and leaves the device without dispatch rights until `grove
 // setup` runs again from a login session.
-func saveJoinedServer(ctx context.Context, r install.Runner, warn io.Writer, serverURL, deviceID, token string) error {
+//
+// keychain false skips the Keychain outright (the worker user's half of `grove setup --user`,
+// where trying could put a Keychain password prompt on the admin's terminal).
+func saveJoinedServer(ctx context.Context, r install.Runner, warn io.Writer, serverURL, deviceID, token string, keychain bool) error {
 	cfg, path, err := config.Load()
 	if err != nil {
 		if !errors.Is(err, config.ErrNotFound) {
@@ -342,7 +395,10 @@ func saveJoinedServer(ctx context.Context, r install.Runner, warn io.Writer, ser
 		}
 	}
 	cfg.Server.URL = serverURL
-	if err := install.StoreKeychainSecret(ctx, r, deviceID, config.ServerTokenKeychainService, token); err != nil {
+	if !keychain {
+		fmt.Fprintln(warn, "note: this device's dispatch credential was not stored (the worker is unaffected). Run `grove setup` once from a login session of this user if you also want `grove ui` or job dispatch as it.")
+		cfg.Server.TokenKeychain = ""
+	} else if err := install.StoreKeychainSecret(ctx, r, deviceID, config.ServerTokenKeychainService, token); err != nil {
 		fmt.Fprintf(warn, "warning: could not store this device's dispatch credential in Keychain (%v).\n"+
 			"The worker is unaffected, but `grove ui` and job dispatch from this Mac need it: run `grove setup` again from a login session (Terminal on the Mac itself, not `su -`) to add it.\n", err)
 		cfg.Server.TokenKeychain = ""

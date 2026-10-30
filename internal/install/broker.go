@@ -20,7 +20,11 @@ const brokerLabel = "com.grove.broker"
 
 // groveExecutable is the grove binary the broker's LaunchDaemon runs: grove on PATH (a Homebrew
 // symlink, which keeps working across upgrades), or else the binary running the install.
+// Options.GroveBin, when set, wins: `grove setup --user` names the same binary on both sides.
 func groveExecutable(opts Options) string {
+	if opts.GroveBin != "" {
+		return opts.GroveBin
+	}
 	if p, err := opts.lookPath()("grove"); err == nil {
 		return p
 	}

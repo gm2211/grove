@@ -101,20 +101,9 @@ func runInstall(cmd *cobra.Command, args []string) error {
 func applyInstall(cmd *cobra.Command, opts install.Options, dryRun, yes, noSudo bool) (install.RootOutcome, error) {
 	out := cmd.OutOrStdout()
 	runner := install.ExecRunner{}
-	steps, err := install.BuildPlan(runner, opts, out)
+	steps, results, err := runInstallPlan(cmd, runner, opts, dryRun, yes)
 	if err != nil {
 		return install.RootNone, err
-	}
-
-	fmt.Fprintf(out, "grove install --role %s (%d steps%s)\n", opts.Role, len(steps), dryRunSuffix(dryRun))
-	results, err := install.RunPlan(cmd.Context(), steps, install.PlanOptions{
-		DryRun: dryRun,
-		Yes:    yes,
-		IsRoot: os.Geteuid() == 0,
-		Out:    out,
-	})
-	if err != nil {
-		return install.RootNone, fmt.Errorf("install: %w", err)
 	}
 	outcome := install.RootNone
 	if !dryRun {
@@ -145,6 +134,27 @@ func applyInstall(cmd *cobra.Command, opts install.Options, dryRun, yes, noSudo 
 	}
 	fmt.Fprintln(out, "\nrun `grove doctor` to verify.")
 	return outcome, nil
+}
+
+// runInstallPlan builds the role's plan and runs it, leaving the privileged steps (listed [root])
+// for the caller.
+func runInstallPlan(cmd *cobra.Command, runner install.Runner, opts install.Options, dryRun, yes bool) ([]install.Step, []install.StepResult, error) {
+	out := cmd.OutOrStdout()
+	steps, err := install.BuildPlan(runner, opts, out)
+	if err != nil {
+		return nil, nil, err
+	}
+	fmt.Fprintf(out, "grove install --role %s (%d steps%s)\n", opts.Role, len(steps), dryRunSuffix(dryRun))
+	results, err := install.RunPlan(cmd.Context(), steps, install.PlanOptions{
+		DryRun: dryRun,
+		Yes:    yes,
+		IsRoot: os.Geteuid() == 0,
+		Out:    out,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("install: %w", err)
+	}
+	return steps, results, nil
 }
 
 func dryRunSuffix(dryRun bool) string {

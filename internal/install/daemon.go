@@ -123,15 +123,16 @@ func plistSHA256(d daemon) string {
 // daemonsRootScript is the root script that installs and (re)loads the daemons: for each, copy the
 // staged plist into place as root's and check the copy is byte-identical to the plist grove renders
 // (its SHA-256 is in the script). The staged file belongs to the worker user, who could add keys
-// such as GroupName or a different Label; the root-owned copy can't change between the check and
-// the load, and a failing check removes it and stops the script. Then boot out the same job if it
+// such as GroupName or a different Label, or make it a symlink to a file only root can read; the
+// root-owned copy is 0600 until it passes the check (so nothing it was pointed at is readable),
+// can't change between the check and the load, and a failing check removes it and stops the script. Then boot out the same job if it
 // was a LaunchAgent in the user's session or already a daemon, bootstrap it into the system
 // domain, and remove the user's old agent plist so it can't run a second worker at the next login.
 func daemonsRootScript(opts Options, user string, ds []daemon) (string, error) {
 	if user == "" || user == "root" {
 		return "", fmt.Errorf("the worker user must not be root")
 	}
-	uid := os.Getuid()
+	uid := opts.workerUID()
 	var installs, loads []string
 	for _, d := range ds {
 		staged, installed := daemonPaths(opts, d.Label)
@@ -140,10 +141,11 @@ func daemonsRootScript(opts Options, user string, ds []daemon) (string, error) {
 			return "", fmt.Errorf("cannot render the %s plist to pin it", d.Label)
 		}
 		installs = append(installs,
-			fmt.Sprintf("/usr/bin/install -o root -g wheel -m 0644 %s %s", shQuote(staged), shQuote(installed)),
+			fmt.Sprintf("/usr/bin/install -o root -g wheel -m 0600 %s %s", shQuote(staged), shQuote(installed)),
 			fmt.Sprintf("[ \"$(/usr/bin/shasum -a 256 < %s | /usr/bin/cut -d' ' -f1)\" = %s ] || { /bin/rm -f %s; echo %s >&2; exit 1; }",
 				shQuote(installed), shQuote(sum), shQuote(installed),
-				shQuote(installed+" is not the plist grove renders for "+user+"; removed it rather than load it")))
+				shQuote(installed+" is not the plist grove renders for "+user+"; removed it rather than load it")),
+			fmt.Sprintf("/bin/chmod 0644 %s", shQuote(installed)))
 		loads = append(loads,
 			fmt.Sprintf("/bin/launchctl bootout gui/%d/%s 2>/dev/null || true", uid, d.Label),
 			fmt.Sprintf("/bin/launchctl bootout system/%s 2>/dev/null || true", d.Label),

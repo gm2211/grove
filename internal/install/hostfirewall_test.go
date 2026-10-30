@@ -263,7 +263,8 @@ func TestHostFirewallRootScript_PinsTheInstalledCopy(t *testing.T) {
 	}
 	sum := sha256.Sum256([]byte(hostFirewallPlist(netip.MustParseAddr("192.168.70.1"))))
 	for _, want := range []string{
-		"/usr/bin/install -o root -g wheel -m 0644 " + shQuote(staged) + " " + shQuote(installed),
+		"/usr/bin/install -o root -g wheel -m 0600 " + shQuote(staged) + " " + shQuote(installed),
+		"/bin/chmod 0644 " + shQuote(installed),
 		"/usr/bin/shasum -a 256 < " + shQuote(installed),
 		shQuote(hex.EncodeToString(sum[:])),
 		"/bin/rm -f " + shQuote(installed) + "; echo",
