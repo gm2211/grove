@@ -4,6 +4,8 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+## v0.1.18
+
 - **Worker Macs serve jobs with nobody logged in.** The Orchard worker and the credential broker
   ran as per-user LaunchAgents, so a worker Mac did nothing after a reboot until someone logged
   in, and `grove setup` over `su - <user>` had no GUI session to load them into. They are now
@@ -36,6 +38,8 @@ All notable changes to grove are documented here.
   the name already installed (from the wrapper, else the old LaunchAgent), and `--name` sets it
   explicitly.
 
+## v0.1.17
+
 - **Workers reach their VMs without Local Network permission.** On macOS 15+ the worker's SSH to
   a VM (startup script, exec, enrolment) needs Local Network permission, which grove's worker
   Macs keep off, so every startup script failed with `no route to host` and Orchard restarted
@@ -63,6 +67,8 @@ All notable changes to grove are documented here.
   already in Keychain. Before, it rewrote the wrapper with an empty controller and restarted the
   worker, which then couldn't reach Orchard. With no worker installed, it now refuses and asks for
   `--controller`.
+
+## v0.1.16
 
 - **Credentials can expire, and a local client can use a Unix socket.** `grove access issue
   --expires-in 180d` (`expiresIn` over HTTP) issues a credential that stops working after that
@@ -233,9 +239,16 @@ All notable changes to grove are documented here.
   `config.yaml`). Expired jobs report `artifactsExpiredAt`. The first sweep after upgrading deletes existing
   artifacts that are already past those windows. See docs/JOBS.md "Artifact retention".
 
+## v0.1.15
+
 - **Security:** re-running `grove setup` on a Mac no longer leaves its earlier device credentials
   valid. Once the Mac is back online with its new credential, grove revokes the older setup
   credentials with the same name. Operator-issued credentials (`grove access issue`) are untouched.
+
+- Re-running `grove install --role control-plane` restarts Nomad when its config changed, so a new
+  config takes effect.
+
+## v0.1.13
 
 - **Security:** the control plane's Nomad runs with ACLs on. `grove install --role control-plane`
   bootstraps them and stores the management token in `config.yaml` (`nomad.token`); re-running it
@@ -279,11 +292,12 @@ All notable changes to grove are documented here.
   install now enables): it clones there, pushes the checkout into a fresh container in a sealed VM,
   streams its logs, polls it, and pulls its artifacts out. A job whose VM stops answering is
   reported lost. Linux pools only. See docs/OPERATIONS.md "Isolating a pool's network".
-- Re-running `grove install --role control-plane` restarts Nomad when its config changed, so a new
-  config takes effect.
 - `grove install --role worker --softnet` installs Softnet and prints the one-time command that
   lets it become root; `grove doctor` reports whether it can.
 - `grove config set <key> -` reads the value from stdin, so secrets stay out of shell history.
+
+## v0.1.11
+
 - Fleet page lists the Macs waiting to join, with an **Approve** button beside each, so enrolling
   a Mac no longer means reading its code off one machine's terminal and retyping it on another
   (`GET /api/v1/join/pending`, operator scope).
