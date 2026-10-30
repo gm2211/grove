@@ -139,6 +139,11 @@ admin, so a dedicated standard user keeps the worker and its jobs apart from the
    The install is the same as above, and everything it needs sudo for is printed. It cannot use
    `sudo` as `argos` unless `argos` is an admin: run the printed `worker-daemons`, `pmset` and
    `host-firewall` commands from the admin account instead, then `grove doctor` as `argos`.
+   If Homebrew belongs to another user (the Mac's owner), `argos` can read its taps but not change
+   them: if the `brew-trust:<tap>` step fails, run the `brew tap X && brew trust X` it prints as
+   Homebrew's owner, then re-run setup. A `--registry-token` login also cannot reach the Keychain
+   from `su -`; setup warns and keeps the login in `credentials/registry`, which is all the
+   worker needs.
 3. Setup warns that it could not store the dispatch credential in the Keychain (a `su -` shell has
    none). That is expected; the worker is unaffected. Run `grove setup` once from a login session
    of that user if you also want to use `grove ui` or dispatch jobs as it.
