@@ -142,3 +142,59 @@ func TestRootScripts_CopyIsPrivateUntilChecked(t *testing.T) {
 		t.Errorf("want a chmod after each of the 3 checks:\n%s", script)
 	}
 }
+
+// The repair path trusts only the root-owned, installed plists: both must be there, for the same
+// ordinary user, and the broker's --server is read back as the control plane.
+func TestFindInstalledWorker(t *testing.T) {
+	opts := adminOptionsFor(t, "worker-user")
+	if _, ok := FindInstalledWorker(opts); ok {
+		t.Fatal("nothing installed, yet found a worker")
+	}
+	install := func(o Options) {
+		for _, d := range workerDaemons(o) {
+			_, installed := daemonPaths(o, d.Label)
+			content, err := d.Render()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := writeFile(installed, content); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	install(opts)
+	got, ok := FindInstalledWorker(opts)
+	if !ok || got.User != "worker-user" || got.ServerURL != "http://100.64.0.1:6130" {
+		t.Fatalf("= %+v, %v", got, ok)
+	}
+
+	// The two daemons disagree about the user.
+	other := opts
+	other.User = "someone-else"
+	d := workerDaemons(other)[1]
+	_, installed := daemonPaths(other, d.Label)
+	content, _ := d.Render()
+	if err := writeFile(installed, content); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := FindInstalledWorker(opts); ok {
+		t.Error("daemons for different users accepted")
+	}
+
+	// Only one daemon installed.
+	install(opts)
+	if err := os.Remove(installed); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := FindInstalledWorker(opts); ok {
+		t.Error("a single daemon accepted")
+	}
+
+	// A broker installed without --server is still a worker, with no known control plane.
+	noServer := opts
+	noServer.ServerURL = ""
+	install(noServer)
+	if got, ok := FindInstalledWorker(opts); !ok || got.ServerURL != "" {
+		t.Errorf("no --server: %+v, %v", got, ok)
+	}
+}

@@ -12,6 +12,11 @@ All notable changes to grove are documented here.
   admin's grove renders that root script itself from `argos`'s name and home, the grove binary and
   its own join result; nothing `argos`'s process prints or stages becomes root script text, and the
   staged plists stay SHA-256 pinned.
+- **Re-running `grove setup --user` repairs instead of re-joining.** When the user's worker is
+  already installed (its root-owned LaunchDaemons say so), setup skips the join, keeps the existing
+  credentials, re-checks every step, and runs only the root steps that fail their check (none, and
+  no sudo beyond the first prompt, if all is well). `--rejoin` joins again; a `--server` that
+  differs from the installed control plane needs it.
 - **Root-owned plist copies stay private until they pass their hash check.** The root script now
   copies each staged LaunchDaemon plist in with mode 0600 and makes it 0644 only after its SHA-256
   matches, so a staged plist that is a symlink to a root-only file can no longer expose that file's

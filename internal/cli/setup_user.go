@@ -138,21 +138,63 @@ type adminHandoff struct {
 	RegistryToken  string `json:"registryToken,omitempty"`
 	ClientToken    string `json:"clientToken,omitempty"`
 	DeviceID       string `json:"deviceId,omitempty"`
+	// Repair is a re-run on a worker that is already installed: no join, so no credentials; the
+	// user's half keeps the ones it has and fixes whatever else no longer matches.
+	Repair bool `json:"repair,omitempty"`
 }
 
-// setupForUser runs the admin's side once the join is approved: the worker user's half through
-// `sudo -n -u <user>` (its unprivileged steps; it stages the daemon plists), then the root steps
-// this process renders for that user, through RunRootSteps and the same sudo session. base names
-// the user, home and grove binary.
-func setupForUser(ctx context.Context, r install.Runner, base install.Options, result *joinResult, registryUser, registryToken string, ro install.RootOptions) (install.RootOutcome, error) {
-	if base.User == "" || base.User == "root" || base.GroveBin == "" {
-		return install.RootNone, errors.New("setup --user: no worker user or grove binary")
-	}
-	payload, err := json.Marshal(adminHandoff{
+func handoffFor(result *joinResult, registryToken string) adminHandoff {
+	return adminHandoff{
 		ControllerURL: result.ControllerURL, ServerURL: result.ServerURL,
 		BootstrapToken: result.BootstrapToken, BrokerToken: result.BrokerToken, RegistryToken: registryToken,
 		ClientToken: result.ClientToken, DeviceID: result.DeviceID,
+	}
+}
+
+// repairForUser re-runs setup for a worker that is already installed for t (its root-owned
+// LaunchDaemons say so) without joining again: no approval, no new credentials, no worker restart
+// unless something it runs on changed. The user's half re-checks its steps with what it has; the
+// root steps run only where a check fails. --rejoin is the way to start over.
+func repairForUser(cmd *cobra.Command, r install.Runner, t *workerTarget, inst install.InstalledWorker) error {
+	fmt.Fprintf(cmd.OutOrStdout(), "A worker is already installed for %s (control plane %s); checking it and fixing what is off, without joining again (--rejoin joins again).\n", t.User, orUnknown(inst.ServerURL))
+	stop, err := startSudoSession(cmd.Context(), r, stdinIsTerminal(), setupYes)
+	if err != nil {
+		return err
+	}
+	defer stop()
+	h := adminHandoff{ServerURL: inst.ServerURL, RegistryToken: os.Getenv("GROVE_REGISTRY_TOKEN"), Repair: true}
+	outcome, err := setupForUser(cmd.Context(), r, t.options(), h, setupRegistryUser, install.RootOptions{
+		Interactive: stdinIsTerminal(), Yes: setupYes, In: cmd.InOrStdin(), Out: cmd.OutOrStdout(),
 	})
+	if err != nil {
+		return fmt.Errorf("%w; `grove setup --user %s --rejoin` starts over with a fresh join", err, t.User)
+	}
+	switch outcome {
+	case install.RootPrinted:
+		return fmt.Errorf("the root steps are not done yet: run the block printed above, then `grove setup --user %s` again", t.User)
+	case install.RootNone:
+		fmt.Fprintf(cmd.OutOrStdout(), "\nNothing needed root: %s's worker daemons and this Mac's settings were already right.\n", t.User)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Worker for %s checked. `sudo -u %s -H grove doctor` shows its health.\n", t.User, t.User)
+	return nil
+}
+
+func orUnknown(s string) string {
+	if s == "" {
+		return "unknown"
+	}
+	return s
+}
+
+// setupForUser runs the admin's side once the join is approved (or, for a repair, with no join):
+// the worker user's half through `sudo -n -u <user>` (its unprivileged steps; it stages the daemon
+// plists), then the root steps this process renders for that user, through RunRootSteps and the
+// same sudo session. base names the user, home and grove binary.
+func setupForUser(ctx context.Context, r install.Runner, base install.Options, h adminHandoff, registryUser string, ro install.RootOptions) (install.RootOutcome, error) {
+	if base.User == "" || base.User == "root" || base.GroveBin == "" {
+		return install.RootNone, errors.New("setup --user: no worker user or grove binary")
+	}
+	payload, err := json.Marshal(h)
 	if err != nil {
 		return install.RootNone, err
 	}
@@ -160,15 +202,15 @@ func setupForUser(ctx context.Context, r install.Runner, base install.Options, r
 	if registryUser != "" {
 		args = append(args, "--registry-user", registryUser)
 	}
-	fmt.Fprintf(ro.Out, "\nInstalling the worker as %s:\n\n", base.User)
+	fmt.Fprintf(ro.Out, "\nRunning the worker install as %s:\n\n", base.User)
 	if err := r.RunStreaming(ctx, string(payload), "/usr/bin/sudo", args...); err != nil {
 		return install.RootNone, fmt.Errorf("the worker install as %s failed (see above): %w", base.User, err)
 	}
 
 	opts := base
 	opts.Role = install.RoleWorker
-	opts.Controller = result.ControllerURL
-	opts.ServerURL = result.ServerURL
+	opts.Controller = h.ControllerURL // "" for a repair: only the user's wrapper holds it
+	opts.ServerURL = h.ServerURL
 	steps, err := install.PendingRootSteps(ctx, r, opts)
 	if err != nil {
 		return install.RootNone, fmt.Errorf("render the root steps for %s: %w", base.User, err)
@@ -188,7 +230,7 @@ func runSetupFromAdmin(cmd *cobra.Command) error {
 	if err := json.NewDecoder(io.LimitReader(cmd.InOrStdin(), 64<<10)).Decode(&h); err != nil {
 		return fmt.Errorf("--from-admin reads the join result from stdin: %w", err)
 	}
-	if h.ControllerURL == "" || h.BootstrapToken == "" {
+	if !h.Repair && (h.ControllerURL == "" || h.BootstrapToken == "") {
 		return errors.New("--from-admin: the join result on stdin has no worker credentials")
 	}
 	if home, err := os.UserHomeDir(); err == nil {
@@ -203,6 +245,9 @@ func runSetupFromAdmin(cmd *cobra.Command) error {
 		return err
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), "The [root] steps are left to the admin's grove, which renders and checks them itself.")
+	if h.Repair {
+		return nil // no join, so nothing new to record
+	}
 	if h.ClientToken != "" && h.DeviceID != "" {
 		return saveJoinedServer(cmd.Context(), install.ExecRunner{}, cmd.ErrOrStderr(), h.ServerURL, h.DeviceID, h.ClientToken, false)
 	}

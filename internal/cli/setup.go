@@ -31,6 +31,7 @@ var setupNoSudo bool
 var setupUser string
 var setupFromAdmin bool
 var setupGroveBin string
+var setupRejoin bool
 
 type joinStart struct {
 	ID, Secret, Code string
@@ -57,6 +58,7 @@ func init() {
 	setupCmd.Flags().BoolVar(&setupNoSudo, "no-sudo", false, "never run sudo; print the root steps for an admin")
 	setupCmd.Flags().StringVar(&setupRegistryUser, "registry-user", "", "registry username; password/PAT is read from GROVE_REGISTRY_TOKEN")
 	setupCmd.Flags().StringVar(&setupUser, "user", "", "run from an admin account: set this Mac up as a worker that runs as this (standard) user, with one sudo password prompt and no `su`")
+	setupCmd.Flags().BoolVar(&setupRejoin, "rejoin", false, "with --user: join again (new approval, new credentials) even if that user's worker is already installed, instead of repairing it in place")
 	// --from-admin and --grove-bin are how `grove setup --user` runs the worker user's half; the
 	// join result arrives on stdin.
 	setupCmd.Flags().BoolVar(&setupFromAdmin, "from-admin", false, "")
@@ -89,6 +91,14 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 		if target, err = lookupWorkerTarget(cmd.Context(), r, setupUser); err != nil {
 			return err
 		}
+		if inst, ok := install.FindInstalledWorker(target.options()); ok && inst.User == target.User && !setupRejoin {
+			if s := strings.TrimRight(setupServer, "/"); s != "" && s != inst.ServerURL {
+				return fmt.Errorf("%s's worker is already joined to %s; pass --rejoin to join %s instead", target.User, inst.ServerURL, s)
+			}
+			return repairForUser(cmd, r, target, inst)
+		}
+	} else if setupRejoin {
+		return errors.New("--rejoin goes with --user; without it `grove setup` always joins")
 	}
 	bin, err := install.FindTailscale(nil, nil)
 	if err != nil {
@@ -131,7 +141,7 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 		if result.BrokerToken == "" {
 			fmt.Fprintln(cmd.ErrOrStderr(), "warning: the control plane sent no broker credential, so jobs on this Mac can't use credentials yet. Update Grove on the control plane, then run `grove setup --user` again.")
 		}
-		outcome, err := setupForUser(cmd.Context(), r, target.options(), result, setupRegistryUser, os.Getenv("GROVE_REGISTRY_TOKEN"), install.RootOptions{
+		outcome, err := setupForUser(cmd.Context(), r, target.options(), handoffFor(result, os.Getenv("GROVE_REGISTRY_TOKEN")), setupRegistryUser, install.RootOptions{
 			Interactive: stdinIsTerminal(), Yes: setupYes, In: cmd.InOrStdin(), Out: cmd.OutOrStdout(),
 		})
 		if err != nil {

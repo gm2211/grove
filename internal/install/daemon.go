@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"html"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -296,4 +298,51 @@ func restartDaemon(ctx context.Context, r Runner, label string) {
 	if m := daemonPIDRE.FindStringSubmatch(stdout); m != nil {
 		_, _, _ = r.Run(ctx, "kill", "-TERM", m[1])
 	}
+}
+
+// InstalledWorker is what the worker's root-owned LaunchDaemons say about the worker installed on
+// this Mac: the user it runs as, and the control plane its broker talks to.
+type InstalledWorker struct {
+	User      string
+	ServerURL string // "" for a broker installed without --server (a control plane from before it)
+}
+
+var (
+	plistUserNameRE = regexp.MustCompile(`<key>UserName</key>\s*<string>([^<]*)</string>`)
+	plistServerRE   = regexp.MustCompile(`<string>--server</string>\s*<string>([^<]*)</string>`)
+)
+
+// FindInstalledWorker reads the installed (not staged) Orchard worker and broker LaunchDaemons.
+// Only root writes /Library/LaunchDaemons, and only after a plist passed its SHA-256 pin, so an
+// admin's grove can rely on them for another user without reading anything that user can change.
+// ok is false unless both are installed, for the same, non-root user.
+func FindInstalledWorker(opts Options) (InstalledWorker, bool) {
+	var users []string
+	var server string
+	for _, label := range []string{orchardWorkerLabel, brokerLabel} {
+		_, installed := daemonPaths(opts, label)
+		b, err := os.ReadFile(installed)
+		if err != nil {
+			return InstalledWorker{}, false
+		}
+		m := plistUserNameRE.FindSubmatch(b)
+		if m == nil {
+			return InstalledWorker{}, false
+		}
+		users = append(users, html.UnescapeString(string(m[1])))
+		if label == brokerLabel {
+			if m := plistServerRE.FindSubmatch(b); m != nil {
+				server = html.UnescapeString(string(m[1]))
+			}
+		}
+	}
+	if users[0] == "" || users[0] == "root" || users[0] != users[1] {
+		return InstalledWorker{}, false
+	}
+	if server != "" {
+		if u, err := url.Parse(server); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return InstalledWorker{}, false
+		}
+	}
+	return InstalledWorker{User: users[0], ServerURL: server}, true
 }
