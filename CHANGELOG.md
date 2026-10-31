@@ -4,6 +4,14 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **`grove uninstall --role worker` removes a worker from its Mac.** One root script (one sudo, or
+  one block for an admin) boots out and removes the Orchard worker, broker and VM firewall
+  LaunchDaemons and flushes the `com.apple/grove-vm` pf anchor (`--restore-sleep` also re-enables
+  sleep); then the worker user's credentials, wrapper, staged plists, Orchard app, `orchard`
+  symlink and logs go. `config.yaml` stays unless `--purge`. `--user <name>` does it from an admin
+  account for a standard worker user, rendering the root script itself; `--dry-run` lists the
+  steps, and a re-run after a full uninstall is a no-op. It prints the `orchard` and `grove access`
+  commands that make the control plane forget the worker.
 - **An admin sets a worker up for a standard user in one command: `grove setup --user argos`.**
   Run from an admin account, it asks for the admin's sudo password once (and keeps the sudo
   session alive through the join-approval wait), joins, runs the worker install as `argos` through

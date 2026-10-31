@@ -32,10 +32,12 @@ type workerTarget struct {
 	User     string
 	Home     string // from the directory service, the same HOME `sudo -H` gives the user's half
 	GroveBin string // the grove binary both halves name, so both render the same broker plist
+	// launchDaemons overrides /Library/LaunchDaemons. Test override.
+	launchDaemons string
 }
 
 func (t *workerTarget) options() install.Options {
-	return install.Options{User: t.User, Home: t.Home, GroveBin: t.GroveBin}
+	return install.Options{User: t.User, Home: t.Home, GroveBin: t.GroveBin, LaunchDaemons: t.launchDaemons}
 }
 
 // lookupWorkerTarget checks that this account can set a worker up for name, and resolves it.
@@ -51,7 +53,7 @@ func lookupWorkerTarget(ctx context.Context, r install.Runner, name string) (*wo
 		return nil, fmt.Errorf("--user %s is uid 0: the worker never runs as root", name)
 	}
 	if me, err := user.Current(); err == nil && me.Username == u.Username {
-		return nil, fmt.Errorf("--user %s is this account: run `grove setup` without --user", name)
+		return nil, fmt.Errorf("--user %s is this account: run the command without --user", name)
 	}
 	if u.HomeDir == "" || !filepath.IsAbs(u.HomeDir) {
 		return nil, fmt.Errorf("--user %s has no home directory", name)
@@ -59,12 +61,12 @@ func lookupWorkerTarget(ctx context.Context, r install.Runner, name string) (*wo
 	if os.Getenv("GROVE_CONFIG") != "" {
 		// It would point this process's idea of the user's config dir somewhere else than the
 		// user's half (which sudo starts with a clean environment) stages into.
-		return nil, errors.New("unset GROVE_CONFIG to run `grove setup --user`: it names this account's config, not the worker user's")
+		return nil, errors.New("unset GROVE_CONFIG to use --user: it names this account's config, not the worker user's")
 	}
 	if os.Geteuid() != 0 {
 		stdout, _, err := r.Run(ctx, "/usr/bin/id", "-Gn")
 		if err != nil || !hasField(stdout, "admin") {
-			return nil, errors.New("`grove setup --user` needs an admin account (it runs the root steps through sudo); run it from one, or run `grove setup` as the worker user and have an admin run the block it prints")
+			return nil, errors.New("--user needs an admin account (it runs the root steps through sudo); run it from one, or run the command as the worker user and have an admin run the block it prints")
 		}
 	}
 	bin, err := exec.LookPath("grove")
@@ -99,12 +101,12 @@ var sudoKeepAlive = time.Minute
 func startSudoSession(ctx context.Context, r install.Runner, interactive, yes bool) (stop func(), err error) {
 	switch {
 	case interactive:
-		fmt.Fprintln(os.Stderr, "grove setup --user runs the worker user's half and then the root steps through sudo; sudo asks for this account's password once:")
+		fmt.Fprintln(os.Stderr, "--user runs the worker user's half and the root steps through sudo; sudo asks for this account's password once:")
 		err = r.RunAttached(ctx, "/usr/bin/sudo", "-v")
 	case yes:
 		_, _, err = r.Run(ctx, "/usr/bin/sudo", "-n", "-v")
 	default:
-		return nil, errors.New("`grove setup --user` needs a terminal for the sudo password (or --yes with sudo credentials already cached)")
+		return nil, errors.New("--user needs a terminal for the sudo password (or --yes with sudo credentials already cached)")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("sudo: %w", err)
