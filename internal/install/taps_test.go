@@ -19,13 +19,44 @@ func TestTrustTap_RefusesWhenHomebrewBelongsToAnotherUser(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error when the Homebrew prefix belongs to another user")
 	}
-	for _, want := range []string{"/opt/homebrew", "someone-else-entirely", "brew tap openai/tools && brew trust openai/tools"} {
+	for _, want := range []string{"/opt/homebrew", "someone-else-entirely", "brew tap openai/tools, then run this again"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q lacks %q", err, want)
 		}
 	}
 	if r.CalledWith("brew tap openai/tools") || r.CalledWith("brew trust openai/tools") {
 		t.Errorf("brew tap/trust must not run on a Homebrew this user doesn't own: %v", r.Calls)
+	}
+}
+
+// A worker user on an admin's Homebrew: the tap is already there, and trust is per user, so it is
+// only trusted, with no `brew tap` and no ownership refusal.
+func TestTrustTap_AlreadyTappedOnAnotherUsersHomebrewOnlyTrusts(t *testing.T) {
+	r := NewFakeRunner()
+	scriptTapInfo(r, "openai/tools", true, false)
+	r.Script("brew --prefix", FakeResult{Stdout: "/opt/homebrew\n"})
+	r.Script("stat -f %Su /opt/homebrew", FakeResult{Stdout: "someone-else-entirely\n"})
+
+	if err := trustTap(context.Background(), r, tapOpenAITools, &bytes.Buffer{}); err != nil {
+		t.Fatalf("trustTap: %v", err)
+	}
+	if r.CalledWith("brew tap openai/tools") || r.CalledWith("brew --prefix") {
+		t.Errorf("an already-tapped tap must not be tapped again or need the prefix: %v", r.Calls)
+	}
+	if !r.CalledWith("brew trust openai/tools") {
+		t.Errorf("expected `brew trust openai/tools`, calls: %v", r.Calls)
+	}
+}
+
+// `brew trust` on a shared Homebrew records the trust, then fails refreshing API data it can't
+// write; tap-info saying trusted afterwards makes that a success.
+func TestTrustTap_TrustFailureButTrustedIsSuccess(t *testing.T) {
+	r := NewFakeRunner()
+	scriptTapInfo(r, "openai/tools", true, true)
+	r.Script("brew trust openai/tools", FakeResult{Err: errors.New("Permission denied @ rb_sysopen - /opt/homebrew/var/homebrew/locks/x.lock (fake)")})
+
+	if err := trustTap(context.Background(), r, tapOpenAITools, &bytes.Buffer{}); err != nil {
+		t.Errorf("trust recorded despite the exit status, want success: %v", err)
 	}
 }
 
