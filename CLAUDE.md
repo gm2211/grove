@@ -250,6 +250,8 @@ Decision tree:
    script through one `sudo` when the user is an admin on a terminal and says yes; otherwise grove
    prints one block for an admin to paste, and you re-run the same command.
 5. **Verify**: `grove doctor`.
+6. **Remove** (later): `grove uninstall --role worker [--user <user>] --dry-run`, then without
+   `--dry-run` (docs/OPERATIONS.md "Removing a worker Mac").
 
 Full walkthrough, flags, and failure modes (Local Network permission popup, FileVault blocking
 auto-login, Mac App Store Tailscale, the 2-macOS-VM cap): **[docs/INSTALL.md](docs/INSTALL.md)**.

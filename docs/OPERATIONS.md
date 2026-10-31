@@ -210,6 +210,55 @@ POST /api/v1/workers/{name}/resume
 Existing VMs on that worker keep running (and draining/recycling normally) until you resume it or
 manually delete them.
 
+## Removing a worker Mac
+
+Pause the worker first (`grove worker pause <name>`, above) and let its jobs drain: uninstalling
+stops the Orchard worker, and the VMs it runs stop with it.
+
+On the worker Mac, as the worker user:
+
+```
+grove uninstall --role worker --dry-run     # every step, nothing changed
+grove uninstall --role worker
+```
+
+or, from an admin account, for a standard worker user (one sudo password prompt, like
+`grove setup --user`):
+
+```
+grove uninstall --role worker --user argos
+```
+
+What it does, in this order:
+
+1. **As root, in one script** through one `sudo` (or printed as one block for an admin when this
+   user can't sudo; run it, then re-run the same command): boot out and remove
+   `/Library/LaunchDaemons/com.grove.orchard-worker.plist`, `com.grove.broker.plist` and
+   `com.grove.pf-vm.plist`, then flush the pf anchor `com.apple/grove-vm` (the Mac's own
+   `/etc/pf.conf` is untouched). `--restore-sleep` adds `pmset -a disablesleep 0`; without it the
+   Mac stays awake, since its owner may want that anyway.
+2. **As the worker user**, only once the root steps are done (so the daemons never restart into a
+   missing wrapper or credential): `~/.config/grove/{launchd,pf,credentials,run-orchard-worker.zsh}`
+   and the `registry-login.*` markers, `~/Applications/Grove Orchard Worker.app`, the
+   `~/.local/bin/orchard` symlink (only while it points into that app), any LaunchAgents an older
+   grove left in `~/Library/LaunchAgents`, and the worker and broker logs in `~/Library/Logs/grove`.
+   `config.yaml` stays unless `--purge`.
+
+With `--user`, the admin's grove renders the root script itself (it names only fixed system paths)
+and then runs the worker user's half as `sudo -n -u argos -H grove uninstall --role worker
+--from-admin`; nothing that user's process prints or writes becomes root script text. Homebrew,
+Tart and Tart's VM images (`~/.tart`) are left alone; `tart list` / `tart delete` clean those up.
+Re-running after a full uninstall changes nothing.
+
+The control plane is not told: a worker holds no credential that may revoke itself or delete
+Orchard records. The command ends by printing what to run on the control plane as its operator:
+
+```
+orchard delete worker <name>
+orchard list service-accounts      # then: orchard delete service-account grove-worker-<name>-<suffix>
+grove access list                  # then: grove access revoke <id>, for each device named <name>
+```
+
 ## Rotating the registry token
 
 If workers log in to `ghcr.io` (rather than the packages being made public — see docs/IMAGES.md
