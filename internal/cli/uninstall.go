@@ -276,6 +276,8 @@ The control plane still knows this worker. To forget it, run on the control plan
   orchard delete worker %[1]s
   orchard list service-accounts          # then: orchard delete service-account grove-worker-<name>-<suffix>
   grove access list                      # then: grove access revoke <id>, for each device named %[1]s
+
+(Re-joining under the same name with grove setup revokes the old access credentials itself.)
 `, shQuoteArg(name))
 }
 

@@ -259,6 +259,14 @@ orchard list service-accounts      # then: orchard delete service-account grove-
 grove access list                  # then: grove access revoke <id>, for each device named <name>
 ```
 
+Re-installing the Mac under the same name instead (`grove setup`) needs none of the `grove access`
+part: once the new join finishes, the control plane revokes that name's earlier join credentials
+itself. The old Orchard service account stays until you delete it.
+
+On a Mac whose Homebrew belongs to an admin, the worker user only trusts the taps grove installs
+from (trust is per user, in `~/.homebrew/trust.json`); tapping one that isn't there yet still needs
+the Homebrew owner.
+
 ## Rotating the registry token
 
 If workers log in to `ghcr.io` (rather than the packages being made public — see docs/IMAGES.md

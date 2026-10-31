@@ -94,21 +94,36 @@ func isUnknownBrewCommand(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "Unknown command")
 }
 
-// trustTap taps (if needed — `brew tap` on an already-tapped tap is a no-op) then trusts tap,
-// printing an explanation to out first so a human reading `grove install`'s output understands why
-// grove is about to mutate Homebrew's trust store. It treats `brew trust` being unknown entirely
-// (older Homebrew, no trust gate to satisfy) as success rather than a failure.
+// trustTap taps (if needed) then trusts tap, printing an explanation to out first so a human
+// reading `grove install`'s output understands why grove is about to mutate Homebrew's trust store.
+// It treats `brew trust` being unknown entirely (older Homebrew, no trust gate to satisfy) as
+// success rather than a failure.
+//
+// Trust is per user (~/.homebrew/trust.json), but tapping writes the Homebrew prefix. So a tap that
+// is already tapped is only trusted, which works on a Homebrew another user owns (a worker user on
+// an admin's Homebrew); only an untapped one needs the prefix to be this user's. And `brew trust`
+// can record the trust and still exit non-zero (on a shared Homebrew it then fails to refresh API
+// data it has no write access to), so a failure is checked against tap-info before it counts.
 func trustTap(ctx context.Context, r Runner, tap thirdPartyTap, out io.Writer) error {
-	if err := checkBrewWritable(ctx, r, tap); err != nil {
-		return err
+	info, infoErr := fetchTapInfo(ctx, r, tap.Name)
+	tapped := infoErr == nil && info.Installed
+	if !tapped {
+		if err := checkBrewWritable(ctx, r, tap); err != nil {
+			return err
+		}
 	}
 	fmt.Fprintf(out, "        Homebrew requires explicit trust for third-party taps; trusting %s (%s).\n",
 		tap.Name, tap.Reason)
-	if _, _, err := r.Run(ctx, "brew", "tap", tap.Name); err != nil {
-		return fmt.Errorf("brew tap %s: %w", tap.Name, err)
+	if !tapped {
+		if _, _, err := r.Run(ctx, "brew", "tap", tap.Name); err != nil {
+			return fmt.Errorf("brew tap %s: %w", tap.Name, err)
+		}
 	}
 	if _, _, err := r.Run(ctx, "brew", "trust", tap.Name); err != nil {
 		if isUnknownBrewCommand(err) {
+			return nil
+		}
+		if after, infoErr := fetchTapInfo(ctx, r, tap.Name); infoErr == nil && after.Installed && after.Trusted {
 			return nil
 		}
 		return fmt.Errorf("brew trust %s: %w", tap.Name, err)
@@ -116,10 +131,9 @@ func trustTap(ctx context.Context, r Runner, tap thirdPartyTap, out io.Writer) e
 	return nil
 }
 
-// checkBrewWritable refuses to run `brew tap`/`brew trust` when the Homebrew prefix belongs to
-// another user: those commands write to the prefix and could only fail halfway with a permission
-// error. It is lenient the other way too: if the prefix or its owner can't be determined, it
-// lets brew try.
+// checkBrewWritable refuses to run `brew tap` when the Homebrew prefix belongs to another user:
+// tapping writes to the prefix and could only fail halfway with a permission error. It is lenient
+// the other way too: if the prefix or its owner can't be determined, it lets brew try.
 func checkBrewWritable(ctx context.Context, r Runner, tap thirdPartyTap) error {
 	prefixOut, _, err := r.Run(ctx, "brew", "--prefix")
 	prefix := strings.TrimSpace(prefixOut)
@@ -135,9 +149,9 @@ func checkBrewWritable(ctx context.Context, r Runner, tap thirdPartyTap) error {
 	if err != nil || cur.Username == owner {
 		return nil
 	}
-	return fmt.Errorf("Homebrew at %s belongs to %s, not %s, so grove cannot tap or trust %s here; "+
-		"as %s run: brew tap %s && brew trust %s",
-		prefix, owner, cur.Username, tap.Name, owner, tap.Name, tap.Name)
+	return fmt.Errorf("Homebrew at %s belongs to %s, not %s, so grove cannot tap %s here; "+
+		"as %s run: brew tap %s, then run this again (grove then trusts it for %s)",
+		prefix, owner, cur.Username, tap.Name, owner, tap.Name, cur.Username)
 }
 
 // trustTapStep returns the idempotent "trust this tap" Step that a planner inserts immediately

@@ -4,6 +4,10 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **`grove setup --user` works on an admin-owned Homebrew.** A worker user no longer needs to own
+  Homebrew to trust a tap that is already tapped (trust is per user); grove only taps when the tap
+  is missing. A `brew trust` that records the trust but exits non-zero (it can't refresh Homebrew's
+  API data on someone else's prefix) now counts as trusted.
 - **`grove uninstall --role worker` removes a worker from its Mac.** One root script (one sudo, or
   one block for an admin) boots out and removes the Orchard worker, broker and VM firewall
   LaunchDaemons and flushes the `com.apple/grove-vm` pf anchor (`--restore-sleep` also re-enables
