@@ -154,6 +154,14 @@ admin, so a dedicated standard user keeps the worker and its jobs apart from the
    copied into `/Library/LaunchDaemons` as root's, private (0600) until their SHA-256 matches the
    plist the admin's grove renders, and removed instead of loaded if it doesn't.
 
+   Re-running `grove setup --user argos` on a Mac where `argos`'s worker is already installed
+   (both LaunchDaemons in `/Library/LaunchDaemons`, running as `argos`) does **not** join again: no
+   approval, no new credentials, no worker restart. It re-checks every step, fixes the ones that
+   no longer match (a plist changed by a grove upgrade, a daemon that isn't loaded, the firewall),
+   and asks for sudo only to run root steps that fail their check. To start over with a fresh join
+   (new credentials, or another control plane), pass `--rejoin`; `--server` naming a different
+   control plane than the installed one is refused without it.
+
    If Homebrew belongs to another user (the Mac's owner), `argos` can read its taps but not change
    them: if the `brew-trust:<tap>` step fails, run the `brew tap X && brew trust X` it prints as
    Homebrew's owner, then re-run setup. A registry login also cannot reach `argos`'s Keychain; setup

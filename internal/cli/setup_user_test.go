@@ -62,7 +62,7 @@ func TestSetupForUser_UserHalfOnStdinThenRootScriptRenderedHere(t *testing.T) {
 	t.Run("printed", func(t *testing.T) {
 		r := install.NewFakeRunner()
 		var out strings.Builder
-		got, err := setupForUser(context.Background(), r, base, testJoin, "octo", "registry-secret-4444",
+		got, err := setupForUser(context.Background(), r, base, handoffFor(testJoin, "registry-secret-4444"), "octo",
 			install.RootOptions{NoSudo: true, In: strings.NewReader(""), Out: &out})
 		if err != nil || got != install.RootPrinted {
 			t.Fatalf("= %v, %v", got, err)
@@ -113,7 +113,7 @@ func TestSetupForUser_UserHalfOnStdinThenRootScriptRenderedHere(t *testing.T) {
 		var out strings.Builder
 		// The script "runs" but installs nothing here, so the re-check fails; what matters is
 		// the order and that root ran exactly one script, this process's.
-		_, _ = setupForUser(context.Background(), r, base, testJoin, "", "",
+		_, _ = setupForUser(context.Background(), r, base, handoffFor(testJoin, ""), "",
 			install.RootOptions{Interactive: true, Yes: true, In: strings.NewReader(""), Out: &out})
 		var streamed, attached []install.Call
 		for _, c := range r.Calls {
@@ -143,7 +143,7 @@ func TestSetupForUser_UserHalfOnStdinThenRootScriptRenderedHere(t *testing.T) {
 func TestSetupForUser_RefusesRootAndAFailedUserHalf(t *testing.T) {
 	r := install.NewFakeRunner()
 	base := userBase(t, "root")
-	if _, err := setupForUser(context.Background(), r, base, testJoin, "", "", install.RootOptions{Out: &strings.Builder{}}); err == nil || len(r.Calls) != 0 {
+	if _, err := setupForUser(context.Background(), r, base, handoffFor(testJoin, ""), "", install.RootOptions{Out: &strings.Builder{}}); err == nil || len(r.Calls) != 0 {
 		t.Errorf("root: err %v, calls %v", err, r.Calls)
 	}
 
@@ -152,7 +152,7 @@ func TestSetupForUser_RefusesRootAndAFailedUserHalf(t *testing.T) {
 	r = install.NewFakeRunner()
 	r.Script("/usr/bin/sudo -n -u "+nobody.Username+" -H -- /opt/test/bin/grove setup --from-admin --grove-bin /opt/test/bin/grove",
 		install.FakeResult{Err: errors.New("exit status 1")})
-	if _, err := setupForUser(context.Background(), r, base, testJoin, "", "", install.RootOptions{Out: &strings.Builder{}}); err == nil {
+	if _, err := setupForUser(context.Background(), r, base, handoffFor(testJoin, ""), "", install.RootOptions{Out: &strings.Builder{}}); err == nil {
 		t.Fatal("a failed user half must stop setup")
 	}
 	for _, c := range r.Calls {
@@ -246,5 +246,43 @@ func TestRunSetupFromAdmin_NeedsTheJoinOnStdin(t *testing.T) {
 		if err := runSetupFromAdmin(cmd); err == nil {
 			t.Errorf("stdin %q accepted", in)
 		}
+	}
+}
+
+// A repair has no join: the user's half gets no credential at all and keeps what it has, and the
+// root script is still rendered here, for that user, with no controller URL to hand.
+func TestSetupForUser_RepairSendsNoCredentials(t *testing.T) {
+	nobody := nobodyUser(t)
+	base := userBase(t, nobody.Username)
+	r := install.NewFakeRunner()
+	var out strings.Builder
+	h := adminHandoff{ServerURL: "http://100.64.0.1:6130", Repair: true}
+	got, err := setupForUser(context.Background(), r, base, h, "", install.RootOptions{NoSudo: true, In: strings.NewReader(""), Out: &out})
+	if err != nil || got != install.RootPrinted {
+		t.Fatalf("= %v, %v", got, err)
+	}
+	var sent adminHandoff
+	if err := json.Unmarshal([]byte(r.Calls[0].Stdin), &sent); err != nil {
+		t.Fatal(err)
+	}
+	if !sent.Repair || sent.BootstrapToken != "" || sent.BrokerToken != "" || sent.ClientToken != "" || sent.ControllerURL != "" {
+		t.Errorf("repair handoff = %+v", sent)
+	}
+	if !strings.Contains(out.String(), "gui/"+nobody.Uid+"/com.grove.broker") || strings.Contains(out.String(), "not-used-by-root-steps") {
+		t.Errorf("root script:\n%s", out.String())
+	}
+}
+
+func TestRunSetupFromAdmin_RepairNeedsNoCredentials(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("refuses root before reading stdin")
+	}
+	// Past the credential check it would run the real install, so only the refusal side is
+	// asserted: a non-repair handoff without credentials is refused, a repair one is not refused
+	// for that reason.
+	cmd := &cobra.Command{}
+	cmd.SetIn(strings.NewReader(`{"repair":false}`))
+	if err := runSetupFromAdmin(cmd); err == nil || !strings.Contains(err.Error(), "no worker credentials") {
+		t.Errorf("non-repair without credentials: %v", err)
 	}
 }
