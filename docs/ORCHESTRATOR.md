@@ -68,7 +68,7 @@ when `idempotencyKey` matched an existing job (nothing was re-dispatched).
 
 | grove `Job.status` | Typical orchestrator status |
 |---|---|
-| `pending` | `pending` |
+| `pending` | `pending`. A pending job with `pendingReason` and `queuedUntil` is waiting (for a free worker, or for a snoozed one), not failing; keep waiting, do not resubmit. `evictions` lists times it was moved off a snoozed worker |
 | `running` | `running` |
 | `success` | `succeeded` |
 | `failed` | `failed` |

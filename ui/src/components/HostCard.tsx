@@ -40,11 +40,19 @@ export function HostCard({
     mutationFn: () => api.resumeWorker(host),
     onSuccess: invalidate,
   });
+  const wake = useMutation({
+    mutationFn: () => api.wakeWorker(host),
+    onSuccess: invalidate,
+  });
   const recycle = useMutation({
     mutationFn: (name: string) => api.recycleVM(name),
     onSuccess: invalidate,
   });
 
+  const snoozedUntil = worker?.snoozedUntil ? new Date(worker.snoozedUntil) : undefined;
+  const snoozed = snoozedUntil !== undefined && snoozedUntil.getTime() > Date.now();
+  // The holder of worker:snooze:<this host> may wake it, like an operator.
+  const canWake = operator || (principal?.scopes.includes(`worker:snooze:${host}`) ?? false);
   const slots = worker?.capacity?.vmSlots ?? 0;
   const used = worker?.running ?? vms.length;
 
@@ -59,7 +67,12 @@ export function HostCard({
           <span className="mono truncate text-base font-semibold">{host}</span>
           {worker && <StatusPill status={worker.status} />}
         </div>
-		{operator && worker &&
+		{snoozed && canWake && (
+          <Button variant="primary" size="sm" disabled={wake.isPending} onClick={() => wake.mutate()}>
+            {wake.isPending ? "waking…" : "Wake"}
+          </Button>
+        )}
+		{!snoozed && operator && worker &&
           (worker.cordoned ? (
             <Button
               variant="primary"
@@ -75,6 +88,13 @@ export function HostCard({
             </Button>
           ))}
       </div>
+
+      {snoozed && snoozedUntil && (
+        <div className="text-xs" style={{ color: "var(--fg-muted)" }}>
+          snoozed until {snoozedUntil.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+          {worker?.pauseReasons && worker.pauseReasons.length > 1 ? ` (also paused: ${worker.pauseReasons.filter((r) => r !== "snooze").join(", ")})` : ""}
+        </div>
+      )}
 
       {/* Line 2: arch + segmented slot utilization bar. */}
       <div className="flex items-center gap-2 text-xs" style={{ color: "var(--fg-muted)" }}>

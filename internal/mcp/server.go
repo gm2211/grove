@@ -20,7 +20,12 @@ node counts) before submitting work. Use grove_run to submit a build or agent jo
 raw shell requires control-plane operator scope. By default it waits for completion and returns exit
 code and a log tail. Use grove_job_status / grove_job_logs / grove_job_cancel to manage jobs
 submitted with wait=false or by other clients. grove_recycle_vm and grove_pause_worker are
-fleet-maintenance actions — use them deliberately, they affect real machines.`
+fleet-maintenance actions — use them deliberately, they affect real machines.
+
+A snoozed worker belongs to its owner, who is using that machine: do not wake it (grove_wake_worker)
+to get your job to run, and do not treat it as broken. Jobs for a pool wait in the pool's queue and
+take whichever worker frees up first; if every worker that could run a job is snoozed the job stays
+pending with a pending_reason and a queued_until time, and resumes by itself when the snooze ends.`
 
 // NewServer builds the grove MCP server, wired against the grove HTTP API at cfg.Server.URL
 // (Authorization: Bearer cfg.Server.Token). version is reported to clients as the server's
@@ -88,6 +93,16 @@ func newServerWithClient(client *apiclient.Client, version string) *mcpsdk.Serve
 		Name:        "grove_pause_worker",
 		Description: "Cordon (paused=true) or resume (paused=false) scheduling on a worker Mac. Cordoning stops new VMs/jobs from landing there without disturbing what's already running.",
 	}, h.pauseWorker)
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "grove_snooze_worker",
+		Description: "Snooze a worker Mac for a while so its owner can use it: no new work, VMs drain, and it resumes by itself (default 2h, max 24h). Omit name for this Mac's own worker. With now=true, build/shell jobs running there are requeued on other workers; agent jobs keep running. Only snooze the owner's own Mac.",
+	}, h.snoozeWorker)
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "grove_wake_worker",
+		Description: "End a worker's snooze now. Only do this when the worker's owner asked; a snoozed worker is not available to jobs. It stays paused if an operator or health pause also holds it.",
+	}, h.wakeWorker)
 
 	s.AddResource(&mcpsdk.Resource{
 		URI:         fleetResourceURI,

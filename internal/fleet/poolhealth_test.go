@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gm2211/grove/internal/orchard"
+	"github.com/gm2211/grove/internal/snooze"
 )
 
 func TestPoolHealth_EnrolmentErrorNamesPoolAndClears(t *testing.T) {
@@ -72,5 +73,63 @@ func TestBootLoops_GroupsByWorker(t *testing.T) {
 	}
 	if d := loops[0].Describe(); !strings.Contains(d, "2 VM(s) boot-looping") || !strings.Contains(d, "9 restarts") {
 		t.Errorf("describe = %q", d)
+	}
+}
+
+type pausesStub map[string]snooze.Entry
+
+func (p pausesStub) Get(w string) snooze.Entry { return p[w] }
+
+func TestPoolHealth_WaitReason(t *testing.T) {
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	until := now.Add(2 * time.Hour)
+	stub := pausesStub{
+		"g-macbook-m5.local": {Snooze: &snooze.Snooze{Until: until, Mode: snooze.ModeDrain}},
+		"opmac":              {Operator: &snooze.Operator{By: "me"}},
+	}
+	h := &PoolHealth{Pauses: stub}
+
+	// Only worker is snoozed: exclusive wait.
+	h.ObserveFleet(nil, Plan{
+		Paused:     []PlannedPause{{Pool: "macos", Workers: []string{"g-macbook-m5.local"}}},
+		PausedOnly: []PlannedPause{{Pool: "macos", Workers: []string{"g-macbook-m5.local"}}},
+	})
+	reason, wu, excl := h.WaitReason("macos", now)
+	if !excl || !wu.Equal(until) || !strings.Contains(reason, "queued: workers for pool macos snoozed (g-macbook-m5.local snoozed until ") {
+		t.Fatalf("wait = %q %v %v", reason, wu, excl)
+	}
+	// Exclusive and snoozed: the unplaceable path must be skipped by the caller, but the health
+	// reason still reads as paused.
+	if r := h.UnplaceableReason("macos"); !strings.Contains(r, "every worker for pool macos is paused") {
+		t.Fatalf("reason = %q", r)
+	}
+
+	// Other Macs exist (busy): not exclusive, worded as waiting for a free worker, not the laptop.
+	h.ObserveFleet(nil, Plan{Paused: []PlannedPause{{Pool: "macos", Workers: []string{"g-macbook-m5.local"}}}})
+	reason, wu, excl = h.WaitReason("macos", now)
+	if excl || !wu.Equal(until) || !strings.HasPrefix(reason, "waiting for a free macos worker (g-macbook-m5.local snoozed until ") {
+		t.Fatalf("wait = %q %v %v", reason, wu, excl)
+	}
+	if r := h.UnplaceableReason("macos"); r != "" {
+		t.Fatalf("reason = %q", r)
+	}
+
+	// Expired snooze, operator-only pause: no wait, clearer fail-fast message.
+	h.ObserveFleet(nil, Plan{
+		Paused:     []PlannedPause{{Pool: "mac2", Workers: []string{"opmac"}}},
+		PausedOnly: []PlannedPause{{Pool: "mac2", Workers: []string{"opmac"}}},
+	})
+	if r, _, _ := h.WaitReason("mac2", now); r != "" {
+		t.Fatalf("operator pause must not wait: %q", r)
+	}
+	if r := h.UnplaceableReason("mac2"); !strings.Contains(r, "opmac (operator pause)") || !strings.Contains(r, "grove worker resume") {
+		t.Fatalf("reason = %q", r)
+	}
+	if r, _, _ := h.WaitReason("macos", until.Add(time.Minute)); r != "" {
+		t.Fatalf("expired snooze waits: %q", r)
+	}
+	var none *PoolHealth
+	if r, _, _ := none.WaitReason("x", now); r != "" {
+		t.Fatal("nil PoolHealth waits")
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/gm2211/grove/internal/server"
 )
 
 // TestJobLogs_RetriesPendingUntilAllocated is the client-side regression test for the live-run
@@ -117,5 +119,43 @@ func TestJobLogs_ErrorStatusReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "404") {
 		t.Errorf("err = %v, want it to mention the 404 status", err)
+	}
+}
+
+func TestSnoozeWakeAndStatus(t *testing.T) {
+	var gotBody, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody, gotPath = string(b), r.Method+" "+r.URL.Path
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/snooze") && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"worker":"g-mac.local","until":"2026-11-01T14:00:00Z","mode":"now","reasons":["snooze"],"requeued":["a"],"leftRunning":[]}`))
+		case strings.HasSuffix(r.URL.Path, "/snooze"):
+			_, _ = w.Write([]byte(`{"worker":"g-mac.local","snoozed":true,"reasons":["snooze"]}`))
+		case strings.HasSuffix(r.URL.Path, "/wake"):
+			_, _ = w.Write([]byte(`{"worker":"g-mac.local","resumed":false,"stillPausedBecause":["health"]}`))
+		case r.URL.Path == "/api/v1/whoami":
+			_, _ = w.Write([]byte(`{"id":"x","name":"n","scopes":["worker:snooze:g-mac.local"]}`))
+		}
+	}))
+	defer srv.Close()
+	c := New(srv.URL, "t")
+	ctx := context.Background()
+
+	res, err := c.SnoozeWorker(ctx, "g-mac.local", server.SnoozeRequest{For: "2h", Now: true})
+	if err != nil || res.Mode != "now" || len(res.Requeued) != 1 {
+		t.Fatalf("snooze = %+v %v", res, err)
+	}
+	if gotPath != "POST /api/v1/workers/g-mac.local/snooze" || !strings.Contains(gotBody, `"for":"2h"`) || !strings.Contains(gotBody, `"now":true`) {
+		t.Errorf("request = %s %s", gotPath, gotBody)
+	}
+	if w, err := c.WakeWorker(ctx, "g-mac.local"); err != nil || w.Resumed || w.StillPausedBecause[0] != "health" {
+		t.Fatalf("wake = %+v %v", w, err)
+	}
+	if st, err := c.WorkerSnooze(ctx, "g-mac.local"); err != nil || !st.Snoozed {
+		t.Fatalf("status = %+v %v", st, err)
+	}
+	if p, err := c.WhoAmI(ctx); err != nil || p.Scopes[0] != "worker:snooze:g-mac.local" {
+		t.Fatalf("whoami = %+v %v", p, err)
 	}
 }

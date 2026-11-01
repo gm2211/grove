@@ -190,6 +190,10 @@ type fakeDispatch struct {
 	cancelCalls []string
 	cancelErr   error
 
+	evictCalls    []string
+	evictRequeued []string
+	evictLeft     []string
+
 	logsFunc func(ctx context.Context, id string, follow bool) (io.ReadCloser, error)
 
 	logLinesFunc func(ctx context.Context, id string, follow bool) (<-chan dispatch.LogLine, error)
@@ -302,4 +306,12 @@ func (f *fakeDispatch) UpdateCredentials(ctx context.Context, id string, creds [
 func (f *fakeDispatch) RunReconciler(ctx context.Context, interval time.Duration) error {
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+// Evict makes fakeDispatch a dispatch.Evictor.
+func (f *fakeDispatch) Evict(_ context.Context, worker, reason string) ([]string, []string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.evictCalls = append(f.evictCalls, worker)
+	return f.evictRequeued, f.evictLeft, nil
 }

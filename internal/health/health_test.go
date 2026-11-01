@@ -4,12 +4,14 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/orchard"
+	"github.com/gm2211/grove/internal/snooze"
 )
 
 type fakeJobs struct {
@@ -144,5 +146,71 @@ func TestQuarantinedJobsSayNothingAboutMachines(t *testing.T) {
 	m.Tick(context.Background())
 	if len(o.deleted) != 0 || len(o.paused) != 0 {
 		t.Fatalf("acted on a quarantined job's losses: deleted %v paused %v", o.deleted, o.paused)
+	}
+}
+
+func lossyJobs() []dispatch.Job {
+	return []dispatch.Job{
+		job("a", attempt("linux-mac1-0", "mac1", dispatch.AttemptLost, 40*time.Minute)),
+		job("b", attempt("linux-mac1-1", "mac1", dispatch.AttemptLost, 30*time.Minute)),
+		job("c", attempt("linux-mac1-0", "mac1", dispatch.AttemptLost, 20*time.Minute)),
+	}
+}
+
+func newStore(t *testing.T) *snooze.Store {
+	t.Helper()
+	st, err := snooze.NewStore(filepath.Join(t.TempDir(), "pauses.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+// Evictions are grove moving a job off a snoozed Mac, not the Mac losing it.
+func TestEvictedAttemptsSayNothingAboutMachines(t *testing.T) {
+	m, o := newMonitor([]dispatch.Job{
+		job("a", attempt("linux-mac1-0", "mac1", dispatch.AttemptEvicted, 40*time.Minute)),
+		job("b", attempt("linux-mac1-1", "mac1", dispatch.AttemptEvicted, 30*time.Minute)),
+		job("c", attempt("linux-mac1-0", "mac1", dispatch.AttemptEvicted, 20*time.Minute)),
+		job("d", attempt("linux-mac1-1", "mac1", dispatch.AttemptEvicted, 10*time.Minute)),
+	})
+	m.Tick(context.Background())
+	if len(o.paused) != 0 || len(o.deleted) != 0 {
+		t.Fatalf("evictions acted on: paused=%v deleted=%v", o.paused, o.deleted)
+	}
+}
+
+func TestHealthPauseIsRecordedInTheStore(t *testing.T) {
+	m, o := newMonitor(lossyJobs())
+	st := newStore(t)
+	m.Pauses = st
+	m.Tick(context.Background())
+	if !slices.Equal(o.paused, []string{"mac1"}) {
+		t.Fatalf("paused = %v", o.paused)
+	}
+	if e := st.Get("mac1"); e.Health == nil || e.Health.Jobs != 3 {
+		t.Fatalf("entry = %+v", e)
+	}
+}
+
+// A Mac the owner snoozed still gets its health reason recorded, so the snooze ending does not
+// put it back to work.
+func TestSnoozedMachineStillRecordsHealthReason(t *testing.T) {
+	m, o := newMonitor(lossyJobs())
+	o.workers[0].SchedulingPaused = true
+	st := newStore(t)
+	if err := st.SetSnooze("mac1", snooze.Snooze{Until: now.Add(time.Hour), Mode: snooze.ModeDrain, At: now}); err != nil {
+		t.Fatal(err)
+	}
+	m.Pauses = st
+	m.Tick(context.Background())
+	if len(o.paused) != 0 {
+		t.Fatalf("Orchard was called for an already-paused machine: %v", o.paused)
+	}
+	if e := st.Get("mac1"); e.Health == nil {
+		t.Fatalf("health reason not recorded: %+v", e)
+	}
+	if got := st.Reasons("mac1", now.Add(2*time.Hour)); !slices.Equal(got, []string{snooze.ReasonHealth}) {
+		t.Fatalf("after the snooze: reasons = %v", got)
 	}
 }

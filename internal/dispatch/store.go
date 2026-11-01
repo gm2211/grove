@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 )
 
 // record is what's persisted for one submitted job. It wraps the public Job (returned to API
@@ -23,6 +24,9 @@ type record struct {
 	// worthless without the in-memory registry entry, and it never leaves the record: the API
 	// returns only Job.
 	Placeholders map[string]string `json:"placeholders,omitempty"`
+	// PendingSince, when later than SubmittedAt, is where the pending timeout starts counting:
+	// the end of a snooze that kept the job queued (see PoolWaiter).
+	PendingSince *time.Time `json:"pendingSince,omitempty"`
 }
 
 // store is a thread-safe in-memory job store, persisted as JSON so history survives restarts.

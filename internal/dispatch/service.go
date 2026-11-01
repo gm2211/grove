@@ -58,6 +58,19 @@ type PoolHealth interface {
 	UnplaceableReason(pool string) string
 }
 
+// PoolWaiter is an optional extension of PoolHealth (`*fleet.PoolHealth` implements it): it says
+// when a pool's jobs should wait because a worker of the pool is snoozed. The workers of a pool are
+// fungible and the queue is per pool; the waiter never holds a job for one worker.
+//
+// reason is the PendingReason to show ("" when no snooze concerns the pool); until is the end of
+// the latest snooze among the pool's workers; exclusive is true when no other worker could ever
+// run the pool's jobs, so the job must be queued rather than failed as unplaceable. A
+// non-exclusive wait only pushes the pending timeout past until: a busy pool may stay busy that
+// long, and the task must not be lost to a snooze.
+type PoolWaiter interface {
+	WaitReason(pool string, now time.Time) (reason string, until time.Time, exclusive bool)
+}
+
 // DefaultReconcileInterval is the tick interval `grove serve` passes to RunReconciler.
 const DefaultReconcileInterval = 30 * time.Second
 
@@ -574,7 +587,19 @@ func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {
 		return nil, fmt.Errorf("dispatch: list allocations for %s: %w", rec.ID, err)
 	}
 
-	if len(allocs) == 0 && rec.Status == StatusPending && time.Since(rec.SubmittedAt) > s.opts.PendingTimeout {
+	var wait poolWait
+	if len(allocs) == 0 && rec.Status == StatusPending {
+		wait = s.poolWait(rec, time.Now().UTC())
+		if wait.until.After(rec.SubmittedAt) && (rec.PendingSince == nil || wait.until.After(*rec.PendingSince)) {
+			u := wait.until
+			rec.PendingSince = &u
+		}
+	}
+	pendingFrom := rec.SubmittedAt
+	if rec.PendingSince != nil && rec.PendingSince.After(pendingFrom) {
+		pendingFrom = *rec.PendingSince
+	}
+	if len(allocs) == 0 && rec.Status == StatusPending && time.Since(pendingFrom) > s.opts.PendingTimeout {
 		// Nomad still knows about the job but has never placed it — the fleet is full for this
 		// pool, or a constraint (e.g. meta.pool) can't be satisfied by any current node. Waiting
 		// longer won't help without an operator noticing, so stop showing it as merely "pending".
@@ -644,7 +669,14 @@ func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {
 			updated.PendingReason = pendingReason(evals)
 			if len(allocs) == 0 {
 				s.maybeFallBack(ctx, rec, &updated, evals)
-				if reason := s.unplaceableReason(rec, evals, time.Now().UTC()); reason != "" {
+				if wait.reason != "" {
+					updated.PendingReason = wait.reason
+					u := wait.until
+					updated.QueuedUntil = &u
+				} else {
+					updated.QueuedUntil = nil
+				}
+				if reason := s.unplaceableReason(rec, evals, time.Now().UTC()); reason != "" && !wait.exclusive {
 					if err := s.nomad.StopJob(ctx, rec.NomadJobID, true); err != nil && !errors.Is(err, nomad.ErrNotFound) {
 						return nil, fmt.Errorf("dispatch: stop unplaceable job %s: %w", rec.ID, err)
 					}
@@ -654,6 +686,7 @@ func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {
 		}
 	} else {
 		updated.PendingReason = ""
+		updated.QueuedUntil = nil
 	}
 
 	rec.Job = updated
@@ -832,6 +865,32 @@ func (s *service) unplaceableReason(rec *record, evals []nomad.Evaluation, now t
 		return "" // runs on the control plane, not on an enrolled VM
 	}
 	return s.opts.PoolHealth.UnplaceableReason(pool)
+}
+
+// poolWait is what the PoolWaiter says about rec's pool right now.
+type poolWait struct {
+	reason    string
+	until     time.Time
+	exclusive bool
+}
+
+func (s *service) poolWait(rec *record, now time.Time) poolWait {
+	waiter, ok := s.opts.PoolHealth.(PoolWaiter)
+	if !ok {
+		return poolWait{}
+	}
+	pool := rec.Request.Pool
+	if rec.Fallback != nil {
+		pool = rec.Fallback.To
+	}
+	if s.pools[pool].Isolated {
+		return poolWait{} // the sealed driver waits for its own machines
+	}
+	reason, until, exclusive := waiter.WaitReason(pool, now)
+	if reason == "" {
+		return poolWait{}
+	}
+	return poolWait{reason: reason, until: until, exclusive: exclusive}
 }
 
 // markEnded marks rec with a terminal status and reason; see markLost.

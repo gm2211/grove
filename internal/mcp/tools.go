@@ -10,6 +10,7 @@ import (
 
 	"github.com/gm2211/grove/internal/apiclient"
 	"github.com/gm2211/grove/internal/dispatch"
+	"github.com/gm2211/grove/internal/server"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -58,6 +59,10 @@ type runResult struct {
 	DurationSeconds float64 `json:"duration_seconds,omitempty"`
 	LogTail         string  `json:"log_tail,omitempty"`
 	TimedOutWaiting bool    `json:"timed_out_waiting,omitempty"`
+	// PendingReason and QueuedUntil say why a job that is still pending has not started: it is
+	// queued for a free worker or a snoozed one, not failing.
+	PendingReason string `json:"pending_reason,omitempty"`
+	QueuedUntil   string `json:"queued_until,omitempty"`
 }
 
 // pollInterval is how often grove_run polls job status while waiting.
@@ -150,7 +155,7 @@ func (h *handlers) awaitJob(ctx context.Context, req *mcpsdk.CallToolRequest, jo
 		if progressToken != nil && session != nil {
 			_ = session.NotifyProgress(ctx, &mcpsdk.ProgressNotificationParams{
 				ProgressToken: progressToken,
-				Message:       fmt.Sprintf("job %s: %s", jobID, job.Status),
+				Message:       progressMessage(jobID, job),
 				Progress:      float64(attempt),
 			})
 		}
@@ -172,6 +177,10 @@ func (h *handlers) awaitJob(ctx context.Context, req *mcpsdk.CallToolRequest, jo
 			if !isTerminal(job.Status) {
 				res.TimedOutWaiting = true
 			}
+			res.PendingReason = job.PendingReason
+			if job.QueuedUntil != nil && job.Status == dispatch.StatusPending {
+				res.QueuedUntil = job.QueuedUntil.Format(time.RFC3339)
+			}
 			if rc, lerr := h.client.JobLogs(ctx, jobID, false); lerr == nil {
 				data, _ := io.ReadAll(rc)
 				rc.Close()
@@ -188,6 +197,16 @@ func (h *handlers) awaitJob(ctx context.Context, req *mcpsdk.CallToolRequest, jo
 		elapsed += pollInterval.Seconds()
 		_ = elapsed
 	}
+}
+
+// progressMessage is the progress line for a polled job: its status, plus why it is still
+// pending when grove says so (queued behind a snooze, waiting for a free worker).
+func progressMessage(jobID string, job *dispatch.Job) string {
+	msg := fmt.Sprintf("job %s: %s", jobID, job.Status)
+	if job.Status == dispatch.StatusPending && job.PendingReason != "" {
+		msg += " (" + job.PendingReason + ")"
+	}
+	return msg
 }
 
 func isTerminal(s dispatch.Status) bool {
@@ -325,4 +344,66 @@ func (h *handlers) pauseWorker(ctx context.Context, _ *mcpsdk.CallToolRequest, a
 		return nil, nil, err
 	}
 	return nil, &pauseWorkerResult{Name: args.Name, Paused: args.Paused}, nil
+}
+
+// --- grove_snooze_worker / grove_wake_worker ----------------------------------------------
+
+type snoozeWorkerArgs struct {
+	Name  string `json:"name,omitempty" jsonschema:"the worker (Mac) to snooze; omit for this Mac's own worker"`
+	For   string `json:"for,omitempty" jsonschema:"how long, e.g. 90m or 2h (default 2h, max 24h)"`
+	Until string `json:"until,omitempty" jsonschema:"snooze until this RFC 3339 time instead of for a duration"`
+	Now   bool   `json:"now,omitempty" jsonschema:"also requeue running build/shell jobs on other workers; agent jobs are left running"`
+}
+
+func (h *handlers) snoozeWorker(ctx context.Context, _ *mcpsdk.CallToolRequest, args snoozeWorkerArgs) (*mcpsdk.CallToolResult, *server.SnoozeResponse, error) {
+	name := strings.TrimSpace(args.Name)
+	if name == "" {
+		var err error
+		if name, err = h.ownWorker(ctx); err != nil {
+			return nil, nil, err
+		}
+	}
+	res, err := h.client.SnoozeWorker(ctx, name, server.SnoozeRequest{For: args.For, Until: args.Until, Now: args.Now})
+	if err != nil {
+		return nil, nil, err
+	}
+	return nil, res, nil
+}
+
+type wakeWorkerArgs struct {
+	Name string `json:"name,omitempty" jsonschema:"the worker to wake; omit for this Mac's own worker"`
+}
+
+func (h *handlers) wakeWorker(ctx context.Context, _ *mcpsdk.CallToolRequest, args wakeWorkerArgs) (*mcpsdk.CallToolResult, *server.WakeResponse, error) {
+	name := strings.TrimSpace(args.Name)
+	if name == "" {
+		var err error
+		if name, err = h.ownWorker(ctx); err != nil {
+			return nil, nil, err
+		}
+	}
+	res, err := h.client.WakeWorker(ctx, name)
+	if err != nil {
+		return nil, nil, err
+	}
+	return nil, res, nil
+}
+
+// ownWorker is the worker this credential may snooze, when it holds exactly one
+// worker:snooze:<name> scope.
+func (h *handlers) ownWorker(ctx context.Context) (string, error) {
+	p, err := h.client.WhoAmI(ctx)
+	if err != nil {
+		return "", err
+	}
+	var names []string
+	for _, s := range p.Scopes {
+		if w, ok := strings.CutPrefix(s, server.ScopeSnoozePrefix); ok {
+			names = append(names, w)
+		}
+	}
+	if len(names) != 1 {
+		return "", errors.New("name is required: this credential does not name exactly one worker it may snooze")
+	}
+	return names[0], nil
 }

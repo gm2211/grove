@@ -14,6 +14,7 @@ import (
 
 	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/orchard"
+	"github.com/gm2211/grove/internal/snooze"
 )
 
 // Defaults for Monitor's thresholds.
@@ -35,6 +36,14 @@ type Monitor struct {
 	Orchard orchard.Client
 	Log     *slog.Logger
 	Now     func() time.Time
+
+	// Pauses, when set (the snooze store), is told about every machine the monitor pauses, so a
+	// snooze ending later does not resume a machine health stopped. A machine already paused
+	// only by a snooze still gets its health reason recorded, with no Orchard call.
+	Pauses interface {
+		Get(worker string) snooze.Entry
+		SetHealth(worker string, at time.Time, jobs int) error
+	}
 
 	Window        time.Duration
 	VMLosses      int
@@ -113,7 +122,21 @@ func (m *Monitor) Tick(ctx context.Context) {
 	for machine, losses := range byMachine {
 		since := m.paused[machine]
 		jobs, vms := losses.after(since)
-		if machine == "" || alreadyPaused[machine] || jobs < m.MachineLosses || vms < 2 {
+		if machine == "" || jobs < m.MachineLosses || vms < 2 {
+			continue
+		}
+		if alreadyPaused[machine] {
+			// Paused by a snooze alone: the losses still say the machine is unhealthy, and the
+			// snooze ending must not put it back to work.
+			if m.Pauses != nil {
+				if e := m.Pauses.Get(machine); e.Health == nil && e.Operator == nil && e.Active(m.Now()) {
+					if err := m.Pauses.SetHealth(machine, m.Now(), jobs); err != nil {
+						m.Log.Warn("health: could not record the pause reason", "machine", machine, "err", err)
+					} else {
+						m.paused[machine] = m.Now()
+					}
+				}
+			}
 			continue
 		}
 		m.Log.Warn("health: stopping work on a machine whose VMs keep losing jobs; resume it with `grove worker resume`",
@@ -123,6 +146,11 @@ func (m *Monitor) Tick(ctx context.Context) {
 			continue
 		}
 		m.paused[machine] = m.Now()
+		if m.Pauses != nil {
+			if err := m.Pauses.SetHealth(machine, m.Now(), jobs); err != nil {
+				m.Log.Warn("health: could not record the pause reason", "machine", machine, "err", err)
+			}
+		}
 	}
 }
 

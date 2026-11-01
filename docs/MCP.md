@@ -24,6 +24,8 @@ HTTPS/HTTP to the configured Grove server.
 | `grove_job_cancel` | Cancel a running or pending job. |
 | `grove_recycle_vm` | Drain + delete a VM by name; the fleet reconciler recreates it from its image. |
 | `grove_pause_worker` | Cordon/resume scheduling on a worker Mac. |
+| `grove_snooze_worker` | Snooze a worker Mac for a while (`name?`, `for?`, `until?`, `now?`); it resumes by itself. Defaults to this credential's own worker. |
+| `grove_wake_worker` | End a snooze early (`name?`). Only when the owner asked: a snoozed worker is not available to jobs. |
 
 **Resources**
 
@@ -134,6 +136,9 @@ Recycle a wedged VM:
 - Raw shell jobs need the operator credential or a credential explicitly issued `dispatch:shell`.
   Named secrets are rejected until grove can resolve them. Worker pause/resume, VM recycle, join approval, and device issue/revocation
   require the control-plane operator credential.
+- `grove_snooze_worker` and `grove_wake_worker` need operator scope or `worker:snooze:<worker>`.
+  `grove_run` results and progress messages carry `pending_reason` and `queued_until` for a job
+  queued behind a snooze; `grove_fleet` counts `workers.snoozed`.
 - `grove_recycle_vm` and `grove_pause_worker` require operator scope and affect real machines
   immediately.
 - Every HTTP call the server makes is time-bounded; a wedged or unreachable grove server

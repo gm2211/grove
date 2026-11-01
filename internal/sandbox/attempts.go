@@ -43,6 +43,9 @@ func (l *attemptLog) finish(i int, code int, started bool, lastMessage string, c
 	switch {
 	case canceled || code == ExitCanceled:
 		a.Outcome = dispatch.AttemptCanceled
+	case code == exitEvicted:
+		a.Outcome = dispatch.AttemptEvicted
+		a.Reason = lastMessage
 	case code == ExitLost:
 		a.Outcome = dispatch.AttemptLost
 		a.Reason = lastMessage
@@ -63,7 +66,16 @@ func (l *attemptLog) quarantine(reason string) {
 	l.save()
 }
 
-func (l *attemptLog) count() int { return len(l.record.Attempts) }
+// count is how many attempts count towards MaxAttempts: evicted ones do not.
+func (l *attemptLog) count() int {
+	n := 0
+	for _, a := range l.record.Attempts {
+		if a.Outcome != dispatch.AttemptEvicted {
+			n++
+		}
+	}
+	return n
+}
 
 func (l *attemptLog) save() {
 	if l.dir == "" || l.record.JobID == "" {

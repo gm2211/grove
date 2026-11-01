@@ -96,6 +96,11 @@ export interface FleetEntry {
   capacity?: FleetCapacity;
   running: number;
   labels?: Record<string, string>;
+  // Worker entries only: the owner's active snooze (RFC 3339 end, and "drain" | "now"), and every
+  // reason the worker is paused for ("snooze", "health", "operator").
+  snoozedUntil?: string;
+  snoozeMode?: string;
+  pauseReasons?: string[];
   raw?: Record<string, unknown>;
 }
 

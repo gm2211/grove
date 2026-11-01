@@ -72,6 +72,11 @@ func requiredScope(r *http.Request) string {
 	if path == "/whoami" {
 		return ScopeRead
 	}
+	// /workers/<name>/snooze and /wake are open to the operator and to the holder of
+	// worker:snooze:<name>; the rest of /workers/ stays operator-only.
+	if worker, ok := snoozeRouteWorker(path); ok && validWorkerName(worker) {
+		return SnoozeScope(worker)
+	}
 	// /github/ is operator-only for reads too: its status names the repositories and the window
 	// the control plane is currently willing to clone privately.
 	if path == "/access" || strings.HasPrefix(path, "/access/") || path == "/secrets" || strings.HasPrefix(path, "/secrets/") || strings.HasPrefix(path, "/join/approve/") ||
@@ -90,6 +95,19 @@ func requiredScope(r *http.Request) string {
 		return ScopeDispatch
 	}
 	return ScopeRead
+}
+
+// snoozeRouteWorker extracts <name> from /workers/<name>/snooze or /workers/<name>/wake.
+func snoozeRouteWorker(path string) (string, bool) {
+	rest, ok := strings.CutPrefix(path, "/workers/")
+	if !ok {
+		return "", false
+	}
+	name, action, ok := strings.Cut(rest, "/")
+	if !ok || (action != "snooze" && action != "wake") {
+		return "", false
+	}
+	return name, true
 }
 
 // withMiddleware wraps next with (in order, outside-in) request logging, same-origin CORS,

@@ -342,7 +342,16 @@ of the last hour:
   between, has its scheduling paused, so no new job goes to it until an operator runs `grove
   worker resume`.
 
-Quarantined jobs are left out of both counts. Reruns and quarantine cover sealed pools only; a
+Quarantined jobs are left out of both counts, and so are `evicted` attempts: when a Mac is snoozed
+with `grove worker snooze --now`, the driver stops the job in that Mac's VM and reruns it in
+another machine's, recording the first attempt as `evicted`. It is not a loss, so it never counts
+toward quarantine, the 3 runs or the health rules above.
+
+A job that cannot start because of a snooze is queued, not failed. Its `pendingReason` says so
+and `queuedUntil` is when the snoozed worker is due back. The queue belongs to the pool: any other
+matching worker takes the job as soon as it is free, and the 30 minute pending timeout counts
+from `queuedUntil`. A shared-pool job moved off a snoozed worker by `--now` lists the moves in
+`evictions` (`worker`, `at`, `reason`). Reruns and quarantine cover sealed pools only; a
 shared pool's job that is lost stays lost.
 
 ### Artifact retention

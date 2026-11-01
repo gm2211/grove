@@ -128,6 +128,20 @@ type Plan struct {
 	// Unmatched lists the shared pools that no online, schedulable worker can host: no VM of
 	// them can exist until a matching worker appears, so their jobs can never be placed.
 	Unmatched []string
+	// Paused lists, per shared pool, the workers matching its selector that are paused
+	// (Orchard SchedulingPaused): a snooze, an operator pause or a health pause. Additive: the
+	// pool may still have schedulable workers.
+	Paused []PlannedPause
+	// PausedOnly is the subset of Paused whose pool has NO schedulable worker, only paused ones.
+	// Such a pool is not in Unmatched: capacity exists and may come back (a snooze ends), so the
+	// job service can queue its jobs instead of failing them.
+	PausedOnly []PlannedPause
+}
+
+// PlannedPause is the paused workers that match one pool's selector.
+type PlannedPause struct {
+	Pool    string
+	Workers []string
 }
 
 // Empty reports whether applying this Plan would be a no-op.
@@ -185,7 +199,11 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 		}
 
 		matched := false
+		var pausedMatch []string
 		for _, worker := range workers {
+			if worker.SchedulingPaused && labelsContain(worker.Labels, pool.WorkerSelector) {
+				pausedMatch = append(pausedMatch, worker.Name)
+			}
 			if worker.Offline || worker.SchedulingPaused {
 				continue
 			}
@@ -241,7 +259,14 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 				})
 			}
 		}
-		if !matched && !pool.Isolated() {
+		if len(pausedMatch) > 0 && !pool.Isolated() {
+			sort.Strings(pausedMatch)
+			plan.Paused = append(plan.Paused, PlannedPause{Pool: pool.Name, Workers: pausedMatch})
+			if !matched {
+				plan.PausedOnly = append(plan.PausedOnly, PlannedPause{Pool: pool.Name, Workers: pausedMatch})
+			}
+		}
+		if !matched && !pool.Isolated() && !(len(pausedMatch) > 0) {
 			plan.Unmatched = append(plan.Unmatched, pool.Name)
 		}
 	}

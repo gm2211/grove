@@ -15,6 +15,7 @@ import (
 	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
 	"github.com/gm2211/grove/internal/secrets"
+	"github.com/gm2211/grove/internal/snooze"
 )
 
 // Options configures the grove HTTP server.
@@ -45,6 +46,10 @@ type Options struct {
 	// the dispatch service as its RepoAuth, so arming it here takes effect on the next dispatch
 	// with no restart — see internal/gitauth and internal/cli/serve.go.
 	GitAuth *gitauth.Store
+	// Pauses records why each worker is paused (snooze, operator, health). Nil disables
+	// snoozing (POST /workers/{name}/snooze answers 503) and leaves pause/resume as plain Orchard
+	// calls. `grove serve` hands the same store to the expiry loop and the health monitor.
+	Pauses *snooze.Store
 	// Logger receives structured request/lifecycle logs. Defaults to slog.Default().
 	Logger *slog.Logger
 	// RecyclePollInterval controls how often POST /vms/{name}/recycle polls Nomad while waiting
@@ -132,6 +137,9 @@ func (s *Server) routes() http.Handler {
 	api.HandleFunc("POST /vms/{name}/recycle", s.handleRecycleVM)
 	api.HandleFunc("POST /workers/{name}/pause", s.handleWorkerPause)
 	api.HandleFunc("POST /workers/{name}/resume", s.handleWorkerResume)
+	api.HandleFunc("POST /workers/{name}/snooze", s.handleWorkerSnooze)
+	api.HandleFunc("GET /workers/{name}/snooze", s.handleGetWorkerSnooze)
+	api.HandleFunc("POST /workers/{name}/wake", s.handleWorkerWake)
 	api.HandleFunc("GET /jobs", s.handleListJobs)
 	api.HandleFunc("POST /jobs", s.handleSubmitJob)
 	api.HandleFunc("GET /jobs/{id}", s.handleGetJob)

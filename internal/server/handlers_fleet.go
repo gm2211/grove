@@ -9,6 +9,7 @@ import (
 	"github.com/gm2211/grove/internal/fleet"
 	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
+	"github.com/gm2211/grove/internal/snooze"
 )
 
 // Capacity is a normalised resource capacity for a FleetEntry.
@@ -34,7 +35,12 @@ type FleetEntry struct {
 	Capacity Capacity          `json:"capacity"`
 	Running  int               `json:"running"`
 	Labels   map[string]string `json:"labels,omitempty"`
-	Raw      any               `json:"raw"`
+	// SnoozedUntil, SnoozeMode and PauseReasons are set on worker entries: the owner's active
+	// snooze, and every reason (snooze, health, operator) the worker is paused for.
+	SnoozedUntil *time.Time `json:"snoozedUntil,omitempty"`
+	SnoozeMode   string     `json:"snoozeMode,omitempty"`
+	PauseReasons []string   `json:"pauseReasons,omitempty"`
+	Raw          any        `json:"raw"`
 }
 
 // FleetResponse is the body of GET /fleet.
@@ -52,6 +58,7 @@ type FleetResponse struct {
 type FleetTotals struct {
 	WorkersOnline   int `json:"workersOnline"`
 	WorkersCordoned int `json:"workersCordoned"`
+	WorkersSnoozed  int `json:"workersSnoozed"`
 	VMsRunning      int `json:"vmsRunning"`
 	NodesReady      int `json:"nodesReady"`
 	NodesDraining   int `json:"nodesDraining"`
@@ -109,8 +116,16 @@ func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
 		VMs:     make([]FleetEntry, 0, len(vms)),
 		Nodes:   make([]FleetEntry, 0, len(nodes)),
 	}
+	now := time.Now()
 	for _, wrk := range workers {
-		resp.Workers = append(resp.Workers, normalizeWorker(wrk, runningByWorker[wrk.Name]))
+		entry := normalizeWorker(wrk, runningByWorker[wrk.Name])
+		if e := s.opts.Pauses.Get(wrk.Name); e.Snooze != nil || e.Health != nil || e.Operator != nil {
+			applyPauses(&entry, e, now)
+		}
+		if entry.SnoozedUntil != nil {
+			resp.Totals.WorkersSnoozed++
+		}
+		resp.Workers = append(resp.Workers, entry)
 	}
 	for _, v := range vms {
 		resp.VMs = append(resp.VMs, normalizeVM(v))
@@ -179,6 +194,20 @@ func normalizeWorker(wrk orchard.Worker, running int) FleetEntry {
 		Running: running,
 		Labels:  wrk.Labels,
 		Raw:     wrk,
+	}
+}
+
+// applyPauses adds a worker's recorded pause reasons to its entry. An active snooze shows the
+// worker as "snoozed" (unless it is offline).
+func applyPauses(entry *FleetEntry, e snooze.Entry, now time.Time) {
+	entry.PauseReasons = e.Reasons(now)
+	if e.Active(now) {
+		until := e.Snooze.Until
+		entry.SnoozedUntil = &until
+		entry.SnoozeMode = string(e.Snooze.Mode)
+		if entry.Status != "offline" {
+			entry.Status = "snoozed"
+		}
 	}
 }
 

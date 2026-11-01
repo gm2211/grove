@@ -97,7 +97,7 @@ func runSandbox(ctx context.Context, f sandboxRunFlags) error {
 		req.Timeout = time.Duration(secs * float64(time.Second))
 	}
 
-	cfg, _, err := loadConfig()
+	cfg, cfgPath, err := loadConfig()
 	if err != nil {
 		return err
 	}
@@ -118,6 +118,7 @@ func runSandbox(ctx context.Context, f sandboxRunFlags) error {
 		Slots:       sandbox.Slots{Dir: sandboxStateDir("sandbox-slots"), PerVM: sandboxSlots(f)},
 		Queue:       sandbox.Queue{Dir: sandboxStateDir("sandbox-queue")},
 		AttemptsDir: dispatch.DefaultAttemptsDir(),
+		PausesPath:  filepath.Join(filepath.Dir(cfgPath), "pauses.json"),
 		WorkDir:     os.Getenv("NOMAD_TASK_DIR"),
 	}
 	if f.kind == sandbox.KindAgent {

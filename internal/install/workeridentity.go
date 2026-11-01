@@ -346,3 +346,14 @@ func renameFleetNote(prev, chosen workerIdentity) string {
 	}
 	return b.String()
 }
+
+// ReadWorkerName returns the Orchard worker name recorded for this user's worker install
+// (worker-identity.json in their grove config directory), or ok=false when there is none. The
+// snooze command uses it to know which worker "this Mac" is.
+func ReadWorkerName() (string, bool) {
+	id, ok := readWorkerIdentityRecord(Options{})
+	if !ok {
+		return "", false
+	}
+	return id.Name, true
+}

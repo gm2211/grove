@@ -12,6 +12,7 @@ export const STATUS_COLORS: Record<string, string> = {
   ready: "var(--status-success)",
   offline: "var(--status-failed)",
   cordoned: "var(--status-lost)",
+  snoozed: "var(--status-pending)",
   initializing: "var(--status-pending)",
   down: "var(--status-failed)",
 };

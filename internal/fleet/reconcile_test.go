@@ -184,6 +184,46 @@ func TestPlan_PausedWorker_Skipped(t *testing.T) {
 	}
 }
 
+// A paused worker's existing VMs are not left running: Plan deletes them (the Reconciler drains
+// each VM's Nomad node first), which is what makes a snooze actually free the Mac.
+func TestPlan_PausedWorkerWithVMs_DeletedAndReportedPausedOnly(t *testing.T) {
+	pool := basePool()
+	worker := onlineWorker("mac1")
+	worker.SchedulingPaused = true
+	vm := orchard.VM{Name: VMName("linux", "mac1", 0), Worker: "mac1", Labels: map[string]string{LabelWorkerPin: "mac1"}}
+
+	client := &fakeOrchardClient{workers: []orchard.Worker{worker}, vms: []orchard.VM{vm}}
+	r := &Reconciler{Client: client, Spec: &Spec{Pools: []Pool{pool}}}
+	plan, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(plan.Deletes) != 1 || plan.Deletes[0].Name != vm.Name || len(plan.Creates) != 0 {
+		t.Fatalf("want the paused worker's VM deleted and nothing created, got %+v", plan)
+	}
+	if len(plan.Unmatched) != 0 {
+		t.Fatalf("an all-paused pool must not be Unmatched, got %v", plan.Unmatched)
+	}
+	if len(plan.PausedOnly) != 1 || plan.PausedOnly[0].Pool != "linux" || len(plan.PausedOnly[0].Workers) != 1 || plan.PausedOnly[0].Workers[0] != "mac1" {
+		t.Fatalf("PausedOnly = %+v", plan.PausedOnly)
+	}
+}
+
+func TestPlan_PartlyPausedPool_ListedPausedNotPausedOnly(t *testing.T) {
+	pool := basePool()
+	paused := onlineWorker("mac1")
+	paused.SchedulingPaused = true
+	client := &fakeOrchardClient{workers: []orchard.Worker{paused, onlineWorker("mac2")}}
+	r := &Reconciler{Client: client, Spec: &Spec{Pools: []Pool{pool}}}
+	plan, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(plan.Paused) != 1 || len(plan.PausedOnly) != 0 || len(plan.Unmatched) != 0 {
+		t.Fatalf("Paused=%v PausedOnly=%v Unmatched=%v", plan.Paused, plan.PausedOnly, plan.Unmatched)
+	}
+}
+
 func TestPlan_OfflineWorker_Skipped(t *testing.T) {
 	pool := basePool()
 	worker := onlineWorker("mac1")

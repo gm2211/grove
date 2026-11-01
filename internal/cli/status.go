@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/gm2211/grove/internal/fleet"
 	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
+	"github.com/gm2211/grove/internal/snooze"
 	"github.com/gm2211/grove/internal/wire"
 	"github.com/spf13/cobra"
 )
@@ -24,7 +26,7 @@ var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Ping Orchard and Nomad and print fleet counts.",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, _, err := loadConfig()
+		cfg, cfgPath, err := loadConfig()
 		if err != nil {
 			return err
 		}
@@ -48,6 +50,7 @@ var statusCmd = &cobra.Command{
 
 		if orchardErr == nil {
 			printOrchardCounts(ctx, out, orchardClient)
+			printSnoozed(out, cfgPath)
 		}
 
 		if nomadErr == nil {
@@ -64,6 +67,27 @@ var statusCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+// printSnoozed lists the workers snoozed right now, from the control plane's pause store (only
+// present on the control plane).
+func printSnoozed(out io.Writer, cfgPath string) {
+	st, err := snooze.Load(filepath.Join(filepath.Dir(cfgPath), "pauses.json"))
+	if err != nil {
+		return
+	}
+	now := time.Now()
+	entries := st.List()
+	names := make([]string, 0, len(entries))
+	for n := range entries {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		if e := entries[n]; e.Active(now) {
+			fmt.Fprintf(out, "snoozed: %s until %s\n", n, e.Snooze.Until.Local().Format("15:04"))
+		}
+	}
 }
 
 func printOrchardCounts(ctx context.Context, out io.Writer, client orchard.Client) {
