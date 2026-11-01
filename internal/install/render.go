@@ -3,6 +3,7 @@ package install
 import (
 	"bytes"
 	"fmt"
+	"path/filepath"
 	"text/template"
 
 	"github.com/gm2211/grove/internal/nomad"
@@ -78,6 +79,10 @@ var launchAgentTemplate = template.Must(template.New("launchagent").Parse(`<?xml
 
 // RenderLaunchAgent renders a launchd agent plist. Deterministic: safe for golden tests.
 func RenderLaunchAgent(spec LaunchAgentSpec) (string, error) {
+	// launchd starts a job with a minimal PATH, so a bare program name never starts it (exit 78).
+	if !filepath.IsAbs(spec.Program) {
+		return "", fmt.Errorf("render launch agent %s: program %q is not an absolute path", spec.Label, spec.Program)
+	}
 	var buf bytes.Buffer
 	if err := launchAgentTemplate.Execute(&buf, spec); err != nil {
 		return "", fmt.Errorf("render launch agent %s: %w", spec.Label, err)

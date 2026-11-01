@@ -1,6 +1,7 @@
 package install
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -9,9 +10,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"time"
 
 	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/nomad"
+	"github.com/gm2211/grove/internal/orchard"
 	"github.com/gm2211/grove/internal/wire"
 )
 
@@ -29,10 +32,11 @@ const (
 // instead of the real machine.
 type Options struct {
 	Role       Role
-	Controller string // Orchard controller URL, e.g. https://grove-cp.tailnet.ts.net:6120
-	NomadAddr  string // Nomad HTTP API URL
-	ServerURL  string // grove server URL (client role, and recorded on control-plane/worker too)
-	Token      string // bootstrap / server token, meaning depends on Role
+	identity   workerIdentity // set by resolveWorkerIdentity for the worker plan
+	Controller string         // Orchard controller URL, e.g. https://grove-cp.tailnet.ts.net:6120
+	NomadAddr  string         // Nomad HTTP API URL
+	ServerURL  string         // grove server URL (client role, and recorded on control-plane/worker too)
+	Token      string         // bootstrap / server token, meaning depends on Role
 	// BrokerToken is a worker's broker credential (only the broker scope, named after the
 	// worker), from `grove setup`. Install keeps it in a 0600 file under ~/.config/grove/credentials
 	// for `grove broker`; it never appears in arguments, launchd plists or the plan's output.
@@ -55,6 +59,12 @@ type Options struct {
 	// Hostname names this machine to grove: the worker's Orchard name (`grove install --name`).
 	// Empty means the worker name already installed on this Mac, else os.Hostname().
 	Hostname string
+	// Labels are the worker's Orchard labels ("k=v,k=v"; `grove install --labels`). Empty means the
+	// labels already installed, else host=<name>,arch=arm64.
+	Labels string
+	// Force lets a rename of a worker proceed on a host that cannot also rewrite fleet.yaml and
+	// delete the old Orchard worker record (a worker host that is not the control plane).
+	Force bool
 	// User is the account a worker's LaunchDaemons run as (their UserName). Test override;
 	// defaults to the user running the install, who must not be root.
 	User string
@@ -68,6 +78,20 @@ type Options struct {
 	// LaunchDaemons is where system LaunchDaemons live. Test override; defaults to
 	// /Library/LaunchDaemons.
 	LaunchDaemons string
+
+	// UsersDir is where other accounts' home directories live, searched for superseded worker
+	// stacks. Test override; defaults to /Users.
+	UsersDir string
+	// LookupUID resolves another account's uid. Test override; defaults to os/user.
+	LookupUID func(name string) (int, bool)
+	// Now stamps the backup directory. Test override.
+	Now func() time.Time
+	// RetireWorker deletes an Orchard worker record on the controller. Test override; defaults to
+	// the authenticated Orchard client.
+	RetireWorker func(ctx context.Context, ep config.Endpoint, name string) error
+	// OrchardClient builds the Orchard client doctor uses. Test override; defaults to
+	// wire.NewOrchardClient.
+	OrchardClient func(config.Endpoint) (orchard.Client, error)
 
 	// LookPath resolves a binary name to a path like exec.LookPath. Test override.
 	LookPath func(name string) (string, error)
@@ -86,6 +110,21 @@ func (o Options) nomadClient(ep config.Endpoint) (nomad.Client, error) {
 		return o.NomadClient(ep)
 	}
 	return wire.NewNomadClient(ep)
+}
+
+func (o Options) orchardClient(ep config.Endpoint) (orchard.Client, error) {
+	if o.OrchardClient != nil {
+		return o.OrchardClient(ep)
+	}
+	return wire.NewOrchardClient(ep)
+}
+
+// workerLabels are the labels the worker advertises: --labels, else host=<name>,arch=arm64.
+func (o Options) workerLabels() string {
+	if o.Labels != "" {
+		return o.Labels
+	}
+	return defaultWorkerLabels(o.hostname())
 }
 
 func (o Options) hostname() string {

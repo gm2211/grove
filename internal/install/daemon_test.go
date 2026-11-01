@@ -292,7 +292,7 @@ func TestRetireLaunchAgents_WaitsForTheDaemon(t *testing.T) {
 	r := NewFakeRunner()
 	opts := testWorkerOptions(t.TempDir())
 	ds := workerDaemons(opts)
-	step := retireLaunchAgentsStep(r, opts, ds)
+	step := retireLaunchAgentsStep(r, opts, ds, newBackupSession(opts, io.Discard), io.Discard)
 	ctx := context.Background()
 	if ok, _ := step.Check(ctx); !ok {
 		t.Fatal("no LaunchAgents: nothing to retire")

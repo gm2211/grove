@@ -26,7 +26,9 @@ func groveExecutable(opts Options) string {
 		return opts.GroveBin
 	}
 	if p, err := opts.lookPath()("grove"); err == nil {
-		return p
+		if abs, aerr := filepath.Abs(p); aerr == nil {
+			return abs
+		}
 	}
 	if p, err := os.Executable(); err == nil {
 		return p

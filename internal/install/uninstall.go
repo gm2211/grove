@@ -64,7 +64,7 @@ func BuildUninstallPlan(r Runner, opts Options, u UninstallOptions) ([]Step, err
 	steps = append(steps,
 		removePathsStep("worker-staged-plists", "the staged LaunchDaemon plists", filepath.Join(cfg, "launchd"), filepath.Join(cfg, "pf")),
 		removePathsStep("worker-credentials", "the worker's credential files (Orchard bootstrap, broker, registry)", credentialsDir(opts)),
-		removePathsStep("orchard-worker-wrapper", "the Orchard worker's wrapper script", workerWrapperPath(opts)),
+		removePathsStep("orchard-worker-wrapper", "the Orchard worker's wrapper script and recorded identity", workerWrapperPath(opts), workerIdentityPath(opts)),
 		removeRegistryMarkersStep(opts),
 		removePathsStep("orchard-worker-app", "the Orchard worker app", workerOrchardAppDir(opts)),
 		removeOrchardSymlinkStep(opts),

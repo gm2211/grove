@@ -214,37 +214,6 @@ func workerDaemonsStep(r Runner, opts Options, ds []daemon) Step {
 	}
 }
 
-// retireLaunchAgentsStep removes the per-user LaunchAgents earlier groves installed for the same
-// jobs, once the daemon that replaces each is loaded: removing one first would leave the Mac with
-// no worker until an admin runs the daemons step.
-func retireLaunchAgentsStep(r Runner, opts Options, ds []daemon) Step {
-	return Step{
-		Name:        "retire-launchagents",
-		Description: "Unload and remove the per-user LaunchAgents (com.grove.orchard-worker, com.grove.broker) an earlier grove installed, once their LaunchDaemons are loaded.",
-		Check: func(ctx context.Context) (bool, error) {
-			for _, d := range ds {
-				if _, err := os.Lstat(legacyAgentPlist(opts, d.Label)); err == nil {
-					return false, nil
-				}
-			}
-			return true, nil
-		},
-		Apply: func(ctx context.Context) error {
-			for _, d := range ds {
-				plist := legacyAgentPlist(opts, d.Label)
-				if _, err := os.Lstat(plist); err != nil || !daemonLoaded(ctx, r, d) {
-					continue
-				}
-				_, _, _ = r.Run(ctx, "launchctl", "bootout", fmt.Sprintf("gui/%d/%s", os.Getuid(), d.Label)) // no GUI session is fine
-				if err := os.Remove(plist); err != nil && !os.IsNotExist(err) {
-					return err
-				}
-			}
-			return nil
-		},
-	}
-}
-
 // daemonsRemediation is what `grove doctor` tells an operator to do about a daemon that isn't
 // installed or loaded.
 func daemonsRemediation(opts Options) string {
