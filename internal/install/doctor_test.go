@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +16,8 @@ import (
 	"time"
 
 	"github.com/gm2211/grove/internal/config"
+	"github.com/gm2211/grove/internal/nomad"
+	"github.com/gm2211/grove/internal/orchard"
 	"github.com/gm2211/grove/internal/pki"
 )
 
@@ -474,5 +478,48 @@ func TestCheckLocalSocket(t *testing.T) {
 	defer l.Close()
 	if c := checkLocalSocket(path, []string{"giulio"}); !c.OK || !strings.Contains(c.Detail, "giulio") {
 		t.Fatalf("listening: %+v", c)
+	}
+}
+
+type fakeTokenNomad struct {
+	nomad.Client
+	err error
+}
+
+func (f fakeTokenNomad) ListNodeTokens(context.Context) ([]nomad.NodeToken, error) { return nil, f.err }
+
+func TestNomadTokenResult(t *testing.T) {
+	ctx := context.Background()
+	denied := fakeTokenNomad{err: fmt.Errorf("nomad: list ACL tokens: %w", nomad.ErrPermissionDenied)}
+	r := nomadTokenResult(ctx, denied)
+	if r.OK || !strings.Contains(r.Remediation, "set config.yaml nomad.token to a management token") || !strings.Contains(r.Detail, "permission denied") {
+		t.Errorf("denied: %+v", r)
+	}
+	if r := nomadTokenResult(ctx, fakeTokenNomad{}); !r.OK {
+		t.Errorf("management token: %+v", r)
+	}
+	if r := nomadTokenResult(ctx, fakeTokenNomad{err: errors.New("connection refused")}); !r.OK {
+		t.Errorf("unreachable nomad is checkNomad's finding, not this one's: %+v", r)
+	}
+}
+
+type fakeVMLister struct {
+	orchard.Client
+	vms []orchard.VM
+}
+
+func (f fakeVMLister) ListVMs(context.Context) ([]orchard.VM, error) { return f.vms, nil }
+
+func TestBootLoopsResult(t *testing.T) {
+	ctx := context.Background()
+	if r := bootLoopsResult(ctx, fakeVMLister{vms: []orchard.VM{{Name: "linux-a-0", Worker: "a"}}}); !r.OK {
+		t.Errorf("healthy: %+v", r)
+	}
+	r := bootLoopsResult(ctx, fakeVMLister{vms: []orchard.VM{
+		{Name: "linux-a-0", Worker: "a", RestartCount: 9, StartedAt: time.Date(2026, 11, 1, 1, 2, 3, 0, time.UTC)},
+		{Name: "linux-a-1", Worker: "a", RestartCount: 5},
+	}})
+	if r.OK || !strings.Contains(r.Detail, "worker a: 2 VM(s) boot-looping (up to 9 restarts, last started 2026-11-01T01:02:03Z)") {
+		t.Errorf("boot loop: %+v", r)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gm2211/grove/internal/config"
+	"github.com/gm2211/grove/internal/fleet"
 	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
 	"github.com/gm2211/grove/internal/wire"
@@ -51,6 +52,10 @@ var statusCmd = &cobra.Command{
 
 		if nomadErr == nil {
 			printNomadCounts(ctx, out, nomadClient)
+			printNomadPermissions(ctx, out, nomadClient)
+		}
+		if orchardErr == nil {
+			printBootLoops(ctx, out, orchardClient)
 		}
 
 		if orchardErr != nil || nomadErr != nil {
@@ -91,6 +96,30 @@ func printNomadCounts(ctx context.Context, out io.Writer, client nomad.Client) {
 		return
 	}
 	fmt.Fprintf(out, "nomad nodes: %s\n", nodeStatusCounts(nodes))
+}
+
+// printNomadPermissions reports a control-plane call Nomad refuses (a 403): "nomad: up" says
+// nothing about whether the token can enrol VMs, and without that no VM ever becomes a node.
+func printNomadPermissions(ctx context.Context, out io.Writer, client nomad.Client) {
+	err := nomad.CheckManagement(ctx, client)
+	switch {
+	case err == nil:
+	case nomad.IsPermissionDenied(err):
+		fmt.Fprintf(out, "nomad token: DENIED: %s (%v)\n", nomad.ManagementTokenHint, err)
+	default:
+		fmt.Fprintf(out, "nomad token: error: %v\n", err)
+	}
+}
+
+// printBootLoops lists, per worker, the VMs Orchard keeps restarting.
+func printBootLoops(ctx context.Context, out io.Writer, client orchard.Client) {
+	vms, err := client.ListVMs(ctx)
+	if err != nil {
+		return // printOrchardCounts already reported it
+	}
+	for _, w := range fleet.BootLoops(vms) {
+		fmt.Fprintf(out, "boot loop: %s\n", w.Describe())
+	}
 }
 
 // nodeStatusCounts renders e.g. "3 (ready 2, down 1)", so stale down registrations don't read as

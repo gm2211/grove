@@ -116,7 +116,8 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 		return fmt.Errorf("named secret store: %w", err)
 	}
 
-	ds, err := dispatch.New(nc, dispatch.Options{Artifacts: ac, ArtifactRetention: cfg.Artifacts.Retention, Pools: pools, RepoAuth: gitAuthStore, Secrets: secretStore})
+	poolHealth := &fleet.PoolHealth{}
+	ds, err := dispatch.New(nc, dispatch.Options{PoolHealth: poolHealth, Artifacts: ac, ArtifactRetention: cfg.Artifacts.Retention, Pools: pools, RepoAuth: gitAuthStore, Secrets: secretStore})
 	if err != nil {
 		return fmt.Errorf("dispatch service: %w", err)
 	}
@@ -191,6 +192,7 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 			interval = defaultFleetReconcileInterval
 		}
 		loop := newFleetReconcileLoop(cfg, oc, srv.FleetReconcile())
+		loop.health = poolHealth
 		if purger, ok := nomad.AsNodePurger(nc); ok {
 			loop.nodes = &fleet.NodeSweeper{Nodes: purger}
 		}
@@ -251,6 +253,9 @@ type fleetReconcileLoop struct {
 	// fleet.Reconciler.Enrol), and warnedEnrol the enrolment error last logged.
 	enrolment   fleet.EnrolState
 	warnedEnrol string
+	// health is told why pools can't get nodes (enrolment errors, boot loops), so unplaceable
+	// jobs fail fast; nil skips that.
+	health *fleet.PoolHealth
 	// warnedRollCall is the roll call error last logged.
 	warnedRollCall string
 
@@ -365,7 +370,14 @@ func (l *fleetReconcileLoop) tick(ctx context.Context) {
 
 	// Before applying the plan, whose failure ends the tick: a VM waiting for its Nomad identity
 	// must not wait on an unrelated create.
-	if err := r.Enrol(ctx, &l.enrolment); err != nil {
+	enrolErr := r.Enrol(ctx, &l.enrolment)
+	if l.health != nil {
+		l.health.ObserveEnrol(enrolErr)
+		if vms, verr := l.client.ListVMs(ctx); verr == nil {
+			l.health.ObserveFleet(vms, plan)
+		}
+	}
+	if err := enrolErr; err != nil {
 		if msg := err.Error(); msg != l.warnedEnrol {
 			slog.Warn("serve: fleet reconciler: enrolling VMs into Nomad failed", "err", err)
 			l.warnedEnrol = msg

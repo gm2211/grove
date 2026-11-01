@@ -530,3 +530,23 @@ func TestEnrol_ANodeTakenOutOfServiceDoesNotCountAsTheVMs(t *testing.T) {
 		t.Fatalf("re-enrolled a VM whose node is present (%d tokens, %v)", len(f.intros.calls), err)
 	}
 }
+
+func TestEnrol_FailureNamesTheVMsPoolForPoolHealth(t *testing.T) {
+	f := newEnrolFixture(t)
+	f.r.Options.NodePools = failingNodePools{}
+	err := f.enrol()
+	if err == nil || !strings.Contains(err.Error(), "enrol linux-mac1-0: nomad: read node pool linux: 403") {
+		t.Fatalf("err = %v", err)
+	}
+	var h PoolHealth
+	h.ObserveEnrol(err)
+	if r := h.UnplaceableReason("linux"); !strings.Contains(r, "pool linux has no ready node: enrollment failing: enrol linux-mac1-0") {
+		t.Fatalf("reason = %q", r)
+	}
+}
+
+type failingNodePools struct{}
+
+func (failingNodePools) EnsureNodePool(context.Context, string, string) error {
+	return errors.New("nomad: read node pool linux: 403")
+}
