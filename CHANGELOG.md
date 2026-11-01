@@ -4,6 +4,10 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+## v0.1.23
+
+Also covers v0.1.21 and v0.1.22, which were tagged without a changelog section.
+
 - **`grove install --role worker` heals a worker whose Tart is not from Homebrew.** The
   `tart-headless-app` step took its source only from `brew --prefix tart`, so a worker running as
   its own user on another user's Homebrew, with Tart installed as the upstream `tart.app`, failed
