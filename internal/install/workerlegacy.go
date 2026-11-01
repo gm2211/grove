@@ -1,12 +1,14 @@
 package install
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -60,7 +62,7 @@ func (o Options) lookupUID(name string) (int, bool) {
 
 // backupDir is where this run keeps copies of what it rewrites or removes.
 func backupDir(opts Options) string {
-	return filepath.Join(opts.ConfigDir(), "backups", opts.now().Format("20060102-150405"))
+	return filepath.Join(backupsRoot(opts), opts.now().Format("20060102-150405"))
 }
 
 // backupSession copies files into backupDir and says so.
@@ -73,8 +75,53 @@ func newBackupSession(opts Options, out io.Writer) *backupSession {
 	return &backupSession{dir: backupDir(opts), out: out}
 }
 
+// backupEntryName is the file name path is stored under in a backup directory.
+func backupEntryName(path string) string {
+	return filepath.Base(filepath.Dir(path)) + "__" + filepath.Base(path)
+}
+
+// backupsRoot holds every run's timestamped backup directory.
+func backupsRoot(opts Options) string { return filepath.Join(opts.ConfigDir(), "backups") }
+
+var timestampedBackupRE = regexp.MustCompile(`^\d{8}-\d{6}$`)
+
+// timestampedBackups lists the YYYYMMDD-HHMMSS directories under root, oldest first. Anything else
+// there (a manual-* copy an operator made) is not grove's and is never listed.
+func timestampedBackups(root string) []string {
+	entries, _ := os.ReadDir(root)
+	var dirs []string
+	for _, e := range entries {
+		if e.IsDir() && timestampedBackupRE.MatchString(e.Name()) {
+			dirs = append(dirs, filepath.Join(root, e.Name()))
+		}
+	}
+	sort.Strings(dirs)
+	return dirs
+}
+
+// existingBackup is a timestamped backup directory that already holds a byte-identical copy of
+// data under entry, or "".
+func existingBackup(root, entry string, data []byte) string {
+	for _, d := range timestampedBackups(root) {
+		if got, err := os.ReadFile(filepath.Join(d, entry)); err == nil && bytes.Equal(got, data) {
+			return d
+		}
+	}
+	return ""
+}
+
+// backedUp reports whether path is absent or already has an identical copy in some backup.
+func backedUp(opts Options, path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return os.IsNotExist(err)
+	}
+	return existingBackup(backupsRoot(opts), backupEntryName(path), data) != ""
+}
+
 // save copies path into the backup directory (0700 dir, 0600 files: it may hold a credential). A
-// path that does not exist is not an error.
+// path that does not exist is not an error, and one that an earlier backup already holds
+// byte-for-byte is not copied again. The directory is created only when something is saved.
 func (b *backupSession) save(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -83,14 +130,72 @@ func (b *backupSession) save(path string) error {
 		}
 		return fmt.Errorf("back up %s: %w", path, err)
 	}
+	entry := backupEntryName(path)
+	if prev := existingBackup(filepath.Dir(b.dir), entry, data); prev != "" {
+		fmt.Fprintf(b.out, "        %s already backed up in %s\n", path, prev)
+		return nil
+	}
 	if err := os.MkdirAll(b.dir, 0o700); err != nil {
 		return err
 	}
-	dest := filepath.Join(b.dir, filepath.Base(filepath.Dir(path))+"__"+filepath.Base(path))
+	dest := filepath.Join(b.dir, entry)
 	if err := os.WriteFile(dest, data, 0o600); err != nil {
 		return fmt.Errorf("back up %s: %w", path, err)
 	}
 	fmt.Fprintf(b.out, "        backed up %s -> %s\n", path, dest)
+	return nil
+}
+
+// duplicateBackups lists the timestamped backup directories whose every entry is a regular file
+// byte-identical to the same entry in an older directory that is kept (so the oldest copy
+// survives). An empty directory is a leftover too.
+func duplicateBackups(root string) []string {
+	var kept, dups []string
+	for _, d := range timestampedBackups(root) {
+		entries, err := os.ReadDir(d)
+		if err != nil {
+			kept = append(kept, d)
+			continue
+		}
+		dup := true
+		for _, e := range entries {
+			if !e.Type().IsRegular() {
+				dup = false
+				break
+			}
+			data, err := os.ReadFile(filepath.Join(d, e.Name()))
+			if err != nil {
+				dup = false
+				break
+			}
+			found := false
+			for _, k := range kept {
+				if got, err := os.ReadFile(filepath.Join(k, e.Name())); err == nil && bytes.Equal(got, data) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				dup = false
+				break
+			}
+		}
+		if dup {
+			dups = append(dups, d)
+		} else {
+			kept = append(kept, d)
+		}
+	}
+	return dups
+}
+
+func pruneDuplicateBackups(root string, out io.Writer) error {
+	for _, d := range duplicateBackups(root) {
+		if err := os.RemoveAll(d); err != nil {
+			return fmt.Errorf("remove duplicate backup %s: %w", d, err)
+		}
+		fmt.Fprintf(out, "        removed duplicate backup %s\n", d)
+	}
 	return nil
 }
 
@@ -142,14 +247,23 @@ func backupLegacyWorkerStep(opts Options, bk *backupSession) Step {
 		Name: "backup-legacy-worker",
 		Description: fmt.Sprintf("Copy the superseded worker launch shape (per-user LaunchAgents, %s, %s) to %s before it is replaced.",
 			legacyWorkerScriptPath(opts), legacyWorkerBootstrapPath(opts), bk.dir),
-		Check: func(context.Context) (bool, error) { return findLegacyWorker(opts).empty(), nil },
+		// Satisfied when nothing is left to copy: every legacy file is absent or already held
+		// byte-for-byte by a backup, and no backup duplicates an older one.
+		Check: func(context.Context) (bool, error) {
+			for _, p := range findLegacyWorker(opts).paths() {
+				if !backedUp(opts, p) {
+					return false, nil
+				}
+			}
+			return len(duplicateBackups(backupsRoot(opts))) == 0, nil
+		},
 		Apply: func(context.Context) error {
 			for _, p := range findLegacyWorker(opts).paths() {
 				if err := bk.save(p); err != nil {
 					return err
 				}
 			}
-			return nil
+			return pruneDuplicateBackups(backupsRoot(opts), bk.out)
 		},
 	}
 }

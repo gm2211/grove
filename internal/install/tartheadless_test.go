@@ -301,3 +301,110 @@ func TestEnsureGroveTart_RealCodeSign(t *testing.T) {
 	}
 	_ = io.Discard
 }
+
+// scriptNonBrewTart makes a tart.app that did not come from Homebrew (a vendor install under
+// ~/.local/lib/grove) reachable only through a `tart` symlink on PATH, and returns that symlink.
+func scriptNonBrewTart(t *testing.T, r *FakeRunner, home string) (link, app string) {
+	t.Helper()
+	app = filepath.Join(home, ".local", "lib", "vendor", "tart.app")
+	exe := filepath.Join(app, "Contents", "MacOS", "tart")
+	if err := os.MkdirAll(filepath.Dir(exe), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exe, []byte("bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link = filepath.Join(home, ".local", "bin", "tart")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(exe, link); err != nil {
+		t.Fatal(err)
+	}
+	// EvalSymlinks resolves the temp dir itself (/var -> /private/var on macOS).
+	real, err := filepath.EvalSymlinks(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app = real
+	plist := app + "/Contents/Info.plist"
+	r.Script("brew --prefix tart", FakeResult{Err: errors.New("brew: not found (fake)")})
+	r.Script("/usr/bin/plutil -extract CFBundleIdentifier raw -o - "+plist, FakeResult{Stdout: upstreamTartBundleID + "\n"})
+	r.Script("/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "+plist, FakeResult{Stdout: "2.37.0\n"})
+	r.Script("/usr/bin/codesign -dv "+app, FakeResult{Stderr: "CDHash=abc123\nTeamIdentifier=" + upstreamTartTeamID + "\n"})
+	return link, app
+}
+
+func TestTartHeadlessStep_NonBrewTartResolvedFromSymlink(t *testing.T) {
+	home := t.TempDir()
+	opts := testWorkerOptions(home)
+	r := NewFakeRunner()
+	link, app := scriptNonBrewTart(t, r, home)
+	opts.LookPath = func(name string) (string, error) {
+		if name == "tart" {
+			return link, nil
+		}
+		return "", errors.New("not found (fake)")
+	}
+	if err := applyHeadlessTart(t, r, opts); err != nil {
+		t.Fatal(err)
+	}
+	if !r.CalledWith("/usr/bin/ditto " + app + " " + groveTartAppDir(opts) + ".new") {
+		t.Errorf("did not copy %s; calls %v", app, r.Calls)
+	}
+	if !r.CalledWith("/usr/bin/codesign --verify --strict " + app) {
+		t.Error("the non-Homebrew bundle was not verified")
+	}
+	prov, _ := os.ReadFile(groveTartProvenancePath(opts))
+	if !strings.Contains(string(prov), "source="+app) || !strings.Contains(string(prov), "version=2.37.0") {
+		t.Errorf("provenance %q", prov)
+	}
+}
+
+func TestTartHeadlessStep_NonBrewTartStillVerified(t *testing.T) {
+	home := t.TempDir()
+	opts := testWorkerOptions(home)
+	r := NewFakeRunner()
+	link, app := scriptNonBrewTart(t, r, home)
+	r.Script("/usr/bin/plutil -extract CFBundleIdentifier raw -o - "+app+"/Contents/Info.plist", FakeResult{Stdout: "com.evil.tart\n"})
+	opts.LookPath = func(string) (string, error) { return link, nil }
+	if err := applyHeadlessTart(t, r, opts); err == nil {
+		t.Fatal("expected a refusal of a foreign bundle")
+	}
+}
+
+func TestTartHeadlessStep_NeverCopiesItsOwnCopy(t *testing.T) {
+	home := t.TempDir()
+	opts := testWorkerOptions(home)
+	r := NewFakeRunner()
+	r.Script("brew --prefix tart", FakeResult{Err: errors.New("brew: not found (fake)")})
+	exe := groveTartExecutable(opts)
+	if err := os.MkdirAll(filepath.Dir(exe), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exe, []byte("bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, "bin", "tart")
+	_ = os.MkdirAll(filepath.Dir(link), 0o755)
+	if err := os.Symlink(exe, link); err != nil {
+		t.Fatal(err)
+	}
+	for name, path := range map[string]string{"app symlink": link, "shim": groveTartShimPath(opts)} {
+		t.Run(name, func(t *testing.T) {
+			if name == "shim" {
+				_ = os.MkdirAll(groveTartBinDir(opts), 0o755)
+				_ = os.WriteFile(path, []byte(groveTartShim(opts)), 0o755)
+			}
+			opts.LookPath = func(string) (string, error) { return path, nil }
+			if err := applyHeadlessTart(t, r, opts); err == nil {
+				t.Fatal("expected no source to be found")
+			}
+			for _, c := range r.Calls {
+				if c.Name == "/usr/bin/ditto" {
+					t.Errorf("copied grove's own bundle: %s", c)
+				}
+			}
+		})
+	}
+}

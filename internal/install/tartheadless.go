@@ -69,9 +69,9 @@ func groveTartEntitlements() string {
 `
 }
 
-// tartSource is the Homebrew tart.app the copy is made from.
+// tartSource is the tart.app the copy is made from.
 type tartSource struct {
-	App     string // <brew prefix>/libexec/tart.app, symlinks resolved
+	App     string // the tart.app bundle, symlinks resolved
 	Version string
 	CDHash  string
 }
@@ -90,19 +90,80 @@ func plutilRaw(ctx context.Context, r Runner, plist, key string) (string, error)
 	return strings.TrimSpace(stdout), err
 }
 
-// brewTartSource locates Homebrew's tart.app and, when verify is set, refuses anything that is not
-// the genuine, validly signed Cirrus Labs bundle. Without verify it only reads the version and
-// code-directory hash (the doctor and the idempotency check).
-func brewTartSource(ctx context.Context, r Runner, verify bool) (tartSource, error) {
-	var s tartSource
+// brewTartApp is Homebrew's tart.app, or "" when Homebrew has no tart prefix. found says whether
+// the bundle is really on disk: `brew --prefix tart` prints a path even for a formula that is not
+// installed.
+func brewTartApp(ctx context.Context, r Runner) (app string, found bool) {
 	stdout, _, err := r.Run(ctx, "brew", "--prefix", "tart")
 	prefix := strings.TrimSpace(stdout)
 	if err != nil || prefix == "" {
-		return s, fmt.Errorf("`brew --prefix tart` found no Homebrew tart")
+		return "", false
 	}
-	s.App = filepath.Join(prefix, "libexec", "tart.app")
-	if real, err := filepath.EvalSymlinks(s.App); err == nil {
-		s.App = real
+	app = filepath.Join(prefix, "libexec", "tart.app")
+	if real, err := filepath.EvalSymlinks(app); err == nil {
+		return real, true
+	}
+	return app, false
+}
+
+// pathTartApp is the tart.app that the `tart` on PATH resolves into (a symlink to the bundle's
+// executable, as a manual or vendor install leaves), or "". Grove's own copy and its shim are
+// never a source.
+func pathTartApp(opts Options) string {
+	bin, err := opts.lookPath()("tart")
+	if err != nil || bin == "" {
+		return ""
+	}
+	real, err := filepath.EvalSymlinks(bin)
+	if err != nil {
+		return ""
+	}
+	own := []string{groveTartAppDir(opts), groveTartShimPath(opts)}
+	for _, o := range own {
+		if resolved, err := filepath.EvalSymlinks(o); err == nil {
+			own = append(own, resolved)
+		}
+	}
+	inside := func(path string) bool {
+		for _, o := range own {
+			if path == o || strings.HasPrefix(path, o+string(filepath.Separator)) {
+				return true
+			}
+		}
+		return false
+	}
+	if inside(real) || inside(bin) {
+		return ""
+	}
+	for dir := filepath.Dir(real); dir != "/" && dir != "." && dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
+		if strings.HasSuffix(dir, ".app") {
+			if inside(dir) {
+				return ""
+			}
+			return dir
+		}
+	}
+	return ""
+}
+
+// installedTartSource locates the tart.app the copy is made from and, when verify is set, refuses
+// anything that is not the genuine, validly signed Cirrus Labs bundle. The source is Homebrew's
+// (`brew --prefix tart`) when it is there, else the bundle the `tart` on PATH resolves into, so a
+// worker whose Tart did not come from Homebrew (or whose Homebrew another user owns) heals too.
+// Without verify it only reads the version and code-directory hash (the doctor and the
+// idempotency check).
+func installedTartSource(ctx context.Context, r Runner, opts Options, verify bool) (tartSource, error) {
+	var s tartSource
+	brewApp, found := brewTartApp(ctx, r)
+	switch {
+	case found:
+		s.App = brewApp
+	case pathTartApp(opts) != "":
+		s.App = pathTartApp(opts)
+	case brewApp != "":
+		s.App = brewApp
+	default:
+		return s, fmt.Errorf("found no installed tart.app: `brew --prefix tart` has no Homebrew tart and no `tart` on PATH resolves into a .app bundle")
 	}
 	plist := filepath.Join(s.App, "Contents", "Info.plist")
 	if verify {
@@ -131,7 +192,7 @@ func brewTartSource(ctx context.Context, r Runner, verify bool) (tartSource, err
 }
 
 // groveTartCopyProblems lists everything wrong with the installed copy: missing, unsigned, not
-// background-only, wrong entitlements, a stale shim. current, when non-nil, is the brew tart the
+// background-only, wrong entitlements, a stale shim. current, when non-nil, is the installed tart the
 // copy must have been made from.
 func groveTartCopyProblems(ctx context.Context, r Runner, opts Options, current *tartSource) []string {
 	app := groveTartAppDir(opts)
@@ -162,7 +223,7 @@ func groveTartCopyProblems(ctx context.Context, r Runner, opts Options, current 
 					have = v
 				}
 			}
-			problems = append(problems, fmt.Sprintf("it was made from Tart %s, Homebrew's tart is %s", have, current.Version))
+			problems = append(problems, fmt.Sprintf("it was made from Tart %s, the installed tart.app is %s", have, current.Version))
 		}
 	}
 	return problems
@@ -173,17 +234,17 @@ func tartHeadlessStep(r Runner, opts Options) Step {
 	return Step{
 		Name: "tart-headless-app",
 		Description: fmt.Sprintf(
-			"Make %s: a copy of Homebrew's tart.app (verified genuine: bundle id, signature, team %s) with LSUIElement set so `tart run` never flashes in the Dock, re-signed ad hoc with only %s (bridged networking is unavailable in it), and an exec shim %s the worker puts first on PATH. Re-made when Homebrew's tart changes.",
+			"Make %s: a copy of the installed tart.app (Homebrew's, or the one `tart` on PATH resolves to; verified genuine: bundle id, signature, team %s) with LSUIElement set so `tart run` never flashes in the Dock, re-signed ad hoc with only %s (bridged networking is unavailable in it), and an exec shim %s the worker puts first on PATH. Re-made when that Tart changes.",
 			app, upstreamTartTeamID, entVirtualization, groveTartShimPath(opts)),
 		Check: func(ctx context.Context) (bool, error) {
-			src, err := brewTartSource(ctx, r, false)
+			src, err := installedTartSource(ctx, r, opts, false)
 			if err != nil {
 				return false, nil
 			}
 			return len(groveTartCopyProblems(ctx, r, opts, &src)) == 0, nil
 		},
 		Apply: func(ctx context.Context) error {
-			src, err := brewTartSource(ctx, r, true)
+			src, err := installedTartSource(ctx, r, opts, true)
 			if err != nil {
 				return err
 			}
@@ -265,7 +326,7 @@ func checkHeadlessTart(ctx context.Context, r Runner, opts Options) CheckResult 
 	const name = "headless-tart"
 	const fix = "re-run `grove install --role worker` (after `brew upgrade tart`, too): it re-makes the Grove Tart copy"
 	var problems []string
-	if cur, err := brewTartSource(ctx, r, false); err != nil {
+	if cur, err := installedTartSource(ctx, r, opts, false); err != nil {
 		problems = groveTartCopyProblems(ctx, r, opts, nil)
 	} else {
 		problems = groveTartCopyProblems(ctx, r, opts, &cur)

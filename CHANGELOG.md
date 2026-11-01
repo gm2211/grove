@@ -4,6 +4,19 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **`grove install --role worker` heals a worker whose Tart is not from Homebrew.** The
+  `tart-headless-app` step took its source only from `brew --prefix tart`, so a worker running as
+  its own user on another user's Homebrew, with Tart installed as the upstream `tart.app`, failed
+  it. It now falls back to the bundle the `tart` on PATH resolves into (never grove's own copy or
+  shim), with the same bundle-id, signature and team checks, and re-makes the copy when either
+  source changes. The `brew-trust:<tap>` steps (openai/tools, hashicorp/tap) are satisfied without
+  asking Homebrew when the binaries the tap gates (tart, softnet, nomad) are already on PATH.
+
+- **`grove install` no longer piles up duplicate backups.** `backup-legacy-worker` skips a file a
+  timestamped backup already holds byte-for-byte, creates the backup directory only when it saves
+  something, and prunes `YYYYMMDD-HHMMSS` backup directories that only repeat an older one (the
+  oldest stays; other names such as `manual-*` are never touched). A re-run reports `[ok]`.
+
 - **`grove install` downloads Orchard instead of building it, so a Mac without Go can be a worker.**
   Every grove release now also carries `orchard_<os>_<arch>.tar.gz` for darwin/linux on
   arm64/amd64: the Orchard fork at the pinned `OrchardForkCommit`, built by the release workflow

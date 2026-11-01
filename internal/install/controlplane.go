@@ -203,7 +203,7 @@ func controlPlaneDependencySteps(r Runner, opts Options, out io.Writer, destOrch
 	lookPath := opts.lookPath()
 	var steps []Step
 	if isDarwin {
-		steps = append(steps, trustTapStep(r, tapHashicorp, out))
+		steps = append(steps, trustTapStepWhen(r, tapHashicorp, out, func() bool { return !onPath(lookPath, "nomad") }))
 	}
 	steps = append(steps,
 		Step{

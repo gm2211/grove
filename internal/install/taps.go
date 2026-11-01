@@ -160,6 +160,15 @@ func checkBrewWritable(ctx context.Context, r Runner, tap thirdPartyTap) error {
 // satisfied" rather than erroring the whole plan — Apply then gets a chance to run and, on a brew
 // old enough not to have `trust` at all, self-heals via the "Unknown command" fallback above.
 func trustTapStep(r Runner, tap thirdPartyTap, out io.Writer) Step {
+	return trustTapStepWhen(r, tap, out, nil)
+}
+
+// trustTapStepWhen is trustTapStep for a tap that is only trusted to install something: needed
+// says whether that install is still pending. When it reports false (the binaries the tap gates
+// are already on PATH, however they got there) the step is satisfied without asking Homebrew
+// anything, so a Mac whose Homebrew another user owns, or whose Tart never came from Homebrew,
+// does not fail a step it has no use for. A nil needed means always needed.
+func trustTapStepWhen(r Runner, tap thirdPartyTap, out io.Writer, needed func() bool) Step {
 	return Step{
 		Name: "brew-trust:" + tap.Name,
 		Description: fmt.Sprintf(
@@ -168,6 +177,9 @@ func trustTapStep(r Runner, tap thirdPartyTap, out io.Writer) Step {
 			tap.Name, tap.Reason, tap.Name, tap.Name,
 		),
 		Check: func(ctx context.Context) (bool, error) {
+			if needed != nil && !needed() {
+				return true, nil
+			}
 			info, err := fetchTapInfo(ctx, r, tap.Name)
 			if err != nil {
 				return false, nil
@@ -208,4 +220,10 @@ func checkTrustedTaps(ctx context.Context, r Runner, opts Options) []CheckResult
 		})
 	}
 	return results
+}
+
+// onPath reports whether name resolves through lookPath.
+func onPath(lookPath func(string) (string, error), name string) bool {
+	_, err := lookPath(name)
+	return err == nil
 }
