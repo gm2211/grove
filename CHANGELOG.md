@@ -4,6 +4,8 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+## v0.1.20
+
 - **`grove install --role worker` heals an existing worker in place.** It keeps the worker's
   Orchard name and labels (from its recorded identity, grove's wrapper, a hand-written
   `run-worker.sh`, or an old LaunchAgent) instead of renaming it to the hostname, so a Mac Studio
