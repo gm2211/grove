@@ -135,23 +135,34 @@ func trustTap(ctx context.Context, r Runner, tap thirdPartyTap, out io.Writer) e
 // tapping writes to the prefix and could only fail halfway with a permission error. It is lenient
 // the other way too: if the prefix or its owner can't be determined, it lets brew try.
 func checkBrewWritable(ctx context.Context, r Runner, tap thirdPartyTap) error {
-	prefixOut, _, err := r.Run(ctx, "brew", "--prefix")
-	prefix := strings.TrimSpace(prefixOut)
-	if err != nil || prefix == "" {
-		return nil
-	}
-	ownerOut, _, err := r.Run(ctx, "stat", "-f", "%Su", prefix)
-	owner := strings.TrimSpace(ownerOut)
-	if err != nil || owner == "" {
-		return nil
-	}
-	cur, err := user.Current()
-	if err != nil || cur.Username == owner {
+	prefix, owner, cur, foreign := brewForeignOwner(ctx, r)
+	if !foreign {
 		return nil
 	}
 	return fmt.Errorf("Homebrew at %s belongs to %s, not %s, so grove cannot tap %s here; "+
 		"as %s run: brew tap %s, then run this again (grove then trusts it for %s)",
-		prefix, owner, cur.Username, tap.Name, owner, tap.Name, cur.Username)
+		prefix, owner, cur, tap.Name, owner, tap.Name, cur)
+}
+
+// brewForeignOwner reports whether the Homebrew prefix belongs to a user other than the current
+// one, which is then unable to install into it. Lenient: if the prefix or its owner can't be
+// determined, foreign is false and brew gets to try.
+func brewForeignOwner(ctx context.Context, r Runner) (prefix, owner, current string, foreign bool) {
+	prefixOut, _, err := r.Run(ctx, "brew", "--prefix")
+	prefix = strings.TrimSpace(prefixOut)
+	if err != nil || prefix == "" {
+		return "", "", "", false
+	}
+	ownerOut, _, err := r.Run(ctx, "stat", "-f", "%Su", prefix)
+	owner = strings.TrimSpace(ownerOut)
+	if err != nil || owner == "" {
+		return "", "", "", false
+	}
+	cur, err := user.Current()
+	if err != nil || cur.Username == owner {
+		return "", "", "", false
+	}
+	return prefix, owner, cur.Username, true
 }
 
 // trustTapStep returns the idempotent "trust this tap" Step that a planner inserts immediately

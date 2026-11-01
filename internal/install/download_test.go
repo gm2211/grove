@@ -37,6 +37,23 @@ func TestPinnedChecksumsCoverEverySupportedPlatform(t *testing.T) {
 	}
 }
 
+func TestPinnedTartDownloadIsVersionedNotLatest(t *testing.T) {
+	d, err := tartDownload(Options{GOOS: "darwin", GOARCH: "arm64"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "https://github.com/openai/tart/releases/download/" + TartVersion + "/tart.tar.gz"
+	if d.URL != want || strings.Contains(d.URL, "latest") {
+		t.Fatalf("tart URL = %q, want %q", d.URL, want)
+	}
+	if sum := tartTarballSHA256["darwin/arm64"]; len(sum) != 64 || strings.ToLower(sum) != sum {
+		t.Errorf("pinned sha256 %q is not 64 lower-case hex chars", sum)
+	}
+	if _, err := tartDownload(Options{GOOS: "darwin", GOARCH: "amd64"}); err == nil {
+		t.Fatal("expected a platform Tart does not run on to be refused")
+	}
+}
+
 func TestPinnedNomadDownloadIsVersionedNotLatest(t *testing.T) {
 	d, err := nomadDownload(Options{GOOS: "linux", GOARCH: "amd64"})
 	if err != nil {
@@ -183,9 +200,14 @@ const fakeTartApp = "/fake-brew/opt/tart/libexec/tart.app"
 
 // scriptTartSource makes a genuine, validly signed Cirrus Labs Homebrew tart at version.
 func scriptTartSource(r *FakeRunner, version string) {
-	plist := fakeTartApp + "/Contents/Info.plist"
 	r.Script("brew --prefix tart", FakeResult{Stdout: "/fake-brew/opt/tart\n"})
+	scriptTartBundle(r, fakeTartApp, version)
+}
+
+// scriptTartBundle makes the tart.app at app a genuine, validly signed Cirrus Labs bundle.
+func scriptTartBundle(r *FakeRunner, app, version string) {
+	plist := app + "/Contents/Info.plist"
 	r.Script("/usr/bin/plutil -extract CFBundleIdentifier raw -o - "+plist, FakeResult{Stdout: upstreamTartBundleID + "\n"})
 	r.Script("/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "+plist, FakeResult{Stdout: version + "\n"})
-	r.Script("/usr/bin/codesign -dv "+fakeTartApp, FakeResult{Stderr: "Identifier=" + upstreamTartBundleID + "\nCDHash=fedc1ee5\nTeamIdentifier=" + upstreamTartTeamID + "\n"})
+	r.Script("/usr/bin/codesign -dv "+app, FakeResult{Stderr: "Identifier=" + upstreamTartBundleID + "\nCDHash=fedc1ee5\nTeamIdentifier=" + upstreamTartTeamID + "\n"})
 }

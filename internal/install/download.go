@@ -14,12 +14,18 @@ import (
 //
 // To bump a pin, change the version and every per-platform hash in the same commit:
 //   - Nomad: https://releases.hashicorp.com/nomad/<v>/nomad_<v>_SHA256SUMS (the *.zip lines).
+//   - Tart: the release's tart.tar.gz (github.com/openai/tart, Cirrus Labs' successor repo):
+//     `shasum -a 256 tart.tar.gz`, or the release's tart_<v>_checksums.txt. Tart runs on Apple
+//     silicon only, so there is one platform.
 //   - Homebrew installer: the commit of github.com/Homebrew/install and `sha256sum install.sh`
 //     at that commit (Homebrew/install publishes no tags).
 const (
 	// NomadVersion matches the upstream release the worker images' patched Nomad
 	// (2.0.7+grove.1, see docs/IMAGES.md) is built from. Servers must not be older than clients.
 	NomadVersion = "2.0.7"
+	// TartVersion is the Tart release grove installs itself when Homebrew cannot (a worker user on
+	// an admin's Homebrew); with Homebrew, `brew install` picks the version.
+	TartVersion = "2.41.1"
 	// HomebrewInstallCommit pins Homebrew's installer script (instead of its HEAD branch).
 	HomebrewInstallCommit = "35da6871c4be7d7fdab2fd505fb7fa667926a2a5"
 	// HomebrewInstallSHA256 is install.sh's digest at HomebrewInstallCommit.
@@ -38,6 +44,11 @@ var nomadZipSHA256 = map[string]string{
 	"darwin/arm64": "4ada34db43f8b75c80c4e09ce50f4753e661bcb4a3745f415dd4aa7d01483e58",
 	"linux/amd64":  "4c9b8a0850d6fd9caadbbab09b3e6fdf8b77aa777729543c70c61b85acca68c1",
 	"linux/arm64":  "19708097585efe0d60234f300b62892fa776ff93ca6ba5fb918360cbd118b71e",
+}
+
+// tartTarballSHA256 is the SHA-256 of the tart.tar.gz of TartVersion, keyed "os/arch".
+var tartTarballSHA256 = map[string]string{
+	"darwin/arm64": "e680a734febccfce7d4e910c1f7f13fc3b00f19a181c945e2d746de3214c32c2",
 }
 
 // pinnedDownload is one fetch-verify unit: a URL and the digest its bytes must have.
@@ -68,6 +79,18 @@ func nomadDownload(opts Options) (pinnedDownload, error) {
 		URL:    fmt.Sprintf("https://releases.hashicorp.com/nomad/%s/%s", NomadVersion, file),
 		SHA256: sum,
 		File:   file,
+	}, nil
+}
+
+func tartDownload(opts Options) (pinnedDownload, error) {
+	sum, err := pinnedFor(tartTarballSHA256, "Tart "+TartVersion, opts)
+	if err != nil {
+		return pinnedDownload{}, err
+	}
+	return pinnedDownload{
+		URL:    "https://github.com/openai/tart/releases/download/" + TartVersion + "/tart.tar.gz",
+		SHA256: sum,
+		File:   "tart-" + TartVersion + ".tar.gz",
 	}, nil
 }
 

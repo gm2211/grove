@@ -95,8 +95,10 @@ grove setup
   be approved. This binds the credential to the worker's exact name so Grove can synchronize its
   assigned VMs and open watch connections. Registration remains allowed, and existing privileged
   legacy credentials remain compatible.
-- The worker runs Tart only through `~/Applications/Grove Tart.app`: a copy of Homebrew's
-  `tart.app` (checked to be the genuine Cirrus Labs bundle) with `LSUIElement` set, re-signed ad
+- The worker runs Tart only through `~/Applications/Grove Tart.app`: a copy of the genuine
+  `tart.app` (Homebrew's, or grove's own install in `~/.local/lib/grove/tart.app`, or the one the
+  `tart` on `PATH` belongs to; whichever it is, it is checked to be the genuine Cirrus Labs bundle:
+  bundle id, strict code signature, team) with `LSUIElement` set, re-signed ad
   hoc with only the `com.apple.security.virtualization` entitlement, and put first on the
   worker's `PATH` by a shim in `~/.config/grove/tart-bin/`. Homebrew's own Tart is a regular
   foreground app, so every `tart run` by the daemon would flash "Tart" in the Dock of whoever is
@@ -139,8 +141,11 @@ A worker does not need anyone logged in at the Mac, and the user it runs as does
 admin, so a dedicated standard user keeps the worker and its jobs apart from the Mac's owner:
 
 1. Create the user (System Settings -> Users & Groups -> **Standard**, or `sysadminctl`), once.
-   Homebrew, Tailscale and Tart must be usable by it; `grove install` installs Tart and Orchard
-   into the user's own home.
+   Tailscale must be usable by it. Homebrew need not be: if it belongs to another user, `grove
+   install` installs Tart itself from the pinned release tarball (SHA-256 checked, bundle id,
+   signature and team verified) into `~/.local/lib/grove/tart.app`, linked at `~/.local/bin/tart`,
+   and Orchard into the user's own home. A Tart that is already on `PATH` and not Homebrew's is
+   used as it is.
 2. From an admin account's Terminal (or ssh), run setup **for** it. No GUI session for `argos` is
    needed, and nobody has to `su`:
 
@@ -389,7 +394,9 @@ ghcr.io` (see "Registry access for private worker images" above), doctor also wa
   printed: `brew trust openai/tools` (or `hashicorp/tap`, matching whichever tap
   the error names). `grove doctor` also reports any required tap that's tapped but not trusted,
   with this exact remediation command. On a Homebrew old enough to not have `brew trust` at all,
-  grove treats that as nothing to do — there's no trust gate to satisfy.
+  grove treats that as nothing to do — there's no trust gate to satisfy. When Tart does not come
+  from Homebrew (a non-Homebrew `tart` is already on `PATH`, or Homebrew is another user's and
+  grove installs the release tarball), the `openai/tools` trust step has nothing to do and passes.
 
 ## See also
 
