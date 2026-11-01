@@ -33,7 +33,40 @@ const (
 	// tokens included, and nothing else. It is never implied by ScopeOperator and never granted by
 	// Tailscale identity: only a device credential named after the worker carries it.
 	ScopeBroker = "broker"
+	// ScopeSnoozePrefix starts the parameterized scope "worker:snooze:<worker>": its holder may
+	// snooze and wake that one worker (POST/GET /workers/<worker>/snooze|wake) and nothing else.
+	// It is never implied by ScopeOperator-less scopes, and never granted by Tailscale identity.
+	ScopeSnoozePrefix = "worker:snooze:"
 )
+
+// SnoozeScope is the scope that lets its holder snooze and wake worker.
+func SnoozeScope(worker string) string { return ScopeSnoozePrefix + worker }
+
+// validWorkerName reports whether name can be the worker of a snooze scope: the characters an
+// Orchard worker name (a hostname, possibly with dots) is made of.
+func validWorkerName(name string) bool {
+	if name == "" || len(name) > 128 {
+		return false
+	}
+	for _, r := range name {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '.' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// validScope reports whether scope is a fixed scope or a snooze scope for a valid worker name.
+func validScope(scope string) bool {
+	if _, ok := validAccessScopes[scope]; ok {
+		return true
+	}
+	if worker, ok := strings.CutPrefix(scope, ScopeSnoozePrefix); ok {
+		return validWorkerName(worker)
+	}
+	return false
+}
 
 var validAccessScopes = map[string]struct{}{
 	ScopeRead: {}, ScopeDispatch: {}, ScopeBuild: {}, ScopeAgent: {}, ScopeShell: {}, ScopeOperator: {}, ScopeBroker: {},
@@ -385,7 +418,7 @@ func normalizeScopes(scopes []string) ([]string, error) {
 	result := make([]string, 0, len(scopes))
 	for _, scope := range scopes {
 		scope = strings.TrimSpace(scope)
-		if _, ok := validAccessScopes[scope]; !ok {
+		if !validScope(scope) {
 			return nil, fmt.Errorf("unknown access scope %q", scope)
 		}
 		if _, ok := seen[scope]; ok {

@@ -26,6 +26,7 @@ import (
 	"github.com/gm2211/grove/internal/sandbox"
 	"github.com/gm2211/grove/internal/secrets"
 	"github.com/gm2211/grove/internal/server"
+	"github.com/gm2211/grove/internal/snooze"
 	"github.com/gm2211/grove/internal/tsauth"
 	"github.com/gm2211/grove/internal/wire"
 )
@@ -141,7 +142,33 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 
 	// Rebuild a sealed VM that keeps losing jobs, and stop sending work to a Mac whose VMs keep
 	// losing them, from the attempt records the job drivers keep (see internal/health).
-	monitor := &health.Monitor{Jobs: ds, Orchard: oc}
+	pauseStore, err := snooze.NewStore(filepath.Join(filepath.Dir(cfgPath), "pauses.json"))
+	if err != nil {
+		return fmt.Errorf("worker pause store: %w", err)
+	}
+	poolHealth.Pauses = pauseStore
+	// A snooze ends by itself: clear its reason when it lapses (resuming the worker only if no
+	// other reason remains) and re-apply the pause if Orchard lost it. Runs now and every tick.
+	expirer := &snooze.Expirer{Store: pauseStore, Orchard: oc}
+	go func() {
+		tick := func() {
+			if err := expirer.Tick(ctx); err != nil {
+				slog.Warn("serve: snooze expiry pass failed", "err", err)
+			}
+		}
+		tick()
+		t := time.NewTicker(dispatch.DefaultReconcileInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				tick()
+			}
+		}
+	}()
+	monitor := &health.Monitor{Jobs: ds, Orchard: oc, Pauses: pauseStore}
 	go func() {
 		if err := monitor.Run(ctx, dispatch.DefaultReconcileInterval); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("serve: machine health monitor stopped", "err", err)
@@ -151,7 +178,7 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 	serverOpts := server.Options{
 		Token: cfg.Server.Token, Version: Version,
 		ControllerURL: cfg.Orchard.URL, ServerURL: cfg.Server.URL,
-		GitAuth: gitAuthStore, Secrets: secretStore,
+		GitAuth: gitAuthStore, Secrets: secretStore, Pauses: pauseStore,
 	}
 	if ts := tailscaleAuthenticator(cfg.Server.Tailscale); ts != nil {
 		serverOpts.Tailscale = ts

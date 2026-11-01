@@ -217,7 +217,7 @@ func (s *Server) handleApproveJoinRequest(w http.ResponseWriter, r *http.Request
 		s.writeError(w, http.StatusBadGateway, errors.New("issue worker credential"))
 		return
 	}
-	clientToken, principal, err := s.opts.AccessStore.IssueJoined(jr.Name, []string{ScopeRead, ScopeBuild, ScopeAgent})
+	clientToken, principal, err := s.opts.AccessStore.IssueJoined(jr.Name, []string{ScopeRead, ScopeBuild, ScopeAgent, SnoozeScope(jr.Name)})
 	if err != nil {
 		s.joins.mu.Lock()
 		jr.Approving = false

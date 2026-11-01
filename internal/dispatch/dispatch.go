@@ -163,6 +163,21 @@ type Job struct {
 	// Fallback is set when the job ran in another pool than Request.Pool because nothing there
 	// could place it (see PoolConfig.Fallback).
 	Fallback *Fallback `json:"fallback,omitempty"`
+	// QueuedUntil is set on a pending job while a snoozed worker of its pool is the reason it is
+	// waiting (see PoolWaiter): the end of the latest relevant snooze. The job is queued, not
+	// failing; its pending timeout starts counting from here.
+	QueuedUntil *time.Time `json:"queuedUntil,omitempty"`
+	// Evictions lists the times grove moved this job off a snoozed worker (`snooze --now`) and
+	// requeued it on its pool. The job carries no pin to the old worker: whichever worker of the
+	// pool frees up first takes it.
+	Evictions []Eviction `json:"evictions,omitempty"`
+}
+
+// Eviction records one requeue of a job off a snoozed worker.
+type Eviction struct {
+	Worker string    `json:"worker"`
+	At     time.Time `json:"at"`
+	Reason string    `json:"reason"`
 }
 
 // Placement is where a job's allocation landed, resolved via the Nomad node's meta (see

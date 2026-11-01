@@ -110,6 +110,25 @@ export const api = {
     await request<void>(`/api/v1/workers/${encodeURIComponent(name)}/resume`, { method: "POST" });
   },
 
+  async snoozeWorker(name: string, forDuration = "2h"): Promise<void> {
+    if (isMock) {
+      mock.snoozeWorker(name, forDuration);
+      return delay(undefined);
+    }
+    await request<unknown>(`/api/v1/workers/${encodeURIComponent(name)}/snooze`, {
+      method: "POST",
+      body: JSON.stringify({ for: forDuration }),
+    });
+  },
+
+  async wakeWorker(name: string): Promise<void> {
+    if (isMock) {
+      mock.wakeWorker(name);
+      return delay(undefined);
+    }
+    await request<unknown>(`/api/v1/workers/${encodeURIComponent(name)}/wake`, { method: "POST" });
+  },
+
   async getGitHubSourcing(): Promise<GitHubSourcingStatus> {
     if (isMock) return delay(structuredClone(mock.githubSourcing));
     return request<GitHubSourcingStatus>("/api/v1/github/sourcing");

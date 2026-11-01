@@ -146,6 +146,42 @@ func (c *Client) ResumeWorker(ctx context.Context, name string) error {
 	return c.doJSON(ctx, http.MethodPost, "/workers/"+url.PathEscape(name)+"/resume", nil, nil)
 }
 
+// SnoozeWorker snoozes a worker (POST /workers/{name}/snooze).
+func (c *Client) SnoozeWorker(ctx context.Context, name string, req server.SnoozeRequest) (*server.SnoozeResponse, error) {
+	var out server.SnoozeResponse
+	if err := c.doJSON(ctx, http.MethodPost, "/workers/"+url.PathEscape(name)+"/snooze", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// WakeWorker ends a worker's snooze (POST /workers/{name}/wake).
+func (c *Client) WakeWorker(ctx context.Context, name string) (*server.WakeResponse, error) {
+	var out server.WakeResponse
+	if err := c.doJSON(ctx, http.MethodPost, "/workers/"+url.PathEscape(name)+"/wake", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// WorkerSnooze reads a worker's snooze state (GET /workers/{name}/snooze).
+func (c *Client) WorkerSnooze(ctx context.Context, name string) (*server.SnoozeStatus, error) {
+	var out server.SnoozeStatus
+	if err := c.doJSON(ctx, http.MethodGet, "/workers/"+url.PathEscape(name)+"/snooze", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// WhoAmI returns the principal the server sees for this client's credential.
+func (c *Client) WhoAmI(ctx context.Context) (*server.Principal, error) {
+	var out server.Principal
+	if err := c.doJSON(ctx, http.MethodGet, "/whoami", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // Devices lists enrolled device credentials without exposing token hashes or raw tokens.
 func (c *Client) Devices(ctx context.Context) ([]server.DeviceCredential, error) {
 	var out []server.DeviceCredential

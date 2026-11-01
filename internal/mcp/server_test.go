@@ -37,6 +37,10 @@ type fakeGroveAPI struct {
 	pausedWorkers map[string]bool
 	submittedJobs []dispatch.JobRequest
 	logsByJobID   map[string]string
+
+	snoozeReqs  map[string]server.SnoozeRequest
+	woken       []string
+	whoamiScope []string
 }
 
 func newFakeGroveAPI() *fakeGroveAPI {
@@ -131,6 +135,28 @@ func (f *fakeGroveAPI) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/whoami":
+		writeJSON(w, http.StatusOK, server.Principal{ID: "x", Name: "me", Scopes: f.whoamiScope})
+
+	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/snooze"):
+		name, _ := url.PathUnescape(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/workers/"), "/snooze"))
+		var req server.SnoozeRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		f.mu.Lock()
+		if f.snoozeReqs == nil {
+			f.snoozeReqs = map[string]server.SnoozeRequest{}
+		}
+		f.snoozeReqs[name] = req
+		f.mu.Unlock()
+		writeJSON(w, http.StatusOK, server.SnoozeResponse{Worker: name, Until: time.Now().Add(2 * time.Hour), Mode: "drain", Reasons: []string{"snooze"}})
+
+	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/wake"):
+		name, _ := url.PathUnescape(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/workers/"), "/wake"))
+		f.mu.Lock()
+		f.woken = append(f.woken, name)
+		f.mu.Unlock()
+		writeJSON(w, http.StatusOK, server.WakeResponse{Worker: name, Resumed: true})
 
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/recycle"):
 		name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/vms/"), "/recycle")
@@ -626,3 +652,67 @@ func TestNewServerBuildsWithoutError(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+func TestSnoozeAndWakeTools(t *testing.T) {
+	fake := newFakeGroveAPI()
+	fake.whoamiScope = []string{"read", "worker:snooze:g-mac.local"}
+	h := newTestHandlers(t, fake)
+
+	// Named worker.
+	_, res, err := h.snoozeWorker(t.Context(), nil, snoozeWorkerArgs{Name: "mini", For: "1h", Now: true})
+	if err != nil || res.Worker != "mini" {
+		t.Fatalf("snooze: %+v %v", res, err)
+	}
+	if req := fake.snoozeReqs["mini"]; req.For != "1h" || !req.Now {
+		t.Errorf("request = %+v", req)
+	}
+	// Default worker comes from the credential's single snooze scope.
+	if _, res, err = h.snoozeWorker(t.Context(), nil, snoozeWorkerArgs{}); err != nil || res.Worker != "g-mac.local" {
+		t.Fatalf("default snooze: %+v %v", res, err)
+	}
+	if _, wake, err := h.wakeWorker(t.Context(), nil, wakeWorkerArgs{}); err != nil || wake.Worker != "g-mac.local" || len(fake.woken) != 1 {
+		t.Fatalf("wake: %+v %v", wake, err)
+	}
+	fake.whoamiScope = []string{"read"}
+	if _, _, err := h.snoozeWorker(t.Context(), nil, snoozeWorkerArgs{}); err == nil {
+		t.Error("snooze with no resolvable worker succeeded")
+	}
+}
+
+func TestFleetSummaryCountsSnoozedWorkers(t *testing.T) {
+	until := time.Now().Add(time.Hour)
+	sum := summarizeFleet(&server.FleetResponse{Workers: []server.FleetEntry{
+		{Name: "a", Online: true, Cordoned: true, SnoozedUntil: &until, SnoozeMode: "drain"},
+		{Name: "b", Online: true},
+	}}, nil)
+	if sum.Workers.Snoozed != 1 || sum.Workers.SnoozedWorkers[0].Name != "a" || !sum.Workers.SnoozedWorkers[0].Until.Equal(until) {
+		t.Errorf("workers = %+v", sum.Workers)
+	}
+}
+
+func TestRunResultCarriesPendingReasonAndProgress(t *testing.T) {
+	fake := newFakeGroveAPI()
+	h := newTestHandlers(t, fake)
+	until := time.Now().Add(time.Hour)
+	wait := false
+	_, res, err := h.run(t.Context(), nil, runArgs{Pool: "macos", Script: "true", Wait: &wait})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	j := fake.jobs[res.JobID]
+	j.Status, j.StartedAt = dispatch.StatusPending, nil
+	j.PendingReason = "queued: workers for pool macos snoozed (g-mac.local snoozed until 15:04)"
+	j.QueuedUntil = &until
+	fake.mu.Unlock()
+	_, out, err := h.awaitJob(t.Context(), nil, res.JobID, 10, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.TimedOutWaiting || !strings.Contains(out.PendingReason, "snoozed") || out.QueuedUntil == "" {
+		t.Errorf("result = %+v", out)
+	}
+	if msg := progressMessage("j", &dispatch.Job{Status: dispatch.StatusPending, PendingReason: "queued: x"}); msg != "job j: pending (queued: x)" {
+		t.Errorf("progress = %q", msg)
+	}
+}

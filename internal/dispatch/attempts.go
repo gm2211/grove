@@ -27,6 +27,9 @@ const (
 	AttemptLost     = "lost"     // the VM stopped answering while the job was in it
 	AttemptSetup    = "setup"    // grove could not set the job up in the VM
 	AttemptCanceled = "canceled" // the job was canceled while in the VM
+	// AttemptEvicted: the VM's Mac was snoozed with --now and grove stopped the job to run it in
+	// another VM. Not a loss: it never counts towards quarantine, MaxAttempts or machine health.
+	AttemptEvicted = "evicted"
 )
 
 // Attempt is one run of a job in one VM.

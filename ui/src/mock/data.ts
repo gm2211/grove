@@ -24,12 +24,13 @@ interface HostDef {
   cordoned: boolean;
   online: boolean;
   vmSlots: number;
+  snoozedUntil?: string;
 }
 
 const hosts: HostDef[] = [
   { host: "mac-mini-1", arch: "arm64", cordoned: false, online: true, vmSlots: 4 },
   { host: "mac-1", arch: "arm64", cordoned: false, online: true, vmSlots: 6 },
-  { host: "mac-mini-2", arch: "arm64", cordoned: true, online: true, vmSlots: 4 },
+  { host: "mac-mini-2", arch: "arm64", cordoned: true, online: true, vmSlots: 4, snoozedUntil: new Date(Date.now() + 90 * 60_000).toISOString() },
   { host: "linux-box-1", arch: "amd64", cordoned: false, online: false, vmSlots: 8 },
 ];
 
@@ -43,7 +44,8 @@ function makeWorkers(): FleetEntry[] {
     arch: h.arch,
     online: h.online,
     cordoned: h.cordoned,
-    status: h.online ? (h.cordoned ? "cordoned" : "ready") : "offline",
+    status: h.online ? (h.snoozedUntil ? "snoozed" : h.cordoned ? "cordoned" : "ready") : "offline",
+    ...(h.snoozedUntil ? { snoozedUntil: h.snoozedUntil, snoozeMode: "drain", pauseReasons: ["snooze"] } : {}),
     capacity: { cpu: h.arch === "arm64" ? 10 : 16, memoryMiB: 32768, vmSlots: h.vmSlots },
     running: h.online ? Math.min(h.vmSlots, 1 + Math.floor(Math.random() * h.vmSlots)) : 0,
     labels: { arch: h.arch },
@@ -219,6 +221,32 @@ export function pauseWorker(name: string): void {
   const w = state.fleet.workers.find((w) => w.name === name);
   if (w) {
     w.cordoned = true;
+    w.status = "cordoned";
+  }
+}
+
+export function snoozeWorker(name: string, forDuration: string): void {
+  const w = state.fleet.workers.find((w) => w.name === name);
+  if (!w) return;
+  const m = /^(\d+)(m|h)$/.exec(forDuration);
+  const minutes = m ? Number(m[1]) * (m[2] === "h" ? 60 : 1) : 120;
+  w.cordoned = true;
+  w.status = "snoozed";
+  w.snoozedUntil = new Date(Date.now() + minutes * 60_000).toISOString();
+  w.snoozeMode = "drain";
+  w.pauseReasons = ["snooze"];
+}
+
+export function wakeWorker(name: string): void {
+  const w = state.fleet.workers.find((w) => w.name === name);
+  if (!w) return;
+  delete w.snoozedUntil;
+  delete w.snoozeMode;
+  w.pauseReasons = (w.pauseReasons ?? []).filter((r) => r !== "snooze");
+  if (w.pauseReasons.length === 0) {
+    w.cordoned = false;
+    w.status = "ready";
+  } else {
     w.status = "cordoned";
   }
 }

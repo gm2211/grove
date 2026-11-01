@@ -120,6 +120,19 @@ func (s *service) fallbackBlockedUntil(req JobRequest, now time.Time) (time.Time
 // (read back from Nomad, since grove keeps neither) to target's parameterized job, then stops and
 // purges the original so it can't also run later. On success rec points at the new Nomad job.
 func (s *service) fallBack(ctx context.Context, rec *record, target, reason string, now time.Time) error {
+	if err := s.redispatch(ctx, rec, target); err != nil {
+		return err
+	}
+	rec.Fallback = &Fallback{From: rec.Request.Pool, To: target, At: now, Reason: reason}
+	return nil
+}
+
+// redispatch dispatches rec's job again to pool's parameterized job with the meta and payload read
+// back from Nomad, then stops and purges the old Nomad job so exactly one copy exists. On success
+// rec.NomadJobID names the new copy; on any failure rec is unchanged and the original is the one
+// left (a failed stop also removes the new copy). The new dispatch carries nothing about where the
+// old one ran: the pool's workers are fungible and any of them may take it.
+func (s *service) redispatch(ctx context.Context, rec *record, pool string) error {
 	inputs, ok := nomad.AsDispatchInputs(s.nomad)
 	if !ok {
 		return errors.New("nomad client can't read dispatch inputs back")
@@ -128,7 +141,7 @@ func (s *service) fallBack(ctx context.Context, rec *record, target, reason stri
 	if err != nil {
 		return err
 	}
-	name := jobName(rec.Request.Kind, target)
+	name := jobName(rec.Request.Kind, pool)
 	res, err := s.nomad.Dispatch(ctx, name, meta, payload)
 	if err != nil {
 		return fmt.Errorf("dispatch %s: %w", name, err)
@@ -136,11 +149,10 @@ func (s *service) fallBack(ctx context.Context, rec *record, target, reason stri
 	if err := s.nomad.StopJob(ctx, rec.NomadJobID, true); err != nil && !errors.Is(err, nomad.ErrNotFound) {
 		// Keep exactly one copy queued: the original, which grove still tracks.
 		if serr := s.nomad.StopJob(ctx, res.DispatchedJobID, true); serr != nil {
-			return errors.Join(fmt.Errorf("stop %s: %w", rec.NomadJobID, err), fmt.Errorf("stop fallback copy %s: %w", res.DispatchedJobID, serr))
+			return errors.Join(fmt.Errorf("stop %s: %w", rec.NomadJobID, err), fmt.Errorf("stop redispatched copy %s: %w", res.DispatchedJobID, serr))
 		}
 		return fmt.Errorf("stop %s: %w", rec.NomadJobID, err)
 	}
 	rec.NomadJobID = res.DispatchedJobID
-	rec.Fallback = &Fallback{From: rec.Request.Pool, To: target, At: now, Reason: reason}
 	return nil
 }

@@ -1,6 +1,8 @@
 package mcp
 
 import (
+	"time"
+
 	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/server"
 )
@@ -21,6 +23,16 @@ type WorkerCounts struct {
 	Total    int `json:"total"`
 	Online   int `json:"online"`
 	Cordoned int `json:"cordoned"`
+	// Snoozed counts workers the owner snoozed; SnoozedWorkers names them with when each wakes.
+	Snoozed        int             `json:"snoozed"`
+	SnoozedWorkers []SnoozedWorker `json:"snoozed_workers,omitempty"`
+}
+
+// SnoozedWorker is a worker its owner snoozed for a while. It is not broken: it comes back by itself.
+type SnoozedWorker struct {
+	Name  string    `json:"name"`
+	Until time.Time `json:"until"`
+	Mode  string    `json:"mode,omitempty"`
 }
 
 type VMCounts struct {
@@ -55,6 +67,10 @@ func summarizeFleet(fleet *server.FleetResponse, jobs []dispatch.Job) *FleetSumm
 		}
 		if w.Cordoned {
 			s.Workers.Cordoned++
+		}
+		if w.SnoozedUntil != nil {
+			s.Workers.Snoozed++
+			s.Workers.SnoozedWorkers = append(s.Workers.SnoozedWorkers, SnoozedWorker{Name: w.Name, Until: *w.SnoozedUntil, Mode: w.SnoozeMode})
 		}
 	}
 

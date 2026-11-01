@@ -22,6 +22,7 @@ import (
 	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/fleet"
 	"github.com/gm2211/grove/internal/orchard"
+	"github.com/gm2211/grove/internal/snooze"
 )
 
 // ExitCanceled is what Run returns when its context ends (Nomad stopping the job): 128+SIGTERM.
@@ -35,6 +36,9 @@ const (
 	drainingMarker = fleet.SealedDrainingMarker
 	drainingExit   = 75
 	exitDraining   = -75
+	// exitEvicted is how job.run hands back that the job's Mac was snoozed with --now and the job
+	// was stopped to run elsewhere. Run never returns it.
+	exitEvicted = -76
 )
 
 // Defaults for Runner's tunables.
@@ -91,6 +95,10 @@ type Runner struct {
 	// AttemptsDir is where the job's attempt record goes (see dispatch.AttemptRecord); "" keeps
 	// none.
 	AttemptsDir string
+	// PausesPath is the snooze store (pauses.json) of the control plane. A job whose Mac is
+	// snoozed with --now is stopped and rerun elsewhere, and a pool whose machines are all
+	// snoozed waits for them instead of timing out. "" ignores snoozes.
+	PausesPath string
 
 	stderrMu sync.Mutex
 	// lastSaid is the last message say printed, which names why an attempt was lost.
@@ -198,8 +206,17 @@ func (r *Runner) Run(ctx context.Context, req Request) int {
 		}
 		at := rec.start(vm)
 		j := r.newJob(req, slot.VM)
+		j.machine = machine(vm)
 		code = j.run(ctx, checkout)
 		slot.Release()
+		if code == exitEvicted {
+			// Not a loss: no lostOn, no quarantine, no MaxAttempts. The Mac is paused, so the
+			// next acquire passes it over and the job goes to another machine.
+			rec.finish(at, code, j.started, j.endMessage, false)
+			r.say("%s was snoozed; moving the job to another VM", j.machine)
+			skip[vm.Name+"/"+vm.UID] = true
+			continue
+		}
 		if code == exitDraining {
 			rec.drop(at)
 			r.say("%s is shutting down; picking another VM", slot.VM)
@@ -260,6 +277,7 @@ func (r *Runner) acquire(ctx context.Context, req Request, joined time.Time, ski
 
 	start := time.Now()
 	said := ""
+	var holdUntil time.Time // end of the latest snooze the pool is waiting out
 	for {
 		var candidates, preferred []string
 		byName := map[string]orchard.VM{}
@@ -294,7 +312,13 @@ func (r *Runner) acquire(ctx context.Context, req Request, joined time.Time, ski
 			if slot != nil {
 				return slot, byName[slot.VM], 0
 			}
+			until := r.snoozedUntil(paused)
 			switch {
+			case len(candidates) == 0 && !until.IsZero():
+				msg = fmt.Sprintf("pool %s: all machines snoozed until %s; waiting", pool, until.Local().Format("15:04"))
+				if until.After(holdUntil) {
+					holdUntil = until
+				}
 			case len(candidates) == 0:
 				msg = fmt.Sprintf("no sealed VM of pool %s is running yet; waiting", pool)
 			default:
@@ -305,7 +329,11 @@ func (r *Runner) acquire(ctx context.Context, req Request, joined time.Time, ski
 			r.say("%s", msg)
 			said = msg
 		}
-		if len(candidates) == 0 && time.Since(start) > r.NoVMTimeout {
+		waitFrom := start
+		if holdUntil.After(waitFrom) {
+			waitFrom = holdUntil // a snooze is not a failure: the timeout starts when it ends
+		}
+		if len(candidates) == 0 && time.Since(waitFrom) > r.NoVMTimeout {
 			r.say("no sealed VM of pool %s came up within %s", pool, r.NoVMTimeout)
 			return nil, orchard.VM{}, ExitLost
 		}
@@ -367,12 +395,50 @@ func (r *Runner) pausedMachines(ctx context.Context) map[string]bool {
 	return paused
 }
 
+// snoozedUntil is the end of the latest snooze among the paused machines, or the zero time when
+// none of them is snoozed. The runner doesn't know which machines belong to the pool, so any
+// snoozed machine counts; it is only consulted when the pool has no VM to use at all.
+func (r *Runner) snoozedUntil(paused map[string]bool) time.Time {
+	st := r.snoozes()
+	now := time.Now()
+	var latest time.Time
+	for w, e := range st.List() {
+		if paused[w] && e.Active(now) && e.Snooze.Until.After(latest) {
+			latest = e.Snooze.Until
+		}
+	}
+	return latest
+}
+
+// snoozes reads the snooze store afresh; an unreadable one counts as empty.
+func (r *Runner) snoozes() *snooze.Store {
+	if r.PausesPath == "" {
+		return nil
+	}
+	st, err := snooze.Load(r.PausesPath)
+	if err != nil {
+		return nil
+	}
+	return st
+}
+
+// evictedNow reports whether the job's Mac is snoozed in "now" mode, so the job should move.
+func (j *job) evictedNow() bool {
+	if j.machine == "" || !j.req.RetryLost {
+		return false // agent jobs are left running
+	}
+	e := j.r.snoozes().Get(j.machine)
+	return e.Active(time.Now()) && e.Snooze.Mode == snooze.ModeNow
+}
+
 // job is one run of a Request in a chosen VM.
 type job struct {
-	r    *Runner
-	req  Request
-	vm   string
-	name string
+	r *Runner
+	// machine is the Mac the VM runs on.
+	machine string
+	req     Request
+	vm      string
+	name    string
 	// b runs the job's steps in the VM: docker in a Linux VM, plain processes in a macOS one.
 	b backend
 
@@ -559,6 +625,13 @@ func (j *job) supervise(ctx context.Context) int {
 			j.stop(defaultStopGrace)
 		case <-ticker.C:
 		case <-poke:
+		}
+
+		if j.evictedNow() {
+			j.r.say("%s was snoozed; stopping the job so it can run elsewhere", j.machine)
+			j.stop(j.r.StopGrace)
+			finish()
+			return exitEvicted
 		}
 
 		status, code, err := j.inspect()
