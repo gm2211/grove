@@ -4,9 +4,6 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
-## v0.1.20
-
-
 - **The worker runs Tart as a background app, so "Tart" no longer flashes in the Dock.**
   Homebrew's `tart.app` is a foreground app that macOS checks into the logged-in user's session on
   every `tart run`. `grove install --role worker` now makes `~/Applications/Grove Tart.app`, a
@@ -16,6 +13,9 @@ All notable changes to grove are documented here.
   unavailable in the copy (grove never uses it). Re-run the install after `brew upgrade tart`;
   `grove doctor` gains a `headless-tart` check; `grove uninstall` removes the copy. Deploying this
   needs `grove install --role worker` on each worker Mac.
+
+## v0.1.20
+
 - **`grove install --role worker` heals an existing worker in place.** It keeps the worker's
   Orchard name and labels (from its recorded identity, grove's wrapper, a hand-written
   `run-worker.sh`, or an old LaunchAgent) instead of renaming it to the hostname, so a Mac Studio
