@@ -37,6 +37,17 @@ const (
 	enrolExecTimeout = time.Minute
 )
 
+// EnrolError is one VM's failed enrolment. Its text is "enrol <vm>: <cause>"; the pool lets
+// PoolHealth tell which pool cannot get nodes.
+type EnrolError struct {
+	VM   string
+	Pool string
+	Err  error
+}
+
+func (e *EnrolError) Error() string { return "enrol " + e.VM + ": " + e.Err.Error() }
+func (e *EnrolError) Unwrap() error { return e.Err }
+
 // EnrolState is what Enrol remembers between ticks, in process memory only: after a restart every
 // VM is simply enrolled again, which renews its certificate.
 type EnrolState struct {
@@ -120,7 +131,7 @@ func (r *Reconciler) Enrol(ctx context.Context, state *EnrolState) error {
 		}
 		notAfter, err := r.enrolVM(ctx, state, vm, pool, !registered[vm.Name], now)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("enrol %s: %w", vm.Name, err))
+			errs = append(errs, &EnrolError{VM: vm.Name, Pool: pool, Err: err})
 			continue
 		}
 		state.vms[vm.Name] = enrolled{uid: vm.UID, at: now, notAfter: notAfter}

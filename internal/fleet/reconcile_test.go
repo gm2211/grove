@@ -220,6 +220,9 @@ func TestPlan_WorkerSelector_NoMatch_Skipped(t *testing.T) {
 	if !plan.Empty() {
 		t.Fatalf("want empty plan when workerSelector doesn't match, got %+v", plan)
 	}
+	if len(plan.Unmatched) != 1 || plan.Unmatched[0] != pool.Name {
+		t.Fatalf("Unmatched = %v, want [%s]", plan.Unmatched, pool.Name)
+	}
 }
 
 func TestPlan_ExtraVM_Delete(t *testing.T) {

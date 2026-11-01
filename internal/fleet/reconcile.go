@@ -125,6 +125,9 @@ type Plan struct {
 	// running, and any other VM of it is deleted, so a pool asked to be isolated never keeps an
 	// unisolated VM.
 	Blocked []PlannedBlock
+	// Unmatched lists the shared pools that no online, schedulable worker can host: no VM of
+	// them can exist until a matching worker appears, so their jobs can never be placed.
+	Unmatched []string
 }
 
 // Empty reports whether applying this Plan would be a no-op.
@@ -181,6 +184,7 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 			continue
 		}
 
+		matched := false
 		for _, worker := range workers {
 			if worker.Offline || worker.SchedulingPaused {
 				continue
@@ -189,6 +193,7 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 			if !labelsContain(worker.Labels, pool.WorkerSelector) {
 				continue
 			}
+			matched = true
 
 			if problem := guestPasswordBlock(pool, worker); problem != "" {
 				plan.Blocked = append(plan.Blocked, PlannedBlock{Pool: pool.Name, Reason: problem})
@@ -235,6 +240,9 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 					Reason: scaled.createReasons[name],
 				})
 			}
+		}
+		if !matched && !pool.Isolated() {
+			plan.Unmatched = append(plan.Unmatched, pool.Name)
 		}
 	}
 

@@ -14,6 +14,8 @@ import (
 
 	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/fleet"
+	"github.com/gm2211/grove/internal/nomad"
+	"github.com/gm2211/grove/internal/orchard"
 	"github.com/gm2211/grove/internal/pki"
 	"github.com/gm2211/grove/internal/tsauth"
 	"github.com/gm2211/grove/internal/wire"
@@ -69,6 +71,8 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 			checkOrchard(ctx, cfg.Orchard),
 			checkNomad(ctx, cfg.Nomad),
 			checkNomadTLS(cfg.Nomad, time.Now()),
+			checkNomadToken(ctx, cfg.Nomad),
+			checkBootLoops(ctx, cfg.Orchard),
 			checkHTTPEndpoint(ctx, "grove-server", cfg.Server.URL, "/api/v1/healthz", cfg.Server.Token),
 		)
 		if cfg.Server.Listen != "" {
@@ -116,6 +120,69 @@ func checkNomad(ctx context.Context, endpoint config.Endpoint) CheckResult {
 		return CheckResult{Name: "nomad", OK: false, Detail: "build authenticated client: " + err.Error()}
 	}
 	return checkAuthenticatedService(ctx, "nomad", endpoint.URL, client.Ping)
+}
+
+// checkNomadToken fails when Nomad refuses a call only a management token may make. Without
+// it the control plane cannot enrol VMs, so no VM becomes a Nomad node and jobs never place.
+func checkNomadToken(ctx context.Context, endpoint config.Endpoint) CheckResult {
+	const name = "nomad-token"
+	if endpoint.URL == "" {
+		return CheckResult{Name: name, OK: true, Detail: "skipped: nomad not configured"}
+	}
+	client, err := wire.NewNomadClient(endpoint)
+	if err != nil {
+		return CheckResult{Name: name, OK: true, Detail: "skipped: " + err.Error()}
+	}
+	return nomadTokenResult(ctx, client)
+}
+
+func nomadTokenResult(ctx context.Context, client nomad.Client) CheckResult {
+	const name = "nomad-token"
+	checkCtx, cancel := context.WithTimeout(ctx, httpCheckTimeout)
+	defer cancel()
+	err := nomad.CheckManagement(checkCtx, client)
+	switch {
+	case err == nil:
+		return CheckResult{Name: name, OK: true, Detail: "can manage ACLs and nodes"}
+	case nomad.IsPermissionDenied(err):
+		return CheckResult{Name: name, OK: false, Detail: err.Error(), Remediation: nomad.ManagementTokenHint}
+	default:
+		return CheckResult{Name: name, OK: true, Detail: "skipped: " + err.Error()}
+	}
+}
+
+// checkBootLoops fails when Orchard keeps restarting VMs: a VM whose startup script fails never
+// becomes a Nomad node.
+func checkBootLoops(ctx context.Context, endpoint config.Endpoint) CheckResult {
+	const name = "vm-boot-loops"
+	if endpoint.URL == "" {
+		return CheckResult{Name: name, OK: true, Detail: "skipped: orchard not configured"}
+	}
+	client, err := wire.NewOrchardClient(endpoint)
+	if err != nil {
+		return CheckResult{Name: name, OK: true, Detail: "skipped: " + err.Error()}
+	}
+	return bootLoopsResult(ctx, client)
+}
+
+func bootLoopsResult(ctx context.Context, client orchard.Client) CheckResult {
+	const name = "vm-boot-loops"
+	checkCtx, cancel := context.WithTimeout(ctx, httpCheckTimeout)
+	defer cancel()
+	vms, err := client.ListVMs(checkCtx)
+	if err != nil {
+		return CheckResult{Name: name, OK: true, Detail: "skipped: " + err.Error()}
+	}
+	loops := fleet.BootLoops(vms)
+	if len(loops) == 0 {
+		return CheckResult{Name: name, OK: true, Detail: "no VM is boot-looping"}
+	}
+	lines := make([]string, len(loops))
+	for i, w := range loops {
+		lines[i] = w.Describe()
+	}
+	return CheckResult{Name: name, OK: false, Detail: strings.Join(lines, "; "),
+		Remediation: "read the VM's startup log (`grove vm ls`, then the worker's Orchard log); grove rebuilds boot-looping VMs every " + fleet.FailedVMRetry.String()}
 }
 
 func checkAuthenticatedService(ctx context.Context, name, endpoint string, ping func(context.Context) error) CheckResult {

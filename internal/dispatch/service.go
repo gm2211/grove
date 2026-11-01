@@ -46,6 +46,18 @@ const defaultAllocationPollInterval = 1 * time.Second
 // see markLost's "no allocation within" reason.
 const defaultPendingTimeout = 30 * time.Minute
 
+// defaultUnplaceableGrace is how long a job may sit pending, with its pool showing no eligible
+// node, before reconcile asks Options.PoolHealth why and fails the job when the answer is a
+// known fault (enrolment erroring, VMs boot-looping, no worker for the pool). Long enough for a
+// pool's node to register after a restart; far shorter than defaultPendingTimeout.
+const defaultUnplaceableGrace = 3 * time.Minute
+
+// PoolHealth says why a pool has no node that can take a job. *fleet.PoolHealth implements it.
+type PoolHealth interface {
+	// UnplaceableReason returns "" when nothing known stops the pool from getting a node.
+	UnplaceableReason(pool string) string
+}
+
 // DefaultReconcileInterval is the tick interval `grove serve` passes to RunReconciler.
 const DefaultReconcileInterval = 30 * time.Second
 
@@ -112,6 +124,12 @@ type Options struct {
 	// Nomad allocation before reconcile marks it StatusLost (fleet full, or an unmatchable
 	// placement constraint — Nomad will otherwise leave it queued forever).
 	PendingTimeout time.Duration
+	// PoolHealth, when set, lets reconcile fail a job fast (after UnplaceableGrace) when its pool
+	// has no eligible node and the fleet knows why none will appear. Nil keeps only
+	// PendingTimeout.
+	PoolHealth PoolHealth
+	// UnplaceableGrace overrides defaultUnplaceableGrace.
+	UnplaceableGrace time.Duration
 	// FallbackAfter overrides defaultFallbackAfter and FallbackNoNodesAfter
 	// defaultFallbackNoNodesAfter: how long an unplaced job waits before moving to its pool's
 	// fallback pool, when its pool's nodes are busy / when its pool has no node at all.
@@ -161,6 +179,9 @@ func New(nc nomad.Client, opts Options) (Service, error) {
 	}
 	if opts.AllocationPollInterval <= 0 {
 		opts.AllocationPollInterval = defaultAllocationPollInterval
+	}
+	if opts.UnplaceableGrace <= 0 {
+		opts.UnplaceableGrace = defaultUnplaceableGrace
 	}
 	if opts.PendingTimeout <= 0 {
 		opts.PendingTimeout = defaultPendingTimeout
@@ -623,6 +644,12 @@ func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {
 			updated.PendingReason = pendingReason(evals)
 			if len(allocs) == 0 {
 				s.maybeFallBack(ctx, rec, &updated, evals)
+				if reason := s.unplaceableReason(rec, evals, time.Now().UTC()); reason != "" {
+					if err := s.nomad.StopJob(ctx, rec.NomadJobID, true); err != nil && !errors.Is(err, nomad.ErrNotFound) {
+						return nil, fmt.Errorf("dispatch: stop unplaceable job %s: %w", rec.ID, err)
+					}
+					return s.markEnded(rec, StatusFailed, reason)
+				}
 			}
 		}
 	} else {
@@ -783,8 +810,34 @@ func (s *service) stopLeakedUnplaced(ctx context.Context) {
 // — the server restarted with a wiped data dir, or the job was purged) or when a job has sat
 // pending longer than Options.PendingTimeout without ever getting an allocation.
 func (s *service) markLost(rec *record, reason string) (*Job, error) {
+	return s.markEnded(rec, StatusLost, reason)
+}
+
+// unplaceableReason returns why rec's job can never be placed ("" if it isn't known to be stuck):
+// it has waited out the grace, its pool (the fallback pool once it moved) shows no eligible node,
+// and the fleet knows the cause. A job that can still fall back to another pool is left to it.
+func (s *service) unplaceableReason(rec *record, evals []nomad.Evaluation, now time.Time) string {
+	if s.opts.PoolHealth == nil || now.Sub(rec.SubmittedAt) < s.opts.UnplaceableGrace || !noPoolNodes(evals) {
+		return ""
+	}
+	pool := rec.Request.Pool
+	if rec.Fallback != nil {
+		pool = rec.Fallback.To
+	} else if fb := s.pools[pool].Fallback; fb != "" && !rec.Request.PinPool && rec.Request.Meta["image"] == "" {
+		if _, ok := s.pools[fb]; ok {
+			return ""
+		}
+	}
+	if s.pools[pool].Isolated {
+		return "" // runs on the control plane, not on an enrolled VM
+	}
+	return s.opts.PoolHealth.UnplaceableReason(pool)
+}
+
+// markEnded marks rec with a terminal status and reason; see markLost.
+func (s *service) markEnded(rec *record, status Status, reason string) (*Job, error) {
 	now := time.Now().UTC()
-	rec.Status = StatusLost
+	rec.Status = status
 	rec.FailureReason = &reason
 	rec.FinishedAt = &now
 	rec.PendingReason = ""

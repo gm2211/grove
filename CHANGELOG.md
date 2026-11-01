@@ -4,6 +4,13 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Jobs that can never be placed fail in minutes, not after 30.** When a job's pool shows no
+  eligible Nomad node for 3 minutes and the fleet reconciler knows why (enrolment erroring, every
+  VM of the pool boot-looping, no worker matching the pool), the job ends `failed` with that
+  reason (e.g. `pool linux has no ready node: enrollment failing: enrol linux-studio-0: ... 403`).
+  The 30-minute `no allocation` timeout remains for busy fleets. `grove status` and `grove doctor`
+  now report a Nomad token that is not a management token (403) and, per worker, VMs that are
+  boot-looping, with counts and last start.
 - **`grove setup --user` works on an admin-owned Homebrew.** A worker user no longer needs to own
   Homebrew to trust a tap that is already tapped (trust is per user); grove only taps when the tap
   is missing. A `brew trust` that records the trust but exits non-zero (it can't refresh Homebrew's
