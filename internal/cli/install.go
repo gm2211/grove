@@ -169,6 +169,9 @@ func applyInstall(cmd *cobra.Command, opts install.Options, dryRun, yes, noSudo 
 // for the caller.
 func runInstallPlan(cmd *cobra.Command, runner install.Runner, opts install.Options, dryRun, yes bool) ([]install.Step, []install.StepResult, error) {
 	out := cmd.OutOrStdout()
+	if opts.GroveVersion == "" {
+		opts.GroveVersion = Version
+	}
 	steps, err := install.BuildPlan(runner, opts, out)
 	if err != nil {
 		return nil, nil, err

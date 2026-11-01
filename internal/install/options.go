@@ -73,8 +73,11 @@ type Options struct {
 	// plist, and the worker user's, which stages it) so they render the same plist.
 	GroveBin string
 	Home     string // test override; defaults to os.UserHomeDir()
-	GOOS     string // test override; defaults to runtime.GOOS
-	GOARCH   string // test override; defaults to runtime.GOARCH
+	// GroveVersion is this grove binary's release version ("0.1.21"; empty or "dev" for a local
+	// build). The Orchard binary is downloaded from that release's assets before any source build.
+	GroveVersion string
+	GOOS         string // test override; defaults to runtime.GOOS
+	GOARCH       string // test override; defaults to runtime.GOARCH
 	// LaunchDaemons is where system LaunchDaemons live. Test override; defaults to
 	// /Library/LaunchDaemons.
 	LaunchDaemons string

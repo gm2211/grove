@@ -28,8 +28,16 @@ archives:
     name_template: >-
       {{ .ProjectName }}_{{ .Os }}_{{ .Arch }}
 
+# The Orchard archives release.yml builds (orchard_<os>_<arch>.tar.gz) ship in the same release
+# and checksums.txt: `grove install` verifies its download against that file.
 checksum:
   name_template: "checksums.txt"
+  extra_files:
+    - glob: ./orchard-assets/orchard_*.tar.gz
+
+release:
+  extra_files:
+    - glob: ./orchard-assets/orchard_*.tar.gz
 
 snapshot:
   version_template: "{{ incpatch .Version }}-next"

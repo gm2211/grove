@@ -27,6 +27,8 @@ const (
 	// OrchardForkCommit pins the github.com/gm2211/orchard commit the control plane and workers
 	// build their Orchard from, so a push to the fork's main reaches neither until this pin moves.
 	// It must carry the guest password fallback on every login path (gm2211/orchard#7, #8).
+	// grove's release workflow reads this constant to build the Orchard assets it attaches to every
+	// release (orchardAssetName), so bumping the pin here is the whole change.
 	OrchardForkCommit = "316f0c6736fb24a136907df4583e67a060ec9de5"
 )
 
@@ -126,4 +128,43 @@ func verifySHA256(ctx context.Context, r Runner, opts Options, path, want string
 		return fmt.Errorf("checksum mismatch: got sha256 %s, want %s", got, want)
 	}
 	return nil
+}
+
+// orchardAssetName is the release asset holding the Orchard fork built at OrchardForkCommit for
+// opts' platform: a tar.gz with a single `orchard` file. .github/workflows/release.yml builds it.
+func orchardAssetName(opts Options) string {
+	return fmt.Sprintf("orchard_%s_%s.tar.gz", opts.goos(), opts.goarch())
+}
+
+// groveReleaseURL is where grove's own release assets live. The version is grove's own, so an
+// installer only ever fetches the Orchard that same release was built to carry.
+func groveReleaseURL(opts Options, file string) string {
+	return "https://github.com/gm2211/grove/releases/download/v" + strings.TrimPrefix(opts.GroveVersion, "v") + "/" + file
+}
+
+// hasReleaseVersion reports whether grove is a tagged build whose release could hold assets.
+func hasReleaseVersion(opts Options) bool {
+	v := strings.TrimPrefix(opts.GroveVersion, "v")
+	return v != "" && v != "dev" && !strings.Contains(v, "-next")
+}
+
+// orchardReleaseDownload resolves the release's Orchard asset and its expected digest from the
+// release's checksums.txt (fetched through r over HTTPS, like grove itself).
+func orchardReleaseDownload(ctx context.Context, r Runner, opts Options) (pinnedDownload, error) {
+	asset := orchardAssetName(opts)
+	sums, _, err := r.Run(ctx, "curl", "-fsSL", "--proto", "=https", "--tlsv1.2", groveReleaseURL(opts, "checksums.txt"))
+	if err != nil {
+		return pinnedDownload{}, fmt.Errorf("fetch release checksums: %w", err)
+	}
+	for _, line := range strings.Split(sums, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && strings.TrimPrefix(fields[1], "*") == asset {
+			sum := strings.ToLower(fields[0])
+			if len(sum) != 64 {
+				return pinnedDownload{}, fmt.Errorf("release checksums.txt has a malformed digest for %s", asset)
+			}
+			return pinnedDownload{URL: groveReleaseURL(opts, asset), SHA256: sum, File: "grove-" + opts.GroveVersion + "-" + asset}, nil
+		}
+	}
+	return pinnedDownload{}, fmt.Errorf("release checksums.txt lists no %s", asset)
 }

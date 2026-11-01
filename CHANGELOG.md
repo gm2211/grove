@@ -4,6 +4,15 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **`grove install` downloads Orchard instead of building it, so a Mac without Go can be a worker.**
+  Every grove release now also carries `orchard_<os>_<arch>.tar.gz` for darwin/linux on
+  arm64/amd64: the Orchard fork at the pinned `OrchardForkCommit`, built by the release workflow
+  (plain Go, no cgo) and listed in the release's `checksums.txt`. `grove install` (worker and
+  control plane) fetches the asset of its own version, verifies its SHA-256 and installs it; it
+  builds from source only when there is no asset (a dev build, or a release from before this)
+  and Go is present, and otherwise says what to install. Takes effect with the first release cut
+  after this change.
+
 - **Snooze a worker: a timed pause that resumes by itself, with jobs queuing instead of failing.**
   `grove worker snooze [--for 2h | --until 18:00] [--now] [--note ...]` (and `wake`, MCP
   `grove_snooze_worker`/`grove_wake_worker`, a Wake button in the UI) pauses the Mac you work on

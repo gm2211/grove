@@ -502,13 +502,73 @@ func ensureWorkerOrchardApp(ctx context.Context, r Runner, opts Options, cliPath
 	return nil
 }
 
-// ensureOrchardBinary builds the fork at OrchardForkCommit in a scratch checkout and moves it
-// over dest. Fetching the commit by its SHA means a push to the fork's main changes nothing here.
-// It runs entirely through r so it's inert under a FakeRunner.
+// ensureOrchardBinary puts the Orchard fork at OrchardForkCommit over dest. It downloads the
+// prebuilt binary attached to this grove's own release (checksum-verified); only when there is
+// none (a dev build, a release that predates the assets) does it build the commit from source,
+// which needs Go. Fetching the commit by its SHA means a push to the fork's main changes nothing
+// here. It runs entirely through r so it's inert under a FakeRunner.
 func ensureOrchardBinary(ctx context.Context, r Runner, opts Options, dest string, out io.Writer) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
 	}
+	var downloadErr error
+	if hasReleaseVersion(opts) {
+		if downloadErr = downloadOrchardBinary(ctx, r, opts, dest, out); downloadErr == nil {
+			return nil
+		}
+		fmt.Fprintf(out, "        no usable prebuilt Orchard (%v)\n", downloadErr)
+	}
+	_, goErr := opts.lookPath()("go")
+	if goErr != nil && downloadErr != nil {
+		return fmt.Errorf("install the prebuilt Orchard from grove v%s: %w; and there is no Go toolchain to build it from source. "+
+			"Install a grove release that carries Orchard (`brew upgrade grove`) or install Go and re-run", strings.TrimPrefix(opts.GroveVersion, "v"), downloadErr)
+	}
+	if err := buildOrchardFromSource(ctx, r, dest, out); err != nil {
+		switch {
+		case downloadErr != nil:
+			return fmt.Errorf("%w (the prebuilt download failed too: %v)", err, downloadErr)
+		case goErr != nil:
+			return fmt.Errorf("%w; this grove has no prebuilt Orchard to download (a development build) and no Go toolchain was found: "+
+				"install a released grove or install Go, then re-run", err)
+		}
+		return err
+	}
+	return nil
+}
+
+// downloadOrchardBinary installs the Orchard asset of grove's own release: fetched, SHA-256
+// verified against that release's checksums.txt, extracted beside dest and renamed over it.
+func downloadOrchardBinary(ctx context.Context, r Runner, opts Options, dest string, out io.Writer) error {
+	d, err := orchardReleaseDownload(ctx, r, opts)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "        downloading prebuilt Orchard %s from grove v%s\n", OrchardForkCommit[:12], strings.TrimPrefix(opts.GroveVersion, "v"))
+	staged, err := fetchVerified(ctx, r, opts, d)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(staged)
+	tmp, err := os.MkdirTemp(filepath.Dir(dest), ".orchard-download-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	if _, _, err := r.Run(ctx, "tar", "-xzf", staged, "-C", tmp, "orchard"); err != nil {
+		return fmt.Errorf("extract %s: %w", d.File, err)
+	}
+	extracted := filepath.Join(tmp, "orchard")
+	if _, _, err := r.Run(ctx, "chmod", "755", extracted); err != nil {
+		return err
+	}
+	if _, _, err := r.Run(ctx, "mv", "-f", extracted, dest); err != nil {
+		return fmt.Errorf("install Orchard to %s: %w", dest, err)
+	}
+	return nil
+}
+
+// buildOrchardFromSource builds the pinned commit in a scratch checkout and moves it over dest.
+func buildOrchardFromSource(ctx context.Context, r Runner, dest string, out io.Writer) error {
 	tmp, err := os.MkdirTemp("", "grove-orchard-build-")
 	if err != nil {
 		return err

@@ -9,7 +9,67 @@ permissions:
   contents: write
 
 jobs:
+  # Builds the Orchard fork at the commit internal/install/download.go pins (OrchardForkCommit,
+  # read from there so the pin lives in one place) for every platform grove supports, so
+  # `grove install` downloads it instead of needing Go. Orchard has no cgo (it is a plain Go
+  # program; upstream releases it with CGO_ENABLED=0), so every target cross-compiles from Linux.
+  orchard:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - {goos: darwin, goarch: arm64}
+          - {goos: darwin, goarch: amd64}
+          - {goos: linux, goarch: arm64}
+          - {goos: linux, goarch: amd64}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch Orchard at the pinned commit
+        run: |
+          commit=$(sed -n 's/^\tOrchardForkCommit = "\([0-9a-f]\{40\}\)"$/\1/p' internal/install/download.go)
+          [ -n "$commit" ] || { echo "OrchardForkCommit not found in internal/install/download.go" >&2; exit 1; }
+          git init -q "$RUNNER_TEMP/orchard"
+          cd "$RUNNER_TEMP/orchard"
+          git fetch -q --depth 1 https://github.com/gm2211/orchard "$commit"
+          git checkout -q FETCH_HEAD
+          [ "$(git rev-parse HEAD)" = "$commit" ] || { echo "fetched commit is not $commit" >&2; exit 1; }
+          echo "ORCHARD_COMMIT=$commit" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ runner.temp }}/orchard/go.mod
+          cache: false
+
+      - name: Build orchard_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          cd "$RUNNER_TEMP/orchard"
+          go build -trimpath -ldflags "-s -w" -o "$RUNNER_TEMP/out/orchard" ./cmd/orchard
+          # Name the commit inside the archive too, for whoever unpacks it by hand.
+          echo "$ORCHARD_COMMIT" > "$RUNNER_TEMP/out/ORCHARD_COMMIT"
+          mkdir -p "$GITHUB_WORKSPACE/orchard-assets"
+          tar -czf "$GITHUB_WORKSPACE/orchard-assets/orchard_${GOOS}_${GOARCH}.tar.gz" -C "$RUNNER_TEMP/out" orchard ORCHARD_COMMIT
+
+      - name: Smoke-test the linux/amd64 binary
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          mkdir "$RUNNER_TEMP/smoke"
+          tar -xzf orchard-assets/orchard_linux_amd64.tar.gz -C "$RUNNER_TEMP/smoke"
+          "$RUNNER_TEMP/smoke/orchard" --help >/dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orchard_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: orchard-assets/*.tar.gz
+          if-no-files-found: error
+
   goreleaser:
+    needs: orchard
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,6 +79,14 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+
+      # The four Orchard archives built above; .goreleaser.yaml adds them to checksums.txt and
+      # attaches them to this release.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: orchard_*
+          path: orchard-assets
+          merge-multiple: true
 
       - uses: actions/setup-node@v4
         with:
