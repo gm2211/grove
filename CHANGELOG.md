@@ -4,6 +4,22 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Snooze a worker: a timed pause that resumes by itself, with jobs queuing instead of failing.**
+  `grove worker snooze [--for 2h | --until 18:00] [--now] [--note ...]` (and `wake`, MCP
+  `grove_snooze_worker`/`grove_wake_worker`, a Wake button in the UI) pauses the Mac you work on
+  for up to 24 hours. Its VMs drain and are removed, then rebuilt when the snooze ends. Workers
+  of a pool are interchangeable, so a snoozed one never holds work: jobs go to whichever other
+  worker frees up first, wait for the snooze only when no other worker could run them (accepted
+  and `pending` with `pendingReason` and `queuedUntil`, never refused), and a snooze can never
+  get a queued job lost to the 30 minute pending timeout. `--now` requeues build/shell jobs
+  elsewhere (agent jobs keep running, reported as `leftRunning`). Sealed pools stop and rerun the
+  job on another machine as an `evicted` attempt, which is not a loss. Control-plane state in
+  `pauses.json` records why a worker is paused (snooze, health, operator), so a snooze ending
+  never undoes another pause; `grove worker resume` no longer ends a snooze. New scope
+  `worker:snooze:<worker>`, granted to a Mac when it joins. **Fixed docs:** a paused worker's VMs
+  were always drained and deleted, not left running. Deploying this needs a `grove serve`
+  restart; to snooze from the Mac itself, issue the scoped credential (docs/OPERATIONS.md).
+
 - **The worker runs Tart as a background app, so "Tart" no longer flashes in the Dock.**
   Homebrew's `tart.app` is a foreground app that macOS checks into the logged-in user's session on
   every `tart run`. `grove install --role worker` now makes `~/Applications/Grove Tart.app`, a

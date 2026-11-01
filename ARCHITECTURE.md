@@ -63,7 +63,9 @@ purpose-specific work. Raw shell jobs require operator credential or an explicit
 `dispatch:shell` scope (plain `dispatch` covers build + agent only); named secrets are rejected
 until grove can resolve them.
 Raw device tokens live only in that device's Keychain; control plane persists SHA-256 hashes.
-Operator credential alone can enroll/revoke devices or mutate worker/VM state. Compromise of
+Operator credential alone can enroll/revoke devices or mutate worker/VM state, except that a
+credential with the parameterized scope `worker:snooze:<worker>` (granted to a Mac when it joins,
+or issued by the operator) may snooze and wake that one worker. Compromise of
 control-plane host still compromises cluster administration, so that host remains part of trusted
 computing base even when most dispatch originates elsewhere.
 
@@ -244,7 +246,8 @@ wins: a bad one is a 401 even from a granted peer. See `internal/tsauth` and doc
 |---|---|---|
 | GET | `/fleet` | `{workers[], vms[], nodes[], fetchedAt, totals}` normalised: name, host, pool (vm entries only, derived — see above), arch, online, cordoned, capacity, running; `totals` is at-a-glance counts (workersOnline/Cordoned, vmsRunning, nodesReady/Draining, jobsRunning/Pending). A VM's `raw` never includes its startup/shutdown scripts — they embed pool setup commands and, until a VM is recreated, older secrets |
 | POST | `/vms/{name}/recycle` | drain (via Nomad) then delete; reconciler recreates |
-| POST | `/workers/{name}/pause` · `/resume` | Orchard cordon |
+| POST | `/workers/{name}/pause` · `/resume` | Orchard cordon, recorded as an operator reason. A paused worker's VMs drain and are deleted on the next reconcile tick. `resume` does not end a snooze (409) |
+| POST · GET | `/workers/{name}/snooze` · `/wake` | timed pause that resumes by itself (`{for? , until? , now?, note?}`, at most 24h, default 2h) → `{worker, until, mode, reasons, requeued, leftRunning}`; GET reads it; `wake` → `{worker, resumed, stillPausedBecause}`. Operator, or a credential with scope `worker:snooze:<name>` for that worker only. Jobs queue (`pendingReason`, `queuedUntil`) instead of failing; see docs/OPERATIONS.md "Snoozing your own Mac" |
 | GET | `/jobs` · `/jobs/{id}` | list / status. An operator sees every job; any other credential sees only the jobs it submitted (403 on someone else's). `request.env` keeps its keys but every value reads `[redacted]`, for every caller |
 | POST | `/jobs` | JobRequest → `{id}`; JobRequest.idempotencyKey replays the existing job (no re-dispatch) instead of creating a new one; JobRequest.timeout is a duration string ("30m", "2h") or a number of *seconds* (never nanoseconds) — see `docs/JOBS.md` |
 | GET | `/jobs/{id}/logs?follow=1` | same ownership rule as `/jobs/{id}`. SSE / chunked log stream; `Accept: application/x-ndjson` + `&sinceOffset=N` streams `{offset,ts,stream,line}` objects, resumable by offset |

@@ -207,6 +207,21 @@ privileged step, printed for an admin. Keep it that way:
 - Every pass comes before the block. `hostfirewall_test.go` loads the anchor on the macOS CI
   runner's real pf (`GROVE_PF_TEST=1`).
 
+## `internal/snooze` — why a worker is paused
+
+Orchard has one pause bit per worker, so `pauses.json` (next to `devices.json`, mode 0600,
+`snooze.Store`) records every reason: snooze, health, operator (`external` for a pause grove
+found with no record). The bit is set iff a reason is present. Keep it that way:
+
+- A snooze expiring or `wake` clears only the snooze reason and resumes the worker only when no
+  other reason remains (`snooze.Wake`, `Expirer.Tick`); never call `ResumeWorker` otherwise.
+- Evicted attempts (`dispatch.AttemptEvicted`) never count as losses: not toward quarantine,
+  `MaxAttempts`, or `internal/health`.
+- The queue is per pool. A snooze never pins or holds a job to a worker; `dispatch.PoolWaiter`
+  only stops a job being failed when no other worker could run it and pushes its pending timeout
+  past the snooze. Never add a host constraint to a redispatch.
+- `worker:snooze:<name>` is granted to that worker's holder only for `/workers/<name>/snooze|wake`.
+
 ## Local socket (`server.socket`)
 
 `internal/server/localsock.go` lets a client on the control-plane Mac (Argos) reach the API

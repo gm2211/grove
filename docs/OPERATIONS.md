@@ -199,21 +199,111 @@ After pushing a new tag:
 
 ## Pausing a Mac
 
-To stop new VMs from being scheduled on a worker (maintenance, moving it, thermal issues) without
-tearing down what's already running:
+To stop work landing on a worker (maintenance, moving it, thermal issues):
 
 ```
-POST /api/v1/workers/{name}/pause     # Orchard cordon
-POST /api/v1/workers/{name}/resume
+grove worker pause <name>      # POST /api/v1/workers/{name}/pause
+grove worker resume <name>     # POST /api/v1/workers/{name}/resume
 ```
 
-Existing VMs on that worker keep running (and draining/recycling normally) until you resume it or
-manually delete them.
+A paused worker is not a quiet worker that keeps its VMs. The fleet reconciler no longer plans
+VMs for a paused worker, so on its next tick (30 seconds) it drains each of that Mac's Nomad
+nodes and then deletes the VMs (the same drain-then-delete as a recycle, with a 2 hour
+deadline). Jobs running there get that long to finish. Resume it and the reconciler builds the
+VMs again.
+
+Why a pool of one worker fails fast: if every worker matching a pool is paused by an operator or
+by health, and nothing else could run its jobs, those jobs are failed after about 3 minutes with
+a message naming the workers and why each is paused. A snooze (below) is the exception: jobs wait.
+A pool with another free worker never fails because one is paused.
+
+Pause and resume go through the control plane's API when `server.url` and `server.token` are set
+on the machine, which records why the worker is paused (see below); otherwise `grove worker`
+talks to Orchard directly and warns that no reason is on record.
+
+## Snoozing your own Mac
+
+When the Mac you work on is also a worker, snooze it to protect its CPU and GPU for a while:
+
+```
+grove worker snooze                       # this Mac's worker, 2 hours
+grove worker snooze --for 90m --note "zoom call"
+grove worker snooze --until 18:00         # local time; a time already past means tomorrow
+grove worker snooze --now                 # also move running build/shell jobs elsewhere
+grove worker wake                         # end it early
+grove worker ls                           # SNOOZED column;  grove status lists "snoozed: <w> until HH:MM"
+```
+
+A snooze lasts at most 24 hours (the server enforces it) and ends by itself: the worker is
+resumed when it lapses. While it runs the worker is paused, so its VMs drain and are removed
+exactly as for a pause, and the Nomad nodes are drained at once rather than on the next tick.
+
+Jobs do not fail because of a snooze, and the queue belongs to the pool, never to one worker:
+
+- Workers of a pool are interchangeable. A queued job goes to whichever matching worker frees up
+  first; a snoozed worker holds nothing.
+- A job waits for the snooze to end only when no other worker could ever run it (a macOS job,
+  and the snoozed Mac is the only Mac). It is accepted and stays `pending` with
+  `pendingReason: "queued: workers for pool macos snoozed (<host> snoozed until HH:MM)"` and a
+  `queuedUntil` time; it is never refused at submit.
+- If other workers exist but are busy, the job is not tied to the snoozed one. Its reason reads
+  `waiting for a free macos worker (<host> snoozed until HH:MM)`, and its 30 minute pending
+  timeout counts from the end of the latest snooze among the pool's workers, so a snooze can
+  never get a queued job marked lost.
+- Sealed pools behave alike: a job waiting for a VM while every machine is snoozed logs
+  `pool X: all machines snoozed until HH:MM; waiting`, and its no-VM timeout starts when the
+  snooze ends.
+
+By default running jobs finish first (the nodes drain). With `--now`: build and shell jobs on the
+worker (the ones `retryLost` allows, true by default for them) are redispatched to the same pool,
+with nothing pinning them to the old worker, and the old copy is stopped and purged (the job
+shows `evictions`); a sealed pool's job is stopped and rerun in another machine's VM, recorded
+as an `evicted` attempt. Agent jobs are never interrupted: they stay running and are reported
+as `leftRunning`. An evicted attempt is not a loss: it does not count toward quarantine, the 3
+attempts, or the machine-health rules.
+
+How a snooze coexists with other pauses. Orchard has one pause bit per worker; the control plane
+records why it is set in `pauses.json` next to `devices.json` (reasons: snooze, health, operator).
+The bit is set exactly while any reason is. A snooze ending, or `grove worker wake`, clears only
+the snooze reason and resumes the worker only if none remain, so:
+
+- `grove worker resume` does not end a snooze ("still snoozed until HH:MM; grove worker wake");
+  `wake` does not clear an operator or health pause, and says what still holds the worker.
+- A pause already in Orchard that grove has no record of is kept as an `external` operator
+  reason and is never resumed by a snooze.
+- If the machine-health monitor pauses a snoozed worker, the health reason is recorded too, so the
+  Mac does not return to work when the snooze lapses.
+- The control plane re-applies the pause if something resumed a snoozed worker in Orchard.
+
+Setting up the credential. Snoozing is open to the operator and to a credential holding
+`worker:snooze:<worker>` (that worker only; it can do nothing else). A Mac approved through
+`grove setup` is granted that scope for itself. For an existing Mac, on the control plane:
+
+```
+grove access issue --name g-macbook-m5.local-owner --scope read \
+  --scope worker:snooze:g-macbook-m5.local --expires-in 180d
+```
+
+then on the Mac you work on (the worker's name is in `grove worker ls`):
+
+```
+grove config set server.url http://<control plane>:6120
+grove config set server.token -          # paste the token, then Ctrl-D
+grove worker snooze
+```
+
+If the Mac's `worker-identity.json` names the worker, or the credential holds a single snooze
+scope, no worker name is needed. A worker's own Tailscale identity is still refused by the API
+(its jobs share it), so use this credential rather than the tailnet. A 403 from `grove worker
+snooze` prints the exact `grove access issue` line to run. `grove worker snooze` never changes
+the local `server.token` for other uses: use a separate GROVE_CONFIG if that Mac also needs the
+operator credential.
 
 ## Removing a worker Mac
 
-Pause the worker first (`grove worker pause <name>`, above) and let its jobs drain: uninstalling
-stops the Orchard worker, and the VMs it runs stop with it.
+Pause the worker first (`grove worker pause <name>`, above; a snooze also frees it, but only
+temporarily and it would resume) and let its jobs drain: uninstalling stops the Orchard worker,
+and the VMs it runs stop with it.
 
 On the worker Mac, as the worker user:
 
@@ -374,7 +464,8 @@ grove access revoke DEVICE_ID           # when it's no longer needed
 
 Scopes: `read` (fleet, and the jobs this credential submitted — status, logs, artifacts),
 `dispatch` (build + agent jobs), `dispatch:build`, `dispatch:agent`, `dispatch:shell` (raw `shell`
-jobs; never implied by `dispatch`), `operator` (everything). A non-operator credential only ever
+jobs; never implied by `dispatch`), `worker:snooze:<worker>` (snooze and wake that one worker and
+nothing else; see "Snoozing your own Mac"), `operator` (everything). A non-operator credential only ever
 sees and cancels its own jobs, and job `env` values come back `[redacted]` to everyone. The same
 thing over HTTP is `POST /api/v1/access/devices` with `{"name": ..., "scopes": [...]}`.
 
