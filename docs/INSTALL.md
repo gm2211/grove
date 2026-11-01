@@ -366,9 +366,12 @@ ghcr.io` (see "Registry access for private worker images" above), doctor also wa
   Fix by either making the package public or running `grove registry login` on the worker
   (see "Registry access for private worker images" above); `grove doctor`'s
   `registry-login` check flags this proactively.
-- **First `grove install --role worker` run is slow**: if no `gm2211/orchard` release asset
-  matches your OS/arch yet, it falls back to `git clone` + `go build ./cmd/orchard`, which needs a
-  working Go toolchain and takes a minute or two the first time.
+- **`grove install` can't get Orchard** (`install the prebuilt Orchard from grove vX … no Go toolchain`):
+  the installer downloads `orchard_<os>_<arch>.tar.gz` from its own release
+  (`github.com/gm2211/grove/releases/download/v<version>/`) and checks it against that release's
+  `checksums.txt`. It builds `./cmd/orchard` from source (needs Go; a minute or two) only when
+  that asset is missing, which is the case for a dev build or a release older than the assets, and
+  Go is on `PATH`. Fix: install a released grove (`brew upgrade grove`) or install Go and re-run.
 - **`Refusing to load formula … from untrusted tap …`**: recent Homebrew (see `brew trust --help`)
   refuses to load any formula from a non-official tap until that tap has been explicitly trusted,
   e.g.:
