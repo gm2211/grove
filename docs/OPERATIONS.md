@@ -723,6 +723,10 @@ subcommands, or `GET /api/v1/jobs/{id}/logs?follow=1`.
   every per-platform SHA-256 beside it, in `internal/install/download.go`) in this
   repo's install steps and re-run to pick up the change (Homebrew formulae upgrade in place;
   Linux downloads re-fetch the pinned version).
+- **`brew upgrade tart` on a worker**: the worker runs Tart from its own copy
+  (`~/Applications/Grove Tart.app`), made from the Homebrew version at install time. After the
+  upgrade, re-run `grove install --role worker` to re-make the copy (and restart the worker);
+  `grove doctor`'s `headless-tart` check fails until you do.
 - **A Homebrew upgrade adds the third-party-tap trust gate**: `brew update && brew upgrade` on a Mac
   that already has `tart`/`nomad` installed can pick up a Homebrew version that now refuses
   to load formulae from an untrusted tap (`Error: Refusing to load formula … from untrusted tap …`)
@@ -762,6 +766,14 @@ copies out of sealed VMs. Only sealed pools' builds produce artifacts today.
 `grove doctor` any time — it's read-only, 3s-timeout HTTP checks, and never hangs.
 
 ## Troubleshooting
+
+**Tart flashes in the Dock on a worker Mac.** Something ran Homebrew's `tart` instead of the
+Grove Tart copy (which is a background app). Confirm with
+`/usr/bin/log show --last 2h --style compact --predicate 'process == "launchservicesd" AND eventMessage CONTAINS "cirruslabs.tart"'`:
+entries for `com.github.cirruslabs.tart` mean the foreground app was launched; the copy is
+`com.gm2211.grove.tart`. Run `grove doctor` (`headless-tart` check), then re-run
+`grove install --role worker`, which re-makes the copy and re-renders the wrapper that puts it
+first on `PATH`.
 
 **Jobs pending with `DimensionExhausted cpu` on macOS.** Nomad's stock CPU fingerprinter badly
 under-reports on Apple Silicon (a real M5 Max worker fingerprinted `cpu.totalcompute=24`), which

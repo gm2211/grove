@@ -137,6 +137,7 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 	if opts.Softnet {
 		steps = append(steps, softnetSteps(r, lookPath, out)...)
 	}
+	steps = append(steps, tartHeadlessStep(r, opts))
 
 	if step := registryLoginStep(r, opts, out); step != nil {
 		steps = append(steps, *step)
@@ -390,6 +391,9 @@ func installedWorkerController(opts Options) string {
 // Mac's hostname.
 func installedWorkerName(opts Options) string { return detectWorkerIdentity(opts).Name }
 
+// workerWrapperTartPathPrefix is how the wrapper's PATH starts: the Grove Tart shim, ahead of Homebrew.
+const workerWrapperTartPathPrefix = `export PATH="$grove_tart_bin:`
+
 // workerWrapper is what the LaunchDaemon runs. It holds no secret: it points Orchard's stdin at the
 // bootstrap credential file, and, when there is a registry login, reads the registry file's two
 // lines (user, token) into the variables Tart takes registry credentials from, so neither is ever
@@ -397,14 +401,16 @@ func installedWorkerName(opts Options) string { return detectWorkerIdentity(opts
 func workerWrapper(opts Options, orchardBin string) string {
 	return fmt.Sprintf(`#!/bin/zsh
 set -eu
-export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+grove_tart_bin=%q
+[ -x "$grove_tart_bin/tart" ] || { print -u2 "grove: headless Tart missing at $grove_tart_bin; run grove install --role worker"; exit 78; }
+export PATH="$grove_tart_bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 registry_credential=%q
 if [ -f "$registry_credential" ]; then
   { IFS= read -r TART_REGISTRY_USERNAME; IFS= read -r TART_REGISTRY_PASSWORD; } < "$registry_credential"
   export TART_REGISTRY_USERNAME TART_REGISTRY_PASSWORD
 fi
 exec %q worker run --name %q --labels %q --guest-agent-transport --bootstrap-token-stdin %q < %q
-`, credentialPath(opts, registryCredentialName), orchardBin, opts.hostname(), opts.workerLabels(), opts.Controller,
+`, groveTartBinDir(opts), credentialPath(opts, registryCredentialName), orchardBin, opts.hostname(), opts.workerLabels(), opts.Controller,
 		credentialPath(opts, workerBootstrapCredentialName))
 }
 

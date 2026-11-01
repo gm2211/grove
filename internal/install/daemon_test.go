@@ -550,6 +550,13 @@ func TestWorkerWrapper_RunsOrchardWithTheCredentials(t *testing.T) {
 	if err := os.WriteFile(script, []byte(workerWrapper(opts, orchard)), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// Without the headless Tart shim the wrapper refuses to start (see the fail-closed test).
+	if err := os.MkdirAll(groveTartBinDir(opts), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(groveTartShimPath(opts), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	run := func() string {
 		cmd := exec.Command(zsh, script)
 		cmd.Env = []string{"HOME=" + home}
@@ -572,5 +579,32 @@ func TestWorkerWrapper_RunsOrchardWithTheCredentials(t *testing.T) {
 	}
 	if out := run(); !strings.Contains(out, "tart: gm2211 / ghp_tok en\n") {
 		t.Errorf("with a registry login:\n%s", out)
+	}
+}
+
+func TestWorkerWrapper_FailsClosedWithoutHeadlessTart(t *testing.T) {
+	zsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("no zsh")
+	}
+	home := t.TempDir()
+	opts := testWorkerOptions(home)
+	orchard := filepath.Join(home, "orchard")
+	if err := os.WriteFile(orchard, []byte("#!/bin/sh\necho orchard-ran\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(home, "wrapper.zsh")
+	if err := os.WriteFile(script, []byte(workerWrapper(opts, orchard)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(zsh, script)
+	cmd.Env = []string{"HOME=" + home}
+	out, err := cmd.CombinedOutput()
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() != 78 {
+		t.Fatalf("want exit 78, got %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "orchard-ran") || !strings.Contains(string(out), "grove install --role worker") {
+		t.Errorf("must not start Orchard, must say how to fix:\n%s", out)
 	}
 }

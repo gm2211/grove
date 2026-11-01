@@ -11,6 +11,7 @@ import (
 // scriptPinnedDownloads makes every pinned download's hash command report the expected digest,
 // i.e. simulates untampered downloads for opts' platform.
 func scriptPinnedDownloads(r *FakeRunner, opts Options) {
+	scriptTartSource(r, "2.41.1")
 	ds := []pinnedDownload{homebrewInstallerDownload()}
 	for _, f := range []func(Options) (pinnedDownload, error){nomadDownload} {
 		if d, err := f(opts); err == nil {
@@ -175,4 +176,16 @@ func assertBefore(t *testing.T, r *FakeRunner, first, second string) {
 	if fi == -1 || si == -1 || fi > si {
 		t.Fatalf("want %q (at %d) before %q (at %d); calls: %v", first, fi, second, si, r.Calls)
 	}
+}
+
+// fakeTartApp is the (fictional) Homebrew tart.app scriptTartSource describes.
+const fakeTartApp = "/fake-brew/opt/tart/libexec/tart.app"
+
+// scriptTartSource makes a genuine, validly signed Cirrus Labs Homebrew tart at version.
+func scriptTartSource(r *FakeRunner, version string) {
+	plist := fakeTartApp + "/Contents/Info.plist"
+	r.Script("brew --prefix tart", FakeResult{Stdout: "/fake-brew/opt/tart\n"})
+	r.Script("/usr/bin/plutil -extract CFBundleIdentifier raw -o - "+plist, FakeResult{Stdout: upstreamTartBundleID + "\n"})
+	r.Script("/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "+plist, FakeResult{Stdout: version + "\n"})
+	r.Script("/usr/bin/codesign -dv "+fakeTartApp, FakeResult{Stderr: "Identifier=" + upstreamTartBundleID + "\nCDHash=fedc1ee5\nTeamIdentifier=" + upstreamTartTeamID + "\n"})
 }

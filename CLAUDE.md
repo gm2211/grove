@@ -86,6 +86,9 @@ calls, returns scripted results) is for tests. This is what makes `--dry-run` ac
   root-owned copy is byte-identical to the rendered plist, by SHA-256, before loading it); never `launchctl bootstrap gui/…` for these;
   restart one with `restartDaemon` (SIGTERM its pid, KeepAlive does the rest), not `kickstart`.
   The installed plist is compared with what grove renders, never with the staged copy.
+- The worker runs Tart only through the grove copy (`tartheadless.go`: `Grove Tart.app`, LSUIElement,
+  ad-hoc signed with only the virtualization entitlement, first on the wrapper's PATH; the wrapper
+  fails closed with exit 78). Never put Homebrew's `tart` ahead of it.
 - A worker's secrets (Orchard bootstrap token, broker credential, registry login) are 0600 files
   in `~/.config/grove/credentials` (`credfile.go`: atomic write, refuses symlinks and foreign
   owners), because a boot-time daemon has no unlocked login Keychain. The Keychain items of an

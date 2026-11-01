@@ -94,6 +94,7 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 	if workerInstalled(opts) && opts.goos() == "darwin" {
 		results = append(results, checkWorkerDaemon(ctx, r, opts))
 		results = append(results, checkWorkerShape(ctx, opts, cfg))
+		results = append(results, checkHeadlessTart(ctx, r, opts))
 		results = append(results, checkBroker(ctx, r, opts))
 		results = append(results, checkHostFirewall(ctx, r, opts))
 	}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -176,8 +177,13 @@ func TestWorkerPlan_AppliesCommandsAndGatesPrivilegedSteps(t *testing.T) {
 	if !strings.Contains(string(wrapper), " --guest-agent-transport ") {
 		t.Fatalf("worker must reach its VMs through the Tart Guest Agent, not the network: %s", wrapper)
 	}
-	if !strings.Contains(string(wrapper), `export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"`) {
-		t.Fatal("worker wrapper must expose Homebrew Tart to its LaunchDaemon")
+	if !strings.Contains(string(wrapper), `export PATH="$grove_tart_bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"`) {
+		t.Fatal("worker wrapper must put the Grove Tart shim first on PATH, ahead of Homebrew")
+	}
+	if !strings.Contains(string(wrapper), `grove_tart_bin=`+strconv.Quote(groveTartBinDir(opts))) ||
+		!strings.Contains(string(wrapper), `[ -x "$grove_tart_bin/tart" ] || {`) ||
+		!strings.Contains(string(wrapper), "exit 78") {
+		t.Fatalf("worker wrapper must fail closed (exit 78) when the headless Tart is missing: %s", wrapper)
 	}
 	if !strings.Contains(string(got), "<key>AssociatedBundleIdentifiers</key>") ||
 		!strings.Contains(string(got), orchardWorkerBundleID) {
@@ -522,13 +528,14 @@ func TestWorkerPlan_DryRunAppliesNothing(t *testing.T) {
 		"brew install cirruslabs/cli/tart",
 		"sudo pmset -a disablesleep 1",
 		"launchctl bootstrap",
+		"/usr/bin/ditto",
 	}
 	for _, c := range r.Calls {
 		if c.Name == "sudo" {
 			t.Errorf("no sudo command should run during --dry-run, got: %s", c.String())
 		}
 		for _, f := range forbidden {
-			if c.String() == f {
+			if c.String() == f || (f == "/usr/bin/ditto" && c.Name == f) {
 				t.Errorf("mutating command %q ran during --dry-run", c.String())
 			}
 		}
@@ -536,7 +543,7 @@ func TestWorkerPlan_DryRunAppliesNothing(t *testing.T) {
 
 	// Nothing should have been written to disk either.
 	staged, _ := daemonPaths(opts, orchardWorkerLabel)
-	for _, p := range []string{staged, credentialPath(opts, workerBootstrapCredentialName), workerWrapperPath(opts)} {
+	for _, p := range []string{staged, credentialPath(opts, workerBootstrapCredentialName), workerWrapperPath(opts), groveTartAppDir(opts), groveTartShimPath(opts), groveTartEntitlementsPath(opts)} {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
 			t.Errorf("expected %s not to be written during --dry-run, stat err = %v", p, err)
 		}
