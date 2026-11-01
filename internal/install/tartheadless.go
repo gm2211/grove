@@ -148,7 +148,8 @@ func pathTartApp(opts Options) string {
 
 // installedTartSource locates the tart.app the copy is made from and, when verify is set, refuses
 // anything that is not the genuine, validly signed Cirrus Labs bundle. The source is Homebrew's
-// (`brew --prefix tart`) when it is there, else the bundle the `tart` on PATH resolves into, so a
+// (`brew --prefix tart`) when it is there, else grove's own install of the release tarball, else the
+// bundle the `tart` on PATH resolves into, so a
 // worker whose Tart did not come from Homebrew (or whose Homebrew another user owns) heals too.
 // Without verify it only reads the version and code-directory hash (the doctor and the
 // idempotency check).
@@ -158,13 +159,23 @@ func installedTartSource(ctx context.Context, r Runner, opts Options, verify boo
 	switch {
 	case found:
 		s.App = brewApp
+	case isDir(groveManagedTartApp(opts)):
+		s.App = resolvedPath(groveManagedTartApp(opts))
 	case pathTartApp(opts) != "":
 		s.App = pathTartApp(opts)
 	case brewApp != "":
 		s.App = brewApp
 	default:
-		return s, fmt.Errorf("found no installed tart.app: `brew --prefix tart` has no Homebrew tart and no `tart` on PATH resolves into a .app bundle")
+		return s, fmt.Errorf("found no installed tart.app: `brew --prefix tart` has no Homebrew tart, there is none at %s, and no `tart` on PATH resolves into a .app bundle", groveManagedTartApp(opts))
 	}
+	return inspectTartApp(ctx, r, s.App, verify)
+}
+
+// inspectTartApp reads the version and code-directory hash of the tart.app at app and, when verify
+// is set, refuses anything that is not the genuine, validly signed Cirrus Labs bundle: the same
+// checks whoever installed it (Homebrew, grove's tarball install, a vendor).
+func inspectTartApp(ctx context.Context, r Runner, app string, verify bool) (tartSource, error) {
+	s := tartSource{App: app}
 	plist := filepath.Join(s.App, "Contents", "Info.plist")
 	if verify {
 		id, err := plutilRaw(ctx, r, plist, "CFBundleIdentifier")
@@ -234,7 +245,7 @@ func tartHeadlessStep(r Runner, opts Options) Step {
 	return Step{
 		Name: "tart-headless-app",
 		Description: fmt.Sprintf(
-			"Make %s: a copy of the installed tart.app (Homebrew's, or the one `tart` on PATH resolves to; verified genuine: bundle id, signature, team %s) with LSUIElement set so `tart run` never flashes in the Dock, re-signed ad hoc with only %s (bridged networking is unavailable in it), and an exec shim %s the worker puts first on PATH. Re-made when that Tart changes.",
+			"Make %s: a copy of the installed tart.app (Homebrew's, grove's own install, or the one `tart` on PATH resolves to; verified genuine: bundle id, signature, team %s) with LSUIElement set so `tart run` never flashes in the Dock, re-signed ad hoc with only %s (bridged networking is unavailable in it), and an exec shim %s the worker puts first on PATH. Re-made when that Tart changes.",
 			app, upstreamTartTeamID, entVirtualization, groveTartShimPath(opts)),
 		Check: func(ctx context.Context) (bool, error) {
 			src, err := installedTartSource(ctx, r, opts, false)

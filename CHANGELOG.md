@@ -4,6 +4,14 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **A worker no longer needs the admin's Homebrew to get Tart.** When Tart is missing and Homebrew
+  belongs to another user, `grove install --role worker` installs the pinned Tart 2.41.1 release
+  tarball (SHA-256 checked; bundle id, signature and team verified before it is linked) to
+  `~/.local/lib/grove/tart.app` and `~/.local/bin/tart`, and the `brew-trust:openai/tools` step
+  passes instead of failing. That grove-managed bundle is also a source for the headless Tart copy,
+  after Homebrew's and before the `tart` on PATH, so a re-run heals without `tart` being on PATH.
+  The doctor's `headless-tart` wording no longer names Homebrew only.
+
 ## v0.1.23
 
 Also covers v0.1.21 and v0.1.22, which were tagged without a changelog section.
