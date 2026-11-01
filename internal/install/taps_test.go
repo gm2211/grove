@@ -299,3 +299,47 @@ func TestCheckTrustedTaps_NoOpOnNonDarwin(t *testing.T) {
 		t.Errorf("expected no brew commands to run on non-darwin, got %+v", r.Calls)
 	}
 }
+
+func TestTrustTapStepWhen_SatisfiedWhenNothingNeedsTheTap(t *testing.T) {
+	r := NewFakeRunner() // brew is foreign-owned and unscripted: it must not even be asked
+	step := trustTapStepWhen(r, tapOpenAITools, io.Discard, func() bool { return false })
+	ok, err := step.Check(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("Check = %v, %v; want satisfied", ok, err)
+	}
+	if len(r.Calls) != 0 {
+		t.Errorf("asked Homebrew: %v", r.Calls)
+	}
+	scriptTapInfo(r, "openai/tools", false, false)
+	step = trustTapStepWhen(r, tapOpenAITools, io.Discard, func() bool { return true })
+	if ok, _ := step.Check(context.Background()); ok {
+		t.Error("a needed, untapped tap satisfies the step")
+	}
+}
+
+func TestWorkerSteps_TrustStepSatisfiedWhenTartIsOnPath(t *testing.T) {
+	opts := testWorkerOptions(t.TempDir())
+	opts.LookPath = lookPathOnly("tailscale", "tart", "brew")
+	r := NewFakeRunner()
+	var trust *Step
+	steps := buildWorkerSteps(r, opts, io.Discard)
+	for i := range steps {
+		if steps[i].Name == "brew-trust:openai/tools" {
+			trust = &steps[i]
+		}
+	}
+	if trust == nil {
+		t.Fatal("no trust step")
+	}
+	if ok, err := trust.Check(context.Background()); err != nil || !ok {
+		t.Fatalf("Check = %v, %v; want satisfied with tart on PATH", ok, err)
+	}
+	opts.LookPath = lookPathOnly("tailscale", "brew")
+	for _, s := range buildWorkerSteps(NewFakeRunner(), opts, io.Discard) {
+		if s.Name == "brew-trust:openai/tools" {
+			if ok, _ := s.Check(context.Background()); ok {
+				t.Error("trust step satisfied without tart")
+			}
+		}
+	}
+}

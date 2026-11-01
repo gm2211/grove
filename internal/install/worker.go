@@ -109,7 +109,9 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 				return err
 			},
 		},
-		trustTapStep(r, tapOpenAITools, out),
+		trustTapStepWhen(r, tapOpenAITools, out, func() bool {
+			return !onPath(lookPath, "tart") || (opts.Softnet && !onPath(lookPath, "softnet"))
+		}),
 		{
 			Name:        "tart",
 			Description: "Install Tart (`brew install openai/tools/tart`, falling back to `brew install cirruslabs/cli/tart` if that tap doesn't have it).",
