@@ -95,6 +95,14 @@ grove setup
   be approved. This binds the credential to the worker's exact name so Grove can synchronize its
   assigned VMs and open watch connections. Registration remains allowed, and existing privileged
   legacy credentials remain compatible.
+- The worker runs Tart only through `~/Applications/Grove Tart.app`: a copy of Homebrew's
+  `tart.app` (checked to be the genuine Cirrus Labs bundle) with `LSUIElement` set, re-signed ad
+  hoc with only the `com.apple.security.virtualization` entitlement, and put first on the
+  worker's `PATH` by a shim in `~/.config/grove/tart-bin/`. Homebrew's own Tart is a regular
+  foreground app, so every `tart run` by the daemon would flash "Tart" in the Dock of whoever is
+  logged in on the Mac. The copy cannot do bridged networking (`com.apple.vm.networking` is
+  restricted and does not survive an ad-hoc signature); grove never uses it. The wrapper refuses
+  to start (exit 78) if the copy is missing; `grove install --role worker` re-makes it.
 - Grove installs Orchard as `~/Applications/Grove Orchard Worker.app` and gives it a stable bundle
   identity. The worker and the credential broker run as **LaunchDaemons with `UserName` set to the
   user that ran the install** (`com.grove.orchard-worker`, `com.grove.broker`), so they start at

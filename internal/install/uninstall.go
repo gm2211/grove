@@ -67,6 +67,7 @@ func BuildUninstallPlan(r Runner, opts Options, u UninstallOptions) ([]Step, err
 		removePathsStep("orchard-worker-wrapper", "the Orchard worker's wrapper script and recorded identity", workerWrapperPath(opts), workerIdentityPath(opts)),
 		removeRegistryMarkersStep(opts),
 		removePathsStep("orchard-worker-app", "the Orchard worker app", workerOrchardAppDir(opts)),
+		removePathsStep("grove-tart-app", "the Grove Tart copy, its PATH shim and entitlements", groveTartAppDir(opts), groveTartBinDir(opts), groveTartEntitlementsPath(opts)),
 		removeOrchardSymlinkStep(opts),
 		removeWorkerLogsStep(opts),
 	)
