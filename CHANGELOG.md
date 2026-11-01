@@ -4,6 +4,8 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+## v0.1.21
+
 - **Snooze a worker: a timed pause that resumes by itself, with jobs queuing instead of failing.**
   `grove worker snooze [--for 2h | --until 18:00] [--now] [--note ...]` (and `wake`, MCP
   `grove_snooze_worker`/`grove_wake_worker`, a Wake button in the UI) pauses the Mac you work on
