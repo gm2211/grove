@@ -12,3 +12,5 @@
 /.claude/worktrees/
 
 /images/macos-worker/artifacts/
+# Release workflow: the orchard job's archives, downloaded into the checkout before goreleaser runs.
+/orchard-assets/
