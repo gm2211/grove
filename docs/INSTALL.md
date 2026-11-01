@@ -207,6 +207,41 @@ web UI. A worker that can't authenticate to a private registry fails to pull the
    rarely needs overriding. Without a token, `grove install`/`grove setup` skip this and print a
    NOTE that the images must be public instead.
 
+#### Repairing a worker: re-run the install
+
+`grove install --role worker` is the supported repair for any installed worker, whatever shape it
+was installed in: it heals the worker in place rather than orphaning it. It never needs
+`--controller`/`--token` for a worker that is already installed (it finds them), and it:
+
+1. **Keeps the worker's identity.** The Orchard name and labels are reused from, in order: the
+   record this installer keeps (`~/.config/grove/worker-identity.json`), grove's wrapper, a
+   hand-written `~/.config/grove/run-worker.sh`, a per-user LaunchAgent's arguments (following it
+   into the script it runs). A Mac with no worker gets its hostname and `host=<name>,arch=arm64`.
+   So a worker that runs as `--name studio --labels host=studio` stays that, and the pools whose
+   `workerSelector` is `host: studio` keep their VMs. `--name` and `--labels` override.
+2. **Renders the current launch shape over whatever is there:** the wrapper with
+   `--guest-agent-transport`, the worker and broker LaunchDaemons (absolute program paths only; a
+   bare `nomad`/`grove` makes launchd exit 78), and the Orchard app at the pinned commit. A
+   running worker is restarted onto it (kill and recreate; its VMs reboot).
+3. **Removes what the new shape supersedes**, after the new LaunchDaemon is loaded: the old
+   per-user LaunchAgent (in the installing user's session, or another account's, such as a
+   MacBook's earlier `gmecocci` stack), `run-worker.sh`, and `worker-bootstrap` once its token is in
+   `credentials/orchard-worker-bootstrap`. Everything it rewrites or removes is first copied to
+   `~/.config/grove/backups/<timestamp>/` (0700), and each action is printed.
+4. **Is idempotent:** with nothing to change it says so and touches and restarts nothing.
+
+**Renaming** (`--name` or `--labels` differing from the installed identity) needs a bootstrap
+credential minted for the new name, so pass `--token`. On the control plane host (a `config.yaml`
+that names a local `fleet.yaml`) the install also rewrites the `workerSelector` entries that
+matched the old labels (comments kept, `fleet.yaml` backed up) and deletes the old Orchard worker
+record, once the renamed worker is loaded; an interrupted rename is retried by the next run. On
+any other host it refuses and prints the exact `fleet.yaml` change and the record to delete; make
+that change on the control plane, then re-run with `--force`.
+
+`grove doctor` has a `worker-shape` check that flags a legacy or drifted worker (no guest-agent
+transport, bare program paths, a leftover LaunchAgent or `run-worker.sh`, a second account's
+stack, a pool whose `workerSelector` matches no worker) and tells you to re-run this command.
+
 ### Control plane (the always-on machine, Linux or a Mac)
 
 ```bash
@@ -250,7 +285,9 @@ manually provisioned environments.
 | `--registry` | container registry a worker authenticates to (worker role; default `ghcr.io`) |
 | `--registry-user` | registry username for `tart login` (worker role) |
 | `--registry-token` | registry password/PAT for `tart login` (worker role); also read from `$GROVE_REGISTRY_TOKEN` |
-| `--name` | the worker's Orchard name, which fleet.yaml's `workerSelector` matches (worker role). Default: the name this Mac's worker is already installed under (grove's wrapper, or an older `com.grove.orchard-worker` LaunchAgent), else the hostname |
+| `--name` | the worker's Orchard name, which fleet.yaml's `workerSelector` matches (worker role). Default: the name this Mac's worker is already installed under (its recorded identity, grove's wrapper, `run-worker.sh`, or an older `com.grove.orchard-worker` LaunchAgent), else the hostname |
+| `--labels` | the worker's Orchard labels, `k=v,k=v` (worker role). Default: the labels it is already installed with, else `host=<name>,arch=arm64` |
+| `--force` | rename a worker on a host that is not the control plane: print the `fleet.yaml` change it needs instead of refusing (worker role) |
 | `--softnet` | also install Softnet and add its one-time root step (worker role; only for Macs that run `network: isolated` pools, see [OPERATIONS.md](OPERATIONS.md#isolating-a-pools-network)) |
 | `--yes` | run the root steps through sudo without asking (needs a terminal, or cached sudo credentials); as root, apply them directly |
 | `--no-sudo` | never run sudo; print the root steps as one block for an admin |
@@ -283,8 +320,9 @@ ghcr.io` (see "Registry access for private worker images" above), doctor also wa
 
 - **A VM restarts every few minutes and the worker log says `no route to host`**: the worker is
   dialing the VM over the network, which macOS 15+ refuses without Local Network permission. It
-  runs a wrapper from before `--guest-agent-transport`: re-run `grove install --role worker` (it
-  rebuilds Orchard at the pinned commit and rewrites the wrapper). Grove deliberately never asks
+  runs a wrapper (or a hand-written `run-worker.sh`) from before `--guest-agent-transport`: re-run
+  `grove install --role worker` (it keeps the worker's name and labels, rebuilds Orchard at the
+  pinned commit, rewrites the wrapper and removes the old launcher; see "Repairing a worker"). Grove deliberately never asks
   for that permission, never writes `AllowedEthernetLocalNetworkAddresses` /
   `AllowedWiFiLocalNetworkAddresses` (they exempt matching networks for every process on the Mac)
   and never uses the privileged Orchard helper.

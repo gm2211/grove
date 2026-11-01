@@ -4,11 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"html"
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 )
@@ -28,7 +26,7 @@ const (
 )
 
 func workerWrapperPath(opts Options) string {
-	return filepath.Join(opts.ConfigDir(), "run-orchard-worker.zsh")
+	return filepath.Join(opts.ConfigDir(), workerWrapperName)
 }
 
 func orchardBinDir(opts Options) string { return filepath.Join(opts.homeDir(), ".local", "bin") }
@@ -88,6 +86,7 @@ func workerOrchardInfoPlist() string {
 func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 	lookPath := opts.lookPath()
 	host := opts.hostname()
+	bk := newBackupSession(opts, out)
 	cliOrchard := filepath.Join(orchardBinDir(opts), orchardBinName)
 	workerOrchard := workerOrchardExecutable(opts)
 	wrapper := workerWrapperPath(opts)
@@ -144,6 +143,8 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 	}
 
 	steps = append(steps,
+		workerIdentityStep(opts),
+		backupLegacyWorkerStep(opts, bk),
 		Step{
 			Name: "orchard-worker-app",
 			Description: fmt.Sprintf(
@@ -165,6 +166,12 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 			},
 			Apply: func(ctx context.Context) error {
 				token := opts.Token
+				if token == "" {
+					// A worker that predates the installer read its credential from worker-bootstrap.
+					if b, err := os.ReadFile(legacyWorkerBootstrapPath(opts)); err == nil {
+						token = strings.TrimSpace(string(b))
+					}
+				}
 				if token == "" {
 					// Migrate the credential an older grove kept in the login Keychain. That needs
 					// this user's Keychain unlocked, which a `su -` shell leaves locked.
@@ -191,6 +198,9 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 			Description: fmt.Sprintf("Render %s; it feeds Orchard the bootstrap credential file over stdin, and exports the registry credentials from their file, if there is one, for Tart.", wrapper),
 			Check:       fileHasContent(wrapper, func() (string, error) { return workerWrapper(opts, workerOrchard), nil }),
 			Apply: func(ctx context.Context) error {
+				if err := bk.save(wrapper); err != nil {
+					return err
+				}
 				if err := writeFile(wrapper, workerWrapper(opts, workerOrchard)); err != nil {
 					return err
 				}
@@ -209,7 +219,9 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 	steps = append(steps, daemonStageStep(opts, daemons[0]))
 	steps = append(steps, workerSleepStep(r))
 	steps = append(steps, brokerSteps(r, opts, daemons[1])...)
-	steps = append(steps, workerDaemonsStep(r, opts, daemons), retireLaunchAgentsStep(r, opts, daemons))
+	steps = append(steps, workerDaemonsStep(r, opts, daemons))
+	steps = append(steps, retireOtherUserStacksStep(r, opts, opts.hostname()))
+	steps = append(steps, workerFinishSteps(r, opts, daemons, bk, out)...)
 	steps = append(steps, hostFirewallSteps(r, opts)...)
 	return steps
 }
@@ -348,6 +360,9 @@ func workerDaemonPlist(opts Options, wrapper string) (string, error) {
 // there is none or it can't be read. It lets `grove install --role worker` re-run (to upgrade, or
 // to add a registry login) without the --controller that `grove setup` supplied the first time.
 func installedWorkerController(opts Options) string {
+	if c := detectWorkerIdentity(opts).Controller; c != "" {
+		return c
+	}
 	b, err := os.ReadFile(workerWrapperPath(opts))
 	if err != nil {
 		return ""
@@ -373,30 +388,7 @@ func installedWorkerController(opts Options) string {
 // existed (which ran Orchard with its arguments inline). Re-running the install keeps that name,
 // so fleet.yaml's workerSelector and the VMs pinned to it still match, even when it isn't this
 // Mac's hostname.
-func installedWorkerName(opts Options) string {
-	if b, err := os.ReadFile(workerWrapperPath(opts)); err == nil {
-		const flag = "--name "
-		if i := strings.Index(string(b), flag); i >= 0 {
-			if quoted, err := strconv.QuotedPrefix(string(b)[i+len(flag):]); err == nil {
-				if name, err := strconv.Unquote(quoted); err == nil {
-					return name
-				}
-			}
-		}
-	}
-	b, err := os.ReadFile(filepath.Join(opts.LaunchAgentsDir(), "com.grove.orchard-worker.plist"))
-	if err != nil {
-		return ""
-	}
-	if m := legacyWorkerNameRE.FindSubmatch(b); m != nil {
-		return html.UnescapeString(string(m[1]))
-	}
-	return ""
-}
-
-// legacyWorkerNameRE finds `--name <name>` or `--name=<name>` in a LaunchAgent's
-// ProgramArguments.
-var legacyWorkerNameRE = regexp.MustCompile(`<string>--name(?:</string>\s*<string>|=)([^<]+)</string>`)
+func installedWorkerName(opts Options) string { return detectWorkerIdentity(opts).Name }
 
 // workerWrapper is what the LaunchDaemon runs. It holds no secret: it points Orchard's stdin at the
 // bootstrap credential file, and, when there is a registry login, reads the registry file's two
@@ -412,7 +404,7 @@ if [ -f "$registry_credential" ]; then
   export TART_REGISTRY_USERNAME TART_REGISTRY_PASSWORD
 fi
 exec %q worker run --name %q --labels %q --guest-agent-transport --bootstrap-token-stdin %q < %q
-`, credentialPath(opts, registryCredentialName), orchardBin, opts.hostname(), fmt.Sprintf("host=%s,arch=arm64", opts.hostname()), opts.Controller,
+`, credentialPath(opts, registryCredentialName), orchardBin, opts.hostname(), opts.workerLabels(), opts.Controller,
 		credentialPath(opts, workerBootstrapCredentialName))
 }
 

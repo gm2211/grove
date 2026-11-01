@@ -4,6 +4,20 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **`grove install --role worker` heals an existing worker in place.** It keeps the worker's
+  Orchard name and labels (from its recorded identity, grove's wrapper, a hand-written
+  `run-worker.sh`, or an old LaunchAgent) instead of renaming it to the hostname, so a Mac Studio
+  running `--name studio --labels host=studio` no longer orphans the pools that select
+  `host: studio`. It re-renders the current launch shape (wrapper with the guest-agent transport,
+  LaunchDaemons), then removes what that supersedes: the old LaunchAgent, `run-worker.sh`,
+  `worker-bootstrap` (its token moves to the credential file), and another account's earlier
+  per-user stack for the same worker, all backed up first under
+  `~/.config/grove/backups/<timestamp>/`. A second run with nothing to change touches and restarts
+  nothing. New `--name`/`--labels`/`--force`: a rename on the control plane host rewrites
+  `fleet.yaml`'s `workerSelector`s and deletes the old Orchard worker record; elsewhere it refuses
+  and prints the exact change. launchd plists now refuse a non-absolute program (a bare
+  `nomad`/`grove` exits 78). `grove doctor` gains a `worker-shape` check that points at the re-run.
+
 - **Jobs that can never be placed fail in minutes, not after 30.** When a job's pool shows no
   eligible Nomad node for 3 minutes and the fleet reconciler knows why (enrolment erroring, every
   VM of the pool boot-looping, no worker matching the pool), the job ends `failed` with that

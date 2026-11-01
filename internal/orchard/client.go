@@ -512,3 +512,9 @@ func (s *execSession) writeStdin(ctx context.Context, r io.Reader) {
 		}
 	}
 }
+
+// DeleteWorker removes a worker record from the controller. It is deliberately not on Client: only
+// `grove install --role worker` retires a worker, when it renames one.
+func (c *client) DeleteWorker(ctx context.Context, name string) error {
+	return c.raw.Workers().Delete(ctx, name)
+}

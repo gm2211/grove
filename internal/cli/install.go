@@ -20,6 +20,8 @@ var installFlags struct {
 	registryToken string
 	softnet       bool
 	name          string
+	labels        string
+	force         bool
 	yes           bool
 	noSudo        bool
 	dryRun        bool
@@ -31,6 +33,15 @@ var installCmd = &cobra.Command{
 	Long: `grove install renders an idempotent plan for the given --role and applies it: Homebrew/
 Tart/Orchard/Nomad dependencies, launchd jobs or systemd --user units, and ~/.config/grove/
 config.yaml. Re-running it is safe — steps that are already satisfied are skipped.
+
+Re-running ` + "`--role worker`" + ` is also how an installed worker is repaired. It keeps the worker's
+name and labels (from what it finds: its recorded identity, grove's wrapper, a hand-written
+run-worker.sh, an old LaunchAgent), re-renders the current launch shape (wrapper, guest-agent
+transport, LaunchDaemons) over whatever is there, and backs up under ~/.config/grove/backups/
+and removes the older pieces it supersedes. --name/--labels override the identity; on the control
+plane host a rename also rewrites fleet.yaml's workerSelectors and deletes the old Orchard worker
+record, and anywhere else it refuses (see --force) and prints the change to make. Nothing to
+change means nothing is touched or restarted.
 
 Run it as the account the worker should run as (a dedicated standard user is fine, including from
 a ` + "`su - <user>`" + ` shell with nobody logged in at the Mac), never as root: the worker and its
@@ -56,6 +67,8 @@ func init() {
 	installCmd.Flags().StringVar(&installFlags.registryToken, "registry-token", "", "registry password/PAT for `tart login` (worker role); also read from $GROVE_REGISTRY_TOKEN so it needn't be in shell history")
 	installCmd.Flags().BoolVar(&installFlags.softnet, "softnet", false, "also install Softnet and print its one-time root step (worker role; needed on Macs that run fleet.yaml pools with network: isolated)")
 	installCmd.Flags().StringVar(&installFlags.name, "name", "", "this worker's Orchard name, which fleet.yaml's workerSelector matches (worker role; default: the name it is already installed under, else the hostname)")
+	installCmd.Flags().StringVar(&installFlags.labels, "labels", "", "this worker's Orchard labels, k=v,k=v, which fleet.yaml's workerSelector matches (worker role; default: the labels it is already installed with, else host=<name>,arch=arm64)")
+	installCmd.Flags().BoolVar(&installFlags.force, "force", false, "rename a worker on a host that is not the control plane: print the fleet.yaml change it needs instead of refusing (worker role)")
 	installCmd.Flags().BoolVar(&installFlags.yes, "yes", false, "run the root steps through sudo without asking (or, as root, apply them directly)")
 	installCmd.Flags().BoolVar(&installFlags.noSudo, "no-sudo", false, "never run sudo; print the root steps for an admin")
 	installCmd.Flags().BoolVar(&installFlags.dryRun, "dry-run", false, "print the plan; change nothing")
@@ -90,6 +103,8 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		RegistryToken: registryToken,
 		Softnet:       installFlags.softnet,
 		Hostname:      installFlags.name,
+		Labels:        installFlags.labels,
+		Force:         installFlags.force,
 	}
 
 	_, err := applyInstall(cmd, opts, installFlags.dryRun, installFlags.yes, installFlags.noSudo)
@@ -104,6 +119,13 @@ func applyInstall(cmd *cobra.Command, opts install.Options, dryRun, yes, noSudo 
 	steps, results, err := runInstallPlan(cmd, runner, opts, dryRun, yes)
 	if err != nil {
 		return install.RootNone, err
+	}
+	needed := false
+	for _, res := range results {
+		needed = needed || res.Needed
+	}
+	if !dryRun && !needed {
+		fmt.Fprintf(out, "\nnothing to change: %s is already up to date; nothing was touched or restarted.\n", opts.Role)
 	}
 	outcome := install.RootNone
 	if !dryRun {
@@ -131,6 +153,13 @@ func applyInstall(cmd *cobra.Command, opts install.Options, dryRun, yes, noSudo 
 	}
 	if outcome == install.RootPrinted {
 		return outcome, nil
+	}
+	if outcome == install.RootRan && opts.Role == install.RoleWorker {
+		// The LaunchDaemons are loaded now: finish what waited for them (retire the superseded
+		// shape, complete a rename).
+		if err := install.FinishWorkerInstall(cmd.Context(), runner, opts, out); err != nil {
+			return outcome, fmt.Errorf("install: %w", err)
+		}
 	}
 	fmt.Fprintln(out, "\nrun `grove doctor` to verify.")
 	return outcome, nil
