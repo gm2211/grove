@@ -1,0 +1,38 @@
+id: pause-state
+name: Pausing, snoozing and resuming a worker
+prose: >-
+  Orchard keeps one pause bit per worker; grove records every reason for it (snooze, health,
+  operator). Every writer holds the worker's lock from reading Orchard to its last write, and a
+  lapsing snooze is cleared only after Orchard accepts the resume.
+behaviors:
+  - id: snoozed-mac-does-no-work
+    description: A snoozed Mac does no work; while a snooze is active, the worker is paused in Orchard.
+    details: >-
+      S1. Attacker C (a resume racing a snooze). Failed before v0.1.28: TLC found a counterexample
+      in 8 steps. Exhaustive TLC check in spec/check.sh; Go test TestS1_WritersHoldTheWorkersLock.
+    tags: [security, s1]
+    formal:
+      - tool: quint
+        file: ../quint/snooze.qnt
+        main: snoozeAll
+        property: snoozedMeansPaused
+        mode: simulate
+        maxSteps: 20
+        samples: 2000
+        seed: 1
+  - id: resumed-mac-works-again
+    description: >-
+      A worker an operator resumed works again once any snooze on it lapses, unless someone pauses
+      it again.
+    details: >-
+      L1. Temporal property (eventuallyWorkingAfterResume in snooze.qnt), checked by TLC in
+      spec/check.sh; Specify's formal check runs invariants only. Failed before v0.1.28.
+    tags: [liveness, l1]
+  - id: pause-bit-matches-reasons
+    description: >-
+      Once requests stop, Orchard's pause bit is set exactly when a recorded reason exists, even
+      when Orchard refuses one resume.
+    details: >-
+      L2. Temporal property (eventuallyConsistent in snooze.qnt), checked by TLC in spec/check.sh.
+      Failed before v0.1.28 three ways; Go test TestL2_FailedResumeAfterSnoozeIsRetried.
+    tags: [liveness, l2]

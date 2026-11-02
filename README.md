@@ -196,6 +196,7 @@ English, each in the tool that fits it:
 | **Quint** models, checked by **TLC** | every interleaving of the control loops, within bounds | snooze and pause, dispatch, retries and quarantine, VM TTL and rebuilds, Nomad enrolment |
 | **Lean 4** proofs | a decision, for every possible input | route scopes, artifact paths, the broker's header swap |
 | **CodeQL** taint queries | every path a secret can take through the Go code | job secrets, the private-repo token, broker credentials, node keys |
+| **[Specify](https://github.com/gm2211/specify)** spec | the 20 properties as behaviors with stable IDs, each linked to its model or theorem | `spec/grove.spec`, checked with `specify formal check` |
 | **Go** conformance tests | that each model matches the real package | Go vs Lean on 24,860 route and method pairs; 500 random fleets; the snooze races replayed |
 
 What holds:

@@ -1,0 +1,11 @@
+id: artifacts
+name: Job artifacts
+behaviors:
+  - id: artifact-path-stays-inside
+    description: An artifact path can't leave the job's artifact directory.
+    details: S9. Attackers C and J. Proved, and the Go check agrees with the Lean one.
+    tags: [security, s9]
+    formal:
+      - tool: lean
+        file: ../lean/Grove/ArtifactPath.lean
+        property: Grove.ArtifactPath.S9_contained

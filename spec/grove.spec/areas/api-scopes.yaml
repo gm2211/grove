@@ -1,0 +1,39 @@
+id: api-scopes
+name: API credential scopes
+prose: >-
+  Every API route requires a scope, decided by one function (requiredScope). The Lean
+  transcription is checked against the Go one on 24,860 method and path pairs.
+behaviors:
+  - id: broker-credential-is-narrow
+    description: A broker credential reaches only GET /broker/entries.
+    details: S5. Attacker C. Proved for every path.
+    tags: [security, s5]
+    formal:
+      - tool: lean
+        file: ../lean/Grove/Auth.lean
+        property: Grove.Auth.S5_broker_only_entries
+  - id: snooze-scope-is-narrow
+    description: >-
+      A worker:snooze:<w> credential reaches only /workers/<w>/snooze and /workers/<w>/wake.
+    details: S6. Attacker C. Proved for every path and worker name.
+    tags: [security, s6]
+    formal:
+      - tool: lean
+        file: ../lean/Grove/Auth.lean
+        property: Grove.Auth.S6_snooze_scope_only_its_worker
+  - id: scope-boundaries
+    description: >-
+      read can't submit, cancel or re-key a job; plain dispatch can't run a shell job; access,
+      secrets, GitHub, VMs, workers and join approval are operator-only.
+    details: S7. Attackers C and J. Proved for every route with any parameters.
+    tags: [security, s7]
+    formal:
+      - tool: lean
+        file: ../lean/Grove/Auth.lean
+        property: Grove.Auth.S7_operator_routes_need_operator
+      - tool: lean
+        file: ../lean/Grove/Auth.lean
+        property: Grove.Auth.S7_read_cannot_dispatch
+      - tool: lean
+        file: ../lean/Grove/Auth.lean
+        property: Grove.Auth.S7_dispatch_cannot_shell

@@ -1,0 +1,41 @@
+id: fleet
+name: Keeping the fleet healthy
+prose: >-
+  The reconciler keeps Orchard's VMs matching fleet.yaml, drains a VM before its TTL recycles it,
+  and rebuilds VMs that fail.
+behaviors:
+  - id: reconcile-converges
+    description: >-
+      From any fleet, one Plan and Apply converges: the next Plan is empty and stays empty, and
+      every VM left runs on an online, unpaused worker its pool's selector matches.
+    details: L6. Go property test over 500 random fleets (TestL6_ReconcilerConvergesWithoutFlapping).
+    tags: [liveness, l6]
+  - id: drained-before-recycle
+    description: >-
+      A VM reaching its TTL is drained before Orchard recycles it, so no job lands on a dying VM,
+      and the pool gets a replacement.
+    details: >-
+      L7. Holds while DrainNode fails on fewer than 4 ticks in a row; the 4-failure instance fails,
+      so the bound is tight. "Gets a replacement" is temporal (alwaysComesBack), checked by TLC.
+    tags: [liveness, l7]
+    formal:
+      - tool: quint
+        file: ../quint/fleet.qnt
+        main: fleetTTL
+        property: noJobOnRecyclingVM
+        mode: simulate
+        maxSteps: 20
+        samples: 2000
+        seed: 1
+      - tool: quint
+        file: ../quint/fleet.qnt
+        main: fleetTTL
+        property: drainedBeforeRecycle
+        mode: simulate
+        maxSteps: 20
+        samples: 2000
+        seed: 1
+  - id: broken-vm-rebuilt
+    description: A failed or boot-looping VM is rebuilt.
+    details: L10. Temporal property (unhealthyIsRebuilt in fleet.qnt), checked by TLC.
+    tags: [liveness, l10]
