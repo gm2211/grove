@@ -329,6 +329,23 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 // wait bounds the churn when the failure is permanent: one rebuild per VM per FailedVMRetry.
 const FailedVMRetry = 10 * time.Minute
 
+// LoginSessionRetry replaces FailedVMRetry for a macOS VM that failed because its worker user has
+// no login session (NeedsLoginSession): every rebuild fails the same way until someone logs in, so
+// rebuilding every 10 minutes only churns tart (and the Dock) on that Mac. One try an hour still
+// picks the pool back up on its own after the login.
+const LoginSessionRetry = time.Hour
+
+// NeedsLoginSession reports whether an Orchard failure message is Virtualization.framework refusing
+// to boot a macOS guest because the worker user's login keychain is locked: VZErrorDomain -9 "The
+// virtual machine encountered a security error … Failed to get current host key"
+// (errSecInteractionNotAllowed). The worker LaunchDaemon starts at boot with nobody logged in, which
+// is enough for Linux VMs but not for this; see install's login-session doctor check.
+func NeedsLoginSession(statusMessage string) bool {
+	m := strings.ToLower(statusMessage)
+	return strings.Contains(m, "host key") || strings.Contains(m, "errsecinteractionnotallowed") ||
+		strings.Contains(m, "encountered a security error")
+}
+
 // BootLoopRestarts is how many times Orchard may restart a VM before the Reconciler counts it as
 // boot-looping and rebuilds it. A healthy VM lives one TTL with no restart at all; one whose
 // startup script fails is restarted by OnFailure over and over (tens of thousands of times, each
@@ -340,6 +357,10 @@ const BootLoopRestarts = 3
 // to rebuild it now.
 func (r *Reconciler) unhealthyVMDue(vm orchard.VM) (why string, due bool) {
 	switch {
+	case vm.Status == "failed" && NeedsLoginSession(vm.StatusMessage):
+		_, host := PoolAndHost(vm)
+		why = "failed: " + loginSessionHint(host) + ": " + vm.StatusMessage
+		return why, vm.CreatedAt.IsZero() || r.Options.now().Sub(vm.CreatedAt) >= LoginSessionRetry
 	case vm.Status == "failed":
 		why = "failed"
 		if vm.StatusMessage != "" {

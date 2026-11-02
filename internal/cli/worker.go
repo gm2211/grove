@@ -1,11 +1,15 @@
 package cli
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"text/tabwriter"
 	"time"
 
+	"github.com/gm2211/grove/internal/server"
 	"github.com/spf13/cobra"
 )
 
@@ -30,26 +34,22 @@ var workerLsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 		fmt.Fprintln(w, "NAME\tARCH\tRUNTIME\tONLINE\tPAUSED\tSNOOZED\tLAST SEEN")
 
-		// The control plane's /fleet knows about snoozes; Orchard alone does not.
-		if api, aerr := newAPIClient(); aerr == nil {
-			if fl, ferr := api.Fleet(cmd.Context()); ferr == nil {
-				for _, e := range fl.Workers {
-					wk, _ := e.Raw.(map[string]any)
-					runtime, _ := wk["runtime"].(string)
-					lastSeen := "-"
-					if s, _ := wk["lastSeen"].(string); s != "" {
-						if t, perr := time.Parse(time.RFC3339Nano, s); perr == nil && !t.IsZero() {
-							lastSeen = time.Since(t).Round(time.Second).String() + " ago"
-						}
-					}
-					fmt.Fprintf(w, "%s\t%s\t%s\t%t\t%t\t%s\t%s\n", e.Name, e.Arch, runtime, e.Online, e.Cordoned, snoozedColumn(e.SnoozedUntil), lastSeen)
-				}
+		// The control plane's /fleet knows about snoozes; Orchard alone does not. A device with a
+		// server URL goes through the API, and only falls back to Orchard (with a warning) when it
+		// also has Orchard configured; otherwise the API's error is the answer.
+		if cfg.Server.URL != "" {
+			fl, ferr := fetchFleet(cmd.Context())
+			if ferr == nil {
+				writeWorkerRows(w, fl.Workers, time.Now())
 				return w.Flush()
 			}
+			if cfg.Orchard.URL == "" {
+				return fmt.Errorf("list workers through %s: %w", cfg.Server.URL, ferr)
+			}
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s: %v; asking Orchard directly (no snooze information)\n", cfg.Server.URL, ferr)
 		}
 
 		client, err := newOrchardClient(cfg)
@@ -70,6 +70,33 @@ var workerLsCmd = &cobra.Command{
 		}
 		return w.Flush()
 	},
+}
+
+// fetchFleet reads GET /fleet with this device's server URL and token.
+func fetchFleet(ctx context.Context) (*server.FleetResponse, error) {
+	api, err := newAPIClient()
+	if err != nil {
+		return nil, err
+	}
+	return api.Fleet(ctx)
+}
+
+// writeWorkerRows renders /fleet's worker entries as `grove worker ls` rows.
+func writeWorkerRows(w io.Writer, workers []server.FleetEntry, now time.Time) {
+	for _, e := range workers {
+		var raw struct {
+			Runtime  string    `json:"runtime"`
+			LastSeen time.Time `json:"lastSeen"`
+		}
+		if b, err := json.Marshal(e.Raw); err == nil {
+			_ = json.Unmarshal(b, &raw)
+		}
+		lastSeen := "-"
+		if !raw.LastSeen.IsZero() {
+			lastSeen = now.Sub(raw.LastSeen).Round(time.Second).String() + " ago"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%t\t%t\t%s\t%s\n", e.Name, e.Arch, raw.Runtime, e.Online, e.Cordoned, snoozedColumn(e.SnoozedUntil), lastSeen)
+	}
 }
 
 func snoozedColumn(until *time.Time) string {

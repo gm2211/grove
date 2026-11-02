@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/gm2211/grove/internal/fleet"
 	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
+	"github.com/gm2211/grove/internal/server"
 	"github.com/gm2211/grove/internal/snooze"
 	"github.com/gm2211/grove/internal/wire"
 	"github.com/spf13/cobra"
@@ -24,7 +26,7 @@ func init() {
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Ping Orchard and Nomad and print fleet counts.",
+	Short: "Ping Orchard and Nomad (or the grove API) and print fleet counts.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, cfgPath, err := loadConfig()
 		if err != nil {
@@ -35,6 +37,18 @@ var statusCmd = &cobra.Command{
 		defer cancel()
 
 		out := cmd.OutOrStdout()
+
+		// A device that only has a server URL and token (a laptop, a worker Mac) asks the control
+		// plane, which talks to Orchard and Nomad on its behalf.
+		if statusViaAPI(cfg) {
+			fl, ferr := fetchFleet(ctx)
+			printPingResult(out, "server", cfg.Server.URL, ferr)
+			if ferr != nil {
+				return fmt.Errorf("the control plane check failed")
+			}
+			printFleetStatus(out, fl, time.Now())
+			return nil
+		}
 
 		orchardClient, orchardErr := newOrchardClient(cfg)
 		if orchardErr == nil {
@@ -67,6 +81,49 @@ var statusCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+// statusViaAPI says whether `grove status` should go through the grove API: the device has a server
+// URL but not both Orchard and Nomad to ask directly.
+func statusViaAPI(cfg *config.Config) bool {
+	return cfg.Server.URL != "" && (cfg.Orchard.URL == "" || cfg.Nomad.URL == "")
+}
+
+// printFleetStatus prints, from GET /fleet, what the direct path prints from Orchard and Nomad.
+func printFleetStatus(out io.Writer, fl *server.FleetResponse, now time.Time) {
+	online := 0
+	for _, w := range fl.Workers {
+		if w.Online {
+			online++
+		}
+	}
+	fmt.Fprintf(out, "workers: %d (%d online)\n", len(fl.Workers), online)
+	fmt.Fprintf(out, "vms: %d\n", len(fl.VMs))
+	counts := map[string]int{}
+	for _, n := range fl.Nodes {
+		counts[n.Status]++
+	}
+	fmt.Fprintf(out, "nomad nodes: %s\n", statusCounts(len(fl.Nodes), counts))
+
+	for _, w := range fl.Workers {
+		if w.SnoozedUntil != nil && w.SnoozedUntil.After(now) {
+			fmt.Fprintf(out, "snoozed: %s until %s\n", w.Name, w.SnoozedUntil.Local().Format("15:04"))
+		}
+	}
+
+	vms := make([]orchard.VM, 0, len(fl.VMs))
+	for _, e := range fl.VMs {
+		var vm orchard.VM
+		if b, err := json.Marshal(e.Raw); err == nil && json.Unmarshal(b, &vm) == nil {
+			vms = append(vms, vm)
+		}
+	}
+	for _, w := range fleet.BootLoops(vms) {
+		fmt.Fprintf(out, "boot loop: %s\n", w.Describe())
+	}
+	for _, f := range fleet.LoginSessionFailures(vms) {
+		fmt.Fprintf(out, "needs login: %s\n", f.Describe())
+	}
 }
 
 // printSnoozed lists the workers snoozed right now, from the control plane's pause store (only
@@ -144,6 +201,9 @@ func printBootLoops(ctx context.Context, out io.Writer, client orchard.Client) {
 	for _, w := range fleet.BootLoops(vms) {
 		fmt.Fprintf(out, "boot loop: %s\n", w.Describe())
 	}
+	for _, f := range fleet.LoginSessionFailures(vms) {
+		fmt.Fprintf(out, "needs login: %s\n", f.Describe())
+	}
 }
 
 // nodeStatusCounts renders e.g. "3 (ready 2, down 1)", so stale down registrations don't read as
@@ -153,6 +213,10 @@ func nodeStatusCounts(nodes []nomad.Node) string {
 	for _, n := range nodes {
 		counts[n.Status]++
 	}
+	return statusCounts(len(nodes), counts)
+}
+
+func statusCounts(total int, counts map[string]int) string {
 	statuses := make([]string, 0, len(counts))
 	for s := range counts {
 		statuses = append(statuses, s)
@@ -165,7 +229,7 @@ func nodeStatusCounts(nodes []nomad.Node) string {
 	if len(parts) == 0 {
 		return "0"
 	}
-	return fmt.Sprintf("%d (%s)", len(nodes), strings.Join(parts, ", "))
+	return fmt.Sprintf("%d (%s)", total, strings.Join(parts, ", "))
 }
 
 func printPingResult(w io.Writer, name, url string, err error) {

@@ -12,6 +12,16 @@ All notable changes to grove are documented here.
   user's session, so macOS VMs get its keychain) and adds only the firewall, whose one root step is
   printed for an admin. Once installed, later rootless runs keep it current without the flag, and
   `grove doctor` checks it instead of warning.
+- **`grove worker ls` and `grove status` work on a device that only has a server token** (#133).
+  With `server.url` set and no Orchard or Nomad config (a laptop set up to snooze its own Mac),
+  both now go through `GET /api/v1/fleet`: `status` prints the server check, worker, VM and node
+  counts, snoozes and boot loops; `worker ls` reports the API's error instead of silently falling
+  back to "orchard.url is not configured".
+- **A macOS VM that can't boot because its worker user isn't logged in is retried hourly** (#132).
+  Virtualization.framework's "Failed to get current host key" fails every rebuild the same way
+  until that user has a login session, so grove no longer recreates it every 10 minutes (and churns
+  tart and the Dock on that Mac); it retries once an hour, names the cause in the rebuild reason,
+  and `grove status` and `grove doctor` list it as "needs login".
 
 ## v0.1.28
 

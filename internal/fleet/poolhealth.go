@@ -55,6 +55,50 @@ func BootLoops(vms []orchard.VM) []WorkerBootLoop {
 	return out
 }
 
+// LoginSessionFailure is one worker's macOS VMs that failed because the worker user has no login
+// session there (NeedsLoginSession).
+type LoginSessionFailure struct {
+	Worker string
+	VMs    []string
+}
+
+// LoginSessionFailures groups the failed VMs in vms whose failure is NeedsLoginSession by worker,
+// sorted by worker.
+func LoginSessionFailures(vms []orchard.VM) []LoginSessionFailure {
+	byWorker := map[string]*LoginSessionFailure{}
+	for _, vm := range vms {
+		if vm.Status != "failed" || !NeedsLoginSession(vm.StatusMessage) {
+			continue
+		}
+		_, host := PoolAndHost(vm)
+		f := byWorker[host]
+		if f == nil {
+			f = &LoginSessionFailure{Worker: host}
+			byWorker[host] = f
+		}
+		f.VMs = append(f.VMs, vm.Name)
+	}
+	out := make([]LoginSessionFailure, 0, len(byWorker))
+	for _, f := range byWorker {
+		sort.Strings(f.VMs)
+		out = append(out, *f)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Worker < out[j].Worker })
+	return out
+}
+
+// Describe renders f for `grove status` and `grove doctor`.
+func (f LoginSessionFailure) Describe() string {
+	return fmt.Sprintf("%s: %d macOS VM(s) can't boot (%s); grove retries them every %s", loginSessionHint(f.Worker), len(f.VMs), strings.Join(f.VMs, ", "), LoginSessionRetry)
+}
+
+func loginSessionHint(worker string) string {
+	if worker == "" {
+		worker = "the worker"
+	}
+	return "the worker user on " + worker + " has no login session (macOS guests need its unlocked login keychain; log it in, fast user switching or auto-login)"
+}
+
 // PoolHealth remembers, from the fleet reconciler's ticks, why a shared pool has no node that can
 // take a job, so the job service can fail a job fast with that reason instead of letting it sit
 // until its pending timeout. Safe for concurrent use; the zero value is ready.
