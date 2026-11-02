@@ -236,6 +236,52 @@ func findLegacyWorker(opts Options) legacyWorker {
 	if _, err := os.Lstat(legacyWorkerBootstrapPath(opts)); err == nil {
 		l.Token = legacyWorkerBootstrapPath(opts)
 	}
+	if opts.Rootless {
+		l.Plists = withoutCurrentAgents(opts, l.Plists)
+	}
+	return l
+}
+
+// withoutCurrentAgents drops the plists that are the LaunchAgents a rootless install renders
+// (byte for byte): they are the current shape, not a superseded one. A same-label agent of an
+// older shape stays in the list, so it is backed up before worker-agents replaces it in place.
+func withoutCurrentAgents(opts Options, plists []string) []string {
+	current := map[string]string{}
+	for _, d := range workerDaemons(opts) {
+		if want, err := RenderLaunchAgent(d.Spec); err == nil {
+			current[agentPlistPath(opts, d.Label)] = want
+		}
+	}
+	var out []string
+	for _, p := range plists {
+		if want, ok := current[p]; ok {
+			if got, err := os.ReadFile(p); err == nil && string(got) == want {
+				continue
+			}
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// retirable is what retire-launchagents may remove. In a rootless install the worker and broker
+// agents themselves are the current shape, installed (or replaced in place) by worker-agents, so
+// they are never retired; only other plists, run-worker.sh and worker-bootstrap are.
+func retirable(opts Options) legacyWorker {
+	l := findLegacyWorker(opts)
+	if opts.Rootless {
+		var keep []string
+		for _, p := range l.Plists {
+			managed := false
+			for _, d := range workerDaemons(opts) {
+				managed = managed || p == agentPlistPath(opts, d.Label)
+			}
+			if !managed {
+				keep = append(keep, p)
+			}
+		}
+		l.Plists = keep
+	}
 	return l
 }
 
@@ -278,16 +324,16 @@ func retireLaunchAgentsStep(r Runner, opts Options, ds []daemon, bk *backupSessi
 	return Step{
 		Name:        "retire-launchagents",
 		Description: "Unload and remove the per-user worker LaunchAgents, run-worker.sh and worker-bootstrap an earlier install left (backed up first), once the worker LaunchDaemon is loaded.",
-		Check:       func(context.Context) (bool, error) { return findLegacyWorker(opts).empty(), nil },
+		Check:       func(context.Context) (bool, error) { return retirable(opts).empty(), nil },
 		Apply: func(ctx context.Context) error {
-			legacy := findLegacyWorker(opts)
+			legacy := retirable(opts)
 			loaded := func(label string) bool {
 				for _, d := range ds {
 					if d.Label == label {
-						return daemonLoaded(ctx, r, d)
+						return unitLoaded(ctx, r, opts, d)
 					}
 				}
-				return daemonLoaded(ctx, r, ds[0]) // a launcher or extra agent of the worker
+				return unitLoaded(ctx, r, opts, ds[0]) // a launcher or extra agent of the worker
 			}
 			var remove []string
 			for _, p := range legacy.Plists {
@@ -308,7 +354,7 @@ func retireLaunchAgentsStep(r Runner, opts Options, ds []daemon, bk *backupSessi
 				}
 			}
 			if len(remove) == 0 && !legacy.empty() {
-				fmt.Fprintf(out, "        the worker LaunchDaemon is not loaded yet; the superseded files stay until it is (re-run `grove install --role worker`)\n")
+				fmt.Fprintf(out, "        the worker job is not loaded yet; the superseded files stay until it is (re-run `grove install --role worker`)\n")
 			}
 			for _, p := range remove {
 				if err := bk.save(p); err != nil {

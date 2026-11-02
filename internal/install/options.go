@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gm2211/grove/internal/config"
@@ -55,6 +56,14 @@ type Options struct {
 	// network: isolated run on, plus the one-time step that lets it become root. Off by default,
 	// so a Mac that never runs an isolated pool doesn't get a root-capable binary.
 	Softnet bool
+
+	// Rootless installs the worker with no root at all: per-user LaunchAgents instead of
+	// LaunchDaemons, a keep-awake agent instead of pmset, no VM firewall (rootless.go). Set by
+	// --rootless, by config.yaml's worker.rootless, or by AutoRootless when the user has no sudo.
+	Rootless bool
+	// NoAutoRootless keeps the root-based install even for a user who isn't an admin
+	// (--rootless=false), and ends a rootless install recorded in config.yaml.
+	NoAutoRootless bool
 
 	// Hostname names this machine to grove: the worker's Orchard name (`grove install --name`).
 	// Empty means the worker name already installed on this Mac, else os.Hostname().
@@ -247,4 +256,19 @@ func (o Options) LogDir() string {
 // SystemdUserDir is where Linux --user units are rendered.
 func (o Options) SystemdUserDir() string {
 	return filepath.Join(o.homeDir(), ".config", "systemd", "user")
+}
+
+// userIsAdmin reports whether the user running this process is in macOS's admin group, i.e. can
+// use sudo.
+func userIsAdmin(ctx context.Context, r Runner) bool {
+	stdout, _, err := r.Run(ctx, "/usr/bin/id", "-Gn")
+	if err != nil {
+		return false
+	}
+	for _, g := range strings.Fields(stdout) {
+		if g == "admin" {
+			return true
+		}
+	}
+	return false
 }

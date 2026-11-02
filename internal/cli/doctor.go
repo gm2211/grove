@@ -46,6 +46,9 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	allOK := true
 	for _, r := range results {
 		mark := "✓" // ✓
+		if r.OK && r.Warn {
+			mark = "!"
+		}
 		if !r.OK {
 			mark = "✗" // ✗
 			allOK = false

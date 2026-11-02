@@ -166,7 +166,7 @@ func renameWorkerStep(r Runner, opts Options, id workerIdentity, ds []daemon, bk
 			id.Name, id.Labels, pendingNames(pending)),
 		Check: func(context.Context) (bool, error) { return len(pending) == 0, nil },
 		Apply: func(ctx context.Context) error {
-			if !daemonLoaded(ctx, r, ds[0]) {
+			if !unitLoaded(ctx, r, opts, ds[0]) {
 				fmt.Fprintf(out, "        the renamed worker is not loaded yet; fleet.yaml and the old worker record %s are updated once it is (re-run `grove install --role worker`)\n", pendingNames(pending))
 				return nil
 			}

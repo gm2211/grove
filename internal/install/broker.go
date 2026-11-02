@@ -38,11 +38,16 @@ func groveExecutable(opts Options) string {
 
 // brokerDaemonPlist renders the LaunchDaemon, run as the worker user, that supervises `grove broker`.
 func brokerDaemonPlist(opts Options, groveBin string) (string, error) {
+	return daemonPlist(opts, brokerJobSpec(opts, groveBin))
+}
+
+// brokerJobSpec is the credential broker's launchd job (a LaunchDaemon or, rootless, a LaunchAgent).
+func brokerJobSpec(opts Options, groveBin string) LaunchAgentSpec {
 	args := []string{"broker"}
 	if opts.ServerURL != "" {
 		args = append(args, "--server", opts.ServerURL)
 	}
-	return daemonPlist(opts, LaunchAgentSpec{
+	return LaunchAgentSpec{
 		Label:      brokerLabel,
 		Program:    groveBin,
 		Args:       args,
@@ -51,7 +56,7 @@ func brokerDaemonPlist(opts Options, groveBin string) (string, error) {
 		RunAtLoad:  true,
 		StdoutPath: filepath.Join(opts.LogDir(), "broker.log"),
 		StderrPath: filepath.Join(opts.LogDir(), "broker.err.log"),
-	})
+	}
 }
 
 // brokerSteps install a worker's credential broker: its credential in a 0600 file, when setup
@@ -60,7 +65,7 @@ func brokerDaemonPlist(opts Options, groveBin string) (string, error) {
 // VMs get its CA and plain tunnels) and says in its log, and in `grove doctor`, that it can't sync.
 func brokerSteps(r Runner, opts Options, d daemon) []Step {
 	path := credentialPath(opts, brokerCredentialName)
-	return []Step{
+	steps := []Step{
 		{
 			Name:        "broker-credential",
 			Description: fmt.Sprintf("Store the broker's credential (broker scope only) in %s (0600, this user's); it never appears in process arguments or launchd plists. A re-run without one keeps it, moving it out of the login Keychain if that is where an older grove put it.", path),
@@ -95,8 +100,11 @@ func brokerSteps(r Runner, opts Options, d daemon) []Step {
 				return nil
 			},
 		},
-		daemonStageStep(opts, d),
 	}
+	if opts.Rootless {
+		return steps // the worker-agents step writes the LaunchAgent itself; nothing is staged
+	}
+	return append(steps, daemonStageStep(opts, d))
 }
 
 // keychainBrokerToken reads the broker credential an older grove stored in the login Keychain.
@@ -126,6 +134,9 @@ func checkBroker(ctx context.Context, r Runner, opts Options) CheckResult {
 	setup := "run `grove setup` on this Mac"
 	d := workerDaemons(opts)[1]
 	_, installed := daemonPaths(opts, d.Label)
+	if opts.Rootless {
+		installed = agentPlistPath(opts, d.Label)
+	}
 	if _, err := os.Stat(installed); err != nil {
 		if _, agentErr := os.Stat(legacyAgentPlist(opts, d.Label)); agentErr == nil {
 			return CheckResult{Name: name, OK: false, Detail: "still a LaunchAgent, which stops when this user logs out and does not start at boot", Remediation: daemonsRemediation(opts)}
@@ -146,7 +157,12 @@ func checkBroker(ctx context.Context, r Runner, opts Options) CheckResult {
 			return CheckResult{Name: name, OK: false, Detail: err.Error(), Remediation: setup}
 		}
 	}
-	if !daemonLoaded(ctx, r, d) {
+	if opts.Rootless {
+		stdout, loaded := agentPrint(ctx, r, opts, d.Label)
+		if !loaded || !strings.Contains(stdout, d.Program) {
+			return CheckResult{Name: name, OK: false, Detail: brokerLabel + " is not loaded in " + agentDomain(opts) + " (the user must be logged in at the Mac)", Remediation: setup}
+		}
+	} else if !daemonLoaded(ctx, r, d) {
 		return CheckResult{Name: name, OK: false, Detail: brokerLabel + " is not loaded in the system domain", Remediation: daemonsRemediation(opts)}
 	}
 	gw, err := VMNetGateway(ctx, r)

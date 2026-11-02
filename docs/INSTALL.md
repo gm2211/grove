@@ -188,6 +188,43 @@ admin, so a dedicated standard user keeps the worker and its jobs apart from the
    once from a login session of that user if you also want to use `grove ui` or dispatch jobs as
    it.
 
+#### A worker with no root (`--rootless`)
+
+If the worker's user has no sudo and no admin is at hand, install it rootless: the worker installs
+and runs entirely as that unprivileged user, and there is no block for an admin to paste. Run, as
+that user (for example `argos`, logged in at the Mac or over ssh):
+
+```bash
+grove setup --rootless --server http://<control-plane>:6130    # or: grove install --role worker --rootless ...
+```
+
+It is chosen automatically when the user running the install is not an admin (and the worker is
+not already installed as LaunchDaemons); the install then prints what it gives up. `--rootless`
+asks for it explicitly, and `worker.rootless: true` in `config.yaml`, which the install writes, keeps
+re-runs rootless. `--rootless=false` keeps the root-based install, and clears that setting.
+
+| Root-based install | Rootless install |
+|---|---|
+| `worker-daemons`: worker and broker LaunchDaemons with `UserName` | `worker-agents`: the same two jobs (same program, wrapper, arguments, KeepAlive + RunAtLoad, log paths) as LaunchAgents in `~/Library/LaunchAgents`, loaded with `launchctl bootout` then `launchctl bootstrap gui/<uid>`. An agent already there under the same label, of an older shape, is replaced in place (backed up first); an agent already right is left running. The step fails unless both jobs are running afterwards |
+| `disable-sleep`: `pmset -a disablesleep 1` | `keep-awake`: a `com.grove.keepawake` LaunchAgent running `/usr/bin/caffeinate -ims` (KeepAlive). An existing caffeinate LaunchAgent of the user's (any label, loaded, running `caffeinate` with `-i`, `-s` or `-d`) counts as done, so a Mac that already has one gets no duplicate |
+| `host-firewall`: the `com.grove.pf-vm` pf anchor | skipped (`[skip]`): pf needs root, so **VMs on this Mac are not fenced off the host's other ports and your LAN**. `grove doctor` shows it as a warning, not a failure |
+| `softnet-root` (with `--softnet`) | skipped: Softnet can't be made setuid root, so `network: isolated` pools can't run on this Mac |
+| the root script, one `sudo` | none: no sudo, no block, exit status 0 when everything succeeded |
+
+`retire-launchagents` still removes the pieces of an earlier install (`run-worker.sh`,
+`worker-bootstrap`, extra plists) once the new agent runs, but never the agents this mode installed.
+`grove doctor` checks `worker-agent` and `keep-awake` instead of `worker-daemon`. Every plist uses
+absolute program paths, because launchd starts jobs with a minimal `PATH`.
+
+**The trade-off: a LaunchAgent only runs while its user has a GUI login session.** A LaunchDaemon
+needed nobody logged in; a rootless worker does not start at boot until its user has logged in at the
+Mac, and stops when that user logs out. So the Mac needs that user logged in: turn on automatic login
+for it (System Settings -> Users & Groups -> Automatically log in as), or, with FileVault on (which
+disables automatic login), unlock the disk and log in once after each reboot. Switch back to
+LaunchDaemons any time: re-run the install as the user with `--rootless=false` and run the block it
+prints; the root script boots the agents out. Other accounts' superseded worker stacks are not this
+user's to remove: the doctor reports them (`worker-shape`).
+
 #### Registry access for private worker images
 
 grove's own worker images (`ghcr.io/gm2211/grove-{linux,macos}-worker:latest`) are pushed to GHCR,
@@ -304,6 +341,7 @@ manually provisioned environments.
 | `--softnet` | also install Softnet and add its one-time root step (worker role; only for Macs that run `network: isolated` pools, see [OPERATIONS.md](OPERATIONS.md#isolating-a-pools-network)) |
 | `--yes` | run the root steps through sudo without asking (needs a terminal, or cached sudo credentials); as root, apply them directly |
 | `--no-sudo` | never run sudo; print the root steps as one block for an admin |
+| `--rootless` | install the worker with no root at all: per-user LaunchAgents, a caffeinate keep-awake agent, no VM firewall (worker role; chosen automatically for a user who isn't an admin; `--rootless=false` keeps the root-based install; see [A worker with no root](#a-worker-with-no-root---rootless)) |
 | `--dry-run` | print the whole plan, change nothing |
 
 Always safe to preview first:

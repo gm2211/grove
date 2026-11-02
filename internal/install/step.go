@@ -28,6 +28,10 @@ type Step struct {
 	Check func(ctx context.Context) (bool, error)
 	// Apply performs the step. Only called when Check returned false and (dry-run is off).
 	Apply func(ctx context.Context) error
+	// SkipReason, when set, marks a step this install can't do at all (a root-only protection in a
+	// rootless install, say). RunPlan prints it as [skip] with this text, which says what is lost,
+	// and runs neither Check nor Apply.
+	SkipReason string
 }
 
 // StepResult records what happened when a Step was planned/run.
@@ -37,7 +41,10 @@ type StepResult struct {
 	Needed  bool // Check() returned false, i.e. Apply would do something
 	Applied bool // Apply was actually invoked
 	Skipped bool // needed but not applied (dry-run, or privileged without --yes/root: left to RunRootSteps)
-	Err     error
+	// Unavailable is the step's SkipReason: it can't be done in this install, so it is neither
+	// needed nor left for anyone to run.
+	Unavailable string
+	Err         error
 }
 
 // PlanOptions controls how RunPlan executes a list of steps.
@@ -62,6 +69,12 @@ func RunPlan(ctx context.Context, steps []Step, opts PlanOptions) ([]StepResult,
 	var firstErr error
 	for _, s := range steps {
 		r := StepResult{Step: s.Name, Desc: s.Description}
+		if s.SkipReason != "" {
+			r.Unavailable = s.SkipReason
+			results = append(results, r)
+			fmt.Fprintf(opts.Out, "[skip]  %-28s %s\n", s.Name, s.SkipReason)
+			continue
+		}
 		ok, err := s.Check(ctx)
 		if err != nil {
 			r.Err = fmt.Errorf("check %s: %w", s.Name, err)

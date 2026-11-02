@@ -59,7 +59,7 @@ func BuildUninstallPlan(r Runner, opts Options, u UninstallOptions) ([]Step, err
 	if u.RestoreSleep {
 		steps = append(steps, restoreSleepStep(r))
 	}
-	steps = append(steps, removeLegacyAgentsStep(r, opts))
+	steps = append(steps, removeLegacyAgentsStep(r, opts), removeKeepAwakeStep(r, opts))
 	cfg := opts.ConfigDir()
 	steps = append(steps,
 		removePathsStep("worker-staged-plists", "the staged LaunchDaemon plists", filepath.Join(cfg, "launchd"), filepath.Join(cfg, "pf")),

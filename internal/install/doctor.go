@@ -49,6 +49,9 @@ type CheckResult struct {
 	OK          bool
 	Detail      string
 	Remediation string // shown only when !OK
+	// Warn marks an OK result that is worth a second look: something this install can't have (a
+	// rootless worker's VM firewall). It never fails the doctor.
+	Warn bool
 }
 
 // RunDoctor runs every check and returns them in table order. cfg may be nil if no config.yaml
@@ -56,6 +59,9 @@ type CheckResult struct {
 // timeout and errors turn into a failed CheckResult rather than propagating.
 func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) []CheckResult {
 	var results []CheckResult
+	if cfg != nil && cfg.Worker.Rootless && !opts.NoAutoRootless {
+		opts.Rootless = true // this worker's jobs are LaunchAgents, not LaunchDaemons
+	}
 
 	results = append(results, checkTailscale(ctx, opts))
 
@@ -92,11 +98,19 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 	}
 	results = append(results, checkTrustedTaps(ctx, r, opts)...)
 	if workerInstalled(opts) && opts.goos() == "darwin" {
-		results = append(results, checkWorkerDaemon(ctx, r, opts))
+		if opts.Rootless {
+			results = append(results, checkWorkerAgent(ctx, r, opts), checkKeepAwake(ctx, r, opts))
+		} else {
+			results = append(results, checkWorkerDaemon(ctx, r, opts))
+		}
 		results = append(results, checkWorkerShape(ctx, opts, cfg))
 		results = append(results, checkHeadlessTart(ctx, r, opts))
 		results = append(results, checkBroker(ctx, r, opts))
-		results = append(results, checkHostFirewall(ctx, r, opts))
+		if opts.Rootless {
+			results = append(results, checkRootlessFirewall())
+		} else {
+			results = append(results, checkHostFirewall(ctx, r, opts))
+		}
 	}
 	if c := checkRegistryLogin(opts, cfg); c != nil {
 		results = append(results, *c)
