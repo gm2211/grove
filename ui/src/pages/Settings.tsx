@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { getServerUrl, getToken, setServerUrl, setToken } from "../lib/settings";
 import { api } from "../api/client";
 import { Button } from "../components/Button";
+import { View, ViewHead } from "../components/Layout";
 import { PrivateRepoSourcing } from "../components/PrivateRepoSourcing";
 
 export function SettingsPage() {
@@ -25,60 +26,83 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="max-w-lg">
-      <h1 className="mb-4 text-lg font-semibold">Settings</h1>
-      <div className="flex flex-col gap-4">
-		{!localBridge && <label className="flex flex-col gap-1 text-xs">
-          <span style={{ color: "var(--fg-faint)" }}>grove server URL</span>
-          <input
-            className="mono rounded border px-2 py-1.5 text-sm"
-            style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder={window.location.origin}
-          />
-		</label>}
-		{!localBridge && <label className="flex flex-col gap-1 text-xs">
-          <span style={{ color: "var(--fg-faint)" }}>API token</span>
-          <input
-            type="password"
-            className="mono rounded border px-2 py-1.5 text-sm"
-            style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
-            value={token}
-            onChange={(e) => setTokenInput(e.target.value)}
-            placeholder="paste the bearer token from `grove config`"
-          />
-		</label>}
-		{localBridge && (
-			<div className="rounded border p-3 text-xs" style={{ borderColor: "var(--border)", color: "var(--fg-muted)" }}>
-				Connected through <code className="mono">grove ui</code>. Device credential stays in macOS Keychain.
-			</div>
-		)}
-        <div className="flex items-center gap-2">
-			{!localBridge && <Button variant="primary" onClick={save}>
-            Save
-			</Button>}
-          <Button onClick={() => test.mutate()} disabled={test.isPending}>
-            {test.isPending ? "Testing…" : "Test connection"}
-          </Button>
-          {saved && <span style={{ color: "var(--status-success)" }}>saved</span>}
-        </div>
-        {test.isSuccess && (
-          <div style={{ color: "var(--status-success)" }} className="text-xs">
-            reachable: {JSON.stringify(test.data)}
+    <View>
+      <ViewHead
+        kicker="Settings · this browser and the control plane"
+        title="Connection and credentials"
+        lede="Where this UI sends its requests, and the one control-plane setting an operator can change from here."
+      />
+      <div className="grid max-w-5xl grid-cols-1 items-start gap-5 lg:grid-cols-2">
+        <section className="panel flex flex-col gap-4 p-5">
+          <span className="kicker" style={{ fontSize: 10 }}>
+            Control plane
+          </span>
+          {!localBridge && (
+            <label className="field">
+              <span className="label">grove server URL</span>
+              <input className="input" value={url} onChange={(e) => setUrl(e.target.value)} placeholder={window.location.origin} />
+            </label>
+          )}
+          {!localBridge && (
+            <label className="field">
+              <span className="label">API token</span>
+              <input
+                type="password"
+                className="input"
+                value={token}
+                onChange={(e) => setTokenInput(e.target.value)}
+                placeholder="paste the bearer token from `grove config`"
+              />
+              <span className="hint">
+                Stored in this browser's localStorage only. Every request sends it as{" "}
+                <code className="mono text-[#c3d1d5]">Authorization: Bearer &lt;token&gt;</code>.
+              </span>
+            </label>
+          )}
+          {localBridge && (
+            <p className="m-0 text-[13px] leading-[1.6] text-[#9fb0b5]">
+              Connected through <code className="mono text-[#c3d1d5]">grove ui</code>. The device credential stays in macOS Keychain.
+            </p>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {!localBridge && (
+              <Button variant="solid" onClick={save}>
+                Save
+              </Button>
+            )}
+            <Button onClick={() => test.mutate()} disabled={test.isPending}>
+              {test.isPending ? "Testing…" : "Test connection"}
+            </Button>
+            {saved && <span className="mono text-[11px] text-[#7ee7c7]">saved</span>}
           </div>
-        )}
-        {test.isError && (
-          <div style={{ color: "var(--status-failed)" }} className="text-xs">
-            {String(test.error)}
-          </div>
-        )}
-		{!localBridge && <p className="text-xs" style={{ color: "var(--fg-faint)" }}>
-          Stored in this browser's localStorage only. Every request sends it as{" "}
-          <code className="mono">Authorization: Bearer &lt;token&gt;</code>.
-		</p>}
+          {test.isSuccess && (
+            <div className="facts">
+              {Object.entries(test.data).map(([k, v]) => (
+                <div key={k} className="fact">
+                  <span className="k">{k}</span>
+                  <span className="v" style={{ color: v === true ? "var(--accent)" : v === false ? "var(--red-text)" : undefined }}>
+                    {String(v)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          {test.isError && <div className="mono text-[11.5px] text-[#eda3a3]">{String(test.error)}</div>}
+          {principal && (
+            <div className="facts">
+              <div className="fact">
+                <span className="k">signed in as</span>
+                <span className="v">{principal.name}</span>
+              </div>
+              <div className="fact">
+                <span className="k">scopes</span>
+                <span className="v">{principal.scopes.join(", ")}</span>
+              </div>
+            </div>
+          )}
+        </section>
         <PrivateRepoSourcing operator={operator} />
       </div>
-    </div>
+    </View>
   );
 }

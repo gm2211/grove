@@ -1,31 +1,54 @@
 import { useEffect, useRef, useState } from "react";
 import { streamJobLogs, type LogLine } from "../api/client";
-import { Button } from "./Button";
+import { isTerminal } from "../lib/fleetModel";
 
-const TERMINAL_STATUSES = ["success", "failed", "canceled", "lost"];
-
-export function LogViewer({ jobId, follow, jobStatus }: { jobId: string; follow: boolean; jobStatus: string }) {
+/** Streams a job's log while `enabled`, reconnecting until the job is terminal. */
+export function useJobLog(jobId: string, jobStatus: string, enabled = true) {
   const [lines, setLines] = useState<LogLine[]>([]);
-  const [paused, setPaused] = useState(false);
   const [connected, setConnected] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const pausedRef = useRef(paused);
-  pausedRef.current = paused;
   const statusRef = useRef(jobStatus);
   statusRef.current = jobStatus;
 
   useEffect(() => {
     setLines([]);
     setConnected(false);
-    if (!follow) return;
-    const stop = streamJobLogs(jobId, {
+    if (!enabled) return;
+    return streamJobLogs(jobId, {
       onOpen: () => setConnected(true),
       onError: () => setConnected(false),
       onLine: (entry) => setLines((prev) => [...prev, entry]),
-      isTerminal: () => TERMINAL_STATUSES.includes(statusRef.current),
+      isTerminal: () => isTerminal(statusRef.current),
     });
-    return stop;
-  }, [jobId, follow]);
+  }, [jobId, enabled]);
+
+  return { lines, connected };
+}
+
+function clock(ts: string): string {
+  const d = new Date(ts);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString([], { hour12: false });
+}
+
+export function LogLines({ lines, empty = "no output yet" }: { lines: LogLine[]; empty?: string }) {
+  if (lines.length === 0) {
+    return <div className="mono px-3 py-2 text-[11px] italic text-[#46545a]">{empty}</div>;
+  }
+  return (
+    <>
+      {lines.map((entry, i) => (
+        <div key={i} className={`logline ${entry.stream === "stderr" ? "err" : ""}`}>
+          <span className="t">{clock(entry.ts)}</span>
+          <span className="msg">{entry.line}</span>
+        </div>
+      ))}
+    </>
+  );
+}
+
+export function LogViewer({ jobId, follow, jobStatus }: { jobId: string; follow: boolean; jobStatus: string }) {
+  const { lines, connected } = useJobLog(jobId, jobStatus, follow);
+  const [paused, setPaused] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (paused) return;
@@ -37,40 +60,24 @@ export function LogViewer({ jobId, follow, jobStatus }: { jobId: string; follow:
     ? connected
       ? "streaming"
       : jobStatus === "pending"
-        ? "waiting for allocation…"
-        : "connecting…"
+        ? "waiting for a slot"
+        : "connecting"
     : "not following";
 
   return (
-    <div
-      className="flex flex-col overflow-hidden rounded-lg border"
-      style={{ borderColor: "var(--border)", background: "var(--bg-inset)" }}
-    >
-      <div
-        className="flex items-center justify-between border-b px-3 py-1.5 text-xs"
-        style={{ borderColor: "var(--border)", color: "var(--fg-muted)" }}
-      >
-        <span>
-          {statusLabel} · {lines.length} lines
+    <div className="logpane min-h-0 flex-1">
+      <div className="logpane-head">
+        <span className={`dot ${connected ? "live" : ""}`} style={{ background: connected ? "var(--accent)" : "var(--grey)" }} />
+        <span className="kicker" style={{ fontSize: 10 }}>
+          {statusLabel}
         </span>
-        <Button onClick={() => setPaused((p) => !p)}>{paused ? "Resume autoscroll" : "Pause autoscroll"}</Button>
+        <span className="mono text-[10.5px] text-[#46545a]">{lines.length} lines</span>
+        <button className="act sm ml-auto" onClick={() => setPaused((p) => !p)}>
+          {paused ? "resume autoscroll" : "pause autoscroll"}
+        </button>
       </div>
-      <div ref={containerRef} className="mono h-96 overflow-auto px-3 py-2 text-xs leading-relaxed">
-        {lines.length === 0 && (
-          <div className="italic" style={{ color: "var(--fg-faint)" }}>
-            no output yet
-          </div>
-        )}
-        {lines.map((entry, i) => (
-          <div
-            key={i}
-            className="whitespace-pre-wrap"
-            style={entry.stream === "stderr" ? { color: "var(--status-lost)" } : undefined}
-          >
-            {entry.stream === "stderr" && <span style={{ opacity: 0.7 }}>[stderr] </span>}
-            {entry.line}
-          </div>
-        ))}
+      <div ref={containerRef} className="h-[420px] overflow-auto py-2 xl:h-auto xl:min-h-[420px] xl:flex-1">
+        <LogLines lines={lines} />
       </div>
     </div>
   );

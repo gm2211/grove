@@ -13,7 +13,7 @@ import { formatDurationMs } from "../lib/format";
  * screen next to the name and tailnet address it belongs to, so approving is one click from
  * whatever device is showing the UI.
  *
- * It renders nothing at all when nobody is waiting: this is the Fleet page's normal state, and a
+ * It renders nothing at all when nobody is waiting: this is the Map's normal state, and a
  * permanent empty "no pending requests" box would be a box that is almost always wrong to show.
  */
 export function PendingJoins() {
@@ -36,32 +36,30 @@ export function PendingJoins() {
   if (!data || data.length === 0) return null;
 
   return (
-    <section
-      className="rounded border p-3"
-      style={{ borderColor: "var(--status-lost)", background: "var(--bg-elevated)" }}
-    >
-      <div className="flex items-baseline justify-between gap-3">
-        <h2 className="text-sm font-semibold">
+    <section className="needs-you flex flex-col gap-2 px-4 py-3">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <span className="kicker" style={{ color: "var(--amber)", fontSize: 10 }}>
+          needs you
+        </span>
+        <h2 className="m-0 text-[13.5px] font-medium text-[#eaf4f4]">
           {data.length === 1 ? "A Mac is waiting to join" : `${data.length} Macs are waiting to join`}
         </h2>
-        <span className="text-xs" style={{ color: "var(--fg-muted)" }}>
-          Approving mints its worker and device credentials.
-        </span>
+        <span className="ml-auto text-[12px] text-[#8c9a9e]">Approving mints its worker and device credentials.</span>
       </div>
 
-      <ul className="mt-2 flex flex-col gap-1.5">
+      <ul className="m-0 flex list-none flex-col p-0">
         {data.map((join) => {
           const expiresInMs = new Date(join.expiresAt).getTime() - Date.now();
           return (
-            <li key={join.code} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-              <span className="font-medium">{join.name}</span>
-              <span className="mono text-xs" style={{ color: "var(--fg-muted)" }}>
-                {join.tailnetIp}
-              </span>
-              <span className="mono text-xs tracking-wider">{join.code}</span>
-              <span className="text-xs" style={{ color: "var(--fg-faint)" }}>
-                expires in {formatDurationMs(expiresInMs)}
-              </span>
+            <li
+              key={join.code}
+              className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t py-2 first:border-t-0"
+              style={{ borderColor: "#2a2416" }}
+            >
+              <span className="mono text-[12.5px] text-[#eaf4f4]">{join.name}</span>
+              <span className="mono text-[11.5px] text-[#8c9a9e]">{join.tailnetIp}</span>
+              <span className="mono text-[12px] tracking-[0.18em] text-[#e6c580]">{join.code}</span>
+              <span className="mono text-[11px] text-[#68767b]">expires in {formatDurationMs(expiresInMs)}</span>
               <Button
                 variant="primary"
                 size="sm"
@@ -77,7 +75,7 @@ export function PendingJoins() {
       </ul>
 
       {approve.error ? (
-        <p className="mt-2 text-xs" style={{ color: "var(--status-failed)" }}>
+        <p className="m-0 text-xs" style={{ color: "var(--red-text)" }}>
           Could not approve: {String(approve.error)}
         </p>
       ) : null}
