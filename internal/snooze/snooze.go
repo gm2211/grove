@@ -111,6 +111,8 @@ type Store struct {
 	path     string
 	readOnly bool
 	state    state
+	ended    map[string]time.Time // see EndedAt
+	locks    workerLocks          // see Lock
 }
 
 // NewStore opens (creating when absent) the store at path. It refuses a symlink.
@@ -274,9 +276,18 @@ func (s *Store) SetSnooze(worker string, sn Snooze) error {
 	return s.mutate(worker, func(e *Entry) { e.Snooze = &sn })
 }
 
-// ClearSnooze drops worker's snooze reason only.
+// ClearSnooze drops worker's snooze reason only, and records when (EndedAt).
 func (s *Store) ClearSnooze(worker string) error {
-	return s.mutate(worker, func(e *Entry) { e.Snooze = nil })
+	if err := s.mutate(worker, func(e *Entry) { e.Snooze = nil }); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ended == nil {
+		s.ended = map[string]time.Time{}
+	}
+	s.ended[worker] = time.Now()
+	return nil
 }
 
 // SetHealth records grove's own health pause.
@@ -346,6 +357,7 @@ type Pauser interface {
 // Engage records sn for worker and pauses it in Orchard. A pause already in Orchard with no
 // recorded reason is first recorded as the external operator reason, so the snooze never resumes it.
 func Engage(ctx context.Context, p Pauser, st *Store, worker string, sn Snooze, now time.Time) error {
+	defer st.Lock(worker)()
 	workers, err := p.ListWorkers(ctx)
 	if err != nil {
 		return err
@@ -374,19 +386,27 @@ func Engage(ctx context.Context, p Pauser, st *Store, worker string, sn Snooze, 
 }
 
 // Wake ends worker's snooze and resumes it when no other reason remains. It returns the reasons
-// that keep it paused.
+// that keep it paused. It resumes BEFORE it clears the snooze: a resume that fails leaves the
+// snooze recorded (and the error to retry), never a pause with no reason that nothing would end.
 func Wake(ctx context.Context, p Pauser, st *Store, worker string, now time.Time) (resumed bool, still []string, err error) {
+	defer st.Lock(worker)()
+	still = otherReasons(st, worker, now)
+	if len(still) == 0 {
+		if err := p.ResumeWorker(ctx, worker); err != nil {
+			return false, nil, err
+		}
+	}
 	if err := st.ClearSnooze(worker); err != nil {
 		return false, nil, err
 	}
-	still = st.Reasons(worker, now)
-	if len(still) > 0 {
-		return false, still, nil
-	}
-	if err := p.ResumeWorker(ctx, worker); err != nil {
-		return false, nil, err
-	}
-	return true, nil, nil
+	return len(still) == 0, still, nil
+}
+
+// otherReasons is worker's pause reasons other than its snooze.
+func otherReasons(st *Store, worker string, now time.Time) []string {
+	e := st.Get(worker)
+	e.Snooze = nil
+	return e.Reasons(now)
 }
 
 // Expirer ends lapsed snoozes and keeps Orchard's pause bit matching the recorded reasons.
@@ -411,6 +431,15 @@ func (e *Expirer) Tick(ctx context.Context) error {
 	if len(entries) == 0 {
 		return nil
 	}
+	names := make([]string, 0, len(entries))
+	for n := range entries {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	// The whole pass holds these workers' locks: what it read from Orchard and the store stays
+	// true until it has acted on it.
+	defer e.Store.lockAll(names)()
+	entries = e.Store.List()
 	workers, err := e.Orchard.ListWorkers(ctx)
 	if err != nil {
 		return err
@@ -419,26 +448,30 @@ func (e *Expirer) Tick(ctx context.Context) error {
 	for _, w := range workers {
 		byName[w.Name] = w
 	}
-	names := make([]string, 0, len(entries))
-	for n := range entries {
-		names = append(names, n)
-	}
-	sort.Strings(names)
 	var errs []error
 	for _, name := range names {
-		entry := entries[name]
+		entry, ok := entries[name]
+		if !ok {
+			continue
+		}
 		w, known := byName[name]
 		if entry.Snooze != nil && !entry.Active(now) {
-			if err := e.Store.ClearSnooze(name); err != nil {
-				errs = append(errs, err)
-				continue
-			}
-			if len(e.Store.Reasons(name, now)) == 0 {
+			// Resume first, then clear: a failed resume keeps the lapsed snooze, so the next pass
+			// tries again instead of leaving a pause with no reason.
+			if len(otherReasons(e.Store, name, now)) == 0 {
 				if known && w.SchedulingPaused {
 					if err := e.Orchard.ResumeWorker(ctx, name); err != nil {
 						errs = append(errs, fmt.Errorf("resume %s after snooze: %w", name, err))
+						continue
 					}
 				}
+				if err := e.Store.ClearSnooze(name); err != nil {
+					errs = append(errs, err)
+				}
+				continue
+			}
+			if err := e.Store.ClearSnooze(name); err != nil {
+				errs = append(errs, err)
 				continue
 			}
 		}

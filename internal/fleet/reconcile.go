@@ -136,6 +136,9 @@ type Plan struct {
 	// Such a pool is not in Unmatched: capacity exists and may come back (a snooze ends), so the
 	// job service can queue its jobs instead of failing them.
 	PausedOnly []PlannedPause
+	// ListedAt is when Plan started listing Orchard's workers: the pause bits above are no newer.
+	// PoolHealth compares it with when a snooze ended (snooze.Store.EndedAt).
+	ListedAt time.Time
 }
 
 // PlannedPause is the paused workers that match one pool's selector.
@@ -165,6 +168,7 @@ func (p Plan) BlockedError() error {
 
 // Plan lists workers and VMs and computes the creates/deletes needed to match r.Spec.
 func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
+	listedAt := time.Now()
 	workers, err := r.Client.ListWorkers(ctx)
 	if err != nil {
 		return Plan{}, fmt.Errorf("list workers: %w", err)
@@ -175,7 +179,7 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 		return Plan{}, fmt.Errorf("list vms: %w", err)
 	}
 
-	var plan Plan
+	plan := Plan{ListedAt: listedAt}
 
 	desired := make(map[string]bool)
 	blocked := make(map[string]string)
