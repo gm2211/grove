@@ -4,6 +4,12 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **An enrolment counts only once the VM confirms it.** An Orchard exec whose stream closed without
+  an exit status read as exit 0, and Enrol took any exit 0 as done, then left the VM alone for up
+  to 30 minutes while it still waited for its certificate. Exec now reports a missing exit status
+  as an error, Enrol also requires the guest script's `grove: enrolled` line, and serve logs each
+  VM it enrols.
+
 ## v0.1.27
 
 - **`grove doctor` warns when the worker user has no login session (`login-session`).** A macOS VM

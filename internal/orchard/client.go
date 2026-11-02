@@ -387,6 +387,10 @@ type execSession struct {
 	exitErr  error
 }
 
+// ErrExecNoExitStatus is what Wait reports when the exec stream ended without saying how the
+// command exited: success can't be assumed from a stream that just closed.
+var ErrExecNoExitStatus = errors.New("exec ended without an exit status")
+
 func newExecSession(ctx context.Context, conn *websocket.Conn, stdin io.Reader, stderr io.Writer) *execSession {
 	pr, pw := io.Pipe()
 
@@ -432,7 +436,7 @@ func (s *execSession) readLoop(ctx context.Context) {
 		if err != nil {
 			var closeErr websocket.CloseError
 			if errors.As(err, &closeErr) && closeErr.Code == websocket.StatusNormalClosure {
-				err = nil
+				err = ErrExecNoExitStatus
 			}
 
 			s.exitErr = err
@@ -465,9 +469,13 @@ func (s *execSession) readLoop(ctx context.Context) {
 				return
 			}
 		case execFrameExit:
-			if frame.Exit != nil {
-				s.exitCode = int(frame.Exit.Code)
+			if frame.Exit == nil {
+				s.exitErr = ErrExecNoExitStatus
+				_ = s.pw.CloseWithError(s.exitErr)
+
+				return
 			}
+			s.exitCode = int(frame.Exit.Code)
 
 			_ = s.pw.Close()
 

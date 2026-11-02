@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -163,5 +164,28 @@ func TestExecSession_CombinedOutputByDefault(t *testing.T) {
 	}
 	if string(out) != "out\nerr\n" {
 		t.Fatalf("output = %q", out)
+	}
+}
+
+func TestExecSession_StreamClosedWithoutExitIsNotSuccess(t *testing.T) {
+	for name, reply := range map[string][]execFrame{
+		"no exit frame":     {{Type: execFrameStdout, Data: []byte("partial\n")}},
+		"exit with no code": {{Type: execFrameExit}},
+	} {
+		fake := &fakeExecServer{reply: reply}
+		srv := httptest.NewServer(fake.handler(t))
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		session := newExecSession(ctx, dialExec(t, srv), strings.NewReader(""), nil)
+
+		_, readErr := io.ReadAll(session.Output())
+		code, err := session.Wait(ctx)
+		if !errors.Is(err, ErrExecNoExitStatus) || !errors.Is(readErr, ErrExecNoExitStatus) {
+			t.Errorf("%s: Wait = %d, %v (output: %v); want ErrExecNoExitStatus, never a bare 0", name, code, err, readErr)
+		}
+
+		_ = session.Close()
+		cancel()
+		srv.Close()
 	}
 }
