@@ -108,7 +108,8 @@ grove setup
 - Grove installs Orchard as `~/Applications/Grove Orchard Worker.app` and gives it a stable bundle
   identity. The worker and the credential broker run as **LaunchDaemons with `UserName` set to the
   user that ran the install** (`com.grove.orchard-worker`, `com.grove.broker`), so they start at
-  boot and serve jobs with nobody logged in, and they and the VMs they boot are that user's
+  boot and serve Linux-VM jobs with nobody logged in (macOS VMs also need that user's login
+  session, see below), and they and the VMs they boot are that user's
   processes, never root's. The install stages their plists under `~/.config/grove/launchd/`;
   installing them into `/Library/LaunchDaemons` takes root, so it is the `worker-daemons` root step
   (below). Run the install as an ordinary user: it refuses root, because
@@ -145,6 +146,8 @@ user's unlocked login keychain can use. Without one, every macOS VM fails with `
 virtual machine encountered a security error … Failed to get current host key"`. On a Mac someone
 else uses, log the worker user in once with fast user switching and leave the session running (or
 give it auto-login on a dedicated Mac). `grove doctor` warns under `login-session` when it is missing.
+grove recognises this failure and retries such a VM once an hour instead of every 10 minutes, and
+`grove status` and doctor's `vm-boot-loops` list it as "needs login".
 
 1. Create the user (System Settings -> Users & Groups -> **Standard**, or `sysadminctl`), once.
    Tailscale must be usable by it. Homebrew need not be: if it belongs to another user, `grove
