@@ -371,7 +371,10 @@ func Engage(ctx context.Context, p Pauser, st *Store, worker string, sn Snooze, 
 	if w == nil {
 		return fmt.Errorf("%w %q", ErrUnknownWorker, worker)
 	}
-	if w.SchedulingPaused && len(st.Reasons(worker, now)) == 0 {
+	// A snooze that lapsed but isn't cleared yet still explains the pause: it is grove's own, and
+	// the Expirer is about to end it. Recording it as external would keep the worker paused after
+	// this new snooze ends (found by replaying spec/quint/snooze.qnt traces, TestSnoozeConformsToModel).
+	if w.SchedulingPaused && len(st.Reasons(worker, now)) == 0 && st.Get(worker).Snooze == nil {
 		if err := st.SetOperator(worker, ExternalBy, now); err != nil {
 			return err
 		}

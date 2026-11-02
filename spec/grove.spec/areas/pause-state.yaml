@@ -9,7 +9,8 @@ behaviors:
     description: A snoozed Mac does no work; while a snooze is active, the worker is paused in Orchard.
     details: >-
       S1. Attacker C (a resume racing a snooze). Failed before v0.1.28: TLC found a counterexample
-      in 8 steps. Exhaustive TLC check in spec/check.sh; Go test TestS1_WritersHoldTheWorkersLock.
+      in 8 steps. Exhaustive TLC check in spec/check.sh; Go test TestS1_WritersHoldTheWorkersLock;
+      TestSnoozeConformsToModel replays 1,000 sampled model traces against the real code.
     tags: [security, s1]
     formal:
       - tool: quint
@@ -34,5 +35,6 @@ behaviors:
       when Orchard refuses one resume.
     details: >-
       L2. Temporal property (eventuallyConsistent in snooze.qnt), checked by TLC in spec/check.sh.
-      Failed before v0.1.28 three ways; Go test TestL2_FailedResumeAfterSnoozeIsRetried.
+      Failed before v0.1.28 three ways; Go tests TestL2_FailedResumeAfterSnoozeIsRetried
+      and TestSnoozeConformsToModel.
     tags: [liveness, l2]

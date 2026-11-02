@@ -41,6 +41,9 @@ check L1  snooze.qnt   snoozeResumeBefore       temporal  eventuallyWorkingAfter
 check L2  snooze.qnt   snoozeAll                temporal  eventuallyConsistent         holds
 check L2  snooze.qnt   snoozeAllBefore          temporal  eventuallyConsistent         fails
 check L2  snooze.qnt   snoozeExpiryFailsBefore  temporal  eventuallyConsistent         fails
+check S1  snooze.qnt   snoozeMBT                invariant snoozedMeansPaused           holds
+check L2  snooze.qnt   snoozeMBT                temporal  eventuallyConsistent         holds
+check L2  snooze.qnt   snoozeMBTFresh           temporal  eventuallyConsistent         holds
 check L3  dispatch.qnt dispatchFixed            temporal  terminates                   holds
 check L4  dispatch.qnt dispatchFixed            invariant neverFailedForSnooze         holds
 check L4  dispatch.qnt dispatchFixed            invariant neverLost                    holds
@@ -78,7 +81,34 @@ row S5-9 lean "Grove.Auth/ArtifactPath/Broker" proved "$([ $fail = 0 ] && echo p
 # The Lean transcriptions against the Go code, and L6, L4, S1, L2 against the real packages.
 (cd "$spec/.." && GROVE_SPEC_BIN="$spec/lean/.lake/build/bin/grove-spec" go test -count=1 \
 	-run 'TestSpec_|TestL6_' ./internal/server ./internal/fleet) || fail=1
-(cd "$spec/.." && go test -count=1 -race ./internal/conformance) || fail=1
+# Model-based conformance: sample traces of the fixed snooze model and replay each against the real
+# code (TestSnoozeConformsToModel); then put each old bug back and require that the tests catch it.
+traces=$(mktemp -d)
+(cd "$spec/quint" &&
+	"$QUINT" run snooze.qnt --backend=typescript --main=snoozeMBT --max-samples=500 --max-steps=40 \
+		--n-traces=500 --seed=1 --out-itf="$traces/op_{seq}.itf.json" >/dev/null &&
+	"$QUINT" run snooze.qnt --backend=typescript --main=snoozeMBTFresh --max-samples=500 --max-steps=40 \
+		--n-traces=500 --seed=2 --out-itf="$traces/fresh_{seq}.itf.json" >/dev/null) || fail=1
+n=$(find "$traces" -name '*.itf.json' | wc -l | tr -d ' ')
+row L1-2 snooze.qnt "traces sampled for replay" 1000 "$n"
+[ "$n" = 1000 ] || fail=1
+(cd "$spec/.." && GROVE_SNOOZE_TRACES="$traces" go test -count=1 -race ./internal/conformance) || fail=1
+mut=$(python3 -B "$spec/mutants.py" "$spec/.." "$traces") || fail=1
+echo "$mut"
+killed=$(grep -c '^killed' <<<"$mut" || true)
+total=$(python3 -B -c 'import importlib.util,sys; s=importlib.util.spec_from_file_location("m",sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(len(m.MUTANTS))' "$spec/mutants.py")
+row S1 mutants "old bugs caught by conformance" "$total/$total" "$killed/$total"
+[ "$killed" = "$total" ] || fail=1
+
+# grove.spec: the 20 properties as Specify behaviors. Its formal links (Quint invariants by seeded
+# simulation, Lean theorems) must all pass; temporal properties stay with the TLC rows above.
+if [ -n "${SPECIFY:-}" ]; then
+	out=$(cd "$spec/.." && LEAN_PATH="$spec/lean/.lake/build/lib/lean" "$SPECIFY" formal check \
+		--spec spec/grove.spec --timeout-ms 300000 2>/dev/null) || true
+	got=$(python3 -c 'import json,sys; r=json.load(sys.stdin); n=len(r["results"]); p=sum(x["outcome"]["status"]=="passed" for x in r["results"]); print(f"{p}/{n}" if r["valid"] else f"FAILED {p}/{n}")' <<<"$out" 2>/dev/null || echo error)
+	row S1-9 specify "grove.spec formal check" 18/18 "$got"
+	[ "$got" = 18/18 ] || fail=1
+fi
 
 # grove.spec: the 20 properties as Specify behaviors. Its formal links (Quint invariants by seeded
 # simulation, Lean theorems) must all pass; temporal properties stay with the TLC rows above.

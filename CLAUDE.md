@@ -256,6 +256,9 @@ spec/check.sh     # every model check, proof and query; needs quint, TLA2TOOLS_J
 A change to snooze, dispatch reconcile, attempts, fleet TTL/health, Enrol/RollCall, route scopes,
 artifact paths or the broker's header swap must keep `spec/check.sh` passing; update the model
 when the design changes, and keep each "before" instance failing.
+`TestSnoozeConformsToModel` replays sampled `snoozeMBT` traces against the real snooze, server and
+health code, and `spec/mutants.py` requires each listed old bug to be caught: when you change that
+code, change the model with it, and when you fix a bug a model found, add its mutant.
 
 CI (`.github/workflows/ci.yml`) runs `go build/vet/test` on `ubuntu-latest` and `macos-latest`,
 plus the `ui` build when `ui/package.json` exists. Releases (`.github/workflows/release.yml`) run

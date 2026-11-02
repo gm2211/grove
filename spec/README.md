@@ -48,6 +48,36 @@ malicious or compromised job (**J**), a compromised worker Mac (**W**), a leaked
 | S9 | An artifact path can't leave the job's artifact directory. | C, J | Lean `ArtifactPath.lean` + differential test | Proved. |
 | S10 | Job secrets, the private-repo token, broker credentials and node keys reach only their one allowed destination: never argv, a log, an API response, the job record or a VM spec. | J, C | CodeQL, 4 queries | No flow found. A coverage query finds each secret at its allowed destination, which shows the queries aren't vacuous. |
 
+### How the models are tied to the code
+
+A model proves things about itself. Three kinds of check make the build break when the Go code
+stops doing what the model says:
+
+- **Trace replay (S1, L1, L2).** `spec/check.sh` samples 1,000 random traces of the fixed snooze
+  model (`snoozeMBT`, `snoozeMBTFresh`: every writer, a second snooze request, one failed Orchard
+  resume) with `quint run --out-itf`. `TestSnoozeConformsToModel` replays each against the real
+  code: `snooze.Engage`, `snooze.Wake`, `POST /workers/{name}/pause` and `/resume` on the real
+  HTTP server, `health.Monitor.Tick` and `snooze.Expirer.Tick`, with a fake Orchard. After every
+  request it compares Orchard's pause bit and the recorded reasons with the model's state. The
+  chain is: every writer holds the worker's lock, so requests serialize (`TestS1_WritersHoldTheWorkersLock`,
+  under `-race`); each request does what the model's step does (the replay); and the model has
+  the properties (TLC).
+- **Differential tests (S5-S7, S9).** The Lean decisions run as a binary and are compared with the
+  Go functions on every route pair and on hostile paths.
+- **Scenario tests (L4, L6, S3, L2).** The counterexamples TLC found, replayed against the real
+  packages, plus a 500-fleet property test for convergence.
+
+`spec/mutants.py` then puts each old bug back into a scratch copy, one at a time, and requires a
+conformance test to fail on it. A mutant that survives, or whose code is gone, fails the build.
+Today it holds 6: Engage marking a lapsed snooze's pause external, Wake and the Expirer clearing
+before resuming, resume going through while snoozed, pause skipping the operator reason, and Wake
+without the lock.
+
+The replay found one bug the model checks couldn't, because the Go code and the model disagreed:
+snoozing a Mac again after its snooze lapsed but before the Expirer cleared it recorded the pause
+as external, so the Mac stayed paused after the new snooze ended. `Engage` now treats a recorded
+snooze, lapsed or not, as grove's own pause.
+
 ### What the fixes in this change are
 
 - **Snooze races (S1, L1, L2).** Every writer of a worker's pause state holds that worker's lock
