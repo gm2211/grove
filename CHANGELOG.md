@@ -2,7 +2,7 @@
 
 All notable changes to grove are documented here.
 
-## Unreleased
+## v0.1.32
 
 - **The control plane's own worker gets a broker credential.** Workers elsewhere get one from join
   approval, but the control plane's worker is installed with `grove install --role worker` and
