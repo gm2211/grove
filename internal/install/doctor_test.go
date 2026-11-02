@@ -539,3 +539,12 @@ func TestRunDoctor_OrchardAndNomadOnlyRequiredOnTheControlPlane(t *testing.T) {
 		}
 	}
 }
+
+func TestBootLoopsResult_LoginSessionFailureWarns(t *testing.T) {
+	r := bootLoopsResult(context.Background(), fakeVMLister{vms: []orchard.VM{
+		{Name: "macos-a-0", Worker: "a", Status: "failed", StatusMessage: "Failed to get current host key"},
+	}})
+	if !r.OK || !r.Warn || !strings.Contains(r.Detail, "the worker user on a has no login session") {
+		t.Errorf("login-session failure: %+v", r)
+	}
+}
