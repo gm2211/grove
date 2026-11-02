@@ -4,7 +4,7 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
-## v0.1.26
+## v0.1.27
 
 - **`grove doctor` warns when the worker user has no login session (`login-session`).** A macOS VM
   can't boot without one: Virtualization.framework's Secure Enclave host key needs the user's
@@ -12,6 +12,8 @@ All notable changes to grove are documented here.
   `VZErrorDomain -9 "… Failed to get current host key"` and was recreated every 10 minutes. Linux
   VMs are unaffected, so it is a warning. docs/INSTALL.md says how to keep the session (fast user
   switching or auto-login).
+
+## v0.1.26
 
 - **`grove doctor` on a worker or client no longer fails on checks that only matter on the control
   plane.** `orchard-controller` and `nomad` pass as "not used here" when config.yaml has no endpoint
