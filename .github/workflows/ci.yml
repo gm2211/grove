@@ -69,7 +69,7 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install Quint, TLC, Lean and CodeQL
+      - name: Install Quint, TLC, Lean, CodeQL and Specify
         run: |
           npm install --global @informalsystems/quint@0.33.1
           curl -fsSL -o "$RUNNER_TEMP/tla2tools.jar" https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
@@ -83,6 +83,10 @@ jobs:
           echo "64518dc413c8e7b5733fee2489e830a899bb1e3f28c8873b5869d5cc90164c5c  $RUNNER_TEMP/codeql.tar.gz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/codeql.tar.gz" -C "$RUNNER_TEMP"
           echo "CODEQL=$RUNNER_TEMP/codeql/codeql" >> "$GITHUB_ENV"
+          git init -q "$RUNNER_TEMP/specify" && git -C "$RUNNER_TEMP/specify" fetch -q --depth 1 https://github.com/gm2211/specify d5e1894cf5b8772011bf961a0cfb6ba538279a54
+          git -C "$RUNNER_TEMP/specify" checkout -q FETCH_HEAD
+          (cd "$RUNNER_TEMP/specify" && npm ci --silent && npm run -s build)
+          echo "SPECIFY=$RUNNER_TEMP/specify/specify" >> "$GITHUB_ENV"
 
       - run: spec/check.sh
 

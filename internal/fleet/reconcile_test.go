@@ -813,3 +813,73 @@ func TestResolveNomadRPCAddress(t *testing.T) {
 		t.Errorf("IPv6-only host = %q", got)
 	}
 }
+
+// A macOS VM that failed because the worker user has no login session (issue #132) fails the same
+// way on every rebuild, so it is retried hourly, not every FailedVMRetry.
+func TestPlan_FailedVM_NeedsLoginSession_RetriedHourly(t *testing.T) {
+	pool := basePool()
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	r := &Reconciler{Spec: &Spec{Pools: []Pool{pool}}, Options: Options{Now: func() time.Time { return now }}}
+	name := VMName(pool.Name, "mac1", 0)
+	failed := existingFrom(r.vmSpec(pool, "mac1", name))
+	failed.Status = "failed"
+	failed.StatusMessage = `Error Domain=VZErrorDomain Code=-9 "The virtual machine encountered a security error." UserInfo={NSDebugDescription=Failed to get current host key}`
+	failed.CPU, failed.Memory = 0, 0
+	client := &fakeOrchardClient{workers: []orchard.Worker{onlineWorker("mac1")}, vms: []orchard.VM{failed}}
+	r.Client = client
+
+	failed.CreatedAt = now.Add(-(FailedVMRetry + time.Minute))
+	client.vms[0] = failed
+	plan, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Empty() {
+		t.Fatalf("a login-session failure must not be rebuilt every %s, got %+v", FailedVMRetry, plan)
+	}
+
+	failed.CreatedAt = now.Add(-LoginSessionRetry)
+	client.vms[0] = failed
+	plan, err = r.Plan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Deletes) != 1 || len(plan.Creates) != 1 {
+		t.Fatalf("want one rebuild after %s, got %+v", LoginSessionRetry, plan)
+	}
+	if !strings.Contains(plan.Deletes[0].Reason, "the worker user on mac1 has no login session") {
+		t.Errorf("delete reason = %q, want the login hint", plan.Deletes[0].Reason)
+	}
+}
+
+func TestNeedsLoginSession(t *testing.T) {
+	for msg, want := range map[string]bool{
+		"Failed to get current host key":                                true,
+		`The virtual machine encountered a security error.`:             true,
+		"SecKeyCreateRandomKey_ios failed: errSecInteractionNotAllowed": true,
+		"failed to pull image":                                          false,
+		"":                                                              false,
+		"not enough room on the host for another VM (security of the pool)": false,
+	} {
+		if got := NeedsLoginSession(msg); got != want {
+			t.Errorf("NeedsLoginSession(%q) = %v, want %v", msg, got, want)
+		}
+	}
+}
+
+func TestLoginSessionFailures(t *testing.T) {
+	key := "Failed to get current host key"
+	got := LoginSessionFailures([]orchard.VM{
+		{Name: "macos-mac2-0", Worker: "mac2", Status: "failed", StatusMessage: key},
+		{Name: "macos-mac1-1", Worker: "mac1", Status: "failed", StatusMessage: key},
+		{Name: "macos-mac1-0", Worker: "mac1", Status: "failed", StatusMessage: key},
+		{Name: "linux-mac1-0", Worker: "mac1", Status: "failed", StatusMessage: "failed to pull image"},
+		{Name: "macos-mac3-0", Worker: "mac3", Status: "running", StatusMessage: key},
+	})
+	if len(got) != 2 || got[0].Worker != "mac1" || strings.Join(got[0].VMs, ",") != "macos-mac1-0,macos-mac1-1" || got[1].Worker != "mac2" {
+		t.Fatalf("LoginSessionFailures = %+v", got)
+	}
+	if d := got[0].Describe(); !strings.Contains(d, "mac1") || !strings.Contains(d, "every 1h0m0s") {
+		t.Errorf("Describe = %q", d)
+	}
+}

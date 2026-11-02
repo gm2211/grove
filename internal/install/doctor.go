@@ -106,7 +106,7 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 		results = append(results, checkWorkerShape(ctx, opts, cfg))
 		results = append(results, checkHeadlessTart(ctx, r, opts))
 		results = append(results, checkBroker(ctx, r, opts))
-		if opts.Rootless {
+		if opts.Rootless && !rootlessFirewallWanted(opts) {
 			results = append(results, checkRootlessFirewall())
 		} else {
 			results = append(results, checkHostFirewall(ctx, r, opts))
@@ -201,14 +201,22 @@ func bootLoopsResult(ctx context.Context, client orchard.Client) CheckResult {
 		return CheckResult{Name: name, OK: true, Detail: "skipped: " + err.Error()}
 	}
 	loops := fleet.BootLoops(vms)
+	var logins []string
+	for _, f := range fleet.LoginSessionFailures(vms) {
+		logins = append(logins, f.Describe())
+	}
 	if len(loops) == 0 {
+		if len(logins) > 0 {
+			// Not a broken image or script: the Mac needs its worker user logged in.
+			return CheckResult{Name: name, OK: true, Warn: true, Detail: strings.Join(logins, "; ")}
+		}
 		return CheckResult{Name: name, OK: true, Detail: "no VM is boot-looping"}
 	}
 	lines := make([]string, len(loops))
 	for i, w := range loops {
 		lines[i] = w.Describe()
 	}
-	return CheckResult{Name: name, OK: false, Detail: strings.Join(lines, "; "),
+	return CheckResult{Name: name, OK: false, Detail: strings.Join(append(lines, logins...), "; "),
 		Remediation: "read the VM's startup log (`grove vm ls`, then the worker's Orchard log); grove rebuilds boot-looping VMs every " + fleet.FailedVMRetry.String()}
 }
 
