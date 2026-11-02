@@ -4,6 +4,8 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+## v0.1.29
+
 - **A rootless worker can have the VM firewall: `grove install --role worker --firewall`.** The
   `host-firewall` step (the `com.grove.pf-vm` pf anchor) no longer forces the whole worker onto
   LaunchDaemons: with `--firewall`, a rootless install keeps its LaunchAgents (which run in the
