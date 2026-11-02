@@ -101,7 +101,7 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 		if opts.Rootless {
 			results = append(results, checkWorkerAgent(ctx, r, opts), checkKeepAwake(ctx, r, opts))
 		} else {
-			results = append(results, checkWorkerDaemon(ctx, r, opts))
+			results = append(results, checkWorkerDaemon(ctx, r, opts), checkLoginSession(ctx, r, opts))
 		}
 		results = append(results, checkWorkerShape(ctx, opts, cfg))
 		results = append(results, checkHeadlessTart(ctx, r, opts))

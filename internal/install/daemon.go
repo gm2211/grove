@@ -250,6 +250,21 @@ func workerDaemonsStep(r Runner, opts Options, ds []daemon) Step {
 	}
 }
 
+// checkLoginSession reports whether the worker user has a login (GUI) session on this Mac. The worker
+// LaunchDaemon starts with nobody logged in, which is all a Linux VM needs, but a macOS guest does
+// not boot without one: Virtualization.framework signs with a Secure Enclave host key that only the
+// user's unlocked login keychain can use, and fails with VZErrorDomain -9 "The virtual machine
+// encountered a security error … Failed to get current host key" (errSecInteractionNotAllowed in
+// the system log). A worker that only runs Linux VMs is fine, so this warns rather than fails.
+func checkLoginSession(ctx context.Context, r Runner, opts Options) CheckResult {
+	const name = "login-session"
+	if _, _, err := r.Run(ctx, "launchctl", "print", fmt.Sprintf("gui/%d", opts.workerUID())); err == nil {
+		return CheckResult{Name: name, OK: true, Detail: opts.userLabel() + " is logged in, so macOS VMs can boot"}
+	}
+	return CheckResult{Name: name, OK: true, Warn: true,
+		Detail: opts.userLabel() + " has no login session here: Linux VMs run, but macOS VMs fail with \"security error … Failed to get current host key\" until " + opts.userLabel() + " logs in (fast user switching is enough, or auto-login)"}
+}
+
 // daemonsRemediation is what `grove doctor` tells an operator to do about a daemon that isn't
 // installed or loaded.
 func daemonsRemediation(opts Options) string {

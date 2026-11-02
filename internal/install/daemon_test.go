@@ -3,6 +3,7 @@ package install
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -625,5 +626,27 @@ func TestSystemReloadRoot_WaitsForUnloadThenBootstraps(t *testing.T) {
 		if bootout < 0 || wait < 0 || bootstrap < 0 || !(bootout < wait && wait < bootstrap) {
 			t.Errorf("%s: want bootout, then wait for unload, then bootstrap with one retry (%d, %d, %d):\n%s", d.Label, bootout, wait, bootstrap, script)
 		}
+	}
+}
+
+// A macOS guest needs the worker user's login session (its Secure Enclave host key); without one the
+// doctor warns, and never fails, since Linux VMs run fine.
+func TestCheckLoginSession(t *testing.T) {
+	opts := Options{GOOS: "darwin", User: "argos"}
+	target := fmt.Sprintf("launchctl print gui/%d", opts.workerUID())
+
+	r := NewFakeRunner()
+	if res := checkLoginSession(context.Background(), r, opts); !res.OK || res.Warn {
+		t.Errorf("logged in: want a plain pass, got %+v", res)
+	}
+	if !r.CalledWith(target) {
+		t.Errorf("must ask launchd for the worker user's GUI domain; calls: %v", r.Calls)
+	}
+
+	r = NewFakeRunner()
+	r.Script(target, FakeResult{Err: errors.New("Could not find domain")})
+	res := checkLoginSession(context.Background(), r, opts)
+	if !res.OK || !res.Warn || !strings.Contains(res.Detail, "Failed to get current host key") {
+		t.Errorf("no session: want a warning naming the macOS VM error, got %+v", res)
 	}
 }

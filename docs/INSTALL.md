@@ -137,8 +137,14 @@ grove setup
 
 #### A dedicated user for the worker (for example `argos`)
 
-A worker does not need anyone logged in at the Mac, and the user it runs as does not need to be an
-admin, so a dedicated standard user keeps the worker and its jobs apart from the Mac's owner:
+A worker does not need anyone logged in at the Mac to run Linux VMs, and the user it runs as does
+not need to be an admin, so a dedicated standard user keeps the worker and its jobs apart from the
+Mac's owner. **macOS VMs are the exception:** a macOS guest boots only while the worker user has a
+login session, because Virtualization.framework signs with a Secure Enclave host key that only that
+user's unlocked login keychain can use. Without one, every macOS VM fails with `VZErrorDomain -9 "The
+virtual machine encountered a security error … Failed to get current host key"`. On a Mac someone
+else uses, log the worker user in once with fast user switching and leave the session running (or
+give it auto-login on a dedicated Mac). `grove doctor` warns under `login-session` when it is missing.
 
 1. Create the user (System Settings -> Users & Groups -> **Standard**, or `sysadminctl`), once.
    Tailscale must be usable by it. Homebrew need not be: if it belongs to another user, `grove
