@@ -35,6 +35,11 @@ const (
 	// enrolExecTimeout bounds one enrolment exec, so one VM that doesn't answer can't hold up the
 	// rest of the fleet for long.
 	enrolExecTimeout = time.Minute
+	// enrolRetryUnregistered is how long Enrol waits for an enrolled VM's Nomad client to
+	// register before enrolling it again. Enrolling is idempotent, and a VM whose files were lost
+	// (a guest that restarted, an exec that ran nowhere) would otherwise sit waiting until its
+	// introduction token expired.
+	enrolRetryUnregistered = 5 * time.Minute
 )
 
 // EnrolError is one VM's failed enrolment. Its text is "enrol <vm>: <cause>"; the pool lets
@@ -65,7 +70,10 @@ type EnrolState struct {
 }
 
 type enrolled struct {
-	uid      string
+	// instance is the VM's Orchard UID and restart count: an Orchard restart (restart policy
+	// OnFailure) boots a fresh clone of the image under the same UID, with none of the files the
+	// last enrolment wrote.
+	instance string
 	at       time.Time
 	notAfter time.Time
 }
@@ -146,9 +154,9 @@ func (r *Reconciler) Enrol(ctx context.Context, state *EnrolState) error {
 		live[vm.Name] = true
 		rec, have := state.vms[vm.Name]
 		switch {
-		case !have || rec.uid != vm.UID:
+		case !have || rec.instance != vmInstance(vm):
 		case now.After(rec.notAfter.Add(-nodeCertRenewBefore)):
-		case !present[vm.Name] && now.Sub(rec.at) > introTokenTTL:
+		case !present[vm.Name] && now.Sub(rec.at) > enrolRetryUnregistered:
 		default:
 			continue
 		}
@@ -157,7 +165,7 @@ func (r *Reconciler) Enrol(ctx context.Context, state *EnrolState) error {
 			errs = append(errs, &EnrolError{VM: vm.Name, Pool: pool, Err: err})
 			continue
 		}
-		state.vms[vm.Name] = enrolled{uid: vm.UID, at: now, notAfter: notAfter}
+		state.vms[vm.Name] = enrolled{instance: vmInstance(vm), at: now, notAfter: notAfter}
 		state.Enrolled = append(state.Enrolled, vm.Name)
 	}
 	for name := range state.vms {
@@ -166,6 +174,11 @@ func (r *Reconciler) Enrol(ctx context.Context, state *EnrolState) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// vmInstance names one boot of an Orchard VM: its UID and how many times Orchard restarted it.
+func vmInstance(vm orchard.VM) string {
+	return fmt.Sprintf("%s/%d", vm.UID, vm.RestartCount)
 }
 
 // enrolRefusal says why vm is not exactly what the reconciler itself would have created for that
