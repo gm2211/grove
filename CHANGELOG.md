@@ -2,6 +2,15 @@
 
 All notable changes to grove are documented here.
 
+## Unreleased
+
+- **The control plane's own worker gets a broker credential.** Workers elsewhere get one from join
+  approval, but the control plane's worker is installed with `grove install --role worker` and
+  never joins, so its broker had no credential and never synced: jobs there couldn't use
+  credentials, and `grove doctor` showed `✗ broker`. On the control-plane host, that install now
+  issues the credential itself (scope `broker` only, named after the Orchard worker) when none is
+  stored. Never on `--dry-run`.
+
 ## v0.1.31
 
 - **The control-plane UI is a live map now.** The queue, worker Macs, their VMs and the jobs running

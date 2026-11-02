@@ -131,7 +131,7 @@ func VMNetGateway(ctx context.Context, r Runner) (netip.Addr, error) {
 // the VM bridge exists, whether it answers and has synced with the control plane.
 func checkBroker(ctx context.Context, r Runner, opts Options) CheckResult {
 	const name = "broker"
-	setup := "run `grove setup` on this Mac"
+	setup := "run `grove setup` on this Mac (on the control plane itself: `grove install --role worker`, which issues it)"
 	d := workerDaemons(opts)[1]
 	_, installed := daemonPaths(opts, d.Label)
 	if opts.Rootless {

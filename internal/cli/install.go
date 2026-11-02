@@ -119,6 +119,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		Firewall:      installFlags.firewall,
 	}
 	opts.Rootless, opts.NoAutoRootless = rootlessFlag(cmd, installFlags.rootless)
+	opts = withControlPlaneBrokerToken(cmd.Context(), opts, installFlags.dryRun, cmd.ErrOrStderr())
 
 	_, err := applyInstall(cmd, opts, installFlags.dryRun, installFlags.yes, installFlags.noSudo)
 	return err
