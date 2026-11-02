@@ -183,6 +183,60 @@ CLI reads from a file, say — and for sealed pools, whose VMs reach no broker. 
 those. See [docs/OPERATIONS.md](docs/OPERATIONS.md) ("The credential broker", "Named secrets
 for jobs").
 
+## What's proved, and how
+
+Two kinds of thing in grove are easy to get subtly wrong. Its control loops race each other: a
+snooze against a resume, a job's reconcile against the fleet tick. And its security rests on a few
+small decisions: which credential may call which route, which header a real token may go into.
+Tests sample those. `spec/` checks them exhaustively, against 20 properties written in plain
+English, each in the tool that fits it:
+
+| Tool | Checks | Used for |
+|---|---|---|
+| **Quint** models, checked by **TLC** | every interleaving of the control loops, within bounds | snooze and pause, dispatch, retries and quarantine, VM TTL and rebuilds, Nomad enrolment |
+| **Lean 4** proofs | a decision, for every possible input | route scopes, artifact paths, the broker's header swap |
+| **CodeQL** taint queries | every path a secret can take through the Go code | job secrets, the private-repo token, broker credentials, node keys |
+| **[Specify](https://github.com/gm2211/specify)** spec | the 20 properties as behaviors with stable IDs, each linked to its model or theorem | `spec/grove.spec`, checked with `specify formal check` |
+| **Go** conformance tests | that each model matches the real package | Go vs Lean on 24,860 route and method pairs; 500 random fleets; the snooze races replayed |
+
+What holds:
+
+- **A snoozed Mac does no work, and a resumed one comes back.** Orchard's pause bit always
+  matches the recorded reasons, even when Orchard refuses a resume.
+- **Every job finishes, and none is failed only because its pool is snoozed.** Evictions never
+  count against a job; quarantine needs losses on two machines.
+- **The fleet heals.** One reconcile converges from any fleet state, a VM is drained before its
+  TTL recycles it, certificates renew before they expire, and a broken VM is rebuilt.
+- **Only VMs grove made stay in Nomad, and a pool's identity stays in that pool.** No worker Mac
+  outside a pool gets that pool's node certificate, and with it that pool's jobs and secrets.
+- **Credentials stay in their lane.** A broker credential reaches one route, a snooze credential
+  only its own Mac's snooze and wake, `read` can't submit or cancel, plain `dispatch` can't run a
+  shell job, and every operator route needs the operator. Proved for every path.
+- **An artifact path can't leave its job's directory.**
+- **The broker writes a real token only into `Authorization` or `X-Api-Key`, and only for its
+  kind's hosts.** Every other header leaves exactly as the job sent it.
+- **No secret reaches argv, a log, an API response, the job record or a VM spec.**
+
+Five of these failed on grove before v0.1.28, and that release fixes them: the snooze and pause
+races, jobs failed in the minute after a snooze ended, and a worker Mac able to enrol a VM of
+another pool on itself.
+
+Where the guarantees stop:
+
+- **A placeholder isn't yet bound to its VM.** The broker never records which VM an entry belongs
+  to, so another VM on the same Mac that learns a job's `gph1_…` placeholder can spend it until
+  the lease ends. The real token still never leaves the broker.
+- **Pool identity assumes per-Mac Orchard scope.** Upstream Orchard gives every worker's
+  credential reach over every VM, so a compromised Mac can still get at other Macs' VMs directly.
+- **Named secrets travel in the dispatch's `env_json`.** The secret-flow check counts that as
+  their allowed destination, so it says nothing about it.
+- **The models are bounded**, for example one worker and six concurrent writers for snooze. TLC
+  explores every interleaving within the bounds, not beyond them.
+
+CI runs `spec/check.sh` on every push. It fails if a property stops holding, and also if a
+"before" model stops finding the bug it was written for. Every property, its result and its
+assumptions: [spec/README.md](spec/README.md).
+
 ## What works today
 
 - fleet reconciler that keeps Orchard VMs matching `fleet.yaml`, including per-VM TTL and

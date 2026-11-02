@@ -11,6 +11,7 @@ CI runs it on every push (the `spec` job).
 | **Quint**, checked by **TLC** (exhaustive) | control loops that race: snooze, dispatch, attempts, fleet, enrolment | `quint/*.qnt` |
 | **Lean 4** | pure decisions over every possible input: route auth, artifact paths, the broker's swap | `lean/Grove/*.lean` |
 | **CodeQL** taint tracking | where secrets can flow in the Go code | `codeql/*.ql` |
+| **Specify** (`gm2211/specify`) | the same 20 properties as behaviors with stable IDs, linked to the Quint invariants and Lean theorems Specify can run | `grove.spec/` |
 | **Go tests** | pin each model to the real packages, so code and model can't drift apart | `../internal/conformance`, `../internal/server/spec_conformance_test.go`, `../internal/fleet/convergence_test.go` |
 
 The threat model is the security review's: a tailnet device grove doesn't control (**T**), a
@@ -87,8 +88,14 @@ malicious or compromised job (**J**), a compromised worker Mac (**W**), a leaked
 ## Running it
 
 ```
-spec/check.sh     # needs quint, TLA2TOOLS_JAR, java, lake (Lean 4.35.0), go; CODEQL for S10
+spec/check.sh     # needs quint, TLA2TOOLS_JAR, java, lake (Lean 4.35.0), go; CODEQL for S10; SPECIFY for grove.spec
 ```
+
+`grove.spec/` is the [Specify](https://github.com/gm2211/specify) view of the same properties: one
+behavior per property, its ID in `details` and `tags`, and 18 formal links. `specify formal check
+--spec spec/grove.spec` runs them (Quint invariants by seeded simulation, Lean theorems with their
+axioms checked). Specify's formal check runs invariants only, so the temporal properties (L1-L5,
+L7's replacement half, L9, L10), L6 and S10 stay unlinked there and are checked by the rows above.
 
 To check one model by hand:
 `quint verify quint/snooze.qnt --main=snoozeAll --backend=tlc --invariant=snoozedMeansPaused`.

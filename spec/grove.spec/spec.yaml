@@ -1,0 +1,31 @@
+version: '2'
+name: grove
+description: >-
+  What grove promises about progress (liveness, L1-L10) and about who can do what (security,
+  S1-S10). Each behavior carries its property ID from spec/README.md. Linked formal references are
+  the parts Specify can run: Quint invariants (seeded simulation) and Lean theorems. spec/check.sh
+  runs the full set, including exhaustive TLC checks, temporal properties and CodeQL queries.
+target:
+  type: cli
+  binary: grove
+assumptions:
+  - description: >-
+      Go's ServeMux cleans a request path before routing, so the scope check sees the path of the
+      route that serves the request (A1).
+  - description: >-
+      Nomad's strict client introduction refuses a client with no TLS, another CA's certificate, no
+      introduction token, or a token for another node pool (A2).
+  - description: >-
+      A worker's Orchard credential can't exec into or port-forward to VMs on other Macs (A3).
+      Upstream Orchard doesn't give this yet (security review H9), so S3 is only as strong as it.
+  - description: >-
+      grove serve ticks every 30 s, and Orchard's TTL counts from a VM's creation (A4).
+areas:
+  - areas/pause-state.yaml
+  - areas/dispatch.yaml
+  - areas/fleet.yaml
+  - areas/node-identity.yaml
+  - areas/api-scopes.yaml
+  - areas/artifacts.yaml
+  - areas/broker.yaml
+  - areas/secrets.yaml
