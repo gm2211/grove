@@ -11,6 +11,29 @@ All notable changes to grove are documented here.
   Jobs, job detail, Dispatch and Settings were restyled to match; `/fleet` links go to the map.
 - **README: new screenshot, a walkthrough GIF, and both diagrams redrawn dark**, with the
   credential broker added to "Where grove runs" and the broker flow drawn in the same style.
+- **A VM that Orchard restarted is enrolled into Nomad again.** Orchard's OnFailure restart boots a
+  fresh clone under the same VM UID, without the certificate the last enrolment wrote, and grove
+  remembered enrolments by UID alone, so the restarted VM waited up to 30 minutes for a new one.
+  Enrol now tells boots apart by UID and restart count, and it re-enrols a VM whose Nomad client
+  hasn't registered 5 minutes after its enrolment.
+
+## v0.1.30
+
+- **The worker's LaunchDaemons get their own security session (`SessionCreate`).** A daemon with
+  none had `tart run` attached to the console user's login session, where it checked in as a
+  foreground app: that is what flashed in the Dock of whoever was logged in at a worker Mac, and it
+  put job-facing VM processes inside someone else's session. Re-run `grove setup --user <user>`
+  (one sudo) after upgrading: the installed plist changes. This does not unlock the worker user's
+  keychain, so macOS VMs still need that user logged in (`login-session`).
+
+- **Snoozing a Mac again just after a snooze lapsed no longer leaves it paused for good.** In the
+  window between a snooze lapsing and the expirer clearing it, a new snooze recorded the existing
+  pause as external, so the Mac stayed paused after the new snooze ended. `Engage` now counts a
+  recorded snooze, lapsed or not, as grove's own pause. Found by replaying the snooze model's
+  traces against the code.
+- **`spec/check.sh` now ties the snooze model to the code.** It replays 1,000 sampled model traces
+  against the real snooze, API and health code (`TestSnoozeConformsToModel`) and puts six old bugs
+  back one at a time (`spec/mutants.py`), failing unless a conformance test catches each.
 
 ## v0.1.29
 

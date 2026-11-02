@@ -449,6 +449,46 @@ func TestEnrol_ARecreatedVMIsEnrolledAgainDespiteItsPredecessorsNode(t *testing.
 	}
 }
 
+func TestEnrol_AnOrchardRestartIsEnrolledAgain(t *testing.T) {
+	f := newEnrolFixture(t)
+	if err := f.enrol(); err != nil {
+		t.Fatal(err)
+	}
+	// Orchard's OnFailure restart boots a fresh clone under the same UID: the files are gone.
+	f.client.vms[0].RestartCount++
+	if err := os.RemoveAll(f.guest.nomad); err != nil {
+		t.Fatal(err)
+	}
+	f.now = f.now.Add(10 * time.Second)
+	if err := f.enrol(); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.execs) != 2 || len(f.intros.calls) != 2 {
+		t.Fatalf("a restarted VM must be enrolled again at once (%d execs, %d tokens)", len(f.execs), len(f.intros.calls))
+	}
+}
+
+func TestEnrol_AnEnrolledVMThatNeverRegistersIsRetriedSoon(t *testing.T) {
+	f := newEnrolFixture(t)
+	if err := f.enrol(); err != nil {
+		t.Fatal(err)
+	}
+	f.now = f.now.Add(enrolRetryUnregistered - time.Second)
+	if err := f.enrol(); err != nil || len(f.execs) != 1 {
+		t.Fatalf("retried before enrolRetryUnregistered (%d execs, %v)", len(f.execs), err)
+	}
+	f.now = f.now.Add(2 * time.Second)
+	if err := f.enrol(); err != nil || len(f.execs) != 2 {
+		t.Fatalf("want a retry once enrolRetryUnregistered passed with no node (%d execs, %v)", len(f.execs), err)
+	}
+	// Registered, it's left alone
+	f.register("ready")
+	f.now = f.now.Add(time.Hour)
+	if err := f.enrol(); err != nil || len(f.execs) != 2 {
+		t.Fatalf("re-enrolled a registered VM (%d execs, %v)", len(f.execs), err)
+	}
+}
+
 func TestEnrol_SkipsVMsThatAreNotWaitingForIt(t *testing.T) {
 	for name, edit := range map[string]func(*orchard.VM){
 		"pending": func(vm *orchard.VM) { vm.Status = "pending" },

@@ -21,3 +21,4 @@ spec/quint/_apalache-out/
 spec/quint/tmp/
 spec/quint/*.tla
 spec/quint/states/
+spec/__pycache__/

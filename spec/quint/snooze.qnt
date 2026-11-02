@@ -21,8 +21,15 @@ module snooze {
   const withResume: bool
   const withEngage: bool
   const withWake: bool
+  // A second snooze request (process F), so a trace can snooze the worker again, e.g. after the
+  // first snooze lapsed but before the Expirer cleared it.
+  const withSecondEngage: bool
   // Start with the worker paused by an operator (else running with no pause).
   const initOperatorPaused: bool
+  // A snooze lapses only between requests. Go samples the clock once per request, so traces the
+  // Go replay test (internal/conformance/snooze_mbt_test.go) runs come from this setting; the
+  // checked instances leave it off, which allows strictly more behaviours.
+  const atomicTime: bool
 
   var bit: bool            // Orchard SchedulingPaused
   var reasons: Set[str]    // pauses.json reasons
@@ -63,18 +70,19 @@ module snooze {
     expired' = false,
     pc' = Map("E" -> startOr(withEngage, "e0"), "W" -> startOr(withWake, "w0"),
               "R" -> startOr(withResume, "r0"), "P" -> startOr(withPause, "p0"),
-              "H" -> startOr(withHealth, "h0"), "X" -> "x0"),
+              "H" -> startOr(withHealth, "h0"), "F" -> startOr(withSecondEngage, "e0"), "X" -> "x0"),
     eb' = false, hb' = false, xe' = Set(), xb' = false,
     fails' = if (resumeCanFail) 1 else 0,
   }
 
   // snooze.Engage: read Orchard, maybe record "external", record snooze, pause if it wasn't
-  action engage = any {
-    all { at("E", "e0"), upd(bit, reasons, expired, "E", "e1", bit, hb, xe, xb) },
-    all { at("E", "e1"), goR("E", "e2", if (eb and reasons == Set()) reasons.union(Set("operator")) else reasons) },
-    all { at("E", "e2"), upd(bit, reasons.union(Set("snooze")), false, "E", "e3", eb, hb, xe, xb) },
-    all { at("E", "e3"), goB("E", "done", bit or not(eb)) },
+  action engageAs(p: str): bool = any {
+    all { at(p, "e0"), upd(bit, reasons, expired, p, "e1", bit, hb, xe, xb) },
+    all { at(p, "e1"), goR(p, "e2", if (eb and reasons == Set()) reasons.union(Set("operator")) else reasons) },
+    all { at(p, "e2"), upd(bit, reasons.union(Set("snooze")), false, p, "e3", eb, hb, xe, xb) },
+    all { at(p, "e3"), goB(p, "done", bit or not(eb)) },
   }
+  action engage = any { engageAs("E"), engageAs("F") }
   // snooze.Wake: end the snooze, resume only if no other reason remains
   action wake = if (fixed) any {
     // resume (when nothing else holds the worker), then clear; a failed resume clears nothing
@@ -127,6 +135,7 @@ module snooze {
   }
   action lapse = all {
     reasons.contains("snooze"), not(expired),
+    not(atomicTime) or pc.keys().forall(q => not(mid(q))),
     bit' = bit, reasons' = reasons, expired' = true, pc' = pc, eb' = eb, hb' = hb, xe' = xe, xb' = xb,
     fails' = fails,
   }
@@ -140,7 +149,7 @@ module snooze {
   // S1, the owner's promise: a snoozed Mac does no work. Excepted: the step between Engage
   // recording the snooze and pausing, and the step between Wake resuming and clearing it (the
   // owner asked to end it).
-  val snoozedMeansPaused = (active and pc.get("E") != "e3" and not(fixed and pc.get("W") == "w2")) implies bit
+  val snoozedMeansPaused = (active and pc.get("E") != "e3" and pc.get("F") != "e3" and not(fixed and pc.get("W") == "w2")) implies bit
   val clientsDone = pc.keys().exclude(Set("X")).forall(p => Set("done", "refused").contains(pc.get(p)))
 
   temporal fairness = weakFair(client, (bit, reasons, expired, pc, eb, hb, xe, xb, fails))
@@ -157,27 +166,41 @@ module snooze {
 // checks S1 and L2.
 module snoozeAll {
   import snooze(fixed = true, resumeCanFail = true, withPause = true, withHealth = true,
-                withResume = true, withEngage = true, withWake = true, initOperatorPaused = true).*
+                withResume = true, withEngage = true, withWake = true, initOperatorPaused = true, atomicTime = false, withSecondEngage = false).*
 }
 
 // An operator resumes a paused worker while its owner snoozes it: checks L1.
 module snoozeResume {
   import snooze(fixed = true, resumeCanFail = false, withPause = false, withHealth = false,
-                withResume = true, withEngage = true, withWake = false, initOperatorPaused = true).*
+                withResume = true, withEngage = true, withWake = false, initOperatorPaused = true, atomicTime = false, withSecondEngage = false).*
 }
 
 // The same scenarios against the code before spec/ (expected to FAIL; CI checks they still do,
 // so the models keep finding the bugs they were written for).
 module snoozeAllBefore {
   import snooze(fixed = false, resumeCanFail = true, withPause = true, withHealth = true,
-                withResume = true, withEngage = true, withWake = true, initOperatorPaused = true).*
+                withResume = true, withEngage = true, withWake = true, initOperatorPaused = true, atomicTime = false, withSecondEngage = false).*
 }
 module snoozeResumeBefore {
   import snooze(fixed = false, resumeCanFail = false, withPause = false, withHealth = false,
-                withResume = true, withEngage = true, withWake = false, initOperatorPaused = true).*
+                withResume = true, withEngage = true, withWake = false, initOperatorPaused = true, atomicTime = false, withSecondEngage = false).*
 }
 // Only a snooze and its expiry, with one failed resume, in the old clear-then-resume order: L2 fails.
 module snoozeExpiryFailsBefore {
   import snooze(fixed = false, resumeCanFail = true, withPause = false, withHealth = false,
-                withResume = false, withEngage = true, withWake = false, initOperatorPaused = false).*
+                withResume = false, withEngage = true, withWake = false, initOperatorPaused = false, atomicTime = false, withSecondEngage = false).*
+}
+
+// Traces for the Go replay test: every writer, one failed resume, time moving between requests.
+// spec/check.sh samples it with `quint run --out-itf` and replays each trace against the real code.
+module snoozeMBT {
+  import snooze(fixed = true, resumeCanFail = true, withPause = true, withHealth = true,
+                withResume = true, withEngage = true, withWake = true, initOperatorPaused = true,
+                atomicTime = true, withSecondEngage = true).*
+}
+// Same, starting with nothing paused.
+module snoozeMBTFresh {
+  import snooze(fixed = true, resumeCanFail = true, withPause = true, withHealth = true,
+                withResume = true, withEngage = true, withWake = true, initOperatorPaused = false,
+                atomicTime = true, withSecondEngage = true).*
 }
