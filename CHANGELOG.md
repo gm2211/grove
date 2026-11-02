@@ -2,6 +2,14 @@
 
 All notable changes to grove are documented here.
 
+## Unreleased
+
+- **A VM that Orchard restarted is enrolled into Nomad again.** Orchard's OnFailure restart boots a
+  fresh clone under the same VM UID, without the certificate the last enrolment wrote, and grove
+  remembered enrolments by UID alone, so the restarted VM waited up to 30 minutes for a new one.
+  Enrol now tells boots apart by UID and restart count, and it re-enrols a VM whose Nomad client
+  hasn't registered 5 minutes after its enrolment.
+
 ## v0.1.30
 
 - **The worker's LaunchDaemons get their own security session (`SessionCreate`).** A daemon with
