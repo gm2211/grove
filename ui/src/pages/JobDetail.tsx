@@ -1,23 +1,17 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate, useParams } from "react-router";
+import { Link, useParams } from "react-router";
 import { api } from "../api/client";
-import { StatusPill } from "../components/StatusPill";
+import type { Job } from "../api/types";
+import { View, ViewHead } from "../components/Layout";
+import { StatusPill, TONES, toneOf, type Tone } from "../components/StatusPill";
 import { ConfirmButton } from "../components/ConfirmButton";
 import { LogViewer } from "../components/LogViewer";
-import { formatBytes, formatJobDuration, formatRelativeAge } from "../lib/format";
-
-const STAGES = ["pending", "running", "success"] as const;
-
-function stageIndex(status: string): number {
-  if (status === "pending") return 0;
-  if (status === "running") return 1;
-  return 2; // success, failed, canceled, lost all terminal
-}
+import { isTerminal } from "../lib/fleetModel";
+import { formatBytes, formatJobDuration, formatRelativeAge, shortRepo } from "../lib/format";
 
 export function JobDetailPage() {
   const { id = "" } = useParams();
-  const navigate = useNavigate();
   const qc = useQueryClient();
   const [follow, setFollow] = useState(true);
 
@@ -26,182 +20,229 @@ export function JobDetailPage() {
     queryFn: () => api.getJob(id),
     refetchInterval: 3000,
   });
-	const { data: principal } = useQuery({ queryKey: ["whoami"], queryFn: api.whoAmI, staleTime: 60_000 });
+  const { data: principal } = useQuery({ queryKey: ["whoami"], queryFn: api.whoAmI, staleTime: 60_000 });
 
   const cancel = useMutation({
     mutationFn: () => api.cancelJob(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["job", id] }),
   });
 
-  if (isLoading) return <div className="p-4 text-sm">Loading job…</div>;
-  if (error) return <div className="p-4 text-sm text-red-500">Failed to load job: {String(error)}</div>;
-  if (!job) return null;
+  if (isLoading) {
+    return (
+      <View>
+        <ViewHead kicker="Job" title="Reading job…" />
+      </View>
+    );
+  }
+  if (error || !job) {
+    return (
+      <View>
+        <ViewHead kicker="Job" title={`No job ${id}`} lede={String(error ?? "not found")} />
+        <Link to="/jobs" className="mono text-[12px]">
+          ← all jobs
+        </Link>
+      </View>
+    );
+  }
 
-  const terminal = ["success", "failed", "canceled", "lost"].includes(job.status);
-  const isFailed = job.status === "failed" || job.status === "canceled" || job.status === "lost";
-  const idx = stageIndex(job.status);
-	const canCancel = principal?.scopes.includes("operator") || job.request.submittedBy === principal?.id;
+  const terminal = isTerminal(job.status);
+  const canCancel = principal?.scopes.includes("operator") || job.request.submittedBy === principal?.id;
+  const subject = job.request.repo
+    ? `${shortRepo(job.request.repo)}@${job.request.ref ?? "HEAD"}`
+    : job.request.script.split("\n")[0];
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-3">
-        <button
-          onClick={() => navigate(-1)}
-          className="text-xs"
-          style={{ color: "var(--fg-muted)" }}
-        >
-          ← back
-        </button>
-        <h1 className="mono text-lg font-semibold">{job.id}</h1>
-        <StatusPill status={isFailed ? job.status : STAGES[idx] ?? job.status} />
-		{!terminal && canCancel && (
-          <ConfirmButton label="Cancel job" onConfirm={() => cancel.mutate()} disabled={cancel.isPending} />
+    <View fill>
+      <div className="mono flex items-center gap-[9px] text-[11.5px] text-[#68767b]">
+        <Link to="/jobs">jobs</Link>
+        <span className="text-[#2a343a]">›</span>
+        {job.node && (
+          <>
+            <Link to={`/map?v=${encodeURIComponent(job.node)}&j=${encodeURIComponent(job.id)}`}>{job.node}</Link>
+            <span className="text-[#2a343a]">›</span>
+          </>
         )}
+        <span>{job.id}</span>
       </div>
+      <ViewHead
+        kicker={`Job · ${job.request.kind} · ${job.request.pool} pool`}
+        title={
+          <span className="flex flex-wrap items-center gap-3">
+            {subject}
+            <StatusPill status={job.status} />
+          </span>
+        }
+        lede={lede(job)}
+        actions={
+          !terminal && canCancel ? (
+            <ConfirmButton
+              label={cancel.isPending ? "canceling…" : "Cancel job"}
+              confirmLabel="sure? cancel"
+              onConfirm={() => cancel.mutate()}
+              disabled={cancel.isPending}
+            />
+          ) : undefined
+        }
+      />
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <div
-          className="flex flex-col gap-2 rounded-lg border p-3 text-sm lg:col-span-1"
-          style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
-        >
-          <div className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--fg-faint)" }}>
-            Request
-          </div>
-          <Field label="kind" value={job.request.kind} />
-          <Field label="pool" value={job.request.pool} />
-          {job.request.repo && <Field label="repo" value={job.request.repo} mono />}
-          {job.request.ref && <Field label="ref" value={job.request.ref} mono />}
-          <Field label="requester" value={job.request.requester ?? "—"} />
-          <Field label="node" value={job.node ?? "—"} mono />
-          <Field label="alloc" value={job.allocId ?? "—"} mono />
-          {job.status === "pending" && job.pendingReason && (
-            <Field label="pending reason" value={job.pendingReason} />
-          )}
-          <Field label="submitted" value={formatRelativeAge(job.submittedAt)} />
-          <Field label="duration" value={formatJobDuration(job.startedAt, job.finishedAt)} />
-          <Field label="exit code" value={job.exitCode === null || job.exitCode === undefined ? "—" : String(job.exitCode)} />
-
-          <div className="mt-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--fg-faint)" }}>
-            Script
-          </div>
-          <pre
-            className="mono overflow-auto rounded p-2 text-xs"
-            style={{ background: "var(--bg-inset)" }}
-          >
-            {job.request.script}
-          </pre>
-
-          {job.request.env && Object.keys(job.request.env).length > 0 && (
-            <>
-              <div className="mt-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--fg-faint)" }}>
-                Env
-              </div>
-              <div className="mono text-xs">
-                {Object.entries(job.request.env).map(([k, v]) => (
-                  <div key={k}>
-                    {k}={v}
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
+        <aside className="flex min-h-0 flex-col gap-5 xl:overflow-auto xl:pr-2">
+          <Lifecycle job={job} />
 
           {job.quarantined && (
-            <div className="rounded p-2 text-xs" style={{ background: "var(--bg-inset)", color: "var(--status-failed)" }}>
+            <div className="rounded-lg border px-3 py-2 text-[12.5px]" style={{ borderColor: "var(--red-line)", background: "var(--red-wash)", color: "var(--red-text)" }}>
               Quarantined: {job.failureReason ?? "lost on two different machines"}. Don't resubmit it unchanged.
             </div>
           )}
 
-          {job.attempts && job.attempts.length > 0 && (
-            <>
-              <div className="mt-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--fg-faint)" }}>
-                Attempts
-              </div>
-              {job.attempts.map((a, i) => (
-                <div key={i} className="flex flex-col text-xs">
-                  <div className="flex justify-between">
-                    <span className="mono">
-                      {i + 1}. {a.vm}
-                      {a.worker ? ` on ${a.worker}` : ""}
-                    </span>
-                    <span style={{ color: "var(--fg-muted)" }}>
-                      {a.outcome === "exited" ? `exited ${a.exitCode ?? "?"}` : a.outcome}
-                    </span>
-                  </div>
-                  {a.reason && <div style={{ color: "var(--fg-muted)" }}>{a.reason}</div>}
-                </div>
-              ))}
-            </>
-          )}
+          <Section label="Request">
+            <div className="facts">
+              <Fact k="job id" v={job.id} />
+              <Fact k="repo" v={job.request.repo ?? "—"} />
+              <Fact k="ref" v={job.request.ref ?? "—"} />
+              <Fact k="requester" v={job.request.requester ?? "—"} />
+              <Fact k="node" v={job.node ?? "—"} />
+              <Fact k="alloc" v={job.allocId ?? "—"} />
+              <Fact k="timeout" v={job.request.timeout ?? "—"} />
+              <Fact k="exit code" v={job.exitCode == null ? "—" : String(job.exitCode)} />
+            </div>
+          </Section>
 
-          <div className="mt-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--fg-faint)" }}>
-            Status timeline
-          </div>
-          <Timeline job={job} />
+          <Section label="Script">
+            <pre className="m-0 overflow-auto rounded-lg border border-[#171d21] bg-[#06080a] p-3 text-[11.5px] leading-[1.6] text-[#c3d1d5]">
+              {job.request.script}
+            </pre>
+          </Section>
+
+          {job.request.env && Object.keys(job.request.env).length > 0 && (
+            <Section label="Env">
+              <div className="facts">
+                {Object.entries(job.request.env).map(([k, v]) => (
+                  <Fact key={k} k={k} v={v} />
+                ))}
+              </div>
+            </Section>
+          )}
 
           {job.artifacts && job.artifacts.length > 0 && (
-            <>
-              <div className="mt-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--fg-faint)" }}>
-                Artifacts
+            <Section label="Artifacts">
+              <div className="facts">
+                {job.artifacts.map((a) => (
+                  <div key={a.path} className="fact" style={{ gridTemplateColumns: "minmax(0,1fr) auto" }}>
+                    <a href={a.url} className="v truncate" style={{ color: "var(--accent)" }}>
+                      {a.path}
+                    </a>
+                    <span className="k">{formatBytes(a.size)}</span>
+                  </div>
+                ))}
               </div>
-              {job.artifacts.map((a) => (
-                <a key={a.path} href={a.url} className="mono flex justify-between text-xs underline">
-                  <span>{a.path}</span>
-                  <span style={{ color: "var(--fg-muted)" }}>{formatBytes(a.size)}</span>
-                </a>
-              ))}
-            </>
+            </Section>
           )}
-        </div>
+        </aside>
 
-        <div className="lg:col-span-2">
-          <div className="mb-2 flex items-center justify-between">
-            <div className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--fg-faint)" }}>
+        <section className="flex min-h-0 flex-col gap-2">
+          <div className="flex items-center justify-between">
+            <span className="kicker" style={{ fontSize: 10 }}>
               Live log
-            </div>
-            <label className="flex items-center gap-1.5 text-xs">
-              <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
+            </span>
+            <label className="mono flex items-center gap-2 text-[11px] text-[#8c9a9e]">
+              <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} className="accent-[#7ee7c7]" />
               follow
             </label>
           </div>
           <LogViewer jobId={job.id} follow={follow} jobStatus={job.status} />
-        </div>
+        </section>
       </div>
-
-      <Link to="/jobs" className="text-xs underline" style={{ color: "var(--fg-muted)" }}>
-        ← all jobs
-      </Link>
-    </div>
+    </View>
   );
 }
 
-function Field({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function lede(job: Job): string {
+  switch (job.status) {
+    case "pending":
+      return job.pendingReason ?? `Waiting for a free slot in the ${job.request.pool} pool.`;
+    case "running":
+      return `Running on ${job.node ?? "a VM"} for ${formatJobDuration(job.startedAt, null)}, submitted ${formatRelativeAge(job.submittedAt)} by ${job.request.requester ?? "someone"}.`;
+    default:
+      return (
+        job.failureReason ??
+        `${job.status[0].toUpperCase()}${job.status.slice(1)} after ${formatJobDuration(job.startedAt, job.finishedAt)}${job.exitCode != null ? ` with exit ${job.exitCode}` : ""}.`
+      );
+  }
+}
+
+function Section({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="flex justify-between gap-2 text-xs">
-      <span style={{ color: "var(--fg-faint)" }}>{label}</span>
-      <span className={mono ? "mono truncate" : "truncate"}>{value}</span>
+    <div className="flex flex-col gap-2">
+      <span className="kicker" style={{ fontSize: 10 }}>
+        {label}
+      </span>
+      {children}
     </div>
   );
 }
 
-function Timeline({ job }: { job: { submittedAt: string; startedAt?: string | null; finishedAt?: string | null; status: string } }) {
-  const steps = [
-    { label: "submitted", at: job.submittedAt, done: true },
-    { label: "started", at: job.startedAt, done: !!job.startedAt },
-    { label: "finished", at: job.finishedAt, done: !!job.finishedAt },
+function Fact({ k, v }: { k: string; v: string }) {
+  return (
+    <div className="fact">
+      <span className="k">{k}</span>
+      <span className="v">{v}</span>
+    </div>
+  );
+}
+
+/** The Argos stage rail: submitted → placed → each attempt → running → finished. */
+function Lifecycle({ job }: { job: Job }) {
+  const terminal = isTerminal(job.status);
+  const rows: { name: string; tone: Tone | "off"; what?: string; note?: string; live?: boolean }[] = [
+    { name: "submitted", tone: "teal", what: `by ${job.request.requester ?? "—"}`, note: formatRelativeAge(job.submittedAt) },
+    {
+      name: "placed",
+      tone: job.node || job.startedAt ? "teal" : job.status === "pending" ? "blue" : "off",
+      live: job.status === "pending",
+      what: job.node ? `on ${job.node}` : job.pendingReason ?? "Nomad is looking for room",
+    },
+    ...(job.attempts ?? []).map((a, i) => ({
+      name: `attempt ${i + 1} · ${a.outcome}`,
+      tone: (a.outcome === "running" ? "teal" : toneOf(a.outcome === "exited" ? (a.exitCode === 0 ? "success" : "failed") : a.outcome)) as Tone,
+      live: a.outcome === "running",
+      what: a.reason ?? `${a.vm}${a.worker ? ` on ${a.worker}` : ""}`,
+      note: a.finishedAt ? formatRelativeAge(a.finishedAt) : formatRelativeAge(a.startedAt),
+    })),
+    {
+      name: "running",
+      tone: job.startedAt ? "teal" : "off",
+      live: job.status === "running",
+      note: job.startedAt ? formatJobDuration(job.startedAt, job.finishedAt) : undefined,
+    },
+    {
+      name: terminal ? job.status : "finished",
+      tone: terminal ? toneOf(job.status) : "off",
+      what: terminal && job.exitCode != null ? `exit ${job.exitCode}` : undefined,
+      note: job.finishedAt ? formatRelativeAge(job.finishedAt) : undefined,
+    },
   ];
   return (
-    <div className="flex flex-col gap-1 text-xs">
-      {steps.map((s) => (
-        <div key={s.label} className="flex items-center gap-2">
-          <span
-            className="h-2 w-2 rounded-full"
-            style={{ background: s.done ? "var(--status-success)" : "var(--border)" }}
-          />
-          <span style={{ color: "var(--fg-muted)" }}>{s.label}</span>
-          <span className="ml-auto">{s.at ? formatRelativeAge(s.at) : "—"}</span>
-        </div>
-      ))}
-    </div>
+    <Section label="Lifecycle">
+      <div className="stages">
+        {rows.map((s, i) => {
+          const off = s.tone === "off";
+          return (
+            <div key={i} className="stage">
+              <span className="spine">
+                <span className={s.live ? "dot live" : ""} style={{ background: off ? "#1e262b" : TONES[s.tone as Tone].dot }} />
+              </span>
+              <span className="flex min-w-0 flex-col gap-0.5">
+                <span className="name" style={{ color: off ? "#4f5c61" : s.live ? "var(--accent)" : "#c3d1d5" }}>
+                  {s.name}
+                </span>
+                {s.what && <span className="what">{s.what}</span>}
+              </span>
+              <span className="note">{s.note ?? ""}</span>
+            </div>
+          );
+        })}
+      </div>
+    </Section>
   );
 }

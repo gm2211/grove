@@ -60,3 +60,46 @@ export function parseDurationToNanos(input: string): number | undefined {
   };
   return Math.round(value * factor[unit]);
 }
+
+/**
+ * Parses a Go duration string ("1h0m0s", "30m", "90s", "1.5h") into milliseconds. A bare number
+ * is seconds, matching internal/dispatch/duration.go. Returns undefined for anything else.
+ */
+export function parseGoDurationMs(input: string | undefined): number | undefined {
+  if (!input) return undefined;
+  const s = input.trim();
+  if (/^\d+(\.\d+)?$/.test(s)) return parseFloat(s) * 1000;
+  const unit: Record<string, number> = { ns: 1e-6, us: 1e-3, "µs": 1e-3, ms: 1, s: 1000, m: 60_000, h: 3_600_000 };
+  const re = /(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)/g;
+  let total = 0;
+  let consumed = 0;
+  for (let m = re.exec(s); m; m = re.exec(s)) {
+    total += parseFloat(m[1]) * unit[m[2]];
+    consumed += m[0].length;
+  }
+  return consumed === s.length && consumed > 0 ? total : undefined;
+}
+
+/** "14:30" in the viewer's locale. */
+export function formatClock(iso: string | Date | undefined | null): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/** Short, glanceable duration: 42s, 7m, 3.4h, 2d. */
+export function formatShort(ms: number): string {
+  if (ms < 0) ms = 0;
+  const s = ms / 1000;
+  if (s < 60) return `${Math.floor(s)}s`;
+  const m = s / 60;
+  if (m < 60) return `${Math.floor(m)}m`;
+  const h = m / 60;
+  if (h < 24) return `${h.toFixed(1)}h`;
+  return `${Math.floor(h / 24)}d`;
+}
+
+/** "github.com/gm2211/grove" → "gm2211/grove". */
+export function shortRepo(repo: string | undefined): string {
+  if (!repo) return "";
+  return repo.replace(/^https?:\/\//, "").replace(/^github\.com\//, "").replace(/\.git$/, "");
+}

@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router";
 import { api } from "../api/client";
 import { Button } from "../components/Button";
+import { View, ViewHead } from "../components/Layout";
 import type { JobKind } from "../api/types";
 
 // Same shape grove's server accepts via time.ParseDuration ("30m", "2h", "90s", "1h30m", ...) —
@@ -81,31 +82,34 @@ export function DispatchPage() {
   }
 
   return (
-    <div className="max-w-2xl">
-      <h1 className="mb-4 text-lg font-semibold">Dispatch a job</h1>
-      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-        <div className="grid grid-cols-2 gap-4">
-          <label className="flex flex-col gap-1 text-xs">
-            <span style={{ color: "var(--fg-faint)" }}>kind</span>
-            <select
-              className="rounded border px-2 py-1.5 text-sm"
-              style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
-              value={kind}
-              onChange={(e) => setKind(e.target.value as JobKind)}
-            >
-              <option value="build">build</option>
-              <option value="agent">agent</option>
-								{canShell && <option value="shell">shell</option>}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1 text-xs">
-            <span style={{ color: "var(--fg-faint)" }}>pool</span>
-            <select
-              className="rounded border px-2 py-1.5 text-sm"
-              style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
-              value={effectivePool}
-              onChange={(e) => setPool(e.target.value)}
-            >
+    <View>
+      <ViewHead
+        kicker="Dispatch · one job into one pool"
+        title="Send a job to the fleet"
+        lede="It waits in its pool's queue until Nomad finds room in a VM, then streams its log here. Builds and agent sessions clone the repo first; shell jobs just run the script."
+      />
+      <form onSubmit={handleSubmit} className="panel flex max-w-3xl flex-col gap-5 p-5 sm:p-6">
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+          <div className="field">
+            <span className="label">kind</span>
+            <div className="seg self-start">
+              {(["build", "agent", ...(canShell ? ["shell"] : [])] as JobKind[]).map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  className="systab"
+                  data-on={kind === k ? "1" : "0"}
+                  data-kind={k}
+                  onClick={() => setKind(k)}
+                >
+                  {k}
+                </button>
+              ))}
+            </div>
+          </div>
+          <label className="field">
+            <span className="label">pool</span>
+            <select className="input" value={effectivePool} onChange={(e) => setPool(e.target.value)} name="pool">
               {pools.length === 0 && <option value="">no pools observed</option>}
               {pools.map((p) => (
                 <option key={p} value={p}>
@@ -117,47 +121,35 @@ export function DispatchPage() {
         </div>
 
         {kind !== "shell" && (
-          <div className="grid grid-cols-2 gap-4">
-            <label className="flex flex-col gap-1 text-xs">
-              <span style={{ color: "var(--fg-faint)" }}>repo</span>
+          <div className="grid grid-cols-1 gap-5 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+            <label className="field">
+              <span className="label">repo</span>
               <input
-                className="mono rounded border px-2 py-1.5 text-sm"
-                style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
-                placeholder="github.com/gm2211/grove"
+                className="input"
+                name="repo"
+                placeholder="https://github.com/gm2211/grove"
                 value={repo}
                 onChange={(e) => setRepo(e.target.value)}
               />
             </label>
-            <label className="flex flex-col gap-1 text-xs">
-              <span style={{ color: "var(--fg-faint)" }}>ref</span>
-              <input
-                className="mono rounded border px-2 py-1.5 text-sm"
-                style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
-                placeholder="main"
-                value={ref}
-                onChange={(e) => setRef(e.target.value)}
-              />
+            <label className="field">
+              <span className="label">ref</span>
+              <input className="input" name="ref" placeholder="main" value={ref} onChange={(e) => setRef(e.target.value)} />
             </label>
           </div>
         )}
 
-        <label className="flex flex-col gap-1 text-xs">
-          <span style={{ color: "var(--fg-faint)" }}>script</span>
-          <textarea
-            className="mono h-32 resize-y rounded border px-2 py-1.5 text-sm"
-            style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
-            value={script}
-            onChange={(e) => setScript(e.target.value)}
-          />
+        <label className="field">
+          <span className="label">script</span>
+          <textarea className="input h-32" name="script" value={script} onChange={(e) => setScript(e.target.value)} />
         </label>
 
-        <div className="flex flex-col gap-1 text-xs">
-          <span style={{ color: "var(--fg-faint)" }}>env</span>
+        <div className="field">
+          <span className="label">env</span>
           {env.map((row, i) => (
             <div key={i} className="flex gap-2">
               <input
-                className="mono flex-1 rounded border px-2 py-1 text-sm"
-                style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
+                className="input flex-1"
                 placeholder="KEY"
                 value={row.key}
                 onChange={(e) =>
@@ -165,44 +157,41 @@ export function DispatchPage() {
                 }
               />
               <input
-                className="mono flex-1 rounded border px-2 py-1 text-sm"
-                style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
+                className="input flex-1"
                 placeholder="value"
                 value={row.value}
                 onChange={(e) =>
                   setEnv((rows) => rows.map((r, idx) => (idx === i ? { ...r, value: e.target.value } : r)))
                 }
               />
-              <Button
-                type="button"
-                onClick={() => setEnv((rows) => rows.filter((_, idx) => idx !== i))}
-              >
+              <Button type="button" size="icon" className="h-[38px] w-[38px]" title="remove" onClick={() => setEnv((rows) => rows.filter((_, idx) => idx !== i))}>
                 ✕
               </Button>
             </div>
           ))}
-          <Button type="button" className="self-start" onClick={() => setEnv((rows) => [...rows, { key: "", value: "" }])}>
+          <Button type="button" size="sm" className="self-start" onClick={() => setEnv((rows) => [...rows, { key: "", value: "" }])}>
             + add var
           </Button>
         </div>
 
-        <label className="flex flex-col gap-1 text-xs">
-          <span style={{ color: "var(--fg-faint)" }}>timeout (e.g. 30m, 1h)</span>
-          <input
-            className="mono w-32 rounded border px-2 py-1.5 text-sm"
-            style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
-            value={timeout}
-            onChange={(e) => setTimeoutStr(e.target.value)}
-          />
+        <label className="field">
+          <span className="label">timeout</span>
+          <input className="input w-36" name="timeout" value={timeout} onChange={(e) => setTimeoutStr(e.target.value)} />
+          <span className="hint">A Go duration: 30m, 1h, 1h30m.</span>
         </label>
 
-        {formError && <div style={{ color: "var(--status-failed)" }}>{formError}</div>}
-        {submit.isError && <div style={{ color: "var(--status-failed)" }}>{String(submit.error)}</div>}
+        {formError && <div className="mono text-[12px] text-[#eda3a3]">{formError}</div>}
+        {submit.isError && <div className="mono text-[12px] text-[#eda3a3]">{String(submit.error)}</div>}
 
-        <Button type="submit" variant="primary" disabled={submit.isPending} className="self-start">
-          {submit.isPending ? "Dispatching…" : "Dispatch"}
-        </Button>
+        <div className="flex items-center gap-3 border-t border-[#171d21] pt-5">
+          <Button type="submit" variant="solid" disabled={submit.isPending}>
+            {submit.isPending ? "Dispatching…" : "Dispatch"}
+          </Button>
+          <span className="stat">
+            into <b>{effectivePool || "—"}</b> as <b>{kind}</b>
+          </span>
+        </div>
       </form>
-    </div>
+    </View>
   );
 }

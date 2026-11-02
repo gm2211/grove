@@ -1,47 +1,45 @@
-import { useState, type ReactNode } from "react";
-import { Button } from "./Button";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
-/** A button that requires a second click within a few seconds to actually fire. */
+/** A button that needs a second click within a few seconds to actually fire. */
 export function ConfirmButton({
   label,
-  confirmLabel = "confirm?",
+  confirmLabel = "sure?",
   onConfirm,
-  variant = "danger",
   size = "md",
   disabled,
-  className,
+  className = "",
   title,
 }: {
   label: ReactNode;
   confirmLabel?: ReactNode;
   onConfirm: () => void;
-  variant?: "danger" | "default" | "primary";
-  size?: "md" | "sm" | "icon";
+  size?: "md" | "sm";
   disabled?: boolean;
   className?: string;
   title?: string;
 }) {
   const [armed, setArmed] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
 
   return (
-    <Button
+    <button
       type="button"
-      variant={armed ? "danger" : variant}
-      size={armed && size === "icon" ? "sm" : size}
+      className={`act ${armed ? "act-armed" : "act-warn"} ${size === "sm" ? "sm" : ""} ${className}`}
       disabled={disabled}
-      className={className}
       title={title}
       onClick={() => {
+        clearTimeout(timer.current);
         if (armed) {
           setArmed(false);
           onConfirm();
         } else {
           setArmed(true);
-          setTimeout(() => setArmed(false), 3000);
+          timer.current = setTimeout(() => setArmed(false), 3000);
         }
       }}
     >
       {armed ? confirmLabel : label}
-    </Button>
+    </button>
   );
 }

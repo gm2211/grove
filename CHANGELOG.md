@@ -4,6 +4,13 @@ All notable changes to grove are documented here.
 
 ## v0.1.31
 
+- **The control-plane UI is a live map now.** The queue, worker Macs, their VMs and the jobs running
+  in each VM sit in columns left to right, in the order a job travels, with a detail column for whatever is selected: its
+  lifecycle, a live log tail for a running job, and the actions you'd take there (pause, snooze,
+  wake, recycle, cancel). The look follows Argos: dark, mono labels, a serif headline per view.
+  Jobs, job detail, Dispatch and Settings were restyled to match; `/fleet` links go to the map.
+- **README: new screenshot, a walkthrough GIF, and both diagrams redrawn dark**, with the
+  credential broker added to "Where grove runs" and the broker flow drawn in the same style.
 - **A VM that Orchard restarted is enrolled into Nomad again.** Orchard's OnFailure restart boots a
   fresh clone under the same VM UID, without the certificate the last enrolment wrote, and grove
   remembered enrolments by UID alone, so the restarted VM waited up to 30 minutes for a new one.

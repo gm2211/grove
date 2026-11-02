@@ -53,17 +53,34 @@ not built, run `make ui`" page until you build the UI for real.
 
 ## Pages
 
-- **Fleet** — hosts grouped card-by-card: Orchard worker (online/cordoned, slots used/total),
-  its VMs (pool, status, TTL remaining, running jobs, recycle), matching Nomad nodes. Polls every
-  5s.
-- **Jobs** — table of all jobs, filterable by status/pool. Polls every 3s.
-- **Job detail** — request, status timeline, live log via `EventSource` (auto-scroll with pause),
-  cancel, artifacts.
+- **Map** (`/map`, the default; `/fleet` redirects here) — the live map, after Argos's: columns
+  in the order a job travels: the queue of pending jobs → worker Macs → their Tart VMs (one Nomad
+  node each, same name) → the jobs on the selected VM. Selecting a queued job lights the Macs and
+  VMs of its pool. A detail column for the selection
+  (lifecycle rail, live log tail, pause/snooze/wake/recycle/cancel). The selection lives in the URL
+  (`?w=&v=&j=`). A Table toggle lists every VM flat. Macs waiting to join show above the columns.
+  Polls fleet every 5s, jobs every 3s.
+- **Jobs** — every job, newest first, filterable by status and pool. Polls every 3s.
+- **Job detail** — lifecycle and attempts, request, script, env, artifacts, live log (fetch +
+  NDJSON, auto-scroll with pause), cancel.
 - **Dispatch** — form to submit a `JobRequest`; navigates to the new job's detail page.
-- **Settings** — server URL + bearer token, stored in `localStorage`.
+- **Settings** — server URL + bearer token, stored in `localStorage`; private-repo sourcing for
+  operators.
+
+## Look
+
+Dark only, borrowed from Argos's "Nocturne" map: near-black canvas, teal accent
+(`--accent: #7ee7c7`), JetBrains Mono for labels and data, a Newsreader serif headline per view,
+Inter for prose. Tokens and the shared primitives (`.mapnode`, `.act`, `.chip`, `.kicker`,
+`.facts`, `.stages`, `.logpane`) are in `src/index.css`, inside `@layer components` so Tailwind
+utilities still override them. Fonts are bundled via `@fontsource`, never fetched from a CDN: the UI
+is served from a private tailnet.
+
+`npm run screenshots` regenerates `docs/screenshots/` (stills at 2x and `walkthrough.gif`, which
+needs ffmpeg) from the deterministic mock fleet.
 
 ## Stack
 
 React 19, react-router, `@tanstack/react-query` for polling/mutations, Tailwind v4
 (`@tailwindcss/vite`, no separate config file needed — see `src/index.css`). No UI kit; components
-are small and hand-written (`src/components/`). Dark/light follows `prefers-color-scheme`.
+are small and hand-written (`src/components/`). 

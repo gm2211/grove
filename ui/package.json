@@ -12,6 +12,9 @@
     "screenshots": "node scripts/screenshots.mjs"
   },
   "dependencies": {
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/newsreader": "^5.3.0",
     "@tanstack/react-query": "^5.62.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

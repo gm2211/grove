@@ -12,73 +12,132 @@ import type {
   PendingJoin,
 } from "../api/types";
 
-let idCounter = 1000;
-function nextId(prefix: string): string {
-  idCounter += 1;
-  return `${prefix}-${idCounter.toString(36)}`;
+// Deterministic, so `npm run screenshots` captures the same fleet every time.
+let seed = 7;
+function rand(): number {
+  seed = (seed * 16807) % 2147483647;
+  return (seed - 1) / 2147483646;
 }
+
+// Job ids are 16 hex characters, like internal/dispatch's randomID.
+function hexId(): string {
+  let s = "";
+  for (let i = 0; i < 16; i++) s += Math.floor(rand() * 16).toString(16);
+  return s;
+}
+function nextId(prefix: string): string {
+  return `${prefix}-${hexId().slice(0, 8)}`;
+}
+
+const MIN = 60_000;
+const NOW = Date.now();
+const ago = (ms: number) => new Date(NOW - ms).toISOString();
 
 interface HostDef {
   host: string;
   arch: "arm64" | "amd64";
-  cordoned: boolean;
-  online: boolean;
+  cores: number;
+  memGB: number;
   vmSlots: number;
-  snoozedUntil?: string;
+  online: boolean;
+  paused?: boolean;
+  snoozeMinutes?: number;
+  // pool and age (minutes) of each VM; VMs live 12h, then grove recycles them
+  vms: { pool: "linux" | "macos"; ageMin: number }[];
 }
 
 const hosts: HostDef[] = [
-  { host: "mac-mini-1", arch: "arm64", cordoned: false, online: true, vmSlots: 4 },
-  { host: "mac-1", arch: "arm64", cordoned: false, online: true, vmSlots: 6 },
-  { host: "mac-mini-2", arch: "arm64", cordoned: true, online: true, vmSlots: 4, snoozedUntil: new Date(Date.now() + 90 * 60_000).toISOString() },
-  { host: "linux-box-1", arch: "amd64", cordoned: false, online: false, vmSlots: 8 },
+  {
+    host: "mac-studio-1",
+    arch: "arm64",
+    cores: 24,
+    memGB: 64,
+    vmSlots: 4,
+    online: true,
+    vms: [
+      { pool: "linux", ageMin: 268 },
+      { pool: "linux", ageMin: 655 },
+      { pool: "macos", ageMin: 131 },
+    ],
+  },
+  {
+    host: "mac-mini-1",
+    arch: "arm64",
+    cores: 10,
+    memGB: 32,
+    vmSlots: 2,
+    online: true,
+    vms: [
+      { pool: "linux", ageMin: 402 },
+      { pool: "macos", ageMin: 47 },
+    ],
+  },
+  {
+    host: "mac-mini-2",
+    arch: "arm64",
+    cores: 10,
+    memGB: 32,
+    vmSlots: 2,
+    online: true,
+    snoozeMinutes: 95,
+    vms: [{ pool: "linux", ageMin: 512 }],
+  },
+  { host: "macbook-pro", arch: "arm64", cores: 14, memGB: 36, vmSlots: 2, online: false, vms: [] },
 ];
 
-const pools = ["linux", "macos"] as const;
+const VM_TTL_NS = 12 * 3600 * 1e9;
 
 function makeWorkers(): FleetEntry[] {
-  return hosts.map((h) => ({
-    name: h.host,
-    kind: "worker",
-    host: h.host,
-    arch: h.arch,
-    online: h.online,
-    cordoned: h.cordoned,
-    status: h.online ? (h.snoozedUntil ? "snoozed" : h.cordoned ? "cordoned" : "ready") : "offline",
-    ...(h.snoozedUntil ? { snoozedUntil: h.snoozedUntil, snoozeMode: "drain", pauseReasons: ["snooze"] } : {}),
-    capacity: { cpu: h.arch === "arm64" ? 10 : 16, memoryMiB: 32768, vmSlots: h.vmSlots },
-    running: h.online ? Math.min(h.vmSlots, 1 + Math.floor(Math.random() * h.vmSlots)) : 0,
-    labels: { arch: h.arch },
-    raw: {},
-  }));
+  return hosts.map((h) => {
+    const snoozed = h.snoozeMinutes !== undefined;
+    return {
+      name: h.host,
+      kind: "worker",
+      host: h.host,
+      arch: h.arch,
+      online: h.online,
+      cordoned: snoozed || !!h.paused,
+      status: !h.online ? "offline" : snoozed ? "snoozed" : h.paused ? "paused" : "online",
+      ...(snoozed
+        ? {
+            snoozedUntil: new Date(NOW + (h.snoozeMinutes ?? 0) * MIN).toISOString(),
+            snoozeMode: "drain",
+            pauseReasons: ["snooze"],
+          }
+        : {}),
+      capacity: { cpu: h.cores, memoryMiB: h.memGB * 1024, vmSlots: h.vmSlots },
+      running: h.online ? h.vms.length : 0,
+      labels: {},
+      raw: {},
+    };
+  });
 }
 
 function makeVMs(): FleetEntry[] {
   const vms: FleetEntry[] = [];
   for (const h of hosts) {
-    if (!h.online) continue;
-    const count = h.cordoned ? 1 : 1 + Math.floor(Math.random() * 3);
-    for (let i = 0; i < count; i++) {
-      const pool = pools[(hosts.indexOf(h) + i) % pools.length];
-      const ageMinutes = Math.floor(Math.random() * 600);
-      const ttlMinutes = 720; // 12h
+    const perPool: Record<string, number> = {};
+    for (const v of h.vms) {
+      const n = perPool[v.pool] ?? 0;
+      perPool[v.pool] = n + 1;
       vms.push({
-        name: `${pool}-${h.host}-${i}`,
+        // <pool>-<worker>-<n>, the name fleet.ParseVMName reads back
+        name: `${v.pool}-${h.host}-${n}`,
         kind: "vm",
         host: h.host,
-        pool,
-        arch: h.arch,
+        pool: v.pool,
         online: true,
         cordoned: false,
-        status: Math.random() > 0.9 ? "pending" : "running",
-        capacity: { cpu: 4, memoryMiB: 8192 },
-        running: Math.floor(Math.random() * 3),
-        // Real VM labels are worker selectors (see ARCHITECTURE.md), not pool/host bookkeeping —
-        // pool/host above are what the server actually derives and returns.
+        status: "running",
+        capacity: v.pool === "macos" ? { cpu: 4, memoryMiB: 8192 } : { cpu: 6, memoryMiB: 12288 },
+        running: 1,
         labels: {},
         raw: {
-          ageMinutes,
-          ttlRemainingMinutes: Math.max(0, ttlMinutes - ageMinutes),
+          image: v.pool === "macos" ? "ghcr.io/gm2211/grove-macos-worker:latest" : "ghcr.io/gm2211/grove-linux-worker:latest",
+          worker: h.host,
+          createdAt: ago(v.ageMin * MIN),
+          ttl: VM_TTL_NS,
+          restartCount: 0,
         },
       });
     }
@@ -86,17 +145,17 @@ function makeVMs(): FleetEntry[] {
   return vms;
 }
 
+// A Nomad node registers under its VM's own name (see internal/fleet/rollcall.go).
 function makeNodes(vms: FleetEntry[]): FleetEntry[] {
   return vms.map((vm) => ({
-    name: `nomad-${vm.name}`,
+    name: vm.name,
     kind: "node",
     host: vm.host,
-    arch: vm.arch,
-    online: vm.status === "running",
+    online: true,
     cordoned: false,
-    status: vm.status === "running" ? "ready" : "initializing",
-    capacity: { cpu: vm.capacity?.cpu, memoryMiB: vm.capacity?.memoryMiB },
-    running: vm.running,
+    status: "ready",
+    capacity: { memoryMiB: vm.capacity?.memoryMiB },
+    running: 0,
     labels: { pool: vm.pool ?? "", host: vm.host ?? "" },
     raw: {},
   }));
@@ -111,74 +170,101 @@ export const state: { fleet: FleetResponse } = {
   })(),
 };
 
-const repos = [
-  "github.com/gm2211/grove",
-  "github.com/gm2211/orchard",
+const requesters = ["argos", "mcp:claude-code", "cli:gio-macbook", "ci:github"];
+
+interface JobDef {
+  kind: JobKind;
+  pool: "linux" | "macos";
+  vm?: string;
+  status: JobStatus;
+  repo?: string;
+  ref?: string;
+  script: string;
+  agoMin: number;
+  tookMin?: number;
+  reason?: string;
+}
+
+const B = "make test && make build";
+const SWIFT = "xcodebuild -scheme App -destination 'platform=macOS' test";
+const AGENT = "claude -p \"$GROVE_TASK\" --permission-mode acceptEdits";
+
+const JOBS: JobDef[] = [
+  // running now
+  { kind: "build", pool: "linux", vm: "linux-mac-studio-1-0", status: "running", repo: "github.com/gm2211/grove", ref: "pr-151", script: B, agoMin: 3 },
+  { kind: "agent", pool: "linux", vm: "linux-mac-studio-1-0", status: "running", repo: "github.com/gm2211/argos", ref: "main", script: AGENT, agoMin: 11 },
+  { kind: "build", pool: "linux", vm: "linux-mac-studio-1-1", status: "running", repo: "github.com/gm2211/orchard", ref: "main", script: B, agoMin: 6 },
+  { kind: "agent", pool: "macos", vm: "macos-mac-studio-1-0", status: "running", repo: "github.com/gm2211/skim", ref: "argos/sk-41", script: AGENT, agoMin: 18 },
+  { kind: "build", pool: "macos", vm: "macos-mac-mini-1-0", status: "running", repo: "github.com/gm2211/turbol", ref: "release/2.4", script: SWIFT, agoMin: 4 },
+  { kind: "build", pool: "linux", vm: "linux-mac-mini-2-0", status: "running", repo: "github.com/gm2211/motive", ref: "pr-88", script: B, agoMin: 9 },
+  // waiting for room
+  { kind: "build", pool: "macos", status: "pending", repo: "github.com/gm2211/turbol", ref: "pr-212", script: SWIFT, agoMin: 2, reason: "resources exhausted (vm-slots 2) — 0/2 nodes available" },
+  { kind: "agent", pool: "macos", status: "pending", repo: "github.com/gm2211/skim", ref: "argos/sk-44", script: AGENT, agoMin: 1, reason: "resources exhausted (vm-slots 2) — 0/2 nodes available" },
+  { kind: "build", pool: "linux", status: "pending", repo: "github.com/gm2211/jev-polls", ref: "main", script: B, agoMin: 0.4 },
+  // history
+  { kind: "build", pool: "linux", vm: "linux-mac-studio-1-0", status: "success", repo: "github.com/gm2211/grove", ref: "main", script: B, agoMin: 22, tookMin: 6 },
+  { kind: "build", pool: "linux", vm: "linux-mac-studio-1-1", status: "failed", repo: "github.com/gm2211/grove", ref: "pr-149", script: B, agoMin: 31, tookMin: 4 },
+  { kind: "agent", pool: "macos", vm: "macos-mac-studio-1-0", status: "success", repo: "github.com/gm2211/skim", ref: "argos/sk-39", script: AGENT, agoMin: 46, tookMin: 21 },
+  { kind: "shell", pool: "macos", vm: "macos-mac-mini-1-0", status: "success", script: "sw_vers && xcrun --show-sdk-version", agoMin: 50, tookMin: 0.3 },
+  { kind: "build", pool: "linux", vm: "linux-mac-mini-1-0", status: "success", repo: "github.com/gm2211/orchard", ref: "pr-31", script: B, agoMin: 58, tookMin: 7 },
+  { kind: "build", pool: "linux", vm: "linux-mac-mini-2-0", status: "canceled", repo: "github.com/gm2211/motive", ref: "pr-87", script: B, agoMin: 64, tookMin: 2 },
+  { kind: "agent", pool: "linux", vm: "linux-mac-studio-1-0", status: "success", repo: "github.com/gm2211/argos", ref: "main", script: AGENT, agoMin: 75, tookMin: 33 },
+  { kind: "build", pool: "macos", vm: "macos-mac-mini-1-0", status: "lost", repo: "github.com/gm2211/turbol", ref: "pr-209", script: SWIFT, agoMin: 96, tookMin: 12 },
+  { kind: "build", pool: "linux", vm: "linux-mac-studio-1-1", status: "success", repo: "github.com/gm2211/grove", ref: "pr-148", script: B, agoMin: 110, tookMin: 6 },
+  { kind: "build", pool: "linux", vm: "linux-mac-mini-1-0", status: "success", repo: "github.com/gm2211/jev-polls", ref: "main", script: B, agoMin: 128, tookMin: 3 },
+  { kind: "agent", pool: "macos", vm: "macos-mac-studio-1-0", status: "failed", repo: "github.com/gm2211/skim", ref: "argos/sk-37", script: AGENT, agoMin: 140, tookMin: 15 },
+  { kind: "shell", pool: "linux", vm: "linux-mac-studio-1-0", status: "success", script: "df -h && uptime", agoMin: 151, tookMin: 0.2 },
+  { kind: "build", pool: "linux", vm: "linux-mac-studio-1-1", status: "success", repo: "github.com/gm2211/orchard", ref: "main", script: B, agoMin: 177, tookMin: 8 },
+  { kind: "build", pool: "macos", vm: "macos-mac-mini-1-0", status: "success", repo: "github.com/gm2211/turbol", ref: "main", script: SWIFT, agoMin: 204, tookMin: 14 },
+  { kind: "build", pool: "linux", vm: "linux-mac-mini-2-0", status: "success", repo: "github.com/gm2211/motive", ref: "main", script: B, agoMin: 233, tookMin: 5 },
 ];
-const kinds: JobKind[] = ["build", "agent", "shell"];
-const requesters = ["orchestrator", "mcp:claude-code", "cli"];
 
-function randomStatus(ageMs: number): JobStatus {
-  if (ageMs < 5_000) return "pending";
-  if (ageMs < 30_000) return "running";
-  const r = Math.random();
-  if (r < 0.75) return "success";
-  if (r < 0.9) return "failed";
-  if (r < 0.97) return "canceled";
-  return "lost";
-}
-
-function makeJob(i: number): Job {
-  const kind = kinds[i % kinds.length];
-  const pool = pools[i % pools.length];
-  const submittedAt = new Date(Date.now() - i * 137_000 - Math.random() * 60_000);
-  const ageMs = Date.now() - submittedAt.getTime();
-  const status = randomStatus(ageMs);
-  const started =
-    status === "pending"
-      ? null
-      : new Date(submittedAt.getTime() + 2_000 + Math.random() * 3_000);
-  const finished =
-    status === "success" || status === "failed" || status === "canceled" || status === "lost"
-      ? new Date((started ?? submittedAt).getTime() + 20_000 + Math.random() * 240_000)
-      : null;
-
+function makeJob(d: JobDef, i: number): Job {
+  const submitted = NOW - d.agoMin * MIN - 20_000;
+  const started = d.status === "pending" ? undefined : submitted + 4_000 + rand() * 6_000;
+  const finished = started !== undefined && d.tookMin !== undefined ? started + d.tookMin * MIN : undefined;
   const req: JobRequest = {
-    kind,
-    pool,
-    repo: kind === "shell" ? undefined : repos[i % repos.length],
-    ref: kind === "shell" ? undefined : i % 3 === 0 ? "main" : `pr-${100 + i}`,
-    script:
-      kind === "build"
-        ? "make test && make build"
-        : kind === "agent"
-          ? "claude --print 'implement bd-1234'"
-          : "df -h && uptime",
+    kind: d.kind,
+    pool: d.pool,
+    repo: d.repo ? `https://${d.repo}` : undefined,
+    ref: d.ref,
+    script: d.script,
     env: { CI: "true" },
-    timeout: "1h0m0s",
+    timeout: d.kind === "agent" ? "2h0m0s" : "30m0s",
     requester: requesters[i % requesters.length],
-    meta: { bead: `bd-${1000 + i}` },
   };
-
   return {
-    id: `job-${1000 + i}`,
+    id: hexId(),
     request: req,
-    status,
-    node: status === "pending" ? undefined : `nomad-${pool}-${hosts[i % hosts.length].host}-0`,
-    allocId: status === "pending" ? undefined : nextId("alloc"),
-    exitCode: status === "success" ? 0 : status === "failed" ? 1 : null,
-    submittedAt: submittedAt.toISOString(),
-    startedAt: started?.toISOString() ?? null,
-    finishedAt: finished?.toISOString() ?? null,
+    status: d.status,
+    node: d.vm,
+    allocId: d.vm ? `${hexId().slice(0, 8)}-${hexId().slice(0, 4)}` : undefined,
+    exitCode: d.status === "success" ? 0 : d.status === "failed" ? 2 : null,
+    submittedAt: new Date(submitted).toISOString(),
+    startedAt: started ? new Date(started).toISOString() : null,
+    finishedAt: finished ? new Date(finished).toISOString() : null,
+    pendingReason: d.reason,
+    failureReason: d.status === "lost" ? "the VM stopped answering mid-run; requeue it" : undefined,
+    attempts: d.vm
+      ? [
+          {
+            vm: d.vm,
+            worker: d.vm.replace(/^[a-z]+-/, "").replace(/-\d+$/, ""),
+            startedAt: new Date(started ?? submitted).toISOString(),
+            finishedAt: finished ? new Date(finished).toISOString() : null,
+            outcome: d.status === "running" ? "running" : d.status === "lost" ? "lost" : d.status === "canceled" ? "canceled" : "exited",
+            exitCode: d.status === "success" ? 0 : d.status === "failed" ? 2 : null,
+          },
+        ]
+      : undefined,
     artifacts:
-      kind === "build" && status === "success"
-        ? [{ path: "artifacts/bin/grove", url: "#", size: 15_234_112 }]
+      d.kind === "build" && d.status === "success"
+        ? [{ path: "artifacts/bin/app", url: "#", size: 15_234_112 }]
         : [],
-    meta: req.meta,
   };
 }
 
-export const jobs: Job[] = Array.from({ length: 27 }, (_, i) => makeJob(i));
+export const jobs: Job[] = JOBS.map(makeJob);
 
 export function findJob(id: string): Job | undefined {
   return jobs.find((j) => j.id === id);
@@ -197,7 +283,7 @@ export function submitJob(req: JobRequest): Job {
   setTimeout(() => {
     job.status = "running";
     job.startedAt = new Date().toISOString();
-    job.node = `nomad-${req.pool}-${hosts[0].host}-0`;
+    job.node = `${req.pool}-${hosts[0].host}-0`;
     job.allocId = nextId("alloc");
   }, 2500);
   setTimeout(() => {
@@ -221,7 +307,8 @@ export function pauseWorker(name: string): void {
   const w = state.fleet.workers.find((w) => w.name === name);
   if (w) {
     w.cordoned = true;
-    w.status = "cordoned";
+    w.status = "paused";
+    w.pauseReasons = [...new Set([...(w.pauseReasons ?? []), "operator"])];
   }
 }
 
@@ -245,9 +332,9 @@ export function wakeWorker(name: string): void {
   w.pauseReasons = (w.pauseReasons ?? []).filter((r) => r !== "snooze");
   if (w.pauseReasons.length === 0) {
     w.cordoned = false;
-    w.status = "ready";
+    w.status = "online";
   } else {
-    w.status = "cordoned";
+    w.status = "paused";
   }
 }
 
@@ -255,7 +342,8 @@ export function resumeWorker(name: string): void {
   const w = state.fleet.workers.find((w) => w.name === name);
   if (w) {
     w.cordoned = false;
-    w.status = "ready";
+    w.status = "online";
+    w.pauseReasons = [];
   }
 }
 
@@ -266,7 +354,7 @@ export function recycleVM(name: string): void {
   state.fleet.vms[idx] = {
     ...old,
     status: "pending",
-    raw: { ageMinutes: 0, ttlRemainingMinutes: 720 },
+    raw: { ...(old.raw as Record<string, unknown>), createdAt: new Date().toISOString() },
   };
   setTimeout(() => {
     const cur = state.fleet.vms.find((v) => v.name === name);
@@ -275,17 +363,21 @@ export function recycleVM(name: string): void {
 }
 
 const LOG_LINES = [
-  "Cloning repository...",
-  "Checking out ref...",
-  "Resolving dependencies...",
-  "Running build script...",
+  "grove: cloning https://github.com/gm2211/grove @ pr-151",
+  "Cloning into '/work/src'...",
+  "HEAD is now at 4be2c1e Map: queue column follows the selected pool",
+  "grove: source ready in 2.1s, handing over to the job",
   "==> make test",
   "go vet ./...",
   "go test ./... -count=1",
-  "ok  \tgithub.com/gm2211/grove/internal/dispatch\t0.412s",
-  "ok  \tgithub.com/gm2211/grove/internal/orchard\t0.201s",
+  "ok  \tgithub.com/gm2211/grove/internal/broker\t1.904s",
+  "ok  \tgithub.com/gm2211/grove/internal/dispatch\t3.412s",
+  "ok  \tgithub.com/gm2211/grove/internal/fleet\t2.207s",
+  "ok  \tgithub.com/gm2211/grove/internal/install\t4.981s",
+  "ok  \tgithub.com/gm2211/grove/internal/server\t2.733s",
+  "ok  \tgithub.com/gm2211/grove/internal/snooze\t0.318s",
   "==> make build",
-  "building bin/grove ...",
+  "go build -ldflags '-X main.version=dev' -o bin/grove ./cmd/grove",
   "uploading artifacts/bin/grove (14.5 MiB)",
   "job finished",
 ];
@@ -294,16 +386,21 @@ export function mockLogStream(
   jobId: string,
   onLine: (line: string) => void,
 ): () => void {
-  let i = 0;
   const job = findJob(jobId);
+  const done = () => !!job && ["success", "failed", "canceled", "lost"].includes(job.status);
+  // A real stream replays from offset 0, so a job that has been running a while arrives with a
+  // backlog; then it trickles.
+  let i = 0;
+  const backlog = job?.startedAt ? Math.min(10, Math.floor((Date.now() - Date.parse(job.startedAt)) / 30_000)) : 0;
+  for (; i < backlog; i++) onLine(LOG_LINES[i]);
   const interval = setInterval(() => {
-    if (i >= LOG_LINES.length || (job && ["success", "failed", "canceled", "lost"].includes(job.status) && i > 3)) {
+    if (i >= LOG_LINES.length - (done() ? 0 : 1)) {
       clearInterval(interval);
       return;
     }
-    onLine(LOG_LINES[i % LOG_LINES.length]);
+    onLine(LOG_LINES[i]);
     i += 1;
-  }, 700);
+  }, 900);
   return () => clearInterval(interval);
 }
 

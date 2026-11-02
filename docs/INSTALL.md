@@ -73,7 +73,7 @@ grove setup
   it lists them and asks which one. Unattended, pass `--server http://<control-plane>:6130`
   (always works, no prompt) or `--yes` (accepts the discovered control plane only when exactly one
   answers).
-- Approve it. The Fleet page in `grove ui` lists every Mac that is waiting, with its name,
+- Approve it. The map in `grove ui` lists every Mac that is waiting, with its name,
   tailnet address and code, and an **Approve** button beside each one — so you can do this from
   whatever device already has the UI open. On a terminal instead, run `grove join approve <CODE>`
   on the control-plane machine. Either way, Grove then creates two unique,

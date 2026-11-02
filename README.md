@@ -16,9 +16,21 @@ and each VM runs a **Nomad** client that packs many jobs inside it: the VM is th
 boundary, Nomad is the scheduler within it. Every job — CI or agent — runs inside a VM, not
 next to your other work on the bare host.
 
-## Fleet at a glance
+## The live map
 
-![grove fleet page](docs/screenshots/fleet.png)
+![grove's live map: the queue of waiting jobs on the left, then worker Macs, their Tart VMs, the jobs Nomad packed into each VM, and the selected job's lifecycle and live log](docs/screenshots/map.png)
+
+Walk left to right the way a job does: it waits in its pool's queue until Nomad places it on a
+worker Mac whose VMs serve that pool, then runs in one of those VMs. Select a queued job to see
+which Macs and VMs it can land on, or anything else to follow its branch: a
+worker can be paused, snoozed or woken, a VM recycled, a job followed or cancelled, right there.
+
+<details>
+<summary>Walkthrough (approve a Mac, walk the fleet, follow a job)</summary>
+
+![A walkthrough of the grove UI: approving two Macs, walking from a worker to its VMs and jobs, the queue, the table view, the jobs list and a job's live log](docs/screenshots/walkthrough.gif)
+
+</details>
 
 ## Quick start
 
@@ -40,7 +52,7 @@ brew upgrade grove
 grove install --role control-plane
 
 # grove setup discovers this control plane over Tailscale. It prints a short approval code.
-# Approve it from the Fleet page in `grove ui` (it lists whoever is waiting), or here:
+# Approve it from the map in `grove ui` (it lists whoever is waiting), or here:
 grove join approve <CODE>
 
 # from anywhere on the tailnet: create the worker VMs from fleet.yaml
@@ -100,12 +112,13 @@ and status vocabulary.
 [SVG](docs/diagrams/architecture.svg)
 
 Solid outlines identify physical host roles; the nested dashed VM outline marks guest OS
-isolation. The outer green outline is the private Tailscale network. A control-plane role
+isolation. The outer teal outline is the private Tailscale network. A control-plane role
 can run on Linux or a Mac; the diagram separates roles for clarity.
 
 Solid arrows are same-host calls. Dashed arrows show network connection initiation:
 clients reach Grove's API, Orchard workers reach the controller, and Nomad clients inside
-VMs reach the Nomad server. `grove mcp` speaks stdio locally to its agent and HTTP to the
+VMs reach the Nomad server. Each worker Mac's credential broker dials grove for its jobs' tokens,
+and a job reaches only that broker, on one port of its VM's gateway. `grove mcp` speaks stdio locally to its agent and HTTP to the
 remote Grove API. Ports show installer defaults, not a live deployment audit. Build artifacts are kept in a
 directory on the control-plane host; artifact transfer paths are omitted.
 
@@ -133,34 +146,10 @@ The dispatcher sends the token *with* the job (`"credentials": [...]`, see
 credential broker on that job's own Mac swaps the real token in on the way to the service it
 belongs to — then masks it back out of the reply.
 
-```mermaid
-flowchart LR
-    dispatcher["your dispatcher\n(orchestrator, CI, you)\nholds the real tokens"]
+![How a job signs in without your token: the dispatcher hands grove the job and its tokens, grove passes them over the tailnet to the credential broker on the job's worker Mac, the job inside its Tart VM holds only a gph1_ placeholder and sends it to the broker on one gateway port, and the broker puts the real token in on the way to GitHub or an AI API and masks it out of the reply; everything else goes straight out with nothing added.](docs/diagrams/credential-broker.png)
 
-    subgraph cp["control plane"]
-        grove["grove\nplaces the job,\npasses its tokens on,\nkeeps none on disk"]
-    end
-
-    subgraph mac["worker Mac"]
-        broker["credential broker\non the host\ntokens in RAM,\nthis Mac's jobs only"]
-        subgraph tart["Tart VM"]
-            job["your job\nholds only gph1_...\nno tailnet, no LAN,\nnone of the host"]
-        end
-    end
-
-    up["github.com\napi.anthropic.com\napi.openai.com · chatgpt.com"]
-    net["the rest of the internet\nnpm, pip, cargo, docs..."]
-
-    dispatcher -- "1. job + its tokens" --> grove
-    grove -- "2. this job's tokens, over the tailnet" --> broker
-    job -- "3. Bearer gph1_... to one port on the VM's gateway" --> broker
-    broker -- "4. real token in, masked out of the reply" --> up
-    job -- "5. direct, nothing added" --> net
-
-    style cp fill:transparent,stroke:#2f6f4f
-    style mac fill:transparent,stroke:#8a9182
-    style tart fill:transparent,stroke:#9a4b3f
-```
+[Editable Excalidraw source](docs/diagrams/credential-broker.excalidraw) ·
+[SVG](docs/diagrams/credential-broker.svg)
 
 Three things hold that up:
 
@@ -255,8 +244,8 @@ assumptions: [spec/README.md](spec/README.md).
   with resumable NDJSON log streaming and stuck/orphaned-job detection (`lost` status)
 - credential broker on every worker Mac: a job's sign-ins reach it as `gph1_…` placeholders and
   the real tokens never enter the VM (see "Jobs never hold your tokens" above)
-- HTTP API (`/api/v1/...`) + embedded control-plane UI (fleet view, job list, job detail with
-  live logs, dispatch form, settings)
+- HTTP API (`/api/v1/...`) + embedded control-plane UI (a live map of workers, VMs, jobs and the
+  queue; job list; job detail with live logs; dispatch form; settings)
 - MCP server for orchestrators (Claude Code, Codex, your own agent runner) to dispatch and follow
   jobs over stdio
 - `grove install` role bootstrap (`worker` / `control-plane` / `client`) and `grove doctor`

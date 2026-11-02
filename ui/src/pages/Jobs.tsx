@@ -1,14 +1,17 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "react-router";
+import { useNavigate } from "react-router";
 import { api } from "../api/client";
-import { StatusPill } from "../components/StatusPill";
-import { formatJobDuration, formatRelativeAge } from "../lib/format";
+import { View, ViewHead } from "../components/Layout";
+import { StatusPill, TONES, toneOf } from "../components/StatusPill";
+import { formatJobDuration, formatRelativeAge, shortRepo } from "../lib/format";
 import type { JobStatus } from "../api/types";
 
-const ALL_STATUSES: JobStatus[] = ["pending", "running", "success", "failed", "canceled", "lost"];
+const ALL_STATUSES: JobStatus[] = ["running", "pending", "success", "failed", "canceled", "lost"];
+const COLS = "minmax(0,1.1fr) 0.55fr 0.6fr minmax(0,1.5fr) 0.8fr minmax(0,1.2fr) 0.65fr minmax(0,1fr)";
 
 export function JobsPage() {
+  const navigate = useNavigate();
   const { data, isLoading, error } = useQuery({
     queryKey: ["jobs"],
     queryFn: api.getJobs,
@@ -17,112 +20,116 @@ export function JobsPage() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [poolFilter, setPoolFilter] = useState<string>("all");
 
-  const pools = useMemo(
-    () => Array.from(new Set((data ?? []).map((j) => j.request.pool))).sort(),
-    [data],
+  const all = useMemo(() => data ?? [], [data]);
+  const pools = useMemo(() => Array.from(new Set(all.map((j) => j.request.pool))).sort(), [all]);
+  const counts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const j of all) c[j.status] = (c[j.status] ?? 0) + 1;
+    return c;
+  }, [all]);
+
+  const filtered = useMemo(
+    () =>
+      all
+        .filter((j) => statusFilter === "all" || j.status === statusFilter)
+        .filter((j) => poolFilter === "all" || j.request.pool === poolFilter)
+        .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()),
+    [all, statusFilter, poolFilter],
   );
 
-  const filtered = useMemo(() => {
-    return (data ?? [])
-      .filter((j) => statusFilter === "all" || j.status === statusFilter)
-      .filter((j) => poolFilter === "all" || j.request.pool === poolFilter)
-      .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
-  }, [data, statusFilter, poolFilter]);
-
-  if (isLoading) return <div className="p-4 text-sm">Loading jobs…</div>;
-  if (error) return <div className="p-4 text-sm text-red-500">Failed to load jobs: {String(error)}</div>;
+  const title = isLoading
+    ? "Reading jobs…"
+    : `${all.length} jobs · ${counts.running ?? 0} running · ${counts.pending ?? 0} queued · ${counts.failed ?? 0} failed`;
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold">Jobs</h1>
-        <div className="flex gap-2 text-xs">
-          <select
-            className="rounded border px-2 py-1"
-            style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-          >
-            <option value="all">all statuses</option>
-            {ALL_STATUSES.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-          <select
-            className="rounded border px-2 py-1"
-            style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
-            value={poolFilter}
-            onChange={(e) => setPoolFilter(e.target.value)}
-          >
-            <option value="all">all pools</option>
-            {pools.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
-        </div>
+    <View fill>
+      <ViewHead
+        kicker="Jobs · every dispatch, newest first"
+        title={title}
+        lede="Builds, agent sessions and shell jobs, each in its own VM. Open one for its lifecycle, attempts and live log."
+      />
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button className="selbtn" data-on={statusFilter === "all" ? "1" : "0"} onClick={() => setStatusFilter("all")}>
+          all <span className="n">{all.length}</span>
+        </button>
+        {ALL_STATUSES.map((s) => (
+          <button key={s} className="selbtn" data-on={statusFilter === s ? "1" : "0"} onClick={() => setStatusFilter(s)}>
+            <span className="dot" style={{ background: TONES[toneOf(s)].dot }} />
+            {s} <span className="n">{counts[s] ?? 0}</span>
+          </button>
+        ))}
+        <select
+          className="input ml-auto w-auto py-[6px]"
+          value={poolFilter}
+          onChange={(e) => setPoolFilter(e.target.value)}
+          aria-label="pool"
+        >
+          <option value="all">all pools</option>
+          {pools.map((p) => (
+            <option key={p} value={p}>
+              {p}
+            </option>
+          ))}
+        </select>
       </div>
 
-      <div className="overflow-x-auto rounded-lg border" style={{ borderColor: "var(--border)" }}>
-        <table className="w-full min-w-[900px] border-collapse text-sm">
-          <thead>
-            <tr
-              className="text-left text-[11px] uppercase tracking-wide"
-              style={{ color: "var(--fg-faint)", background: "var(--bg-inset)" }}
+      {error && <div className="mono text-[12px] text-[#eda3a3]">Failed to load jobs: {String(error)}</div>}
+
+      <div className="panel min-h-0 flex-1 overflow-auto">
+        <div className="min-w-[980px]">
+          <div className="trow thead sticky top-0 z-[1] bg-[#0b0e11]" style={{ gridTemplateColumns: COLS }}>
+            <span>Job</span>
+            <span>Kind</span>
+            <span>Pool</span>
+            <span>Repo @ ref</span>
+            <span>State</span>
+            <span>Node</span>
+            <span>Took</span>
+            <span>Requester</span>
+          </div>
+          {filtered.map((job) => (
+            <div
+              key={job.id}
+              role="link"
+              tabIndex={0}
+              className="trow cursor-pointer"
+              style={{ gridTemplateColumns: COLS }}
+              onClick={() => navigate(`/jobs/${encodeURIComponent(job.id)}`)}
+              onKeyDown={(e) => e.key === "Enter" && navigate(`/jobs/${encodeURIComponent(job.id)}`)}
             >
-              <th className="px-3 py-2 font-medium">ID</th>
-              <th className="px-3 py-2 font-medium">Kind</th>
-              <th className="px-3 py-2 font-medium">Pool</th>
-              <th className="px-3 py-2 font-medium">Repo@Ref</th>
-              <th className="px-3 py-2 font-medium">Status</th>
-              <th className="px-3 py-2 font-medium">Node</th>
-              <th className="px-3 py-2 font-medium">Duration</th>
-              <th className="px-3 py-2 font-medium">Requester</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((job) => (
-              <tr
-                key={job.id}
-                className="cursor-pointer border-t hover:brightness-95"
-                style={{ borderColor: "var(--border)" }}
-              >
-                <td className="p-0">
-                  <Link to={`/jobs/${job.id}`} className="block px-3 py-2 mono">
-                    {job.id}
-                  </Link>
-                </td>
-                <td className="px-3 py-2">{job.request.kind}</td>
-                <td className="px-3 py-2">{job.request.pool}</td>
-                <td className="px-3 py-2 mono text-xs">
-                  {job.request.repo ? `${job.request.repo.replace(/^github\.com\//, "")}@${job.request.ref}` : "—"}
-                </td>
-                <td className="px-3 py-2">
-                  <StatusPill status={job.status} />
-                </td>
-                <td className="px-3 py-2 mono text-xs">{job.node ?? "—"}</td>
-                <td className="px-3 py-2 text-xs">{formatJobDuration(job.startedAt, job.finishedAt)}</td>
-                <td className="px-3 py-2 text-xs" style={{ color: "var(--fg-muted)" }}>
-                  {job.request.requester ?? "—"}
-                  <div className="text-[10px]" style={{ color: "var(--fg-faint)" }}>
-                    {formatRelativeAge(job.submittedAt)}
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {filtered.length === 0 && (
-              <tr>
-                <td colSpan={8} className="px-3 py-6 text-center text-xs" style={{ color: "var(--fg-faint)" }}>
-                  no jobs match this filter
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+              <span className="mono flex min-w-0 items-center gap-2 text-[12.5px] text-[#eaf4f4]">
+                <span
+                  className={`dot ${job.status === "running" ? "live" : ""}`}
+                  style={{ background: TONES[toneOf(job.status)].dot }}
+                />
+                <span className="truncate">{job.id}</span>
+              </span>
+              <span className="mono text-[12px] text-[#9fb0b5]">{job.request.kind}</span>
+              <span className="mono text-[12px] text-[#9fb0b5]">{job.request.pool}</span>
+              <span className="mono truncate text-[12px] text-[#c3d1d5]">
+                {job.request.repo ? (
+                  `${shortRepo(job.request.repo)}@${job.request.ref ?? "HEAD"}`
+                ) : (
+                  <span className="text-[#68767b]">{job.request.script.split("\n")[0]}</span>
+                )}
+              </span>
+              <span>
+                <StatusPill status={job.status} />
+              </span>
+              <span className="mono truncate text-[11.5px] text-[#8c9a9e]">{job.node ?? "—"}</span>
+              <span className="mono text-[12px] text-[#9fb0b5]">{formatJobDuration(job.startedAt, job.finishedAt)}</span>
+              <span className="flex min-w-0 flex-col gap-0.5">
+                <span className="mono truncate text-[11.5px] text-[#9fb0b5]">{job.request.requester ?? "—"}</span>
+                <span className="mono text-[10.5px] text-[#4f5c61]">{formatRelativeAge(job.submittedAt)}</span>
+              </span>
+            </div>
+          ))}
+          {!isLoading && filtered.length === 0 && (
+            <div className="mapcol-empty px-[18px] py-8">no jobs match this filter</div>
+          )}
+        </div>
       </div>
-    </div>
+    </View>
   );
 }
