@@ -4,6 +4,14 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **`grove doctor` on a worker or client no longer fails on checks that only matter on the control
+  plane.** `orchard-controller` and `nomad` pass as "not used here" when config.yaml has no endpoint
+  for them and the machine doesn't run `grove serve` (no `server.listen`): a worker joined through
+  `grove setup` reaches the control plane through `server.url` only. `brew-trust:hashicorp/tap` is
+  audited only on the control plane, the one role that installs Nomad (trust is per user, so a
+  worker user was flagged for an admin's tap it never uses). A control plane missing either endpoint
+  still fails.
+
 - **`grove serve` says why it won't enrol a VM.** A running VM that waits for its Nomad identity
   but doesn't match what the fleet spec would create (other worker, sealed pool, drifted spec) was
   skipped silently, so it looked like enrolment was never attempted. serve now logs each such VM

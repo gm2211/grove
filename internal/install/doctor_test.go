@@ -523,3 +523,19 @@ func TestBootLoopsResult(t *testing.T) {
 		t.Errorf("boot loop: %+v", r)
 	}
 }
+
+// A worker joined through `grove setup` (or a client) has only server.url: it never talks to Orchard
+// or Nomad itself, so their missing endpoints are not failures. On the control plane they are.
+func TestRunDoctor_OrchardAndNomadOnlyRequiredOnTheControlPlane(t *testing.T) {
+	opts := Options{Home: t.TempDir(), GOOS: "darwin", LookPath: alwaysFailLookPath, Exists: alwaysFalseExists}
+	worker := &config.Config{Server: config.ServerConfig{URL: "http://127.0.0.1:1"}}
+	controlPlane := &config.Config{Server: config.ServerConfig{URL: "http://127.0.0.1:1", Listen: "127.0.0.1:6130"}}
+	for _, name := range []string{"orchard-controller", "nomad"} {
+		if r := findResult(t, RunDoctor(context.Background(), NewFakeRunner(), opts, worker), name); !r.OK || !strings.Contains(r.Detail, "not used here") {
+			t.Errorf("worker: %s should pass as not used here, got %+v", name, r)
+		}
+		if r := findResult(t, RunDoctor(context.Background(), NewFakeRunner(), opts, controlPlane), name); r.OK || r.Detail != "not configured" {
+			t.Errorf("control plane: %s must fail as not configured, got %+v", name, r)
+		}
+	}
+}
