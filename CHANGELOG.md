@@ -4,6 +4,20 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Pausing, snoozing and waking a worker no longer race.** Two writers of a worker's pause state
+  (a snooze, `grove worker resume`, the snooze expirer, the health monitor) could interleave and
+  leave a snoozed Mac taking jobs, or a resumed Mac paused forever with no recorded reason. Every
+  writer now holds that worker's lock, and a lapsing snooze is cleared only after Orchard accepts
+  the resume, so a failed resume is retried on the next pass.
+- **A job queued on a snoozed pool no longer fails just after the snooze ends.** For up to a minute
+  after a snooze ended, dispatch could fail the job as "every worker is paused". It now waits.
+- **A VM gets its pool's Nomad identity only on a worker that pool's selector matches.** Before, a
+  worker Mac outside a pool could create a VM of that pool on itself and be enrolled into it, with
+  that pool's jobs and secrets.
+- **`spec/`: 20 properties of grove, checked on every push.** Quint models checked by TLC, Lean 4
+  proofs and CodeQL secret-flow queries, tied to the Go code by conformance tests; `spec/check.sh`
+  runs them and CI runs it as the `spec` job. spec/README.md lists each property and its result.
+
 - **An enrolment counts only once the VM confirms it.** An Orchard exec whose stream closed without
   an exit status read as exit 0, and Enrol took any exit 0 as done, then left the VM alone for up
   to 30 minutes while it still waited for its certificate. Exec now reports a missing exit status
