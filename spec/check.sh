@@ -93,10 +93,10 @@ n=$(find "$traces" -name '*.itf.json' | wc -l | tr -d ' ')
 row L1-2 snooze.qnt "traces sampled for replay" 1000 "$n"
 [ "$n" = 1000 ] || fail=1
 (cd "$spec/.." && GROVE_SNOOZE_TRACES="$traces" go test -count=1 -race ./internal/conformance) || fail=1
-mut=$(python3 "$spec/mutants.py" "$spec/.." "$traces") || fail=1
+mut=$(python3 -B "$spec/mutants.py" "$spec/.." "$traces") || fail=1
 echo "$mut"
 killed=$(grep -c '^killed' <<<"$mut" || true)
-total=$(python3 -c 'import importlib.util,sys; s=importlib.util.spec_from_file_location("m",sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(len(m.MUTANTS))' "$spec/mutants.py")
+total=$(python3 -B -c 'import importlib.util,sys; s=importlib.util.spec_from_file_location("m",sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(len(m.MUTANTS))' "$spec/mutants.py")
 row S1 mutants "old bugs caught by conformance" "$total/$total" "$killed/$total"
 [ "$killed" = "$total" ] || fail=1
 
