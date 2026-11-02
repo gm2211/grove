@@ -233,8 +233,17 @@ Where the guarantees stop:
 - **The models are bounded**, for example one worker and six concurrent writers for snooze. TLC
   explores every interleaving within the bounds, not beyond them.
 
-CI runs `spec/check.sh` on every push. It fails if a property stops holding, and also if a
-"before" model stops finding the bug it was written for. Every property, its result and its
+**The models are tied to the code, so the build breaks when the code drifts.** For the pause
+state, CI samples 1,000 random traces of the model and replays each against the real Go code
+(the snooze calls, the HTTP pause and resume routes, the health monitor and the expirer),
+comparing state after every request. The route-scope and artifact-path proofs are compared with
+the Go functions on every route. And CI puts each old bug back into a scratch copy, one at a time,
+and fails unless a conformance test catches it. The replay has already found one bug the model
+checks couldn't: snoozing a Mac again in the window after a snooze lapsed left it paused for good.
+
+CI runs `spec/check.sh` on every push. It fails if a property stops holding, if the code stops
+matching a model, if a reintroduced bug goes uncaught, and also if a "before" model stops finding
+the bug it was written for. Every property, its result and its
 assumptions: [spec/README.md](spec/README.md).
 
 ## What works today
