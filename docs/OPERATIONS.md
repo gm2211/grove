@@ -435,7 +435,7 @@ hands out the broker credential along with the others; setup keeps it in a 0600 
 at boot, before anyone logs in), and stages the `com.grove.broker` LaunchDaemon, which the
 `worker-daemons` step of the privileged checklist installs into `/Library/LaunchDaemons` with
 `UserName` set to the worker account and loads. It runs `grove broker --server <control plane>`
-and logs to `~/Library/Logs/grove/broker.log` and `broker.err.log`. A worker set up by an earlier
+and logs to `~/Library/Logs/grove/broker.log` and `broker.err.log`. The control plane's own worker never joins, so `grove install --role worker` there issues its broker credential itself (scope `broker` only, named after the Orchard worker) when none is stored. A worker set up by an earlier
 grove has the credential in Keychain (service `com.gm2211.grove.broker`, account `broker`); the
 broker still falls back to that item, and re-running the install copies it into the file. Running
 setup again replaces the credential, revokes the old one and restarts the broker. A Mac set up against a control plane
