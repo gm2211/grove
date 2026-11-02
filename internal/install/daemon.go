@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // A worker Mac runs Orchard's worker and grove's credential broker as system LaunchDaemons with a
@@ -153,13 +154,42 @@ func daemonsRootScript(opts Options, user string, ds []daemon) (string, error) {
 				shQuote(installed), shQuote(sum), shQuote(installed),
 				shQuote(installed+" is not the plist grove renders for "+user+"; removed it rather than load it")),
 			fmt.Sprintf("/bin/chmod 0644 %s", shQuote(installed)))
-		loads = append(loads,
-			fmt.Sprintf("/bin/launchctl bootout gui/%d/%s 2>/dev/null || true", uid, d.Label),
-			fmt.Sprintf("/bin/launchctl bootout system/%s 2>/dev/null || true", d.Label),
-			fmt.Sprintf("/bin/launchctl bootstrap system %s", shQuote(installed)),
-			fmt.Sprintf("/bin/rm -f %s", shQuote(legacyAgentPlist(opts, d.Label))))
+		loads = append(loads, fmt.Sprintf("/bin/launchctl bootout gui/%d/%s 2>/dev/null || true", uid, d.Label))
+		loads = append(loads, systemReloadRoot(d.Label, installed)...)
+		loads = append(loads, fmt.Sprintf("/bin/rm -f %s", shQuote(legacyAgentPlist(opts, d.Label))))
 	}
 	return strings.Join(append(installs, loads...), "\n") + "\n", nil
+}
+
+// systemReloadRoot is the root text that (re)loads the system-domain job label from installed: boot
+// out whatever has the label (not loaded is fine), wait until launchd has actually unloaded it, then
+// bootstrap. bootout returns before launchd has finished, and bootstrapping a job that is still
+// loaded fails with "Bootstrap failed: 5: Input/output error" (a worker Mac whose daemons were
+// already running hit exactly that). The wait is bounded (10s); past it, and once more after a short
+// pause, bootstrap runs anyway so its own error says what is wrong.
+func systemReloadRoot(label, installed string) []string {
+	target := "system/" + label // a fixed com.grove.* label: nothing to quote
+	return []string{
+		fmt.Sprintf("/bin/launchctl bootout %s 2>/dev/null || true", target),
+		fmt.Sprintf("i=0; while /bin/launchctl print %s >/dev/null 2>&1 && [ \"$i\" -lt 20 ]; do /bin/sleep 0.5; i=$((i+1)); done", target),
+		fmt.Sprintf("/bin/launchctl bootstrap system %s || { /bin/sleep 2; /bin/launchctl bootstrap system %s; }", shQuote(installed), shQuote(installed)),
+	}
+}
+
+// waitSystemUnloaded waits (up to launchdRelaunchWait) until launchd no longer has label loaded in
+// the system domain: the Go side of systemReloadRoot's wait, for a root --yes run.
+func waitSystemUnloaded(ctx context.Context, r Runner, label string) {
+	deadline := time.Now().Add(launchdRelaunchWait)
+	for time.Now().Before(deadline) {
+		if _, _, err := r.Run(ctx, "sudo", "launchctl", "print", "system/"+label); err != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(launchdPoll):
+		}
+	}
 }
 
 // daemonLoaded reports whether launchd has d loaded in the system domain running its program.
@@ -209,6 +239,7 @@ func workerDaemonsStep(r Runner, opts Options, ds []daemon) Step {
 				// Not loaded is fine for both bootouts: the job may never have been an agent here.
 				_, _, _ = r.Run(ctx, "sudo", "launchctl", "bootout", fmt.Sprintf("gui/%d/%s", os.Getuid(), d.Label))
 				_, _, _ = r.Run(ctx, "sudo", "launchctl", "bootout", "system/"+d.Label)
+				waitSystemUnloaded(ctx, r, d.Label)
 				if _, _, err := r.Run(ctx, "sudo", "launchctl", "bootstrap", "system", installed); err != nil {
 					return err
 				}

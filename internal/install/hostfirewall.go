@@ -113,12 +113,11 @@ func hostFirewallRootScript(staged, installed, plist string) string {
 	return fmt.Sprintf("/usr/bin/install -o root -g wheel -m 0600 %s %s\n"+
 		"[ \"$(/usr/bin/shasum -a 256 < %s | /usr/bin/cut -d' ' -f1)\" = %s ] || { /bin/rm -f %s; echo %s >&2; exit 1; }\n"+
 		"/bin/chmod 0644 %s\n"+
-		"/bin/launchctl bootout system/%s 2>/dev/null || true\n"+
-		"/bin/launchctl bootstrap system %s\n",
+		strings.Join(systemReloadRoot(hostFirewallLabel, installed), "\n")+"\n",
 		shQuote(staged), shQuote(installed),
 		shQuote(installed), shQuote(hex.EncodeToString(sum[:])), shQuote(installed),
 		shQuote(installed+" is not the plist grove renders; removed it rather than load it"),
-		shQuote(installed), hostFirewallLabel, shQuote(installed))
+		shQuote(installed))
 }
 
 // hostFirewallSteps stage the VM firewall's LaunchDaemon and then install it. Installing is
@@ -172,6 +171,7 @@ func hostFirewallSteps(r Runner, opts Options) []Step {
 					return err
 				}
 				_, _, _ = r.Run(ctx, "sudo", "launchctl", "bootout", "system/"+hostFirewallLabel) // not loaded is fine
+				waitSystemUnloaded(ctx, r, hostFirewallLabel)
 				_, _, err := r.Run(ctx, "sudo", "launchctl", "bootstrap", "system", installed)
 				return err
 			},

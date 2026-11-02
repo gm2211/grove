@@ -608,3 +608,22 @@ func TestWorkerWrapper_FailsClosedWithoutHeadlessTart(t *testing.T) {
 		t.Errorf("must not start Orchard, must say how to fix:\n%s", out)
 	}
 }
+
+// A bootout finishes asynchronously, so the root script must wait for launchd to unload each job
+// before bootstrapping it again ("Bootstrap failed: 5: Input/output error" otherwise), and retry once.
+func TestSystemReloadRoot_WaitsForUnloadThenBootstraps(t *testing.T) {
+	opts := testWorkerOptions(t.TempDir())
+	script, err := daemonsRootScript(opts, "worker", workerDaemons(opts))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range workerDaemons(opts) {
+		_, installed := daemonPaths(opts, d.Label)
+		bootout := strings.Index(script, "/bin/launchctl bootout system/"+d.Label)
+		wait := strings.Index(script, "while /bin/launchctl print system/"+d.Label+" >/dev/null 2>&1 && [ \"$i\" -lt 20 ]")
+		bootstrap := strings.Index(script, "/bin/launchctl bootstrap system "+shQuote(installed)+" || { /bin/sleep 2; /bin/launchctl bootstrap system "+shQuote(installed)+"; }")
+		if bootout < 0 || wait < 0 || bootstrap < 0 || !(bootout < wait && wait < bootstrap) {
+			t.Errorf("%s: want bootout, then wait for unload, then bootstrap with one retry (%d, %d, %d):\n%s", d.Label, bootout, wait, bootstrap, script)
+		}
+	}
+}
