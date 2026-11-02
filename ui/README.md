@@ -54,8 +54,9 @@ not built, run `make ui`" page until you build the UI for real.
 ## Pages
 
 - **Map** (`/map`, the default; `/fleet` redirects here) — the live map, after Argos's: columns
-  for worker Macs → their Tart VMs (one Nomad node each, same name) → the jobs on the selected VM,
-  plus the queue of pending jobs for the selected pools, and a detail column for the selection
+  in the order a job travels: the queue of pending jobs → worker Macs → their Tart VMs (one Nomad
+  node each, same name) → the jobs on the selected VM. Selecting a queued job lights the Macs and
+  VMs of its pool. A detail column for the selection
   (lifecycle rail, live log tail, pause/snooze/wake/recycle/cancel). The selection lives in the URL
   (`?w=&v=&j=`). A Table toggle lists every VM flat. Macs waiting to join show above the columns.
   Polls fleet every 5s, jobs every 3s.

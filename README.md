@@ -18,10 +18,11 @@ next to your other work on the bare host.
 
 ## The live map
 
-![grove's live map: worker Macs on the left, their Tart VMs, the jobs Nomad packed into each VM, the queue, and the selected job's lifecycle and live log](docs/screenshots/map.png)
+![grove's live map: the queue of waiting jobs on the left, then worker Macs, their Tart VMs, the jobs Nomad packed into each VM, and the selected job's lifecycle and live log](docs/screenshots/map.png)
 
-Walk left to right from a worker Mac to the VMs it hosts to the jobs running in each one, with
-the queue of jobs still waiting for room alongside. Select anything to follow its branch: a
+Walk left to right the way a job does: it waits in its pool's queue until Nomad places it on a
+worker Mac whose VMs serve that pool, then runs in one of those VMs. Select a queued job to see
+which Macs and VMs it can land on, or anything else to follow its branch: a
 worker can be paused, snoozed or woken, a VM recycled, a job followed or cancelled, right there.
 
 <details>

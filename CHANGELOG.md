@@ -4,8 +4,8 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
-- **The control-plane UI is a live map now.** Worker Macs, their VMs, the jobs running in each VM
-  and the queue sit in columns left to right, with a detail column for whatever is selected: its
+- **The control-plane UI is a live map now.** The queue, worker Macs, their VMs and the jobs running
+  in each VM sit in columns left to right, in the order a job travels, with a detail column for whatever is selected: its
   lifecycle, a live log tail for a running job, and the actions you'd take there (pause, snooze,
   wake, recycle, cancel). The look follows Argos: dark, mono labels, a serif headline per view.
   Jobs, job detail, Dispatch and Settings were restyled to match; `/fleet` links go to the map.

@@ -113,7 +113,7 @@ async function walkthrough(browser) {
   await pause(page, 1200);
   await node(page, "macos-mac-mini-1-0");
   await pause(page, 2000);
-  await page.locator(".mapcol").nth(3).locator(".mapnode").first().click();
+  await page.locator(".mapcol").nth(0).locator(".mapnode").first().click();
   await pause(page, 2400);
   await node(page, "mac-studio-1");
   await pause(page, 1000);

@@ -12,10 +12,10 @@ import { buildFleetModel, workerStatus, type FleetModel, type VMView, type Worke
 import { formatClock, formatShort, parseGoDurationMs, shortRepo } from "../lib/format";
 
 /**
- * The live map, after Argos's: walk left to right from a worker Mac to the VMs it hosts to the
- * jobs Nomad packed into each VM, with the queue of jobs still waiting for room on the far
- * right. Selecting anything lights its branch, dims the rest, and opens it in the detail
- * column. The selection lives in the URL (?w=&v=&j=) so a view can be linked.
+ * The live map, after Argos's, laid out the way a job travels: the per-pool queue, then the
+ * worker Macs Nomad places onto, their VMs, and the jobs packed into each VM. Selecting a queued
+ * job lights the Macs and VMs of its pool; selecting anything else lights its branch, dims the
+ * rest, and opens it in the detail column. The selection lives in the URL (?w=&v=&j=) so a view can be linked.
  */
 export function MapPage() {
   const qc = useQueryClient();
@@ -49,19 +49,19 @@ export function MapPage() {
   };
 
   const headline = [
+    `${model.queue.length} queued`,
     plural(model.workers.length, "worker"),
     plural(model.vmCount, "VM"),
     `${model.runningJobs} running`,
-    `${model.queue.length} queued`,
   ].join(" · ");
   const updated = Math.max(fleet.dataUpdatedAt, jobs.dataUpdatedAt);
 
   return (
     <View fill>
       <ViewHead
-        kicker="Map · workers, VMs, jobs, queue"
+        kicker="Map · queue, workers, VMs, jobs"
         title={headline}
-        lede="Walk left to right: a worker Mac hosts Tart VMs, each VM is one Nomad node, and Nomad packs jobs into it. Jobs still waiting for room sit in the queue. Select anything to follow its branch."
+        lede="Walk left to right: jobs wait in their pool's queue until Nomad places them on a worker Mac whose Tart VMs serve that pool, each VM being one Nomad node. Select a queued job to see where it can land, or anything else to follow its branch."
         actions={
           <>
             <div className="seg">
@@ -177,30 +177,51 @@ function Graph({
   sel: Selection;
   pick: (s: { w?: string; v?: string; j?: string }) => void;
 }) {
-  const vms = sel.worker?.vms ?? [];
+  // A queued job hasn't been placed yet: light up the workers and VMs its pool could land on.
+  const queuedPool = sel.job?.status === "pending" ? sel.job.request.pool : undefined;
+  const canTake = (w: WorkerView, pool: string) => w.vms.some((v) => v.vm.pool === pool);
+  const vms = queuedPool
+    ? model.workers.flatMap((w) => w.vms.filter((v) => v.vm.pool === queuedPool))
+    : (sel.worker?.vms ?? []);
   const vmJobs = sel.vm ? sel.vm.jobs.slice(0, 8) : [];
-  const pools = new Set((sel.vm ? [sel.vm] : vms).map((v) => v.vm.pool).filter(Boolean));
-  const queue = sel.worker ? model.queue.filter((j) => pools.has(j.request.pool)) : model.queue;
-  const queueLabel = sel.worker && pools.size > 0 ? [...pools].join(", ") : "all pools";
+  const workerPools = new Set((sel.worker?.vms ?? []).map((v) => v.vm.pool).filter(Boolean));
 
   return (
     <div className="mapgrid">
+      <Column label="Queue" count={model.queue.length} empty="nothing waiting · every job found a slot">
+        {model.queue.map((j) => (
+          <QueuedNode
+            key={j.id}
+            job={j}
+            on={sel.job?.id === j.id}
+            dim={queuedPool ? sel.job?.id !== j.id : !!sel.worker && !workerPools.has(j.request.pool)}
+            onPick={() => pick({ j: j.id })}
+          />
+        ))}
+      </Column>
+
       <Column label="Workers" count={model.workers.length} empty="no workers have joined yet · run grove setup on a Mac">
         {model.workers.map((w) => (
           <WorkerNode
             key={w.name}
             w={w}
-            on={sel.worker?.name === w.name}
-            dim={!!sel.worker && sel.worker.name !== w.name}
+            on={queuedPool ? false : sel.worker?.name === w.name}
+            dim={queuedPool ? !canTake(w, queuedPool) : !!sel.worker && sel.worker.name !== w.name}
             onPick={() => pick({ w: w.name })}
           />
         ))}
       </Column>
 
       <Column
-        label="VMs"
-        count={sel.worker ? vms.length : undefined}
-        empty={sel.worker ? "no VMs on this worker · grove fleet apply creates them" : "select a worker"}
+        label={queuedPool ? `VMs · ${queuedPool} pool` : "VMs"}
+        count={sel.worker || queuedPool ? vms.length : undefined}
+        empty={
+          queuedPool
+            ? `no ${queuedPool} VMs yet · grove fleet apply creates them`
+            : sel.worker
+              ? "no VMs on this worker · grove fleet apply creates them"
+              : "select a worker"
+        }
       >
         {vms.map((v) => (
           <VMNode
@@ -208,7 +229,7 @@ function Graph({
             v={v}
             on={sel.vm?.vm.name === v.vm.name}
             dim={!!sel.vm && sel.vm.vm.name !== v.vm.name}
-            onPick={() => pick({ w: sel.worker?.name, v: v.vm.name })}
+            onPick={() => pick({ w: v.vm.host, v: v.vm.name })}
           />
         ))}
       </Column>
@@ -216,7 +237,7 @@ function Graph({
       <Column
         label="Jobs"
         count={sel.vm ? sel.vm.jobs.length : undefined}
-        empty={sel.vm ? "no jobs have run here yet" : "select a VM"}
+        empty={queuedPool ? "not placed yet · Nomad picks a VM with room" : sel.vm ? "no jobs have run here yet" : "select a VM"}
       >
         {vmJobs.map((j) => (
           <JobNode
@@ -230,18 +251,6 @@ function Graph({
         {sel.vm && sel.vm.jobs.length > vmJobs.length && (
           <span className="mapcol-empty">+{sel.vm.jobs.length - vmJobs.length} older on the Jobs page</span>
         )}
-      </Column>
-
-      <Column label={`Queue · ${queueLabel}`} count={queue.length} empty="nothing waiting · every job found a slot">
-        {queue.map((j) => (
-          <QueuedNode
-            key={j.id}
-            job={j}
-            on={sel.job?.id === j.id}
-            dim={sel.job?.status === "pending" && sel.job.id !== j.id}
-            onPick={() => pick({ j: j.id })}
-          />
-        ))}
       </Column>
 
       <MapDetail model={model} sel={sel} />
@@ -433,7 +442,6 @@ function QueuedNode({ job, on, dim, onPick }: { job: Job; on: boolean; dim: bool
       pct={0}
       on={on}
       dim={dim}
-      link={false}
       onPick={onPick}
     />
   );
