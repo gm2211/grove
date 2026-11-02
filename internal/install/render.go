@@ -15,7 +15,11 @@ type LaunchAgentSpec struct {
 	Label string
 	// UserName is the account a LaunchDaemon runs as. Without it a daemon runs as root, so grove's
 	// worker daemons always set it (see daemonPlist) and never to root.
-	UserName                    string
+	UserName string
+	// SessionCreate gives a LaunchDaemon its own security (audit) session instead of none. Without
+	// one, a GUI-ish child (tart run) gets attached to the console user's login session and checks
+	// in there as a foreground app: it flashed in that user's Dock and ran inside their session.
+	SessionCreate               bool
 	Program                     string
 	Args                        []string
 	WorkingDir                  string
@@ -43,6 +47,10 @@ var launchAgentTemplate = template.Must(template.New("launchagent").Parse(`<?xml
 {{- if .UserName}}
 	<key>UserName</key>
 	<string>{{.UserName}}</string>
+{{- end}}
+{{- if .SessionCreate}}
+	<key>SessionCreate</key>
+	<true/>
 {{- end}}
 {{- if .WorkingDir}}
 	<key>WorkingDirectory</key>

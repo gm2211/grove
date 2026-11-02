@@ -58,6 +58,8 @@ func daemonPlist(opts Options, spec LaunchAgentSpec) (string, error) {
 		return "", err
 	}
 	spec.UserName = user
+	// Its own security session: never the console user's (see LaunchAgentSpec.SessionCreate).
+	spec.SessionCreate = true
 	return RenderLaunchAgent(spec)
 }
 

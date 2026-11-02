@@ -650,3 +650,26 @@ func TestCheckLoginSession(t *testing.T) {
 		t.Errorf("no session: want a warning naming the macOS VM error, got %+v", res)
 	}
 }
+
+// A worker daemon gets its own security session (SessionCreate), so tart run is never attached to
+// the console user's login session (where it checked in as a foreground app and flashed in their
+// Dock). A rootless LaunchAgent already runs in its own user's session and doesn't set it.
+func TestWorkerDaemons_OwnSecuritySession(t *testing.T) {
+	opts := testWorkerOptions(t.TempDir())
+	for _, d := range workerDaemons(opts) {
+		plist, err := d.Render()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(plist, "<key>SessionCreate</key>\n\t<true/>") {
+			t.Errorf("%s daemon lacks SessionCreate:\n%s", d.Label, plist)
+		}
+		agent, err := RenderLaunchAgent(d.Spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(agent, "SessionCreate") {
+			t.Errorf("%s LaunchAgent must not set SessionCreate:\n%s", d.Label, agent)
+		}
+	}
+}
