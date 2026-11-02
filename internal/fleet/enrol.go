@@ -54,6 +54,10 @@ type EnrolState struct {
 	vms   map[string]enrolled
 	pools map[string]bool
 
+	// Enrolled lists the VMs the last Enrol gave a certificate (and, if they needed one, an
+	// introduction token), so the caller can log each enrolment.
+	Enrolled []string
+
 	// Refused is, after each Enrol, why each running VM that waits for its Nomad identity was
 	// not given one (VM name → reason), so the caller can say why a VM sits waiting instead of
 	// leaving it silent. Empty when every such VM was enrolled or needed nothing.
@@ -90,6 +94,7 @@ func (r *Reconciler) Enrol(ctx context.Context, state *EnrolState) error {
 		state.pools = map[string]bool{}
 	}
 	state.Refused = map[string]string{}
+	state.Enrolled = nil
 
 	vms, err := r.Client.ListVMs(ctx)
 	if err != nil {
@@ -145,6 +150,7 @@ func (r *Reconciler) Enrol(ctx context.Context, state *EnrolState) error {
 			continue
 		}
 		state.vms[vm.Name] = enrolled{uid: vm.UID, at: now, notAfter: notAfter}
+		state.Enrolled = append(state.Enrolled, vm.Name)
 	}
 	for name := range state.vms {
 		if !live[name] {
@@ -220,12 +226,20 @@ func (r *Reconciler) enrolVM(ctx context.Context, state *EnrolState, vm orchard.
 	if code != 0 {
 		return time.Time{}, fmt.Errorf("enrolment exited %d: %s", code, strings.TrimSpace(out.String()))
 	}
+	// Only the guest script's last line says the files are in place: an exec that reports 0
+	// without it ran somewhere else, or not at all.
+	if !strings.Contains(out.String(), enrolledLine) {
+		return time.Time{}, fmt.Errorf("enrolment exited 0 without confirming: %q", strings.TrimSpace(out.String()))
+	}
 	return cert.NotAfter, nil
 }
 
 // enrolPayloadHeader starts what an enrolment exec reads on stdin: then the introduction token
 // line (empty for a renewal), then the certificate and key PEM.
 const enrolPayloadHeader = "grove-enrol/1"
+
+// enrolledLine is what enrolGuestScript prints once the VM's files are in place.
+const enrolledLine = "grove: enrolled"
 
 func enrolPayload(token string, cert pki.NodeCert) string {
 	return enrolPayloadHeader + "\n" + token + "\n" + cert.Cert + cert.Key
@@ -273,5 +287,5 @@ if [ -f "$grove_nomad_tls/enrolled" ]; then
   pkill -HUP -x nomad || true
 fi
 touch "$grove_nomad_tls/enrolled"
-echo "grove: enrolled"
+echo "` + enrolledLine + `"
 `
