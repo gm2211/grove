@@ -462,6 +462,9 @@ func TestEnrol_SkipsVMsThatAreNotWaitingForIt(t *testing.T) {
 		if len(f.execs) != 0 || len(f.intros.calls) != 0 || len(f.certs.issued) != 0 {
 			t.Fatalf("%s: enrolled (%d execs)", name, len(f.execs))
 		}
+		if len(f.state.Refused) != 0 {
+			t.Fatalf("%s: a VM not waiting for enrolment counts as refused: %v", name, f.state.Refused)
+		}
 	}
 }
 
@@ -511,6 +514,31 @@ func TestEnrol_OnlyVMsTheReconcilerWouldHaveMade(t *testing.T) {
 		if len(f.execs) != 0 || len(f.intros.calls) != 0 {
 			t.Errorf("%s: a VM grove didn't plan was enrolled", name)
 		}
+		// A VM left waiting says why, so serve can log it instead of staying silent
+		if why := f.state.Refused[f.client.vms[0].Name]; why == "" {
+			t.Errorf("%s: no refusal reason recorded (%v)", name, f.state.Refused)
+		}
+	}
+}
+
+func TestEnrol_RefusalNamesTheDrift(t *testing.T) {
+	f := newEnrolFixture(t)
+	f.client.vms[0].CPU++
+	if err := f.enrol(); err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("differs from its spec: %d CPUs assigned, want %d", f.client.vms[0].CPU, f.client.vms[0].CPU-1)
+	if got := f.state.Refused["linux-mac1-0"]; got != want {
+		t.Fatalf("refusal = %q, want %q", got, want)
+	}
+
+	// Fixed, it's enrolled and the refusal is gone
+	f.client.vms[0].CPU--
+	if err := f.enrol(); err != nil || len(f.execs) != 1 {
+		t.Fatalf("want one enrolment once it matches (%d execs, %v)", len(f.execs), err)
+	}
+	if len(f.state.Refused) != 0 {
+		t.Fatalf("refusals left over: %v", f.state.Refused)
 	}
 }
 

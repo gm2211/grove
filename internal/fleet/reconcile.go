@@ -234,6 +234,11 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 
 				existing, ok := findVM(vms, name)
 				reason := "spec changed"
+				if ok {
+					if why := driftReason(spec, existing); why != "" {
+						reason = "spec changed: " + why
+					}
+				}
 				if ok && !specDrifted(spec, existing) {
 					why, due := r.unhealthyVMDue(existing)
 					if why == "" || !due {
@@ -591,17 +596,33 @@ func labelsContain(have, want map[string]string) bool {
 // bookkeeping: there's nowhere left to stash a hash, so the desired orchard.VMSpec (built fresh
 // from the current Pool) is compared directly against the observed orchard.VM.
 func specDrifted(desired orchard.VMSpec, existing orchard.VM) bool {
-	if desired.Image != existing.Image ||
-		desired.DiskSize != existing.DiskSize ||
-		desired.RestartPolicy != existing.RestartPolicy ||
-		withoutNodeACL(desired.StartupScript) != withoutNodeACL(existing.StartupScript) ||
-		withoutNodeACL(desired.ShutdownScript) != withoutNodeACL(existing.ShutdownScript) ||
-		desired.ShutdownTimeout != existing.ShutdownTimeout ||
-		desired.TTL != existing.TTL ||
-		!slices.Equal(desired.HostDirs, existing.HostDirs) ||
-		desired.Softnet != existing.Softnet ||
-		!slices.Equal(desired.SoftnetBlock, existing.SoftnetBlock) {
-		return true
+	return driftReason(desired, existing) != ""
+}
+
+// driftReason names the first field in which existing differs from desired (see specDrifted), or
+// returns "" when it doesn't.
+func driftReason(desired orchard.VMSpec, existing orchard.VM) string {
+	switch {
+	case desired.Image != existing.Image:
+		return fmt.Sprintf("image %q, want %q", existing.Image, desired.Image)
+	case desired.DiskSize != existing.DiskSize:
+		return fmt.Sprintf("disk size %d, want %d", existing.DiskSize, desired.DiskSize)
+	case desired.RestartPolicy != existing.RestartPolicy:
+		return fmt.Sprintf("restart policy %q, want %q", existing.RestartPolicy, desired.RestartPolicy)
+	case withoutNodeACL(desired.StartupScript) != withoutNodeACL(existing.StartupScript):
+		return "startup script"
+	case withoutNodeACL(desired.ShutdownScript) != withoutNodeACL(existing.ShutdownScript):
+		return "shutdown script"
+	case desired.ShutdownTimeout != existing.ShutdownTimeout:
+		return fmt.Sprintf("shutdown timeout %s, want %s", existing.ShutdownTimeout, desired.ShutdownTimeout)
+	case desired.TTL != existing.TTL:
+		return fmt.Sprintf("TTL %s, want %s", existing.TTL, desired.TTL)
+	case !slices.Equal(desired.HostDirs, existing.HostDirs):
+		return "host directories"
+	case desired.Softnet != existing.Softnet:
+		return fmt.Sprintf("softnet %t, want %t", existing.Softnet, desired.Softnet)
+	case !slices.Equal(desired.SoftnetBlock, existing.SoftnetBlock):
+		return "softnet block list"
 	}
 
 	// CPU/Memory come from Orchard's *assigned* resources (v1.VM's AssignedCPU/AssignedMemory —
@@ -612,10 +633,15 @@ func specDrifted(desired orchard.VMSpec, existing orchard.VM) bool {
 	// something to report.
 	// A failed VM may never have been given any either; FailedVMRetry decides when it's rebuilt.
 	if existing.Status == "pending" || existing.Status == "failed" {
-		return false
+		return ""
 	}
-
-	return desired.CPU != existing.CPU || desired.Memory != existing.Memory
+	if desired.CPU != existing.CPU {
+		return fmt.Sprintf("%d CPUs assigned, want %d", existing.CPU, desired.CPU)
+	}
+	if desired.Memory != existing.Memory {
+		return fmt.Sprintf("%d MB memory assigned, want %d", existing.Memory, desired.Memory)
+	}
+	return ""
 }
 
 var nodeACLBlocksRE = regexp.MustCompile(`(?s)# grove:(node-token|client-acl) begin\n.*?# grove:(node-token|client-acl) end\n\n?`)

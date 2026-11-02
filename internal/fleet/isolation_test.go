@@ -188,7 +188,7 @@ func TestPlan_SwitchingPoolToIsolated_RecreatesVM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
-	if len(plan.Deletes) != 1 || plan.Deletes[0].Reason != "spec changed" {
+	if len(plan.Deletes) != 1 || !strings.HasPrefix(plan.Deletes[0].Reason, "spec changed") {
 		t.Fatalf("want the shared VM deleted as changed, got %+v", plan.Deletes)
 	}
 	if len(plan.Creates) != 1 || !plan.Creates[0].Spec.Softnet {

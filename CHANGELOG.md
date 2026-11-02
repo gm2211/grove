@@ -4,6 +4,11 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **`grove serve` says why it won't enrol a VM.** A running VM that waits for its Nomad identity
+  but doesn't match what the fleet spec would create (other worker, sealed pool, drifted spec) was
+  skipped silently, so it looked like enrolment was never attempted. serve now logs each such VM
+  and the reason (every 10 minutes while it holds), and a plan's `spec changed` delete names the
+  field that differs.
 - **A shared VM that never enrolled in Nomad is deleted right away.** Its shutdown script used to
   poll a Nomad client that never started until the 2h30m shutdown timeout, which held the Orchard
   worker's sync loop, so no other VM on that Mac was created, reported running or deleted. The
