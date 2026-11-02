@@ -49,7 +49,7 @@ func fallbackSignature(req JobRequest) string {
 func (s *service) fallbackTarget(rec *record, evals []nomad.Evaluation, now time.Time) (target, reason string) {
 	req := rec.Request
 	target = s.pools[req.Pool].Fallback
-	if target == "" || rec.Fallback != nil || req.PinPool || req.Meta["image"] != "" {
+	if target == "" || rec.Fallback != nil || effectivePin(req) {
 		return "", ""
 	}
 	if _, ok := s.pools[target]; !ok {
@@ -141,6 +141,19 @@ func (s *service) redispatch(ctx context.Context, rec *record, pool string) erro
 	if err != nil {
 		return err
 	}
+	// The image travels with the meta, unchanged. A build dispatched before task_image existed
+	// has none; give it the pool's runner image, but never guess for a job that asked for an
+	// environment.
+	if rec.Request.Kind == KindBuild && meta["task_image"] == "" {
+		if rec.Request.Environment != nil {
+			return fmt.Errorf("job %s asked for an environment but its dispatch carries no task_image", rec.ID)
+		}
+		image, err := RunnerImageOrDefault(s.pools[pool].RunnerImage)
+		if err != nil {
+			return err
+		}
+		meta = withMeta(meta, "task_image", image)
+	}
 	name := jobName(rec.Request.Kind, pool)
 	res, err := s.nomad.Dispatch(ctx, name, meta, payload)
 	if err != nil {
@@ -155,4 +168,14 @@ func (s *service) redispatch(ctx context.Context, rec *record, pool string) erro
 	}
 	rec.NomadJobID = res.DispatchedJobID
 	return nil
+}
+
+// withMeta returns a copy of meta with key set, leaving the map read back from Nomad untouched.
+func withMeta(meta map[string]string, key, value string) map[string]string {
+	out := make(map[string]string, len(meta)+1)
+	for k, v := range meta {
+		out[k] = v
+	}
+	out[key] = value
+	return out
 }

@@ -26,6 +26,13 @@ plugin "docker" {
       enabled = false
     }
     allow_privileged = false
+
+    # Job environment images are pulled per job: keep a pulled image a day, then let Nomad's
+    # image GC remove it so a long-lived VM's disk doesn't fill with them (docs/IMAGES.md).
+    gc {
+      image       = true
+      image_delay = "24h"
+    }
   }
 }
 

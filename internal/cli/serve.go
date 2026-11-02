@@ -543,7 +543,7 @@ func poolConfigs(cfg *config.Config) ([]dispatch.PoolConfig, error) {
 		if err != nil {
 			return nil, fmt.Errorf("pool %q runnerImage: %w", p.Name, err)
 		}
-		pools = append(pools, dispatch.PoolConfig{
+		pc := dispatch.PoolConfig{
 			Name:        p.Name,
 			RunnerImage: runnerImage,
 			CPU:         int(p.JobCPUOrDefault()),
@@ -553,7 +553,11 @@ func poolConfigs(cfg *config.Config) ([]dispatch.PoolConfig, error) {
 			OS:          poolOS(p),
 			Fallback:    spec.FallbackFor(p),
 			NodePool:    nodePoolFor(cfg, p),
-		})
+		}
+		if p.Environments != nil {
+			pc.AllowedImages = p.Environments.Allow
+		}
+		pools = append(pools, pc)
 	}
 	return pools, nil
 }

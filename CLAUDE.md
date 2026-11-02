@@ -29,7 +29,7 @@ images/                         Packer templates
 nomad/jobs/                     parameterized Nomad job HCL
 scripts/install.sh              curl | sh → brew tap + grove install
 docs/                            INSTALL.md, OPERATIONS.md
-spec/                            20 properties: Quint models, Lean proofs, CodeQL queries, Specify spec (spec/grove.spec); spec/check.sh (see spec/README.md)
+spec/                            21 properties: Quint models, Lean proofs, CodeQL queries, Specify spec (spec/grove.spec); spec/check.sh (see spec/README.md)
 ```
 
 **Contract packages** (`config`, `orchard`, `nomad`, `dispatch`, `fleet` *types*) define the Go
@@ -232,6 +232,23 @@ found with no record). The bit is set iff a reason is present. Keep it that way:
 - `PoolHealth.WaitReason` holds a job for a snooze that lapsed but isn't cleared, or that ended
   (`EndedAt`) after the fleet observation was listed (`Plan.ListedAt`): never fail a job as "every
   worker is paused" in that window (spec L4).
+
+## Job environments — keep it that way
+
+A shared-pool job's image is its pool's runner image or a digest-pinned image its pool allows,
+chosen by the control plane; the clone token runs only in the runner image (spec S11).
+
+- `dispatch.Service.Submit` (`taskImage`) is the only place a build's `task_image` meta is set:
+  the environment image after `ValidateEnvironmentImage` (digest, no tag, explicit registry, in the
+  pool's `environments.allow`), else the pool's runner image. Never copy a caller's `Meta`, `Env`
+  or any other field into it, and never forward `Meta["image"]` (the old passthrough was a bug).
+- build.nomad.hcl's `source` task stays on `{{.RunnerImage}}`: it holds the clone token. Only `main`
+  uses `${NOMAD_META_task_image}`, and a missing value must fail the task, not default to an image.
+- A job with an environment never falls back to another pool (`effectivePin`); macOS and sealed
+  pools refuse environments (`fleet.Load` and `Submit`).
+- `internal/dispatch/environment_test.go` and `nomad/jobs/nomadjobs_test.go` assert it;
+  `TestTaskImageInterpolationRealNomad` (real Nomad + docker, `GROVE_NOMAD_BIN`) proves the
+  interpolation.
 
 ## Local socket (`server.socket`)
 

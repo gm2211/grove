@@ -324,3 +324,40 @@ func TestLoad_NomadReservedPoolNames(t *testing.T) {
 		}
 	}
 }
+
+func TestLoad_Environments(t *testing.T) {
+	spec, err := Load(writeTempSpec(t, `
+pools:
+  - name: linux
+    image: ghcr.io/example/linux:latest
+    perWorker: 1
+    environments:
+      allow:
+        - ghcr.io/acme/
+        - registry.example.com:5000/team/builder
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := spec.Pools[0].Environments; got == nil || len(got.Allow) != 2 || got.Allow[0] != "ghcr.io/acme/" {
+		t.Errorf("environments = %+v", got)
+	}
+}
+
+func TestLoad_EnvironmentsRefused(t *testing.T) {
+	for name, pool := range map[string]string{
+		"macos pool":    "name: macos\n    image: x\n    perWorker: 1\n    environments:\n      allow: [ghcr.io/acme/]",
+		"sealed pool":   "name: linux\n    image: x\n    perWorker: 1\n    network: isolated\n    environments:\n      allow: [ghcr.io/acme/]",
+		"empty allow":   "name: linux\n    image: x\n    perWorker: 1\n    environments:\n      allow: []",
+		"no registry":   "name: linux\n    image: x\n    perWorker: 1\n    environments:\n      allow: [acme/builder]",
+		"tag":           "name: linux\n    image: x\n    perWorker: 1\n    environments:\n      allow: ['ghcr.io/acme/b:1']",
+		"digest":        "name: linux\n    image: x\n    perWorker: 1\n    environments:\n      allow: ['ghcr.io/acme/b@sha256:0000000000000000000000000000000000000000000000000000000000000000']",
+		"bare registry": "name: linux\n    image: x\n    perWorker: 1\n    environments:\n      allow: [ghcr.io/]",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(writeTempSpec(t, "pools:\n  - "+pool+"\n")); err == nil {
+				t.Fatal("Load accepted it")
+			}
+		})
+	}
+}

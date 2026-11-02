@@ -11,7 +11,7 @@ CI runs it on every push (the `spec` job).
 | **Quint**, checked by **TLC** (exhaustive) | control loops that race: snooze, dispatch, attempts, fleet, enrolment | `quint/*.qnt` |
 | **Lean 4** | pure decisions over every possible input: route auth, artifact paths, the broker's swap | `lean/Grove/*.lean` |
 | **CodeQL** taint tracking | where secrets can flow in the Go code | `codeql/*.ql` |
-| **Specify** (`gm2211/specify`) | the same 20 properties as behaviors with stable IDs, linked to the Quint invariants and Lean theorems Specify can run | `grove.spec/` |
+| **Specify** (`gm2211/specify`) | the same 21 properties as behaviors with stable IDs, linked to the Quint invariants and Lean theorems Specify can run | `grove.spec/` |
 | **Go tests** | pin each model to the real packages, so code and model can't drift apart | `../internal/conformance`, `../internal/server/spec_conformance_test.go`, `../internal/fleet/convergence_test.go` |
 
 The threat model is the security review's: a tailnet device grove doesn't control (**T**), a
@@ -47,6 +47,7 @@ malicious or compromised job (**J**), a compromised worker Mac (**W**), a leaked
 | S8 | The broker writes a real token only into `Authorization` or `X-Api-Key`, only for its kind's hosts, only from a live entry, and only to the job's own VM. Other headers leave exactly as the job sent them. | J | Lean `Broker.lean` | Proved, except the last clause: **the VM binding fails**. `dispatch.BrokerEntries` never sets `Entry.Source`, so any VM on the same worker that learns a placeholder can use it until the entry's lease ends. Still open. |
 | S9 | An artifact path can't leave the job's artifact directory. | C, J | Lean `ArtifactPath.lean` + differential test | Proved. |
 | S10 | Job secrets, the private-repo token, broker credentials and node keys reach only their one allowed destination: never argv, a log, an API response, the job record or a VM spec. | J, C | CodeQL, 4 queries | No flow found. A coverage query finds each secret at its allowed destination, which shows the queries aren't vacuous. |
+| S11 | A shared-pool job's image is its pool's runner image or a digest-pinned image its pool allows, chosen by the control plane; the clone token runs only in the runner image. | J (a caller choosing its own image, via `environment` or `meta`) | Go tests: `internal/dispatch/environment_test.go`, `nomad/jobs/nomadjobs_test.go` | Holds. A caller's `meta.image` used to be copied into dispatch meta; it no longer is. |
 
 ### How the models are tied to the code
 

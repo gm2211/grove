@@ -16,6 +16,13 @@ func TestHealthz_OK(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
 	}
+	var out HealthzResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Features) != 1 || out.Features[0] != "environment" {
+		t.Errorf("features = %v, want [environment]", out.Features)
+	}
 }
 
 func TestHealthz_DegradedOnOrchardError(t *testing.T) {

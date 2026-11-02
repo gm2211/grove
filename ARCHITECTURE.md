@@ -135,6 +135,11 @@ pools:
     ttl: 12h
 ```
 
+A shared Linux pool may add `environments: {allow: [...]}`: the repositories (exact, or a prefix
+ending in `/`, each with an explicit registry host) a `build` job's `environment.image` may come
+from. Without it the pool accepts no environment; `fleet.Load` refuses it on the `macos` pool and
+on sealed pools. See "Job model" below.
+
 Pool names are restricted to lowercase letters/digits, no dashes or dots (`fleet.Load`'s
 validation) — VM names are parsed back as `<pool>-<worker>-<n>` (`fleet.ParseVMName`), and worker
 names (real hostnames) routinely contain both, so the pool component must be unambiguous.
@@ -225,6 +230,15 @@ constrained to `meta.pool`. Kinds:
 
 Secrets never go into images: they arrive as Nomad `template`/env at dispatch time.
 
+A `build` job may also carry `environment: {image}`, the image its script runs in. The control
+plane picks the image; the caller only requests it: the reference must be pinned by digest
+(`<registry>/<repository>@sha256:<64 hex>`, no tag, explicit registry) and allowed by its pool's
+`environments.allow`, or `Submit` answers 400. grove delivers it as Nomad meta `task_image`
+(always set on a build: the environment image, else the pool's `runnerImage`), which build.nomad.hcl
+interpolates into the `main` task's docker `image`. The clone-token-holding `source` task stays on
+the pool's runner image. A job with an environment never falls back to macOS. `docs/JOBS.md` →
+"Job environments".
+
 Cloning a **private** repository needs a credential, and grove has none until an operator arms one
 through the control plane (`grove github enable`, `PUT /api/v1/github/sourcing`). While it is
 armed, the server injects it into the dispatch of each build/agent job whose repo URL is in scope;
@@ -254,7 +268,7 @@ wins: a bad one is a 401 even from a granted peer. See `internal/tsauth` and doc
 | GET | `/jobs/{id}/artifacts/{path}` | streams one artifact from the control plane's artifact store; same ownership rule as `/jobs/{id}`. A path with a `.`/`..`/empty segment or a leading `/` (checked after URL-decoding) is a 400. Always served `Content-Disposition: attachment` + `X-Content-Type-Options: nosniff`, so a browser downloads it rather than rendering job output on grove's origin |
 | DELETE | `/jobs/{id}` · POST `/jobs/{id}/cancel` | cancel (same operation, two spellings) |
 | GET · POST · DELETE | `/access/devices` · `/access/devices/{id}` | operator-only: list device credentials / mint one (`{name, scopes}` → `{token, device}`; the raw token is returned only here, once) / revoke one |
-| GET | `/healthz` | `{ok, version, orchard, nomad, serverTime}`; orchard/nomad are "up" or "down" |
+| GET | `/healthz` | `{ok, version, orchard, nomad, serverTime, features}`; orchard/nomad are "up" or "down"; `features` lists optional capabilities (`environment`: `JobRequest.environment` is enforced) |
 | GET · PUT · DELETE | `/secrets` · `/secrets/{name}` | operator-only: list named job secrets (name, allow list, fingerprint, never the value) / set one (`{value, allow[]}`) / delete one. Jobs request them by name in JobRequest.secrets — see `docs/JOBS.md` |
 | GET · PUT · DELETE | `/github/sourcing` | operator-only: read / arm / disarm the credential jobs use to clone PRIVATE repositories. Off by default, never echoes the token — see `docs/JOBS.md` |
 

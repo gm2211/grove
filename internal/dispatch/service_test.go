@@ -169,8 +169,11 @@ func TestSubmit_Success(t *testing.T) {
 	if call.meta["timeout_seconds"] != "30" {
 		t.Errorf("meta[timeout_seconds] = %q, want 30", call.meta["timeout_seconds"])
 	}
-	if call.meta["image"] != "golang:1.27" {
-		t.Errorf("meta[image] = %q", call.meta["image"])
+	if _, ok := call.meta["image"]; ok {
+		t.Errorf("a caller's Meta[image] must not reach Nomad meta, got %q", call.meta["image"])
+	}
+	if call.meta["task_image"] != DefaultRunnerImage {
+		t.Errorf("meta[task_image] = %q, want the pool's runner image", call.meta["task_image"])
 	}
 	if !strings.HasPrefix(call.meta["artifact_prefix"], "jobs/") || !strings.HasSuffix(call.meta["artifact_prefix"], "/") {
 		t.Errorf("artifact_prefix = %q, want jobs/<id>/", call.meta["artifact_prefix"])

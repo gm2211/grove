@@ -260,6 +260,9 @@ func validate(req JobRequest) error {
 	if err := validateCredentials(req); err != nil {
 		return err
 	}
+	if req.Environment != nil && req.Kind != KindBuild {
+		return fmt.Errorf("dispatch: environment is only supported for kind %q", KindBuild)
+	}
 	seen := make(map[string]struct{}, len(req.Secrets))
 	for _, name := range req.Secrets {
 		if !envKeyPattern.MatchString(name) {
@@ -325,11 +328,44 @@ func artifactPrefix(id string) string {
 	return "jobs/" + id + "/"
 }
 
+// taskImage is the image a build job's main task runs in ("" for the other kinds, whose
+// templates don't take one): req.Environment once the pool allows it, else the pool's runner
+// image. It refuses an environment on a pool that can't honour it.
+func (s *service) taskImage(req JobRequest) (string, error) {
+	pc := s.pools[req.Pool]
+	if req.Environment != nil {
+		switch {
+		case pc.Isolated:
+			return "", fmt.Errorf("dispatch: pool %s is sealed and does not support job environments", req.Pool)
+		case pc.OS == "darwin":
+			return "", fmt.Errorf("dispatch: pool %s is macOS and does not support job environments", req.Pool)
+		case len(pc.AllowedImages) == 0:
+			return "", fmt.Errorf("dispatch: pool %s has no environments.allow in fleet.yaml, so it accepts no job environment", req.Pool)
+		}
+		if err := ValidateEnvironmentImage(req.Environment.Image, pc.AllowedImages); err != nil {
+			return "", fmt.Errorf("dispatch: %w", err)
+		}
+		return req.Environment.Image, nil
+	}
+	if req.Kind != KindBuild {
+		return "", nil
+	}
+	image, err := RunnerImageOrDefault(pc.RunnerImage)
+	if err != nil {
+		return "", fmt.Errorf("dispatch: pool %s runner image: %w", req.Pool, err)
+	}
+	return image, nil
+}
+
 func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error) {
 	if err := validate(req); err != nil {
 		return nil, false, err
 	}
 	if err := s.validateResources(req); err != nil {
+		return nil, false, err
+	}
+	taskImage, err := s.taskImage(req)
+	if err != nil {
 		return nil, false, err
 	}
 
@@ -407,8 +443,11 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	if s.pools[req.Pool].Isolated {
 		meta["retry_lost"] = strconv.FormatBool(req.retryLost())
 	}
-	if img, ok := req.Meta["image"]; ok && img != "" {
-		meta["image"] = img
+	// The image the build's main task runs in is chosen here and only here: the validated
+	// environment, else the pool's runner image. A caller's Meta never reaches it (Meta rides in
+	// grove_meta_json). build.nomad.hcl interpolates it and fails closed when it is missing.
+	if taskImage != "" {
+		meta["task_image"] = taskImage
 	}
 
 	name := jobName(req.Kind, req.Pool)
@@ -856,7 +895,7 @@ func (s *service) unplaceableReason(rec *record, evals []nomad.Evaluation, now t
 	pool := rec.Request.Pool
 	if rec.Fallback != nil {
 		pool = rec.Fallback.To
-	} else if fb := s.pools[pool].Fallback; fb != "" && !rec.Request.PinPool && rec.Request.Meta["image"] == "" {
+	} else if fb := s.pools[pool].Fallback; fb != "" && !effectivePin(rec.Request) {
 		if _, ok := s.pools[fb]; ok {
 			return ""
 		}

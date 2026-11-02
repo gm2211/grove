@@ -134,6 +134,27 @@ func TestPostJobs_SubmitValidationErrorIs400(t *testing.T) {
 	}
 }
 
+// TestPostJobs_EnvironmentIsDecodedAndRefusalIs400: the wire form of JobRequest.Environment reaches
+// dispatch, and its refusal (an image no pool allows, an unpinned tag) comes back as a 400.
+func TestPostJobs_EnvironmentIsDecodedAndRefusalIs400(t *testing.T) {
+	refusal := dispatch.ValidateEnvironmentImage("ghcr.io/acme/builder:latest", []string{"ghcr.io/acme/"})
+	if refusal == nil {
+		t.Fatal("a tag must be refused")
+	}
+	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{}, submitErr: refusal}
+	srv := newTestServer(nil, nil, ds, Options{InsecureNoAuth: true})
+	body := `{"kind":"build","pool":"linux","repo":"https://github.com/x/y","script":"x","environment":{"image":"ghcr.io/acme/builder:latest"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", rec.Code, rec.Body.String())
+	}
+	if len(ds.submitCalls) != 1 || ds.submitCalls[0].Environment == nil || ds.submitCalls[0].Environment.Image != "ghcr.io/acme/builder:latest" {
+		t.Fatalf("environment did not reach dispatch: %+v", ds.submitCalls)
+	}
+}
+
 func TestGetJob(t *testing.T) {
 	job := &dispatch.Job{ID: "job-1", Status: dispatch.StatusRunning}
 	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{"job-1": job}}

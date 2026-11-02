@@ -273,12 +273,15 @@ the kernel's `binfmt_misc`, so an `amd64` container's ELF binaries transparently
 Rosetta instead of failing or falling back to slow QEMU emulation. This is best-effort: if the VM
 wasn't started with `--rosetta rosetta`, the script logs and exits 0 rather than failing the boot.
 
-## Why the default `build`/`agent`/`shell` container isn't dynamically chosen
+## Which container a Linux job runs in
 
-See docs/JOBS.md's "Why the image isn't just `image = "${NOMAD_META_image}"`" section — the short
-version is that Nomad's docker driver can't interpolate its `image` field from dispatch-time meta,
-and the nested `docker run` against the VM's docker socket that used to work around it was removed
-(the socket gave jobs root on the VM). Every Linux job runs in its pool's `runnerImage`.
+A Linux job runs in its pool's `runnerImage` (default `images/runner`), except a `build` job that
+names an `environment`: the control plane puts that digest-pinned, allowlisted image in dispatch
+meta `task_image` and the build's `main` task runs it (docs/JOBS.md "Job environments"). Job
+environment images are pulled on the VM at job start, so the Linux worker's static `client.hcl`
+sets `gc { image_delay = "24h" }` on the docker plugin: Nomad removes a pulled image a day after
+its last use, and a long-lived VM's disk doesn't fill with toolchain images. Nothing in an image
+gives a job the VM's docker socket.
 
 ## Rebuilding after a base image update
 

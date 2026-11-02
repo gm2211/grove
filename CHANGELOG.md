@@ -2,6 +2,21 @@
 
 All notable changes to grove are documented here.
 
+## Unreleased
+
+- **A build job can name its environment.** `JobRequest.environment.image` runs a `build` job's
+  script in a digest-pinned image (`<registry>/<repo>@sha256:...`, no tags) instead of the pool's
+  runner image. The control plane decides: the pool must allow the repository in fleet.yaml
+  `environments.allow` (exact repository or a `/` prefix, explicit registry), or the submit is a
+  400. Not for macOS or sealed pools, and a job with an environment never falls back to macOS. The
+  image reaches Nomad as meta `task_image`, set on every build dispatch (environment, else the
+  pool's runner image); the `source` step that holds the clone token always runs in the runner
+  image. `/healthz` reports `features: ["environment"]`. The Linux worker's docker plugin now
+  garbage-collects unused images after 24h. Details: docs/JOBS.md "Job environments".
+- **Security: a caller's `meta.image` no longer reaches Nomad.** It used to be copied into the
+  dispatch meta (ignored by the templates, but a trap for any template that read it). Caller meta
+  now only round-trips in `grove_meta_json`.
+
 ## v0.1.32
 
 - **The control plane's own worker gets a broker credential.** Workers elsewhere get one from join

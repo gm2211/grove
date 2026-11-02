@@ -60,6 +60,10 @@ if len(req.Meta) > 0 {
 // artifact_prefix: server-assigned, e.g. the Job.ID, so build artifacts land at a predictable
 // path grove can later present as Artifact.URL.
 meta["artifact_prefix"] = jobID
+// build only: the image the main task runs in. Chosen here and nowhere else: the validated
+// req.Environment.Image, else the pool's runnerImage. Never copied from req.Meta (which rides in
+// grove_meta_json) and always set, so the template fails closed if it is ever missing.
+meta["task_image"] = taskImage
 // build/agent: "grove-payload/1\n" + cloneToken + "\n" + req.Script (only the source task reads
 // it); shell: req.Script. See encodePayload.
 payload := encodePayload(req.Kind, cloneToken, req.Script)
@@ -118,8 +122,9 @@ shared `macos` pool instead of waiting:
   The job keeps its id; `job.fallback` says `{from, to, at, reason}`. On macOS it runs as a plain
   process of the `_grovejob` user, not in the runner container.
 - **Opting out:** `"pinPool": true` on the JobRequest keeps a job in its pool (use it for scripts
-  that need Linux: docker, apt-get, ELF binaries). A job with `meta.image` (a nested container)
-  never falls back. Per pool, fleet.yaml `fallback: none` turns it off, or `fallback: <pool>` picks
+  that need Linux: docker, apt-get, ELF binaries). A job with an `environment` (see "Job
+  environments") never falls back, whatever `pinPool` says: macOS has no containers to run its
+  image in. Per pool, fleet.yaml `fallback: none` turns it off, or `fallback: <pool>` picks
   another shared pool. Sealed (`network: isolated`) pools never fall back or take fallback jobs.
 - **Learning what doesn't work there:** jobs are grouped by kind, pool and repo. When the last 3
   fallback runs of a group all failed (timeouts and cancels don't count), that group stops falling
@@ -437,34 +442,65 @@ otherwise).
    pool — the pool-specific driver difference (`raw_exec` on macOS, `docker` on linux) is fully
    contained inside the job template and invisible to callers.
 
-## Why the image isn't just `image = "${NOMAD_META_image}"`
+## Job environments
 
-`meta_optional` includes an `image` field so a `build`/`agent`/`shell` job can request a different
-container than the default `ghcr.io/gm2211/grove-runner:latest` — e.g. a job that needs a specific
-language toolchain version. The obvious implementation would be
-`config { image = "${NOMAD_META_image}" }` in the docker driver's task config. That does not work:
-Nomad's docker driver does not support interpolating the `image` field from dispatch-time/task
-meta ([hashicorp/nomad#6247](https://github.com/hashicorp/nomad/issues/6247) — filed 2019, still
-open as of writing); `${NOMAD_META_x}`-style interpolation is only reliable in fields Nomad
-documents as "interpretable" for that driver, such as `args` and `env`
-(see [Runtime Variable Interpolation](https://developer.hashicorp.com/nomad/docs/reference/runtime-variable-interpolation) —
-constraints only see node attributes/meta, since runtime env vars don't exist until after
-placement, which is a separate but related interpolation limitation).
+A `build` job can name the image its script runs in, so a project brings its own toolchain
+instead of the pool's `grove-runner`:
 
-The outer task image is fixed when Grove registers each pool's parameterized jobs. Set
-`pools[].runnerImage` in `fleet.yaml` to use a prebuilt runner for every Linux job in that pool;
-when omitted it remains `ghcr.io/gm2211/grove-runner:latest`. Grove validates this value before
-rendering HCL. Changing it requires `grove serve` to register the jobs again.
+```json
+{"kind": "build", "pool": "linux", "repo": "https://github.com/acme/app", "script": "make test",
+ "environment": {"image": "ghcr.io/acme/builder@sha256:<64 hex>"}}
+```
 
-There is no per-dispatch image override. `NOMAD_META_image` stays in every template's
-`meta_optional` list so older callers don't break, but it is ignored: every Linux job runs in its
-pool's fixed `runnerImage`, and the `macos`/`raw_exec` pool always runs the script as a native
-process. Grove used to offer this through `fleet.yaml`'s `pools[].allowDockerSocket`, which mounted
-the VM's docker socket into jobs so `run.sh` could nest a `docker run "$NOMAD_META_image"`. It was
-removed: the socket gives a job root on the VM, so it could start a container on the VM's own
-network (past the fence that keeps jobs off the tailnet and the LAN), rewrite that fence, or reach
-every other job's containers. `grove serve` now refuses a `fleet.yaml` that still sets it. A
-per-job image, if it comes back, has to be chosen by the control plane at dispatch time.
+The caller only *requests* an image; the control plane decides. `Submit` returns 400 unless all of
+these hold:
+
+- The reference is `<registry>/<repository>@sha256:<64 lowercase hex>`: an explicit registry host
+  (`ghcr.io/…`, `host:5000/…`, `localhost/…`), a lowercase OCI path, a digest, **no tag**, at most
+  512 bytes. A tag can be repointed after review; a digest cannot.
+- The job's pool lists the repository in fleet.yaml `environments.allow`:
+
+  ```yaml
+  pools:
+    - name: linux
+      environments:
+        allow:
+          - ghcr.io/acme/            # a prefix: ends in "/", each path below it
+          - registry.example.com/team/builder   # an exact repository
+  ```
+
+  Entries need an explicit registry host and no tag or digest; a prefix matches at the `/`
+  (`ghcr.io/acme/` does not allow `ghcr.io/acme-evil/x`). A pool with no `environments` block
+  accepts none, and `grove serve` refuses the block on the `macos` pool and on sealed pools.
+- The kind is `build` (agent and shell jobs have no `environment` yet) and the pool is a shared
+  Linux pool.
+
+**Image contract.** The image needs `/bin/bash`, coreutils and `jq` (`run.sh` checks for `jq` first
+and fails with a clear message). It does not need `git`: cloning is a separate step. grove runs
+it with `entrypoint = ["/bin/bash"]` (the image's own ENTRYPOINT never runs), as `root` in the
+container whatever its `USER` says, with a 15-minute `image_pull_timeout`; Nomad's image GC removes
+a pulled image a day after its last use (`images/linux-worker/files/client.hcl`).
+
+**How it is delivered.** build.nomad.hcl's `main` task has `image = "${NOMAD_META_task_image}"`.
+(Nomad does interpolate `NOMAD_META_*` in the docker `image` field; [hashicorp/nomad#6247], once
+cited here as open, is closed. `TestTaskImageInterpolationRealNomad` proves it against a real
+agent.) grove sets meta `task_image` on **every** build dispatch: the validated environment image,
+else the pool's `runnerImage`. With it missing the task fails to start, never runs a guessed image.
+A caller's `Meta["image"]` is no longer forwarded anywhere; it only round-trips in
+`grove_meta_json`. A redispatch (eviction, fallback) carries the meta unchanged; one for a build
+older than `task_image` gets its pool's runner image, and an environment job missing it fails.
+
+**Security.** The `source` prestart task, which holds the private-repo clone token, always runs in
+the pool's trusted `runnerImage`, never in the environment image; the environment image runs only
+the caller's script, which never sees that token (see "Private repositories"). The allowlist is
+the trust decision: an allowed repository is code the operator vouches for, pinned to a digest so
+the vouching can't be changed under them. Jobs still get no docker socket (`allowDockerSocket` is
+refused), so an environment image gains nothing over the runner image except its contents.
+
+The feature is advertised as `features: ["environment"]` in `/healthz`, so a client can tell a
+server that would silently ignore the field from one that enforces it.
+
+[hashicorp/nomad#6247]: https://github.com/hashicorp/nomad/issues/6247
 
 ## HCL escaping in `run.sh`
 

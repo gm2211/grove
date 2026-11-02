@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"unicode"
 
+	"github.com/gm2211/grove/internal/dispatch"
 	"gopkg.in/yaml.v3"
 )
 
@@ -80,6 +81,23 @@ func (s *Spec) Validate() error {
 			return fmt.Errorf("pool %q: minPerWorker needs maxPerWorker", p.Name)
 		} else if p.PerWorker < 1 {
 			return fmt.Errorf("pool %q: perWorker must be >= 1, got %d", p.Name, p.PerWorker)
+		}
+
+		if p.Environments != nil {
+			if p.MacOS() {
+				return fmt.Errorf("pool %q: environments is not supported on the macOS pool (it has no containers)", p.Name)
+			}
+			if p.Isolated() {
+				return fmt.Errorf("pool %q: environments is not supported on a sealed pool", p.Name)
+			}
+			if len(p.Environments.Allow) == 0 {
+				return fmt.Errorf("pool %q: environments.allow needs at least one repository or prefix", p.Name)
+			}
+			for _, entry := range p.Environments.Allow {
+				if err := dispatch.ValidateAllowEntry(entry); err != nil {
+					return fmt.Errorf("pool %q: environments.%w", p.Name, err)
+				}
+			}
 		}
 
 		if p.HostXcode != nil {
