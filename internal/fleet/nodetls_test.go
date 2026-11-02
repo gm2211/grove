@@ -550,3 +550,36 @@ type failingNodePools struct{}
 func (failingNodePools) EnsureNodePool(context.Context, string, string) error {
 	return errors.New("nomad: read node pool linux: 403")
 }
+
+// TestNodeTLS_ShutdownSkipsDrainWhenNeverEnrolled: a shared VM the control plane never enrolled
+// has no Nomad node, so its shutdown script must end before it asks Nomad anything. Otherwise
+// the alloc poll waits on a client still retrying registration and holds the VM's deletion (and
+// the Orchard worker's sync loop) for the whole ShutdownTimeout.
+func TestNodeTLS_ShutdownSkipsDrainWhenNeverEnrolled(t *testing.T) {
+	pool := basePool()
+	name := VMName(pool.Name, "mac1", 0)
+
+	spec := (&Reconciler{Options: Options{NodeTokens: &fakeNodeTokens{}, NodeTLS: testNodeTLS}}).vmSpec(pool, "mac1", name)
+	exit := strings.Index(spec.ShutdownScript, "# grove:unenrolled-exit")
+	nomad := strings.Index(spec.ShutdownScript, "nomad node status")
+	if exit < 0 || nomad < 0 || exit > nomad {
+		t.Fatalf("the never-enrolled exit must come before the alloc poll:\n%s", spec.ShutdownScript)
+	}
+	if !strings.HasPrefix(spec.ShutdownScript, "#!/bin/sh\nset -eu\n\n# grove:unenrolled-exit") {
+		t.Fatalf("the never-enrolled exit must follow the script header:\n%s", spec.ShutdownScript)
+	}
+	if out, err := guestCmd(t, "", "-n", "-c", spec.ShutdownScript).CombinedOutput(); err != nil {
+		t.Fatalf("shutdown script doesn't parse: %v\n%s", err, out)
+	}
+
+	// Without TLS there's no enrolment, and a sealed VM runs no Nomad client
+	plain := (&Reconciler{Options: Options{NodeTokens: &fakeNodeTokens{}}}).vmSpec(pool, "mac1", name)
+	sealedPool := basePool()
+	sealedPool.Network = NetworkIsolated
+	sealed := (&Reconciler{Options: Options{NodeTLS: testNodeTLS}}).vmSpec(sealedPool, "mac1", name)
+	for label, script := range map[string]string{"no TLS": plain.ShutdownScript, "sealed": sealed.ShutdownScript} {
+		if strings.Contains(script, "grove:unenrolled-exit") {
+			t.Errorf("%s: unexpected never-enrolled exit:\n%s", label, script)
+		}
+	}
+}

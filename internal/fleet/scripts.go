@@ -312,6 +312,38 @@ func buildShutdownScript(pool Pool, nodeToken bool) (script string, timeout time
 	return b.String(), timeout
 }
 
+// unenrolledShutdownExit ends a shared VM's shutdown script at once when the control plane never
+// enrolled it (enrolGuestScript's marker is missing): its Nomad client never joined, so there are
+// no allocations to wait for. Without it, the alloc poll asks a Nomad client that is still
+// retrying registration, which can hold the VM's deletion (and with it the Orchard worker's
+// whole sync loop) for the full ShutdownTimeout. When sudo isn't available it can't tell, so it
+// falls through to the poll.
+const unenrolledShutdownExit = `# grove:unenrolled-exit
+if [ "$(uname -s)" = "Darwin" ]; then
+  grove_nomad_tls=/usr/local/etc/nomad.d/tls
+else
+  grove_nomad_tls=/etc/nomad.d/tls
+fi
+if [ "$(id -u)" -eq 0 ] || sudo -n true 2>/dev/null; then
+  if [ "$(id -u)" -eq 0 ]; then grove_sudo=; else grove_sudo="sudo -n"; fi
+  if ! $grove_sudo test -f "$grove_nomad_tls/enrolled"; then
+    echo "grove: this VM was never enrolled into Nomad; nothing to drain"
+    exit 0
+  fi
+fi
+
+`
+
+// withUnenrolledShutdownExit puts unenrolledShutdownExit right after script's shebang and
+// `set -eu`, before anything that talks to Nomad.
+func withUnenrolledShutdownExit(script string) string {
+	const header = "#!/bin/sh\nset -eu\n\n"
+	if !strings.HasPrefix(script, header) {
+		return script
+	}
+	return header + unenrolledShutdownExit + strings.TrimPrefix(script, header)
+}
+
 func appendUserScript(b *strings.Builder, label, script string) {
 	if strings.TrimSpace(script) == "" {
 		return

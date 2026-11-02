@@ -4,6 +4,10 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **A shared VM that never enrolled in Nomad is deleted right away.** Its shutdown script used to
+  poll a Nomad client that never started until the 2h30m shutdown timeout, which held the Orchard
+  worker's sync loop, so no other VM on that Mac was created, reported running or deleted. The
+  script now exits at once when the VM has no `enrolled` marker.
 - **A fleet failure that persists is logged again every 10 minutes.** `grove serve` logged an
   enrolment or roll-call error only when it changed, so one that kept failing the same way went
   quiet after its first line. That read like a fix while a VM sat waiting for its Nomad identity.
