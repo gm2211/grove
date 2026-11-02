@@ -43,6 +43,7 @@ type Monitor struct {
 	Pauses interface {
 		Get(worker string) snooze.Entry
 		SetHealth(worker string, at time.Time, jobs int) error
+		Lock(worker string) (unlock func())
 	}
 
 	Window        time.Duration
@@ -110,46 +111,57 @@ func (m *Monitor) Tick(ctx context.Context) {
 	if len(byMachine) == 0 {
 		return
 	}
-	workers, err := m.Orchard.ListWorkers(ctx)
-	if err != nil {
-		m.Log.Warn("health: could not list machines", "err", err)
-		return
-	}
-	alreadyPaused := map[string]bool{}
-	for _, w := range workers {
-		alreadyPaused[w.Name] = w.SchedulingPaused
-	}
 	for machine, losses := range byMachine {
 		since := m.paused[machine]
 		jobs, vms := losses.after(since)
 		if machine == "" || jobs < m.MachineLosses || vms < 2 {
 			continue
 		}
-		if alreadyPaused[machine] {
-			// Paused by a snooze alone: the losses still say the machine is unhealthy, and the
-			// snooze ending must not put it back to work.
-			if m.Pauses != nil {
-				if e := m.Pauses.Get(machine); e.Health == nil && e.Operator == nil && e.Active(m.Now()) {
-					if err := m.Pauses.SetHealth(machine, m.Now(), jobs); err != nil {
-						m.Log.Warn("health: could not record the pause reason", "machine", machine, "err", err)
-					} else {
-						m.paused[machine] = m.Now()
-					}
+		m.pauseMachine(ctx, machine, losses, jobs)
+	}
+}
+
+// pauseMachine stops work on machine, holding its pause lock (snooze.Store.Lock) from reading
+// Orchard's pause bit to recording the reason, so no snooze or resume lands in between.
+func (m *Monitor) pauseMachine(ctx context.Context, machine string, l losses, jobs int) {
+	if m.Pauses != nil {
+		defer m.Pauses.Lock(machine)()
+	}
+	workers, err := m.Orchard.ListWorkers(ctx)
+	if err != nil {
+		m.Log.Warn("health: could not list machines", "err", err)
+		return
+	}
+	alreadyPaused := false
+	for _, w := range workers {
+		if w.Name == machine {
+			alreadyPaused = w.SchedulingPaused
+		}
+	}
+	if alreadyPaused {
+		// Paused by a snooze alone: the losses still say the machine is unhealthy, and the
+		// snooze ending must not put it back to work.
+		if m.Pauses != nil {
+			if e := m.Pauses.Get(machine); e.Health == nil && e.Operator == nil && e.Active(m.Now()) {
+				if err := m.Pauses.SetHealth(machine, m.Now(), jobs); err != nil {
+					m.Log.Warn("health: could not record the pause reason", "machine", machine, "err", err)
+				} else {
+					m.paused[machine] = m.Now()
 				}
 			}
-			continue
 		}
-		m.Log.Warn("health: stopping work on a machine whose VMs keep losing jobs; resume it with `grove worker resume`",
-			"machine", machine, "jobs", sortedKeys(losses.jobs))
-		if err := m.Orchard.PauseWorker(ctx, machine); err != nil {
-			m.Log.Warn("health: could not pause the machine", "machine", machine, "err", err)
-			continue
-		}
-		m.paused[machine] = m.Now()
-		if m.Pauses != nil {
-			if err := m.Pauses.SetHealth(machine, m.Now(), jobs); err != nil {
-				m.Log.Warn("health: could not record the pause reason", "machine", machine, "err", err)
-			}
+		return
+	}
+	m.Log.Warn("health: stopping work on a machine whose VMs keep losing jobs; resume it with `grove worker resume`",
+		"machine", machine, "jobs", sortedKeys(l.jobs))
+	if err := m.Orchard.PauseWorker(ctx, machine); err != nil {
+		m.Log.Warn("health: could not pause the machine", "machine", machine, "err", err)
+		return
+	}
+	m.paused[machine] = m.Now()
+	if m.Pauses != nil {
+		if err := m.Pauses.SetHealth(machine, m.Now(), jobs); err != nil {
+			m.Log.Warn("health: could not record the pause reason", "machine", machine, "err", err)
 		}
 	}
 }

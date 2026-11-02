@@ -343,6 +343,9 @@ func TestEnrol_FirstBootGetsACertificateAndAPoolBoundToken(t *testing.T) {
 	if len(f.execs) != 1 {
 		t.Fatalf("want one enrolment exec, got %d", len(f.execs))
 	}
+	if len(f.state.Enrolled) != 1 || f.state.Enrolled[0] != "linux-mac1-0" {
+		t.Fatalf("Enrolled = %v, want [linux-mac1-0] for serve to log", f.state.Enrolled)
+	}
 	if want := (introCall{"linux-mac1-0", "linux", introTokenTTL}); len(f.intros.calls) != 1 || f.intros.calls[0] != want {
 		t.Fatalf("intro tokens = %+v, want one %+v", f.intros.calls, want)
 	}
@@ -483,6 +486,24 @@ func TestEnrol_AFailedExecIsRetriedNextTick(t *testing.T) {
 	}
 }
 
+func TestEnrol_AnExecThatDoesNotConfirmIsNotAnEnrolment(t *testing.T) {
+	f := newEnrolFixture(t)
+	f.client.exec = func(_ string, command []string, _ string) (int, string) {
+		f.execs = append(f.execs, strings.Join(command, " "))
+		return 0, "" // reported success, but the guest script never ran
+	}
+	if err := f.enrol(); err == nil || !strings.Contains(err.Error(), "without confirming") {
+		t.Fatalf("want an unconfirmed enrolment reported, got %v", err)
+	}
+	if len(f.state.Enrolled) != 0 {
+		t.Fatalf("counted as enrolled: %v", f.state.Enrolled)
+	}
+	// Not remembered either, so the next tick tries again
+	if err := f.enrol(); err == nil || len(f.execs) != 2 {
+		t.Fatalf("want a retry next tick (%d execs, %v)", len(f.execs), err)
+	}
+}
+
 func TestEnrol_NoTLSIsANoOpAndHalfConfiguredIsAnError(t *testing.T) {
 	f := newEnrolFixture(t)
 	f.r.Options.NodeTLS = nil
@@ -502,6 +523,13 @@ func TestEnrol_OnlyVMsTheReconcilerWouldHaveMade(t *testing.T) {
 		"other worker": func(f *enrolFixture) { f.client.vms[0].Worker = "mac2" },
 		"unknown pool": func(f *enrolFixture) { f.client.vms[0].Name = "gpu-mac1-0" },
 		"sealed pool":  func(f *enrolFixture) { f.r.Spec.Pools[0].Network = NetworkIsolated },
+		// S3 (spec/quint/enrol.qnt): a worker outside the pool's selector made itself a VM of
+		// the pool, with grove's exact spec; its owner would get the pool's jobs and secrets.
+		"worker outside the pool's selector": func(f *enrolFixture) {
+			f.r.Spec.Pools[0].WorkerSelector = map[string]string{"tier": "prod"}
+			f.client.workers[0].Labels = map[string]string{"tier": "dev"}
+		},
+		"worker Orchard doesn't list": func(f *enrolFixture) { f.client.workers = nil },
 		"host dirs": func(f *enrolFixture) {
 			f.client.vms[0].HostDirs = []orchard.HostDir{{Name: "home", Path: "/Users/me"}}
 		},

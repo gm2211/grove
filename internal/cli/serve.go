@@ -415,6 +415,9 @@ func (l *fleetReconcileLoop) tick(ctx context.Context) {
 	} else {
 		l.warnedEnrol.clear()
 	}
+	for _, name := range l.enrolment.Enrolled {
+		slog.Info("serve: fleet reconciler: enrolled VM into Nomad", "vm", name)
+	}
 	if refused := refusedSummary(l.enrolment.Refused); refused != "" {
 		if l.warnedRefused.due(refused, time.Now()) {
 			slog.Warn("serve: fleet reconciler: not enrolling VMs into Nomad", "vms", refused)

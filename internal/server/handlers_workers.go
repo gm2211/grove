@@ -8,6 +8,7 @@ import (
 
 func (s *Server) handleWorkerPause(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	defer s.opts.Pauses.Lock(name)() // see snooze.Store.Lock
 	// Record the reason first: an Orchard pause with no reason recorded would look external, and
 	// a snooze ending later must not resume it.
 	if s.opts.Pauses != nil {
@@ -27,6 +28,7 @@ func (s *Server) handleWorkerPause(w http.ResponseWriter, r *http.Request) {
 // the owner (and `grove worker wake`), and resuming under it would put the Mac back to work.
 func (s *Server) handleWorkerResume(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	defer s.opts.Pauses.Lock(name)() // see snooze.Store.Lock
 	if s.opts.Pauses != nil {
 		if e := s.opts.Pauses.Get(name); e.Active(time.Now()) {
 			http.Error(w, fmt.Sprintf("worker %s is still snoozed until %s; end the snooze with `grove worker wake %s`",
