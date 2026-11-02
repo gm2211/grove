@@ -523,6 +523,13 @@ func TestEnrol_OnlyVMsTheReconcilerWouldHaveMade(t *testing.T) {
 		"other worker": func(f *enrolFixture) { f.client.vms[0].Worker = "mac2" },
 		"unknown pool": func(f *enrolFixture) { f.client.vms[0].Name = "gpu-mac1-0" },
 		"sealed pool":  func(f *enrolFixture) { f.r.Spec.Pools[0].Network = NetworkIsolated },
+		// S3 (spec/quint/enrol.qnt): a worker outside the pool's selector made itself a VM of
+		// the pool, with grove's exact spec; its owner would get the pool's jobs and secrets.
+		"worker outside the pool's selector": func(f *enrolFixture) {
+			f.r.Spec.Pools[0].WorkerSelector = map[string]string{"tier": "prod"}
+			f.client.workers[0].Labels = map[string]string{"tier": "dev"}
+		},
+		"worker Orchard doesn't list": func(f *enrolFixture) { f.client.workers = nil },
 		"host dirs": func(f *enrolFixture) {
 			f.client.vms[0].HostDirs = []orchard.HostDir{{Name: "home", Path: "/Users/me"}}
 		},

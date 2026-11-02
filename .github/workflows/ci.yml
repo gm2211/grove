@@ -49,6 +49,43 @@ jobs:
 
       - run: go test ./...
 
+  # spec/: the 20 properties of spec/README.md, model-checked (Quint + TLC), proved (Lean) and
+  # queried (CodeQL), and pinned to the Go code. Every tool is pinned by version and checksum.
+  spec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Quint, TLC, Lean and CodeQL
+        run: |
+          npm install --global @informalsystems/quint@0.33.1
+          curl -fsSL -o "$RUNNER_TEMP/tla2tools.jar" https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+          echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $RUNNER_TEMP/tla2tools.jar" | sha256sum -c -
+          echo "TLA2TOOLS_JAR=$RUNNER_TEMP/tla2tools.jar" >> "$GITHUB_ENV"
+          curl -fsSL -o "$RUNNER_TEMP/lean.zip" https://github.com/leanprover/lean4/releases/download/v4.35.0/lean-4.35.0-linux.zip
+          echo "c8531faaa4a93d5a4dae0c742cbc1bd42a2993594d02f93a9d629ebf299fb2c8  $RUNNER_TEMP/lean.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/lean.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/lean-4.35.0-linux/bin" >> "$GITHUB_PATH"
+          curl -fsSL -o "$RUNNER_TEMP/codeql.tar.gz" https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.27.3/codeql-bundle-linux64.tar.gz
+          echo "64518dc413c8e7b5733fee2489e830a899bb1e3f28c8873b5869d5cc90164c5c  $RUNNER_TEMP/codeql.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/codeql.tar.gz" -C "$RUNNER_TEMP"
+          echo "CODEQL=$RUNNER_TEMP/codeql/codeql" >> "$GITHUB_ENV"
+
+      - run: spec/check.sh
+
   ui:
     runs-on: ubuntu-latest
     steps:

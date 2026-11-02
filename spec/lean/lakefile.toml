@@ -1,0 +1,9 @@
+name = "grove-spec"
+defaultTargets = ["Grove", "grove-spec"]
+
+[[lean_lib]]
+name = "Grove"
+
+[[lean_exe]]
+name = "grove-spec"
+root = "Main"

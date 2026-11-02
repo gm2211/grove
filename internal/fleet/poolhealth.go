@@ -76,6 +76,7 @@ type PoolHealth struct {
 	healthy     map[string]int      // pool -> running VMs that are not boot-looping
 	paused      map[string][]string // pool -> paused workers matching it
 	pausedOnly  map[string]bool     // pool -> every matching worker is paused
+	listedAt    time.Time           // when the observed plan listed Orchard's workers
 }
 
 // ObserveEnrol records the outcome of one Enrol pass: nil clears every enrolment problem.
@@ -100,6 +101,10 @@ func (h *PoolHealth) ObserveFleet(vms []orchard.VM, plan Plan) {
 	h.noWorker, h.blocked = map[string]bool{}, map[string]string{}
 	h.bootLooping, h.healthy = map[string]int{}, map[string]int{}
 	h.paused, h.pausedOnly = map[string][]string{}, map[string]bool{}
+	h.listedAt = plan.ListedAt
+	if h.listedAt.IsZero() {
+		h.listedAt = time.Now()
+	}
 	for _, p := range plan.Unmatched {
 		h.noWorker[p] = true
 	}
@@ -179,17 +184,25 @@ func (h *PoolHealth) WaitReason(pool string, now time.Time) (reason string, unti
 	h.mu.Lock()
 	workers := append([]string(nil), h.paused[pool]...)
 	exclusive = h.pausedOnly[pool]
+	listedAt := h.listedAt
 	h.mu.Unlock()
 
+	ended, _ := h.Pauses.(interface{ EndedAt(worker string) time.Time })
 	var parts []string
 	for _, w := range workers {
 		e := h.Pauses.Get(w)
-		if !e.Active(now) {
-			continue
-		}
-		parts = append(parts, fmt.Sprintf("%s snoozed until %s", w, e.Snooze.Until.Local().Format("15:04")))
-		if e.Snooze.Until.After(until) {
-			until = e.Snooze.Until
+		switch {
+		case e.Active(now):
+			parts = append(parts, fmt.Sprintf("%s snoozed until %s", w, e.Snooze.Until.Local().Format("15:04")))
+			if e.Snooze.Until.After(until) {
+				until = e.Snooze.Until
+			}
+		// The snooze is over but the worker may not be working yet: the Expirer hasn't resumed it
+		// (the snooze is still recorded), or it has, after the fleet observation this pool's
+		// pause comes from was listed. Either way the job waits for the next observation instead
+		// of being failed for a pause that has already ended (L4, spec/quint/dispatch.qnt).
+		case e.Snooze != nil, ended != nil && !ended.EndedAt(w).Before(listedAt) && !ended.EndedAt(w).IsZero():
+			parts = append(parts, fmt.Sprintf("%s snooze ended, resuming", w))
 		}
 	}
 	if len(parts) == 0 {

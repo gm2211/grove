@@ -22,12 +22,14 @@ internal/gitauth/             operator-armed private-repo credential (see below)
 internal/broker/              per-worker credential broker: placeholders in, real tokens out (see below)
 internal/health/              rebuilds VMs / pauses Macs that keep losing sealed-pool jobs
 internal/mcp/                 MCP server (stdio)
+internal/conformance/         Go tests that pin the spec/ models to the real packages
 internal/install/             role bootstrap planner + doctor checks (see below)
 ui/                            Vite + React + TS SPA
 images/                         Packer templates
 nomad/jobs/                     parameterized Nomad job HCL
 scripts/install.sh              curl | sh → brew tap + grove install
 docs/                            INSTALL.md, OPERATIONS.md
+spec/                            20 properties: Quint models, Lean proofs, CodeQL queries; spec/check.sh (see spec/README.md)
 ```
 
 **Contract packages** (`config`, `orchard`, `nomad`, `dispatch`, `fleet` *types*) define the Go
@@ -130,7 +132,8 @@ Only the control plane may tell a node what to do, so only nodes grove created m
 The control-plane install creates grove's CA (`internal/pki`, under `~/.config/grove/nomad/tls`)
 and runs Nomad with mutual TLS on RPC and HTTP and `client_introduction { enforcement = "strict" }`.
 A shared VM's spec carries only the CA. Once it runs, `Reconciler.Enrol` (`internal/fleet/enrol.go`,
-called every `grove serve` tick) pushes in, over Orchard exec with the secrets on stdin, its own
+called every `grove serve` tick) pushes in, only for a VM on a worker Orchard lists, that its pool's
+selector matches and that Plan wouldn't block (spec S3), over Orchard exec with the secrets on stdin, its own
 24-hour client certificate (`pki.CA.IssueNode`, renewed after 12 with a SIGHUP) and, until it
 registers, an introduction token bound to its name and its pool's Nomad node pool; the pool's jobs
 are pinned to that node pool. The control plane's own sandbox-host client is a separate agent for
@@ -221,6 +224,13 @@ found with no record). The bit is set iff a reason is present. Keep it that way:
   only stops a job being failed when no other worker could run it and pushes its pending timeout
   past the snooze. Never add a host constraint to a redispatch.
 - `worker:snooze:<name>` is granted to that worker's holder only for `/workers/<name>/snooze|wake`.
+- Every writer of a worker's pause state (Engage, Wake, the Expirer, `worker pause|resume`, the
+  health monitor) holds `snooze.Store.Lock(worker)` from reading Orchard to its last write, and
+  Wake and the Expirer resume *before* clearing the snooze, so a failed resume leaves a lapsed
+  snooze to retry, never a pause with no reason (spec S1, L1, L2).
+- `PoolHealth.WaitReason` holds a job for a snooze that lapsed but isn't cleared, or that ended
+  (`EndedAt`) after the fleet observation was listed (`Plan.ListedAt`): never fail a job as "every
+  worker is paused" in that window (spec L4).
 
 ## Local socket (`server.socket`)
 
@@ -239,7 +249,12 @@ go test ./...
 make build        # binary to bin/grove, version via -ldflags
 make test         # go vet + go test
 make ui           # cd ui && npm ci && npm run build (only needed once ui/ has content)
+spec/check.sh     # every model check, proof and query; needs quint, TLA2TOOLS_JAR, java, lake, go (CODEQL optional)
 ```
+
+A change to snooze, dispatch reconcile, attempts, fleet TTL/health, Enrol/RollCall, route scopes,
+artifact paths or the broker's header swap must keep `spec/check.sh` passing; update the model
+when the design changes, and keep each "before" instance failing.
 
 CI (`.github/workflows/ci.yml`) runs `go build/vet/test` on `ubuntu-latest` and `macos-latest`,
 plus the `ui` build when `ui/package.json` exists. Releases (`.github/workflows/release.yml`) run

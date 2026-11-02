@@ -14,3 +14,10 @@
 /images/macos-worker/artifacts/
 # Release workflow: the orchard job's archives, downloaded into the checkout before goreleaser runs.
 /orchard-assets/
+
+# spec/: Lean build output, Quint/TLC scratch
+spec/lean/.lake/
+spec/quint/_apalache-out/
+spec/quint/tmp/
+spec/quint/*.tla
+spec/quint/states/
