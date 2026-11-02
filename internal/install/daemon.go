@@ -30,7 +30,10 @@ type daemon struct {
 	Label   string // launchd label, and the plist's file name
 	Program string // what `launchctl print` shows for it once it is loaded
 	Render  func() (string, error)
-	Logs    []string // files launchd opens as StandardOut/ErrorPath, pre-created as the user
+	// Spec is the job without UserName: rendered as is, it is the per-user LaunchAgent of a
+	// rootless install (see rootless.go); Render adds the UserName a LaunchDaemon needs.
+	Spec LaunchAgentSpec
+	Logs []string // files launchd opens as StandardOut/ErrorPath, pre-created as the user
 }
 
 // daemonPaths are where a daemon's plist is staged (the user's, for the admin to copy) and where it
@@ -67,10 +70,12 @@ func workerDaemons(opts Options) []daemon {
 	return []daemon{
 		{
 			Name: "orchard-worker", Label: orchardWorkerLabel, Program: wrapper, Logs: logs("orchard-worker"),
+			Spec:   workerJobSpec(opts, wrapper),
 			Render: func() (string, error) { return workerDaemonPlist(opts, wrapper) },
 		},
 		{
 			Name: "broker", Label: brokerLabel, Program: groveBin, Logs: logs("broker"),
+			Spec:   brokerJobSpec(opts, groveBin),
 			Render: func() (string, error) { return brokerDaemonPlist(opts, groveBin) },
 		},
 	}
@@ -260,12 +265,16 @@ var daemonPIDRE = regexp.MustCompile(`(?m)^\s*pid = (\d+)\s*$`)
 // user's, so the user can signal it.) A daemon that isn't loaded or isn't running is left alone:
 // the install loads it, or launchd starts it, with the new files anyway.
 func restartDaemon(ctx context.Context, r Runner, label string) {
-	stdout, _, err := r.Run(ctx, "launchctl", "print", "system/"+label)
-	if err != nil {
+	// A rootless install runs the same job as this user's LaunchAgent; try the system domain first.
+	for _, domain := range []string{"system", fmt.Sprintf("gui/%d", os.Getuid())} {
+		stdout, _, err := r.Run(ctx, "launchctl", "print", domain+"/"+label)
+		if err != nil {
+			continue
+		}
+		if m := daemonPIDRE.FindStringSubmatch(stdout); m != nil {
+			_, _, _ = r.Run(ctx, "kill", "-TERM", m[1])
+		}
 		return
-	}
-	if m := daemonPIDRE.FindStringSubmatch(stdout); m != nil {
-		_, _, _ = r.Run(ctx, "kill", "-TERM", m[1])
 	}
 }
 

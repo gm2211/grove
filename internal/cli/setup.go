@@ -28,6 +28,7 @@ var setupServer string
 var setupRegistryUser string
 var setupYes bool
 var setupNoSudo bool
+var setupRootless bool
 var setupUser string
 var setupFromAdmin bool
 var setupGroveBin string
@@ -56,6 +57,7 @@ func init() {
 	setupCmd.Flags().StringVar(&setupServer, "server", "", "Grove server URL; normally discovered over Tailscale")
 	setupCmd.Flags().BoolVar(&setupYes, "yes", false, "join the discovered control plane without asking, when exactly one answers (several always need --server), and run the root steps through sudo without asking")
 	setupCmd.Flags().BoolVar(&setupNoSudo, "no-sudo", false, "never run sudo; print the root steps for an admin")
+	setupCmd.Flags().BoolVar(&setupRootless, "rootless", false, "install the worker with no root, as this user's own LaunchAgents (chosen automatically for a user who isn't an admin; --rootless=false keeps the root-based install; see docs/INSTALL.md)")
 	setupCmd.Flags().StringVar(&setupRegistryUser, "registry-user", "", "registry username; password/PAT is read from GROVE_REGISTRY_TOKEN")
 	setupCmd.Flags().StringVar(&setupUser, "user", "", "run from an admin account: set this Mac up as a worker that runs as this (standard) user, with one sudo password prompt and no `su`")
 	setupCmd.Flags().BoolVar(&setupRejoin, "rejoin", false, "with --user: join again (new approval, new credentials) even if that user's worker is already installed, instead of repairing it in place")
@@ -86,6 +88,9 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	if setupUser != "" {
 		if setupNoSudo {
 			return errors.New("--user runs the root steps through sudo; drop --no-sudo, or run `grove setup` as that user")
+		}
+		if setupRootless {
+			return errors.New("--rootless is for the user the worker runs as: run `grove setup --rootless` as that user, with no --user")
 		}
 		var err error
 		if target, err = lookupWorkerTarget(cmd.Context(), r, setupUser); err != nil {
@@ -161,6 +166,7 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 		Token: result.BootstrapToken, BrokerToken: result.BrokerToken, RegistryUser: setupRegistryUser,
 		RegistryToken: os.Getenv("GROVE_REGISTRY_TOKEN"),
 	}
+	opts.Rootless, opts.NoAutoRootless = rootlessFlag(cmd, setupRootless)
 	if result.BrokerToken == "" {
 		fmt.Fprintln(cmd.ErrOrStderr(), "warning: the control plane sent no broker credential, so jobs on this Mac can't use credentials yet. Update Grove on the control plane, then run `grove setup` here again.")
 	}

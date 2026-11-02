@@ -147,16 +147,7 @@ func sudoUsable(ctx context.Context, r Runner, opts RootOptions) (bool, string) 
 	if opts.NoSudo {
 		return false, "--no-sudo: not running sudo."
 	}
-	stdout, _, err := r.Run(ctx, "/usr/bin/id", "-Gn")
-	admin := false
-	if err == nil {
-		for _, g := range strings.Fields(stdout) {
-			if g == "admin" {
-				admin = true
-			}
-		}
-	}
-	if !admin {
+	if !userIsAdmin(ctx, r) {
 		return false, "This user is not an admin, so it cannot use sudo."
 	}
 	if opts.Interactive {

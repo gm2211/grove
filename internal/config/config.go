@@ -33,6 +33,16 @@ type Config struct {
 	// Additive: not required by any existing consumer of Config.
 	Tailscale  TailscaleConfig  `yaml:"tailscale,omitempty"`
 	Enrollment EnrollmentConfig `yaml:"enrollment,omitempty"`
+	// Worker records how this Mac's worker was installed, so a re-run installs it the same way.
+	Worker WorkerConfig `yaml:"worker,omitempty"`
+}
+
+// WorkerConfig is what `grove install --role worker` remembers about the worker on this Mac.
+type WorkerConfig struct {
+	// Rootless is a worker installed with no root at all: its jobs are per-user LaunchAgents of
+	// the user it runs as, so it needs that user logged in at the Mac (see docs/INSTALL.md,
+	// "A worker with no root"). Re-runs of the install stay rootless.
+	Rootless bool `yaml:"rootless,omitempty"`
 }
 
 type EnrollmentConfig struct {

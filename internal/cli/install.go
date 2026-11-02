@@ -24,6 +24,7 @@ var installFlags struct {
 	force         bool
 	yes           bool
 	noSudo        bool
+	rootless      bool
 	dryRun        bool
 }
 
@@ -46,6 +47,13 @@ change means nothing is touched or restarted.
 Run it as the account the worker should run as (a dedicated standard user is fine, including from
 a ` + "`su - <user>`" + ` shell with nobody logged in at the Mac), never as root: the worker and its
 credential broker become LaunchDaemons that run as that user from boot.
+
+A user with no sudo (not an admin) gets a rootless install automatically, or with --rootless: the
+worker and broker become the user's own LaunchAgents, a caffeinate LaunchAgent keeps the Mac awake,
+and nothing needs root or an admin (no block to paste). It gives up the VM firewall and isolated
+network pools, and runs only while that user is logged in at the Mac; the install says so, and
+records worker.rootless in config.yaml so re-runs stay rootless. --rootless=false keeps the
+root-based install. See docs/INSTALL.md, "A worker with no root".
 
 Steps that need root or touch system-wide settings (disabling sleep, the VM firewall, installing
 the worker's LaunchDaemons) run last, together, as ONE script through a single sudo: if you are an
@@ -71,6 +79,7 @@ func init() {
 	installCmd.Flags().BoolVar(&installFlags.force, "force", false, "rename a worker on a host that is not the control plane: print the fleet.yaml change it needs instead of refusing (worker role)")
 	installCmd.Flags().BoolVar(&installFlags.yes, "yes", false, "run the root steps through sudo without asking (or, as root, apply them directly)")
 	installCmd.Flags().BoolVar(&installFlags.noSudo, "no-sudo", false, "never run sudo; print the root steps for an admin")
+	installCmd.Flags().BoolVar(&installFlags.rootless, "rootless", false, "install the worker with no root: per-user LaunchAgents, a caffeinate keep-awake agent, no VM firewall (worker role; chosen automatically for a user who isn't an admin; --rootless=false keeps the root-based install)")
 	installCmd.Flags().BoolVar(&installFlags.dryRun, "dry-run", false, "print the plan; change nothing")
 	_ = installCmd.MarkFlagRequired("role")
 	Root.AddCommand(installCmd)
@@ -106,9 +115,19 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		Labels:        installFlags.labels,
 		Force:         installFlags.force,
 	}
+	opts.Rootless, opts.NoAutoRootless = rootlessFlag(cmd, installFlags.rootless)
 
 	_, err := applyInstall(cmd, opts, installFlags.dryRun, installFlags.yes, installFlags.noSudo)
 	return err
+}
+
+// rootlessFlag turns --rootless into the install options: --rootless asks for it, --rootless=false
+// turns off both the automatic choice and a rootless install recorded in config.yaml.
+func rootlessFlag(cmd *cobra.Command, rootless bool) (on, off bool) {
+	if f := cmd.Flags().Lookup("rootless"); f != nil && f.Changed {
+		return rootless, !rootless
+	}
+	return false, false
 }
 
 // applyInstall runs the role's plan, then the privileged steps it left (root script, one sudo).
@@ -116,6 +135,9 @@ func runInstall(cmd *cobra.Command, args []string) error {
 func applyInstall(cmd *cobra.Command, opts install.Options, dryRun, yes, noSudo bool) (install.RootOutcome, error) {
 	out := cmd.OutOrStdout()
 	runner := install.ExecRunner{}
+	if opts.Role == install.RoleWorker && install.AutoRootless(cmd.Context(), runner, opts, out) {
+		opts.Rootless = true
+	}
 	steps, results, err := runInstallPlan(cmd, runner, opts, dryRun, yes)
 	if err != nil {
 		return install.RootNone, err

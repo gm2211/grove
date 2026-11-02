@@ -115,7 +115,11 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 		tartStep(r, opts, out),
 	}
 	if opts.Softnet {
-		steps = append(steps, softnetSteps(r, lookPath, out)...)
+		sn := softnetSteps(r, lookPath, out)
+		if opts.Rootless {
+			sn = sn[:1] // the brew install is the user's own; softnet-root is skipped at the end
+		}
+		steps = append(steps, sn...)
 	}
 	steps = append(steps, tartHeadlessStep(r, opts))
 
@@ -197,6 +201,18 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 	)
 
 	daemons := workerDaemons(opts)
+	steps = append(steps, workerModeStep(opts))
+	if opts.Rootless {
+		// No root anywhere: the jobs are this user's LaunchAgents, loaded right here, so the steps
+		// that wait for the root script (retire, rename) run in this same plan, after them.
+		steps = append(steps, keepAwakeStep(r, opts))
+		steps = append(steps, brokerSteps(r, opts, daemons[1])...)
+		steps = append(steps, workerAgentsStep(r, opts, daemons))
+		// Another account's superseded stack is not this user's to remove (that is a root step):
+		// `grove doctor` reports it through worker-shape instead.
+		steps = append(steps, workerFinishSteps(r, opts, daemons, bk, out)...)
+		return append(steps, rootlessSkipSteps(opts)...)
+	}
 	steps = append(steps, daemonStageStep(opts, daemons[0]))
 	steps = append(steps, workerSleepStep(r))
 	steps = append(steps, brokerSteps(r, opts, daemons[1])...)
@@ -325,7 +341,13 @@ func RegistryLogin(ctx context.Context, r Runner, opts Options) error {
 // workerDaemonPlist renders the LaunchDaemon, run as the worker user, that supervises `orchard
 // worker run`.
 func workerDaemonPlist(opts Options, wrapper string) (string, error) {
-	return daemonPlist(opts, LaunchAgentSpec{
+	return daemonPlist(opts, workerJobSpec(opts, wrapper))
+}
+
+// workerJobSpec is the Orchard worker's launchd job, whether it runs as a LaunchDaemon (which adds
+// UserName) or, in a rootless install, as the user's own LaunchAgent.
+func workerJobSpec(opts Options, wrapper string) LaunchAgentSpec {
+	return LaunchAgentSpec{
 		Label:                       orchardWorkerLabel,
 		Program:                     wrapper,
 		WorkingDir:                  opts.homeDir(),
@@ -334,7 +356,7 @@ func workerDaemonPlist(opts Options, wrapper string) (string, error) {
 		RunAtLoad:                   true,
 		StdoutPath:                  filepath.Join(opts.LogDir(), "orchard-worker.log"),
 		StderrPath:                  filepath.Join(opts.LogDir(), "orchard-worker.err.log"),
-	})
+	}
 }
 
 // installedWorkerController is the controller URL in this Mac's existing worker wrapper, or "" if
