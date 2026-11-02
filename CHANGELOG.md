@@ -4,6 +4,8 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+## v0.1.28
+
 - **Pausing, snoozing and waking a worker no longer race.** Two writers of a worker's pause state
   (a snooze, `grove worker resume`, the snooze expirer, the health monitor) could interleave and
   leave a snoozed Mac taking jobs, or a resumed Mac paused forever with no recorded reason. Every
