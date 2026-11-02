@@ -4,6 +4,10 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **A fleet failure that persists is logged again every 10 minutes.** `grove serve` logged an
+  enrolment or roll-call error only when it changed, so one that kept failing the same way went
+  quiet after its first line. That read like a fix while a VM sat waiting for its Nomad identity.
+
 ## v0.1.25
 
 - **The worker install no longer fails with `Bootstrap failed: 5: Input/output error` on a Mac whose
