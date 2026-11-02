@@ -4,6 +4,14 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+## v0.1.29
+
+- **A rootless worker can have the VM firewall: `grove install --role worker --firewall`.** The
+  `host-firewall` step (the `com.grove.pf-vm` pf anchor) no longer forces the whole worker onto
+  LaunchDaemons: with `--firewall`, a rootless install keeps its LaunchAgents (which run in the
+  user's session, so macOS VMs get its keychain) and adds only the firewall, whose one root step is
+  printed for an admin. Once installed, later rootless runs keep it current without the flag, and
+  `grove doctor` checks it instead of warning.
 - **`grove worker ls` and `grove status` work on a device that only has a server token** (#133).
   With `server.url` set and no Orchard or Nomad config (a laptop set up to snooze its own Mac),
   both now go through `GET /api/v1/fleet`: `status` prints the server check, worker, VM and node
