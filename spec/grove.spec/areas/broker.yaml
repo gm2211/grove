@@ -1,0 +1,23 @@
+id: broker
+name: Credential broker
+prose: >-
+  A job holds gph1_ placeholders; the broker on its worker swaps them for real tokens on the way to
+  a fixed set of upstreams.
+behaviors:
+  - id: broker-swaps-safely
+    description: >-
+      The broker writes a real token only into Authorization or X-Api-Key, only for its kind's
+      hosts, only from a live entry, and only for the job's own VM. Every other header leaves
+      exactly as the job sent it.
+    details: >-
+      S8. Attacker J. Open: the last clause fails. dispatch.BrokerEntries never sets Entry.Source,
+      so another VM on the same worker that learns a placeholder can spend it until the entry's
+      lease ends (source_unbound shows it). The rest is proved.
+    tags: [security, s8, open]
+    formal:
+      - tool: lean
+        file: ../lean/Grove/Broker.lean
+        property: Grove.Broker.S8_inject_sound
+      - tool: lean
+        file: ../lean/Grove/Broker.lean
+        property: Grove.Broker.S8_other_headers_untouched

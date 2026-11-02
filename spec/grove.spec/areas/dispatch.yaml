@@ -1,0 +1,57 @@
+id: dispatch
+name: Dispatching and retrying jobs
+prose: >-
+  A job is queued per pool, retried on lost attempts, and failed only when no worker could ever run
+  it. Evicted attempts are free.
+behaviors:
+  - id: every-job-finishes
+    description: Every job reaches a terminal state.
+    details: L3. Temporal property (terminates in dispatch.qnt), checked by TLC in spec/check.sh.
+    tags: [liveness, l3]
+  - id: snooze-never-fails-a-job
+    description: >-
+      A job queued only because its pool's workers are snoozed is never failed for it, and runs once
+      the snooze ends.
+    details: >-
+      L4. Failed before v0.1.28 in the up to 60 s between a snooze ending and the next fleet tick.
+      The "runs once the snooze ends" half is temporal (runsAfterSnooze), checked by TLC; Go test
+      TestL4 in internal/conformance.
+    tags: [liveness, l4]
+    formal:
+      - tool: quint
+        file: ../quint/dispatch.qnt
+        main: dispatchFixed
+        property: neverFailedForSnooze
+        mode: simulate
+        maxSteps: 30
+        samples: 2000
+        seed: 1
+      - tool: quint
+        file: ../quint/dispatch.qnt
+        main: dispatchFixed
+        property: neverLost
+        mode: simulate
+        maxSteps: 30
+        samples: 2000
+        seed: 1
+  - id: sealed-jobs-terminate
+    description: >-
+      A sealed-pool job terminates, given that owners snooze its Macs and VMs drain only finitely
+      often.
+    details: L5. Temporal property (terminates in attempts.qnt), checked by TLC over 40,544 states.
+    tags: [liveness, l5]
+  - id: fair-attempt-accounting
+    description: >-
+      Evictions never count against a job, quarantine needs losses on two machines, and a job gets
+      at most three counted attempts.
+    details: S2. Attacker J (a job that crashes Macs). Exhaustive TLC check in spec/check.sh.
+    tags: [security, s2]
+    formal:
+      - tool: quint
+        file: ../quint/attempts.qnt
+        main: attemptsRetry
+        property: accounting
+        mode: simulate
+        maxSteps: 30
+        samples: 2000
+        seed: 1

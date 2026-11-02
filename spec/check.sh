@@ -5,7 +5,8 @@
 # the model no longer finds the bug it was written for).
 #
 # Needs: quint (npm @informalsystems/quint), TLA2TOOLS_JAR (tla2tools.jar), Java, lake (Lean
-# 4.35.0) and go. CODEQL, when set, also runs the S10 CodeQL queries.
+# 4.35.0) and go. CODEQL, when set, also runs the S10 CodeQL queries; SPECIFY, when set (the
+# gm2211/specify CLI), lints spec/grove.spec and runs its linked formal checks.
 set -euo pipefail
 cd "$(dirname "$0")"
 spec=$PWD
@@ -78,6 +79,16 @@ row S5-9 lean "Grove.Auth/ArtifactPath/Broker" proved "$([ $fail = 0 ] && echo p
 (cd "$spec/.." && GROVE_SPEC_BIN="$spec/lean/.lake/build/bin/grove-spec" go test -count=1 \
 	-run 'TestSpec_|TestL6_' ./internal/server ./internal/fleet) || fail=1
 (cd "$spec/.." && go test -count=1 -race ./internal/conformance) || fail=1
+
+# grove.spec: the 20 properties as Specify behaviors. Its formal links (Quint invariants by seeded
+# simulation, Lean theorems) must all pass; temporal properties stay with the TLC rows above.
+if [ -n "${SPECIFY:-}" ]; then
+	out=$(cd "$spec/.." && LEAN_PATH="$spec/lean/.lake/build/lib/lean" "$SPECIFY" formal check \
+		--spec spec/grove.spec --timeout-ms 300000 2>/dev/null) || true
+	got=$(python3 -c 'import json,sys; r=json.load(sys.stdin); n=len(r["results"]); p=sum(x["outcome"]["status"]=="passed" for x in r["results"]); print(f"{p}/{n}" if r["valid"] else f"FAILED {p}/{n}")' <<<"$out" 2>/dev/null || echo error)
+	row S1-9 specify "grove.spec formal check" 18/18 "$got"
+	[ "$got" = 18/18 ] || fail=1
+fi
 
 # S10: CodeQL taint queries. Each leak query must find nothing; the coverage query must find each
 # of the four secrets at its one allowed destination (else the leak queries would be vacuous).

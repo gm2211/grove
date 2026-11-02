@@ -1,0 +1,64 @@
+id: node-identity
+name: Nomad node identity
+prose: >-
+  Only nodes grove created may join Nomad. Enrol pushes a VM its pool's certificate and
+  introduction token only when the VM is exactly what the reconciler would have made, on a worker
+  the pool's selector matches; the roll call drains every node no VM accounts for.
+behaviors:
+  - id: pool-identity-stays-in-pool
+    description: No Nomad identity for a pool reaches a worker outside that pool.
+    details: >-
+      S3. Attacker W. Security review C1 and H9. Failed before v0.1.28: a worker could create a VM
+      of another pool on itself and be enrolled into it. Holds assuming A3. Go test
+      TestEnrol_OnlyVMsTheReconcilerWouldHaveMade.
+    tags: [security, s3]
+    formal:
+      - tool: quint
+        file: ../quint/enrol.qnt
+        main: identityFixed
+        property: noForeignIdentity
+        mode: simulate
+        maxSteps: 20
+        samples: 2000
+        seed: 1
+      - tool: quint
+        file: ../quint/enrol.qnt
+        main: identityFixed
+        property: noAttackerInProd
+        mode: simulate
+        maxSteps: 20
+        samples: 2000
+        seed: 1
+  - id: roll-call-leaves-only-real-vms
+    description: >-
+      After every roll call, each eligible Nomad node is a VM in Orchard, alone, in its own pool.
+    details: S4. Attackers T, W, C. Security review C1.
+    tags: [security, s4]
+    formal:
+      - tool: quint
+        file: ../quint/enrol.qnt
+        main: identityFixed
+        property: rollCallLeavesOnlyAccounted
+        mode: simulate
+        maxSteps: 20
+        samples: 2000
+        seed: 1
+  - id: certs-renewed-in-time
+    description: A running VM's Nomad certificate is renewed before it expires.
+    details: L8. Holds through any outage under 11 hours; the 11-hour instance fails.
+    tags: [liveness, l8]
+    formal:
+      - tool: quint
+        file: ../quint/enrol.qnt
+        main: certsTolerant
+        property: neverExpires
+        mode: simulate
+        maxSteps: 20
+        samples: 2000
+        seed: 1
+  - id: new-vms-join
+    description: >-
+      A genuine new VM eventually joins Nomad, even when a previous VM of its name still has a
+      draining node.
+    details: L9. Temporal property (joins in enrol.qnt) under strong fairness, checked by TLC.
+    tags: [liveness, l9]
