@@ -248,7 +248,7 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 		slog.Info("grove serve: listening on the local socket", "socket", cfg.Server.Socket, "users", cfg.Server.SocketUsers)
 	}
 
-	slog.Info("grove serve: listening", "addr", addr)
+	slog.Info("grove serve: listening", "addr", addr, "version", Version)
 	return http.ListenAndServe(addr, srv)
 }
 

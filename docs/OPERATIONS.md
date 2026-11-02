@@ -93,7 +93,10 @@ like grove's gets nothing. Each enrolled VM gets:
 Enrolment state lives in `grove serve`'s memory: after a restart it simply enrols every VM again,
 which renews its certificate. `grove fleet apply` creates VMs but doesn't enrol them; the running
 `grove serve` does, within a tick. A VM that is never enrolled fails its startup script after 30
-minutes, and Orchard's restarts then hand it to the reconciler's boot-loop rebuild.
+minutes, and Orchard's restarts then hand it to the reconciler's boot-loop rebuild. Orchard
+restarts a VM onto a fresh clone of its image, without the files the last enrolment wrote, so
+`grove serve` tells boots apart by Orchard UID and restart count and enrols a restarted VM again
+on the next tick, and enrols again any enrolled VM whose node hasn't registered 5 minutes later.
 
 Every tick, `grove serve` also takes a **roll call** of Nomad's live, eligible nodes against
 Orchard's VMs, the one record of what grove created (the control plane's `grove-sandbox-host` is
@@ -128,6 +131,7 @@ What each refusal looks like in a client's log, for debugging a VM that never sh
 | `introduction claims mismatch` in the server's log | the token names another node pool than the client's config: the VM is not the pool it claims to be |
 | `tls: expired certificate` | the VM's certificate wasn't renewed: is `grove serve` running, and does `serve: fleet reconciler: enrolling VMs into Nomad failed` say why? |
 | startup script fails with `the control plane never enrolled this VM into Nomad` | the same, for a VM's first enrolment |
+| a Linux VM restarts (Orchard `restarts` going up) within seconds of `enrolled VM into Nomad`, and its client never tries TLS | a startup script from before v0.1.33: its login shell's `~/.bash_logout` (`clear_console`, which fails with no terminal) turned every finished script into exit status 1. Upgrade the control plane and restart `grove serve`: the new script reads as drifted and the VM is recreated |
 
 `grove doctor` has a `nomad-tls` row: it fails when Nomad runs without mTLS and when a
 certificate is within 30 days of expiry. grove's CA lasts ten years and the control plane's own
@@ -803,6 +807,11 @@ subcommands, or `GET /api/v1/jobs/{id}/logs?follow=1`.
 - **grove CLI**: re-run `scripts/install.sh` (or `brew upgrade grove` on macOS), then re-run
   `grove install --role <role>` to pick up any new config/unit templates — it's idempotent, so
   already-correct steps are skipped.
+- **`grove serve` keeps running the binary it started with.** `grove install --role
+  control-plane` restarts it; replacing the file alone changes nothing until the service restarts
+  (macOS: `launchctl kickstart -k gui/$(id -u)/com.grove.server`; Linux: `systemctl --user
+  restart grove-server`). Its
+  `grove serve: listening` log line names the version it runs, and so does `GET /healthz`.
 - **Orchard** (the control plane's controller and every worker) is built from source at
   `OrchardForkCommit` (`internal/install/download.go`), fetched by SHA, never from the tip of
   gm2211/orchard's main. Each build records its commit: the worker bundle in
