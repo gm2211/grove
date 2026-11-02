@@ -4,11 +4,15 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+## v0.1.25
+
 - **The worker install no longer fails with `Bootstrap failed: 5: Input/output error` on a Mac whose
   daemons were already running.** launchd finishes a `bootout` after it returns, so the root step
   that reloads the Orchard worker, broker and VM firewall LaunchDaemons now waits (up to 10s) until
   each is unloaded before bootstrapping it, and retries the bootstrap once. Before, the script
   stopped there and left the broker unloaded.
+
+## v0.1.24
 
 - **`grove install --role worker --rootless` installs a worker with no root at all.** For a user with no sudo (such as a dedicated `argos` standard user), the worker and broker become that user's own LaunchAgents in `~/Library/LaunchAgents` (`worker-agents`, replacing `worker-daemons`; the same jobs, loaded into `gui/<uid>`, an older same-label agent replaced in place, verified running), `com.grove.keepawake` runs `/usr/bin/caffeinate -ims` in place of `pmset` (an existing caffeinate agent counts as done), and `host-firewall` and `softnet-root` are listed as `[skip]` with what is lost: VMs on this Mac are not fenced off the host's other ports and LAN, and isolated network pools are unavailable. No sudo block is printed and the install exits 0. It is selected by `--rootless`, by `worker.rootless: true` in `config.yaml` (written by the install, so re-runs stay rootless), or automatically when the user isn't an admin and the worker isn't already installed as LaunchDaemons (`--rootless=false` opts out). `retire-launchagents` keeps the agents it installed, and `grove doctor` checks agents instead of daemons and reports the missing firewall as a warning. LaunchAgents only run while the user is logged in at the Mac, so it needs auto-login or a FileVault unlock; see docs/INSTALL.md, "A worker with no root".
 
