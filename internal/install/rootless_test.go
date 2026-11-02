@@ -452,3 +452,48 @@ func TestRootless_Doctor(t *testing.T) {
 		t.Errorf("doctor should check agents, not daemons: %s", joined)
 	}
 }
+
+// --firewall keeps the VM firewall in a rootless install: its root step goes to an admin while the
+// worker stays LaunchAgents. Once installed, later rootless runs keep it without the flag.
+func TestRootless_FirewallKeepsTheRootStepOnly(t *testing.T) {
+	e, opts := rootlessEnv(t)
+	scriptTailscaleUp(e.r)
+	scriptPinnedDownloads(e.r, opts)
+	opts.Softnet = true
+	opts.Firewall = true
+	steps, err := BuildPlan(e.r, opts, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"worker-agents", "keep-awake", "host-firewall-stage", "host-firewall", "softnet-root"} {
+		if !hasStep(steps, want) {
+			t.Errorf("rootless --firewall plan lacks %s: %v", want, stepNames(steps))
+		}
+	}
+	if hasStep(steps, "worker-daemons") || hasStep(steps, "disable-sleep") {
+		t.Errorf("--firewall must not switch the worker to daemons: %v", stepNames(steps))
+	}
+	for _, s := range steps {
+		switch {
+		case s.Name == "host-firewall" && (!s.Privileged || s.SkipReason != ""):
+			t.Errorf("host-firewall must be the root step, not skipped: %+v", s)
+		case s.Name != "host-firewall" && s.Privileged:
+			t.Errorf("only host-firewall may need root, got %s", s.Name)
+		case s.Name == "softnet-root" && s.SkipReason == "":
+			t.Errorf("softnet-root stays skipped")
+		}
+	}
+
+	// Already installed by an admin: kept (and kept current) without the flag, and doctor checks it.
+	opts.Firewall = false
+	_, installed := hostFirewallPaths(opts)
+	if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(installed, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !rootlessFirewallWanted(opts) {
+		t.Error("an installed firewall must stay in the rootless plan")
+	}
+}

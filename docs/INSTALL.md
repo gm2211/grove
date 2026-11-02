@@ -213,7 +213,7 @@ re-runs rootless. `--rootless=false` keeps the root-based install, and clears th
 |---|---|
 | `worker-daemons`: worker and broker LaunchDaemons with `UserName` | `worker-agents`: the same two jobs (same program, wrapper, arguments, KeepAlive + RunAtLoad, log paths) as LaunchAgents in `~/Library/LaunchAgents`, loaded with `launchctl bootout` then `launchctl bootstrap gui/<uid>`. An agent already there under the same label, of an older shape, is replaced in place (backed up first); an agent already right is left running. The step fails unless both jobs are running afterwards |
 | `disable-sleep`: `pmset -a disablesleep 1` | `keep-awake`: a `com.grove.keepawake` LaunchAgent running `/usr/bin/caffeinate -ims` (KeepAlive). An existing caffeinate LaunchAgent of the user's (any label, loaded, running `caffeinate` with `-i`, `-s` or `-d`) counts as done, so a Mac that already has one gets no duplicate |
-| `host-firewall`: the `com.grove.pf-vm` pf anchor | skipped (`[skip]`): pf needs root, so **VMs on this Mac are not fenced off the host's other ports and your LAN**. `grove doctor` shows it as a warning, not a failure |
+| `host-firewall`: the `com.grove.pf-vm` pf anchor | skipped (`[skip]`): pf needs root, so **VMs on this Mac are not fenced off the host's other ports and your LAN**. `grove doctor` shows it as a warning, not a failure. **Add `--firewall`** to keep it anyway: its one root step is printed for an admin (or run through sudo for one), the worker stays LaunchAgents, and once installed later runs keep it current without the flag |
 | `softnet-root` (with `--softnet`) | skipped: Softnet can't be made setuid root, so `network: isolated` pools can't run on this Mac |
 | the root script, one `sudo` | none: no sudo, no block, exit status 0 when everything succeeded |
 
@@ -347,6 +347,7 @@ manually provisioned environments.
 | `--softnet` | also install Softnet and add its one-time root step (worker role; only for Macs that run `network: isolated` pools, see [OPERATIONS.md](OPERATIONS.md#isolating-a-pools-network)) |
 | `--yes` | run the root steps through sudo without asking (needs a terminal, or cached sudo credentials); as root, apply them directly |
 | `--no-sudo` | never run sudo; print the root steps as one block for an admin |
+| `--firewall` | with a rootless worker, still install the VM firewall (`host-firewall`): one root step for an admin, the worker stays LaunchAgents |
 | `--rootless` | install the worker with no root at all: per-user LaunchAgents, a caffeinate keep-awake agent, no VM firewall (worker role; chosen automatically for a user who isn't an admin; `--rootless=false` keeps the root-based install; see [A worker with no root](#a-worker-with-no-root---rootless)) |
 | `--dry-run` | print the whole plan, change nothing |
 

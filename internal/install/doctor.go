@@ -106,7 +106,7 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 		results = append(results, checkWorkerShape(ctx, opts, cfg))
 		results = append(results, checkHeadlessTart(ctx, r, opts))
 		results = append(results, checkBroker(ctx, r, opts))
-		if opts.Rootless {
+		if opts.Rootless && !rootlessFirewallWanted(opts) {
 			results = append(results, checkRootlessFirewall())
 		} else {
 			results = append(results, checkHostFirewall(ctx, r, opts))

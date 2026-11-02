@@ -376,6 +376,28 @@ func keepAwakeStep(r Runner, opts Options) Step {
 	}
 }
 
+// rootlessFirewallWanted reports whether a rootless install keeps the VM firewall: asked for with
+// --firewall, or already installed by an admin (so an upgrade that changes the rules is offered).
+func rootlessFirewallWanted(opts Options) bool {
+	if opts.Firewall {
+		return true
+	}
+	_, installed := hostFirewallPaths(opts)
+	_, err := os.Stat(installed)
+	return err == nil
+}
+
+// rootlessTailSteps end a rootless plan: the VM firewall when it is wanted (its one privileged step
+// goes to an admin, like any root step; the worker stays this user's LaunchAgents), otherwise the
+// root-only protections listed as skipped.
+func rootlessTailSteps(r Runner, opts Options) []Step {
+	steps := rootlessSkipSteps(opts)
+	if rootlessFirewallWanted(opts) {
+		return append(hostFirewallSteps(r, opts), steps[1:]...)
+	}
+	return steps
+}
+
 // rootlessSkipSteps are the root-only protections a rootless install can't have. Each is listed as
 // [skip] with what is lost, so the install never looks as if it did them.
 func rootlessSkipSteps(opts Options) []Step {

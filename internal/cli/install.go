@@ -25,6 +25,7 @@ var installFlags struct {
 	yes           bool
 	noSudo        bool
 	rootless      bool
+	firewall      bool
 	dryRun        bool
 }
 
@@ -79,6 +80,7 @@ func init() {
 	installCmd.Flags().BoolVar(&installFlags.force, "force", false, "rename a worker on a host that is not the control plane: print the fleet.yaml change it needs instead of refusing (worker role)")
 	installCmd.Flags().BoolVar(&installFlags.yes, "yes", false, "run the root steps through sudo without asking (or, as root, apply them directly)")
 	installCmd.Flags().BoolVar(&installFlags.noSudo, "no-sudo", false, "never run sudo; print the root steps for an admin")
+	installCmd.Flags().BoolVar(&installFlags.firewall, "firewall", false, "with a rootless worker, still install the VM firewall (host-firewall): its one root step is run or printed for an admin, and the worker stays LaunchAgents")
 	installCmd.Flags().BoolVar(&installFlags.rootless, "rootless", false, "install the worker with no root: per-user LaunchAgents, a caffeinate keep-awake agent, no VM firewall (worker role; chosen automatically for a user who isn't an admin; --rootless=false keeps the root-based install)")
 	installCmd.Flags().BoolVar(&installFlags.dryRun, "dry-run", false, "print the plan; change nothing")
 	_ = installCmd.MarkFlagRequired("role")
@@ -114,6 +116,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		Hostname:      installFlags.name,
 		Labels:        installFlags.labels,
 		Force:         installFlags.force,
+		Firewall:      installFlags.firewall,
 	}
 	opts.Rootless, opts.NoAutoRootless = rootlessFlag(cmd, installFlags.rootless)
 
