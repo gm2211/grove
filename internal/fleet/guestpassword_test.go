@@ -3,7 +3,6 @@ package fleet
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -191,10 +190,7 @@ exit 64
 
 func runGuestPasswordBlock(t *testing.T, dir, current, password string, broken bool) error {
 	t.Helper()
-	bin := filepath.Join(dir, "bin")
-	if err := os.MkdirAll(bin, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	bin := newFakeBin(t)
 	if err := os.WriteFile(filepath.Join(bin, "dscl"), []byte(fakeDscl), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -207,8 +203,8 @@ func runGuestPasswordBlock(t *testing.T, dir, current, password string, broken b
 	}
 	_ = os.Remove(filepath.Join(dir, "argv"))
 	script := "set -eu\n" + strings.ReplaceAll(guestPasswordScript, guestPasswordPlaceholder, shQuote(password))
-	cmd := exec.Command("/bin/sh", "-c", script)
-	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "GROVE_TEST_DIR="+dir)
+	cmd := guestCmd(t, bin, "-c", script)
+	cmd.Env = append(cmd.Env, "GROVE_TEST_DIR="+dir)
 	if broken {
 		cmd.Env = append(cmd.Env, "GROVE_TEST_DSCL_BROKEN=1")
 	}
