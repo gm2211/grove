@@ -4,6 +4,8 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+## v0.1.24
+
 - **The worker install no longer fails with `Bootstrap failed: 5: Input/output error` on a Mac whose
   daemons were already running.** launchd finishes a `bootout` after it returns, so the root step
   that reloads the Orchard worker, broker and VM firewall LaunchDaemons now waits (up to 10s) until
