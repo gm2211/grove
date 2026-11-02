@@ -2,7 +2,14 @@
 
 All notable changes to grove are documented here.
 
-## Unreleased
+## v0.1.30
+
+- **The worker's LaunchDaemons get their own security session (`SessionCreate`).** A daemon with
+  none had `tart run` attached to the console user's login session, where it checked in as a
+  foreground app: that is what flashed in the Dock of whoever was logged in at a worker Mac, and it
+  put job-facing VM processes inside someone else's session. Re-run `grove setup --user <user>`
+  (one sudo) after upgrading: the installed plist changes. This does not unlock the worker user's
+  keychain, so macOS VMs still need that user logged in (`login-session`).
 
 ## v0.1.29
 

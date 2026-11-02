@@ -83,7 +83,8 @@ calls, returns scripted results) is for tests. This is what makes `--dry-run` ac
   works from `su - <user>`. Like `hostfirewall.go`, the unprivileged install only *stages* each
   plist (`daemon-stage:*`, under `~/.config/grove/launchd`); one privileged `worker-daemons` step
   installs them root-owned into `/Library/LaunchDaemons` and loads them into the system domain.
-  Keep it that way: every daemon plist carries `UserName` and never root (`daemonPlist`,
+  Keep it that way: every daemon plist carries `UserName` and never root, and `SessionCreate` (its
+  own security session, so `tart run` never joins the console user's session) (`daemonPlist`,
   `Options.workerUser`; the install refuses a root user, and the printed command re-checks the
   root-owned copy is byte-identical to the rendered plist, by SHA-256, before loading it); never `launchctl bootstrap gui/…` for these;
   restart one with `restartDaemon` (SIGTERM its pid, KeepAlive does the rest), not `kickstart`.
