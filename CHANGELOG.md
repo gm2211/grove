@@ -4,6 +4,8 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+## v0.1.26
+
 - **`grove doctor` on a worker or client no longer fails on checks that only matter on the control
   plane.** `orchard-controller` and `nomad` pass as "not used here" when config.yaml has no endpoint
   for them and the machine doesn't run `grove serve` (no `server.listen`): a worker joined through
