@@ -64,6 +64,11 @@ type Options struct {
 	// NoAutoRootless keeps the root-based install even for a user who isn't an admin
 	// (--rootless=false), and ends a rootless install recorded in config.yaml.
 	NoAutoRootless bool
+	// Firewall keeps the VM firewall (host-firewall, one root step for an admin) in a rootless
+	// install, which otherwise skips it. The worker's own jobs stay LaunchAgents: pf is
+	// independent of how the worker launches. Once the firewall is installed, later rootless runs
+	// keep it up to date without the flag.
+	Firewall bool
 
 	// Hostname names this machine to grove: the worker's Orchard name (`grove install --name`).
 	// Empty means the worker name already installed on this Mac, else os.Hostname().

@@ -6,7 +6,8 @@
 //
 // Units of 30s (one grove serve tick). The pool's TTL is ttl units, ttlDrainLead = 2m = 4 units,
 // FailedVMRetry = 10m = 20 units (scaled down to `retry` here: only its order relative to the TTL
-// matters). DrainNode may fail on up to drainFails ticks in a row.
+// matters; LoginSessionRetry = 1h, for a macOS VM that failed only because its worker user has no
+// login session, is the same finite wait, longer). DrainNode may fail on up to drainFails ticks in a row.
 module fleet {
   const ttl: int
   const retry: int

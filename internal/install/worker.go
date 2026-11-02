@@ -211,7 +211,7 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 		// Another account's superseded stack is not this user's to remove (that is a root step):
 		// `grove doctor` reports it through worker-shape instead.
 		steps = append(steps, workerFinishSteps(r, opts, daemons, bk, out)...)
-		return append(steps, rootlessSkipSteps(opts)...)
+		return append(steps, rootlessTailSteps(r, opts)...)
 	}
 	steps = append(steps, daemonStageStep(opts, daemons[0]))
 	steps = append(steps, workerSleepStep(r))
