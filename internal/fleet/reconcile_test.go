@@ -347,7 +347,7 @@ func TestPlan_SpecChanged_DeleteAndCreate(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	if len(plan.Deletes) != 1 || plan.Deletes[0].Name != name || plan.Deletes[0].Reason != "spec changed" {
+	if len(plan.Deletes) != 1 || plan.Deletes[0].Name != name || !strings.HasPrefix(plan.Deletes[0].Reason, "spec changed") {
 		t.Fatalf("want 1 delete of %q (spec changed), got %+v", name, plan.Deletes)
 	}
 
@@ -387,7 +387,7 @@ func TestPlan_SpecChanged_DriftOnScriptContent(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	if len(plan.Deletes) != 1 || plan.Deletes[0].Reason != "spec changed" {
+	if len(plan.Deletes) != 1 || !strings.HasPrefix(plan.Deletes[0].Reason, "spec changed") {
 		t.Fatalf("want 1 delete (spec changed) for shutdown-script drift, got %+v", plan.Deletes)
 	}
 }
@@ -465,7 +465,7 @@ func TestPlan_TTLChangeAlone_IsDrift(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	if len(plan.Deletes) != 1 || plan.Deletes[0].Reason != "spec changed" {
+	if len(plan.Deletes) != 1 || !strings.HasPrefix(plan.Deletes[0].Reason, "spec changed") {
 		t.Fatalf("want 1 delete (spec changed) for TTL drift, got %+v", plan.Deletes)
 	}
 }

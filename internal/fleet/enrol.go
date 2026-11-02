@@ -53,6 +53,11 @@ func (e *EnrolError) Unwrap() error { return e.Err }
 type EnrolState struct {
 	vms   map[string]enrolled
 	pools map[string]bool
+
+	// Refused is, after each Enrol, why each running VM that waits for its Nomad identity was
+	// not given one (VM name → reason), so the caller can say why a VM sits waiting instead of
+	// leaving it silent. Empty when every such VM was enrolled or needed nothing.
+	Refused map[string]string
 }
 
 type enrolled struct {
@@ -84,6 +89,7 @@ func (r *Reconciler) Enrol(ctx context.Context, state *EnrolState) error {
 		state.vms = map[string]enrolled{}
 		state.pools = map[string]bool{}
 	}
+	state.Refused = map[string]string{}
 
 	vms, err := r.Client.ListVMs(ctx)
 	if err != nil {
@@ -117,7 +123,11 @@ func (r *Reconciler) Enrol(ctx context.Context, state *EnrolState) error {
 			continue
 		}
 		pool, worker, _, ok := ParseVMName(vm.Name)
-		if !ok || !r.wantsEnrolled(vm, pool, worker) {
+		if !ok {
+			continue
+		}
+		if why := r.enrolRefusal(vm, pool, worker); why != "" {
+			state.Refused[vm.Name] = why
 			continue
 		}
 		live[vm.Name] = true
@@ -144,20 +154,30 @@ func (r *Reconciler) Enrol(ctx context.Context, state *EnrolState) error {
 	return errors.Join(errs...)
 }
 
-// wantsEnrolled reports whether vm is exactly what the reconciler itself would have created for
-// that name: a shared pool's VM, on the worker its name pins it to, not drifted from its spec. Any
-// worker's Orchard credential can create VMs, so a VM that merely looks like one of grove's, by
-// its name or its startup script, gets no Nomad identity.
-func (r *Reconciler) wantsEnrolled(vm orchard.VM, poolName, worker string) bool {
-	if r.Spec == nil || hostOf(vm, worker) != worker {
-		return false
+// enrolRefusal says why vm is not exactly what the reconciler itself would have created for that
+// name (a shared pool's VM, on the worker its name pins it to, not drifted from its spec), or ""
+// when it is. Any worker's Orchard credential can create VMs, so a VM that merely looks like one
+// of grove's, by its name or its startup script, gets no Nomad identity.
+func (r *Reconciler) enrolRefusal(vm orchard.VM, poolName, worker string) string {
+	if r.Spec == nil {
+		return "no fleet spec"
+	}
+	if host := hostOf(vm, worker); host != worker {
+		return fmt.Sprintf("runs on worker %q, not %q its name pins it to", host, worker)
 	}
 	for _, p := range r.Spec.Pools {
-		if p.Name == poolName {
-			return !p.Isolated() && !specDrifted(r.vmSpec(p, worker, vm.Name), vm)
+		if p.Name != poolName {
+			continue
 		}
+		if p.Isolated() {
+			return "its pool is sealed"
+		}
+		if why := driftReason(r.vmSpec(p, worker, vm.Name), vm); why != "" {
+			return "differs from its spec: " + why
+		}
+		return ""
 	}
-	return false
+	return fmt.Sprintf("no pool %q in the fleet spec", poolName)
 }
 
 func (r *Reconciler) enrolVM(ctx context.Context, state *EnrolState, vm orchard.VM, pool string, withToken bool, now time.Time) (time.Time, error) {

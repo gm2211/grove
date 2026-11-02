@@ -29,3 +29,14 @@ func TestRepeatedWarning(t *testing.T) {
 		t.Error("after a clean tick, the next failure should be logged at once")
 	}
 }
+
+func TestRefusedSummaryIsSorted(t *testing.T) {
+	got := refusedSummary(map[string]string{"linux-b-0": "its pool is sealed", "linux-a-0": "differs from its spec: shutdown script"})
+	want := "linux-a-0: differs from its spec: shutdown script; linux-b-0: its pool is sealed"
+	if got != want {
+		t.Fatalf("refusedSummary = %q, want %q", got, want)
+	}
+	if refusedSummary(nil) != "" {
+		t.Fatal("no refusals must summarise as empty")
+	}
+}

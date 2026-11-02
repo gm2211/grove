@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -280,6 +281,9 @@ type fleetReconcileLoop struct {
 	// fleet.Reconciler.Enrol), and warnedEnrol the enrolment error last logged.
 	enrolment   fleet.EnrolState
 	warnedEnrol repeatedWarning
+	// warnedRefused is the last logged list of VMs that wait for a Nomad identity Enrol won't
+	// give them.
+	warnedRefused repeatedWarning
 	// health is told why pools can't get nodes (enrolment errors, boot loops), so unplaceable
 	// jobs fail fast; nil skips that.
 	health *fleet.PoolHealth
@@ -411,6 +415,13 @@ func (l *fleetReconcileLoop) tick(ctx context.Context) {
 	} else {
 		l.warnedEnrol.clear()
 	}
+	if refused := refusedSummary(l.enrolment.Refused); refused != "" {
+		if l.warnedRefused.due(refused, time.Now()) {
+			slog.Warn("serve: fleet reconciler: not enrolling VMs into Nomad", "vms", refused)
+		}
+	} else {
+		l.warnedRefused.clear()
+	}
 
 	actions, err := r.RollCall(ctx)
 	for _, a := range actions {
@@ -474,6 +485,21 @@ func (l *fleetReconcileLoop) tick(ctx context.Context) {
 	}
 	l.warnedBlocked = blocked
 	l.status.Report(plan, blockedErr, time.Now())
+}
+
+// refusedSummary renders Enrol's refusals as e.g. "linux-mac1-0: differs from its spec: shutdown
+// script", sorted by VM name so the same refusals always read the same.
+func refusedSummary(refused map[string]string) string {
+	names := make([]string, 0, len(refused))
+	for name := range refused {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, len(names))
+	for i, name := range names {
+		parts[i] = name + ": " + refused[name]
+	}
+	return strings.Join(parts, "; ")
 }
 
 // planSummary renders a Plan as e.g. "+create linux-mac1-0 / -delete linux-mac2-0" for the
