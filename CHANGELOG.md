@@ -4,6 +4,8 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **The test suite no longer changes the host's DNS settings.** Fleet tests that ran the macOS VM startup script with `/bin/sh` called the real `networksetup -setdnsservers` on the developer's machine, resetting every network service (Tailscale's included). Every such test now gets a PATH directory whose host-mutating binaries (`networksetup`, `pfctl`, `launchctl`, `dscl`, `sudo` and the rest) fail loudly unless the test fakes them, and a guard test rejects any test that runs a shell without it.
+
 - **A worker no longer needs the admin's Homebrew to get Tart.** When Tart is missing and Homebrew
   belongs to another user, `grove install --role worker` installs the pinned Tart 2.41.1 release
   tarball (SHA-256 checked; bundle id, signature and team verified before it is linked) to

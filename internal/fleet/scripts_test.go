@@ -3,7 +3,6 @@ package fleet
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -115,7 +114,7 @@ func TestNomadRPCAddressFromHTTPURL(t *testing.T) {
 }
 
 func TestBuildStartupScript_UnprivilegedGuestUsesNonInteractiveSudo(t *testing.T) {
-	fakeBin := t.TempDir()
+	fakeBin := newFakeBin(t)
 	logPath := filepath.Join(t.TempDir(), "sudo.log")
 	writeExecutable := func(name, body string) {
 		t.Helper()
@@ -150,8 +149,8 @@ case "${1:-}" in
 esac
 `)
 
-	cmd := exec.Command("/bin/sh", "-c", BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", ""))
-	cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_SUDO_LOG="+logPath)
+	cmd := guestCmd(t, fakeBin, "-c", BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", ""))
+	cmd.Env = append(cmd.Env, "GROVE_TEST_SUDO_LOG="+logPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("startup script failed through fake sudo: %v\n%s", err, output)
 	}
@@ -299,7 +298,7 @@ func TestBuildStartupScript_HostXcodeSetupIsFailClosedAndVerified(t *testing.T) 
 		{name: "sudo unavailable", build: expectedBuild, guestOS: "26.6.2", minOS: "26.6", launchctlPrintStatus: "0", sudoFails: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			fakeBin := t.TempDir()
+			fakeBin := newFakeBin(t)
 			logPath := filepath.Join(t.TempDir(), "commands.log")
 			shareRoot := filepath.Join(t.TempDir(), "Shared Files")
 			appPath := filepath.Join(shareRoot, "grove-xcode.app")
@@ -416,9 +415,8 @@ esac
 			guestScript, _, _ := fakeMacOSLockdown(t, fakeBin, script, true)
 			guestScript = strings.ReplaceAll(guestScript, shQuote(guestHostXcodeMountPath), shQuote(appPath))
 			guestScript = strings.ReplaceAll(guestScript, "/usr/libexec/PlistBuddy", plistBuddy)
-			cmd := exec.Command("/bin/sh", "-c", guestScript)
-			cmd.Env = append(os.Environ(),
-				"PATH="+fakeBin+":"+os.Getenv("PATH"),
+			cmd := guestCmd(t, fakeBin, "-c", guestScript)
+			cmd.Env = append(cmd.Env,
 				"GROVE_TEST_COMMAND_LOG="+logPath,
 				"GROVE_TEST_NOMAD_BOOTED_OUT="+filepath.Join(t.TempDir(), "nomad-booted-out"),
 				"GROVE_TEST_LAUNCHCTL_PRINT_STATUS="+tt.launchctlPrintStatus,
@@ -496,7 +494,7 @@ func TestBuildStartupScript_MacOSNomadServiceAndReadiness(t *testing.T) {
 		{name: "fails when client never becomes healthy", launchctlPrintStatus: "113", wantBootstrap: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			fakeBin := t.TempDir()
+			fakeBin := newFakeBin(t)
 			logPath := filepath.Join(t.TempDir(), "commands.log")
 			writeExecutable := func(name, body string) {
 				t.Helper()
@@ -552,9 +550,8 @@ case "$*" in *"-s rules"*) echo 'block return out quick proto tcp from any to 10
 `)
 
 			script, _, _ := fakeMacOSLockdown(t, fakeBin, BuildStartupScript(Pool{Name: "macos"}, "mac1", "macos-mac1-0", ""), true)
-			cmd := exec.Command("/bin/sh", "-c", script)
-			cmd.Env = append(os.Environ(),
-				"PATH="+fakeBin+":"+os.Getenv("PATH"),
+			cmd := guestCmd(t, fakeBin, "-c", script)
+			cmd.Env = append(cmd.Env,
 				"GROVE_TEST_COMMAND_LOG="+logPath,
 				"GROVE_TEST_LAUNCHCTL_PRINT_STATUS="+tt.launchctlPrintStatus,
 				"GROVE_TEST_CLIENT_HEALTHY="+fmt.Sprint(tt.clientHealthy),
@@ -668,7 +665,7 @@ func TestBuildStartupScript_MacOSCreatesJobUserBeforeNomad(t *testing.T) {
 // Linux VM, restarted 40,426 times: under `set -eu` a failing `tailscale up` (expired auth key)
 // ended the startup script before Nomad was restarted with the VM's meta.
 func TestBuildStartupScript_LinuxTurnsTailscaleOffThenRestartsNomad(t *testing.T) {
-	fakeBin := t.TempDir()
+	fakeBin := newFakeBin(t)
 	calls := filepath.Join(t.TempDir(), "calls")
 	write := func(name, body string) {
 		t.Helper()
@@ -687,8 +684,8 @@ func TestBuildStartupScript_LinuxTurnsTailscaleOffThenRestartsNomad(t *testing.T
 	write("ip", "#!/bin/sh\nexit 0\n")
 
 	script := BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", "tskey-expired")
-	cmd := exec.Command("/bin/sh", "-c", script)
-	cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_CALLS="+calls)
+	cmd := guestCmd(t, fakeBin, "-c", script)
+	cmd.Env = append(cmd.Env, "GROVE_TEST_CALLS="+calls)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("startup script failed: %v\n%s", err, out)
@@ -753,7 +750,7 @@ func TestSharedEgressFenceScript_Runs(t *testing.T) {
 		{"not an address", "default via fe80::1 dev enp0s1", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fakeBin := t.TempDir()
+			fakeBin := newFakeBin(t)
 			log := filepath.Join(t.TempDir(), "iptables.log")
 			if err := os.WriteFile(filepath.Join(fakeBin, "iptables"), []byte("#!/bin/sh\necho \"$*\" >> \"$GROVE_TEST_LOG\"\nexit 0\n"), 0o755); err != nil {
 				t.Fatal(err)
@@ -765,9 +762,9 @@ func TestSharedEgressFenceScript_Runs(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(fakeBin, "ip"), []byte(ip), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			cmd := exec.Command("/bin/sh", "-s")
+			cmd := guestCmd(t, fakeBin, "-s")
 			cmd.Stdin = strings.NewReader(sharedEgressFenceScript())
-			cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_LOG="+log)
+			cmd.Env = append(cmd.Env, "GROVE_TEST_LOG="+log)
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("fence script failed: %v\n%s", err, out)
 			}
@@ -811,7 +808,7 @@ func TestMacOSHomeFenceLoader_BrokerException(t *testing.T) {
 		{"no gateway", "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fakeBin := t.TempDir()
+			fakeBin := newFakeBin(t)
 			dir := t.TempDir()
 			anchor := filepath.Join(dir, "anchor")
 			for name, body := range map[string]string{
@@ -838,9 +835,9 @@ esac
 					t.Fatal(err)
 				}
 			}
-			cmd := exec.Command("/bin/sh", "-s")
+			cmd := guestCmd(t, fakeBin, "-s")
 			cmd.Stdin = strings.NewReader(macosHomeFenceLoader)
-			cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_ANCHOR="+anchor, "GROVE_TEST_RULES="+macosHomeFenceRules)
+			cmd.Env = append(cmd.Env, "GROVE_TEST_ANCHOR="+anchor, "GROVE_TEST_RULES="+macosHomeFenceRules)
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("loader failed: %v\n%s", err, out)
 			}

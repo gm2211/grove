@@ -2,7 +2,6 @@ package fleet
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -67,11 +66,11 @@ func fakeMacOSLockdown(t *testing.T, fakeBin, script string, gated bool) (rewrit
 // (after pam_rootok, so root still su's), denies system.privilege.admin, changes nothing on a
 // second run, and stops the script when a step fails.
 func TestMacOSLockdownScript(t *testing.T) {
-	fakeBin := t.TempDir()
+	fakeBin := newFakeBin(t)
 	script, pamDir, securityLog := fakeMacOSLockdown(t, fakeBin, "set -eu\ngrove_priv() { \"$@\"; }\n"+macosLockdownScript+"echo locked-down\n", false)
 	run := func(env ...string) (string, error) {
-		cmd := exec.Command("/bin/sh", "-c", script)
-		cmd.Env = append(append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH")), env...)
+		cmd := guestCmd(t, fakeBin, "-c", script)
+		cmd.Env = append(cmd.Env, env...)
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}

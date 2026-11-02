@@ -62,7 +62,7 @@ func runBrokerScript(t *testing.T, gateway, ca string) (meta, output string) {
 	if _, err := exec.LookPath("openssl"); err != nil {
 		t.Skip("openssl not installed")
 	}
-	fakeBin := t.TempDir()
+	fakeBin := newFakeBin(t)
 	dir := t.TempDir()
 	caFile := filepath.Join(dir, "served.pem")
 	if err := os.WriteFile(caFile, []byte(ca), 0o644); err != nil {
@@ -102,8 +102,8 @@ cp "$GROVE_TEST_CA" "$out"
 		t.Fatal(err)
 	}
 	script := "set -eu\ngrove_priv() { \"$@\"; }\n" + strings.ReplaceAll(brokerScript(), "/etc/nomad.d", metaDir)
-	cmd := exec.Command("/bin/sh", "-c", script)
-	cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"),
+	cmd := guestCmd(t, fakeBin, "-c", script)
+	cmd.Env = append(cmd.Env,
 		"GROVE_TEST_DIR="+dir, "GROVE_TEST_CA="+caFile, "GROVE_TEST_GATEWAY="+gateway)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

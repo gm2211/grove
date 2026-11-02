@@ -6,7 +6,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -175,7 +174,7 @@ func TestSweepNodeTokens_NoopWithoutIssuer(t *testing.T) {
 }
 
 func TestBuildStartupScript_ClientACLLandsInMetaFile(t *testing.T) {
-	fakeBin := t.TempDir()
+	fakeBin := newFakeBin(t)
 	metaPath := filepath.Join(t.TempDir(), "grove-meta.hcl")
 	writeExecutable := func(name, body string) {
 		t.Helper()
@@ -199,8 +198,8 @@ exit 0
 `)
 
 	script := buildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", Options{NodeTokens: &fakeNodeTokens{}})
-	cmd := exec.Command("/bin/sh", "-c", script)
-	cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_META="+metaPath)
+	cmd := guestCmd(t, fakeBin, "-c", script)
+	cmd.Env = append(cmd.Env, "GROVE_TEST_META="+metaPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("startup script failed: %v\n%s", err, output)
 	}

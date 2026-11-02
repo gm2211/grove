@@ -184,7 +184,7 @@ func (g guestDirs) rewrite(script string) string {
 func (g guestDirs) runEnrol(t *testing.T, stdin string) (int, string) {
 	t.Helper()
 	script := "pkill() { echo \"$*\" >>" + shQuote(filepath.Join(g.nomad, "hups")) + "; }\n" + g.rewrite(enrolGuestScript)
-	cmd := exec.Command("/bin/sh", "-c", script)
+	cmd := guestCmd(t, "", "-c", script)
 	cmd.Stdin = strings.NewReader(stdin)
 	out, err := cmd.CombinedOutput()
 	var exitErr *exec.ExitError
@@ -211,7 +211,7 @@ func TestNodeTLS_StartupAndEnrolmentWriteRootOnlyFiles(t *testing.T) {
 	g := newGuestDirs(t)
 	prelude := "set -eu\ngrove_priv() { \"$@\"; }\ngrove_vm='linux-mac1-0'\ngrove_pool='linux'\ngrove_meta_file=" +
 		shQuote(filepath.Join(g.nomad, "grove-meta.hcl")) + "\nmkdir -p " + shQuote(g.nomad) + "\n"
-	if out, err := exec.Command("/bin/sh", "-c", prelude+nomadTLSScript(*testNodeTLS)).CombinedOutput(); err != nil {
+	if out, err := guestCmd(t, "", "-c", prelude+nomadTLSScript(*testNodeTLS)).CombinedOutput(); err != nil {
 		t.Fatalf("TLS block failed: %v\n%s", err, out)
 	}
 
@@ -220,7 +220,7 @@ func TestNodeTLS_StartupAndEnrolmentWriteRootOnlyFiles(t *testing.T) {
 		t.Fatalf("enrolment exited %d:\n%s", code, out)
 	}
 	// The startup script carries on once enrolled.
-	if out, err := exec.Command("/bin/sh", "-c", prelude+"grove_nomad_tls="+shQuote(filepath.Join(g.nomad, "tls"))+"\n"+nomadEnrolWaitScript+"echo past-wait\n").CombinedOutput(); err != nil || !strings.Contains(string(out), "past-wait") {
+	if out, err := guestCmd(t, "", "-c", prelude+"grove_nomad_tls="+shQuote(filepath.Join(g.nomad, "tls"))+"\n"+nomadEnrolWaitScript+"echo past-wait\n").CombinedOutput(); err != nil || !strings.Contains(string(out), "past-wait") {
 		t.Fatalf("enrolment wait: %v\n%s", err, out)
 	}
 

@@ -3,7 +3,6 @@ package fleet
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -272,7 +271,7 @@ func TestBuildStartupScript_Isolated(t *testing.T) {
 // unprivileged guest user against stub commands and checks every privileged step it takes, in
 // order, and the files it writes.
 func TestBuildStartupScript_IsolatedRunsThroughFakeSudo(t *testing.T) {
-	fakeBin := t.TempDir()
+	fakeBin := newFakeBin(t)
 	root := t.TempDir()
 	logPath := filepath.Join(t.TempDir(), "sudo.log")
 	writeExecutable := func(name, body string) {
@@ -303,9 +302,8 @@ fi
 `)
 
 	script := buildStartupScript(isolatedPool(), "mac1", "linux-mac1-0", isolatedOptions())
-	cmd := exec.Command("/bin/sh", "-c", script)
-	cmd.Env = append(os.Environ(),
-		"PATH="+fakeBin+":"+os.Getenv("PATH"),
+	cmd := guestCmd(t, fakeBin, "-c", script)
+	cmd.Env = append(cmd.Env,
 		"GROVE_TEST_SUDO_LOG="+logPath,
 		"GROVE_TEST_ROOT="+root,
 	)
@@ -356,7 +354,7 @@ fi
 // is the same complete rule set with each jump present exactly once.
 func TestEgressFenceScript_IdempotentAndComplete(t *testing.T) {
 	for _, dockerStarted := range []bool{false, true} {
-		fakeBin := t.TempDir()
+		fakeBin := newFakeBin(t)
 		chains := t.TempDir()
 		if err := os.WriteFile(filepath.Join(fakeBin, "iptables"), []byte(`#!/bin/sh
 set -eu
@@ -388,8 +386,8 @@ esac
 		}
 
 		for run := 0; run < 2; run++ {
-			cmd := exec.Command("/bin/sh", "-c", egressFenceScript)
-			cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_CHAINS="+chains)
+			cmd := guestCmd(t, fakeBin, "-c", egressFenceScript)
+			cmd.Env = append(cmd.Env, "GROVE_TEST_CHAINS="+chains)
 			if output, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("dockerStarted=%v run %d: fence failed: %v\n%s", dockerStarted, run, err, output)
 			}
@@ -430,7 +428,7 @@ esac
 // docker that reports a job for two polls: it must mark the VM draining first, then wait for the
 // job to finish, and never touch Nomad.
 func TestBuildShutdownScript_SealedWaitsForJobs(t *testing.T) {
-	fakeBin := t.TempDir()
+	fakeBin := newFakeBin(t)
 	logPath := filepath.Join(t.TempDir(), "sudo.log")
 	counter := filepath.Join(t.TempDir(), "polls")
 	for name, body := range map[string]string{
@@ -450,8 +448,8 @@ func TestBuildShutdownScript_SealedWaitsForJobs(t *testing.T) {
 	if timeout != defaultShutdownTimeout {
 		t.Errorf("timeout = %s", timeout)
 	}
-	cmd := exec.Command("/bin/sh", "-c", script)
-	cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_SUDO_LOG="+logPath, "GROVE_TEST_COUNTER="+counter)
+	cmd := guestCmd(t, fakeBin, "-c", script)
+	cmd.Env = append(cmd.Env, "GROVE_TEST_SUDO_LOG="+logPath, "GROVE_TEST_COUNTER="+counter)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("sealed shutdown script failed: %v\n%s", err, output)
 	}
@@ -586,7 +584,7 @@ func TestBuildStartupScript_IsolatedMacOS(t *testing.T) {
 // TestBuildStartupScript_IsolatedMacOSRunsThroughFakeSudo executes the sealed macOS startup script
 // as an unprivileged guest user against stub commands and checks every privileged step, in order.
 func TestBuildStartupScript_IsolatedMacOSRunsThroughFakeSudo(t *testing.T) {
-	fakeBin := t.TempDir()
+	fakeBin := newFakeBin(t)
 	logPath := filepath.Join(t.TempDir(), "sudo.log")
 	for name, body := range map[string]string{
 		"id":    "#!/bin/sh\necho 502\n",
@@ -604,8 +602,8 @@ func TestBuildStartupScript_IsolatedMacOSRunsThroughFakeSudo(t *testing.T) {
 	}
 
 	script, _, _ := fakeMacOSLockdown(t, fakeBin, buildStartupScript(isolatedMacOSPool(), "mac1", "macos-mac1-0", isolatedOptions()), true)
-	cmd := exec.Command("/bin/sh", "-c", script)
-	cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_SUDO_LOG="+logPath)
+	cmd := guestCmd(t, fakeBin, "-c", script)
+	cmd.Env = append(cmd.Env, "GROVE_TEST_SUDO_LOG="+logPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("sealed macOS startup script failed through fake sudo: %v\n%s", err, output)
 	}
@@ -645,7 +643,7 @@ func TestBuildStartupScript_IsolatedMacOSRunsThroughFakeSudo(t *testing.T) {
 // a stub pgrep that finds job processes for two polls: it must mark the VM draining first, then
 // wait for the job user's processes to end, and never touch Nomad or docker.
 func TestBuildShutdownScript_SealedMacOSWaitsForJobs(t *testing.T) {
-	fakeBin := t.TempDir()
+	fakeBin := newFakeBin(t)
 	logPath := filepath.Join(t.TempDir(), "steps.log")
 	counter := filepath.Join(t.TempDir(), "polls")
 	for name, body := range map[string]string{
@@ -670,8 +668,8 @@ func TestBuildShutdownScript_SealedMacOSWaitsForJobs(t *testing.T) {
 	if !strings.Contains(script, "grove_deadline=$(( $(date +%s) + 9000 ))") {
 		t.Errorf("shutdown wait must be bounded by grove_deadline:\n%s", script)
 	}
-	cmd := exec.Command("/bin/sh", "-c", script)
-	cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "GROVE_TEST_LOG="+logPath, "GROVE_TEST_COUNTER="+counter)
+	cmd := guestCmd(t, fakeBin, "-c", script)
+	cmd.Env = append(cmd.Env, "GROVE_TEST_LOG="+logPath, "GROVE_TEST_COUNTER="+counter)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("sealed macOS shutdown script failed: %v\n%s", err, output)
 	}
