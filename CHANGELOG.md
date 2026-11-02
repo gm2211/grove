@@ -2,7 +2,7 @@
 
 All notable changes to grove are documented here.
 
-## Unreleased
+## v0.1.30
 
 - **The worker's LaunchDaemons get their own security session (`SessionCreate`).** A daemon with
   none had `tart run` attached to the console user's login session, where it checked in as a
