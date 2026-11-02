@@ -74,8 +74,8 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 		})
 	} else {
 		results = append(results,
-			checkOrchard(ctx, cfg.Orchard),
-			checkNomad(ctx, cfg.Nomad),
+			controlPlaneEndpoint(ctx, cfg, "orchard-controller", cfg.Orchard, checkOrchard),
+			controlPlaneEndpoint(ctx, cfg, "nomad", cfg.Nomad, checkNomad),
 			checkNomadTLS(cfg.Nomad, time.Now()),
 			checkNomadToken(ctx, cfg.Nomad),
 			checkBootLoops(ctx, cfg.Orchard),
@@ -96,7 +96,7 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 	if _, err := opts.lookPath()("tart"); err == nil && opts.goos() == "darwin" {
 		results = append(results, checkSoftnet(ctx, r, opts, cfg))
 	}
-	results = append(results, checkTrustedTaps(ctx, r, opts)...)
+	results = append(results, checkTrustedTaps(ctx, r, opts, cfg != nil && cfg.Server.Listen != "")...)
 	if workerInstalled(opts) && opts.goos() == "darwin" {
 		if opts.Rootless {
 			results = append(results, checkWorkerAgent(ctx, r, opts), checkKeepAwake(ctx, r, opts))
@@ -117,6 +117,17 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 	}
 
 	return results
+}
+
+// controlPlaneEndpoint runs check on endpoint, except where nothing needs it: only `grove serve`
+// (a config with server.listen) talks to Orchard and Nomad directly. A worker joined through
+// `grove setup` or a client reaches the control plane through server.url, so their config.yaml has
+// no orchard or nomad endpoint, and "not configured" there is how it should be, not a failure.
+func controlPlaneEndpoint(ctx context.Context, cfg *config.Config, name string, endpoint config.Endpoint, check func(context.Context, config.Endpoint) CheckResult) CheckResult {
+	if endpoint.URL == "" && cfg.Server.Listen == "" {
+		return CheckResult{Name: name, OK: true, Detail: "not used here (only the control plane talks to it; this machine goes through grove-server)"}
+	}
+	return check(ctx, endpoint)
 }
 
 // checkOrchard and checkNomad use the same authenticated clients as the rest of grove. The

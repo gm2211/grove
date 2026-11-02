@@ -255,7 +255,7 @@ func TestCheckTrustedTaps_FlagsInstalledButUntrusted(t *testing.T) {
 	scriptTapInfo(r, "minio/stable", true, false)
 
 	opts := Options{GOOS: "darwin"}
-	results := checkTrustedTaps(context.Background(), r, opts)
+	results := checkTrustedTaps(context.Background(), r, opts, true)
 
 	byName := map[string]CheckResult{}
 	for _, res := range results {
@@ -292,7 +292,7 @@ func TestCheckTrustedTaps_FlagsInstalledButUntrusted(t *testing.T) {
 func TestCheckTrustedTaps_NoOpOnNonDarwin(t *testing.T) {
 	r := NewFakeRunner()
 	opts := Options{GOOS: "linux"}
-	if results := checkTrustedTaps(context.Background(), r, opts); results != nil {
+	if results := checkTrustedTaps(context.Background(), r, opts, true); results != nil {
 		t.Errorf("expected no results on non-darwin, got %+v", results)
 	}
 	if len(r.Calls) != 0 {
@@ -341,5 +341,32 @@ func TestWorkerSteps_TrustStepSatisfiedWhenTartIsOnPath(t *testing.T) {
 				t.Error("trust step satisfied without tart")
 			}
 		}
+	}
+}
+
+// Only the control plane installs Nomad: on a worker (trust is per user, and the worker user never
+// installs from hashicorp/tap) an untrusted hashicorp/tap is not grove's problem.
+func TestCheckTrustedTaps_HashicorpOnlyOnTheControlPlane(t *testing.T) {
+	r := NewFakeRunner()
+	scriptTapInfo(r, "openai/tools", true, true)
+	scriptTapInfo(r, "cirruslabs/cli", false, false)
+	scriptTapInfo(r, "hashicorp/tap", true, false)
+	opts := Options{GOOS: "darwin"}
+	for _, res := range checkTrustedTaps(context.Background(), r, opts, false) {
+		if res.Name == "brew-trust:hashicorp/tap" {
+			t.Errorf("a worker must not audit hashicorp/tap, got %+v", res)
+		}
+	}
+	found := false
+	for _, res := range checkTrustedTaps(context.Background(), r, opts, true) {
+		if res.Name == "brew-trust:hashicorp/tap" {
+			found = true
+			if res.OK {
+				t.Error("on the control plane an untrusted hashicorp/tap must fail")
+			}
+		}
+	}
+	if !found {
+		t.Error("the control plane must audit hashicorp/tap")
 	}
 }

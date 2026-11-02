@@ -208,12 +208,17 @@ func trustTapStepWhen(r Runner, tap thirdPartyTap, out io.Writer, needed func() 
 // remediation command. A tap that was never tapped isn't "required" yet, so it isn't reported —
 // mirroring how the rest of doctor only complains about things that are configured but unhealthy.
 // It's a no-op on non-macOS, where Homebrew (and so this whole trust gate) doesn't exist.
-func checkTrustedTaps(ctx context.Context, r Runner, opts Options) []CheckResult {
+func checkTrustedTaps(ctx context.Context, r Runner, opts Options, controlPlane bool) []CheckResult {
 	if opts.goos() != "darwin" {
 		return nil
 	}
 	var results []CheckResult
 	for _, tap := range requiredTaps {
+		// Only the control plane installs Nomad. Trust is per user, so on a worker or client the tap
+		// is someone else's business (an admin's own Nomad on a shared Homebrew), not grove's.
+		if tap == tapHashicorp && !controlPlane {
+			continue
+		}
 		info, err := fetchTapInfo(ctx, r, tap.Name)
 		if err != nil || !info.Installed {
 			continue
