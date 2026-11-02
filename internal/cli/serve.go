@@ -279,12 +279,12 @@ type fleetReconcileLoop struct {
 	// enrolment is what the reconciler remembers about the VMs it has enrolled into Nomad (see
 	// fleet.Reconciler.Enrol), and warnedEnrol the enrolment error last logged.
 	enrolment   fleet.EnrolState
-	warnedEnrol string
+	warnedEnrol repeatedWarning
 	// health is told why pools can't get nodes (enrolment errors, boot loops), so unplaceable
 	// jobs fail fast; nil skips that.
 	health *fleet.PoolHealth
 	// warnedRollCall is the roll call error last logged.
-	warnedRollCall string
+	warnedRollCall repeatedWarning
 
 	// jobs, vmLoads and tracker feed elastic pools' autoscaling (see fleet.JobLoad); nil leaves
 	// elastic pools at their current size.
@@ -405,12 +405,11 @@ func (l *fleetReconcileLoop) tick(ctx context.Context) {
 		}
 	}
 	if err := enrolErr; err != nil {
-		if msg := err.Error(); msg != l.warnedEnrol {
+		if l.warnedEnrol.due(err.Error(), time.Now()) {
 			slog.Warn("serve: fleet reconciler: enrolling VMs into Nomad failed", "err", err)
-			l.warnedEnrol = msg
 		}
 	} else {
-		l.warnedEnrol = ""
+		l.warnedEnrol.clear()
 	}
 
 	actions, err := r.RollCall(ctx)
@@ -419,12 +418,11 @@ func (l *fleetReconcileLoop) tick(ctx context.Context) {
 			"node", a.NodeID, "name", a.Name, "reason", a.Reason, "deletedVM", a.DeletedVM)
 	}
 	if err != nil {
-		if msg := err.Error(); msg != l.warnedRollCall {
+		if l.warnedRollCall.due(err.Error(), time.Now()) {
 			slog.Warn("serve: fleet reconciler: roll call failed", "err", err)
-			l.warnedRollCall = msg
 		}
 	} else {
-		l.warnedRollCall = ""
+		l.warnedRollCall.clear()
 	}
 
 	if !plan.Empty() {
