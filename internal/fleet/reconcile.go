@@ -508,6 +508,9 @@ func (r *Reconciler) Run(ctx context.Context, interval time.Duration) error {
 func (r *Reconciler) vmSpec(pool Pool, worker, name string) orchard.VMSpec {
 	startup := buildStartupScript(pool, worker, name, r.Options)
 	shutdown, shutdownTimeout := buildShutdownScript(pool, r.Options.NodeTokens != nil)
+	if r.Options.NodeTLS != nil && !pool.Isolated() {
+		shutdown = withUnenrolledShutdownExit(shutdown)
+	}
 
 	spec := orchard.VMSpec{
 		Name:            name,
