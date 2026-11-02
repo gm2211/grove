@@ -2,7 +2,7 @@
 
 All notable changes to grove are documented here.
 
-## Unreleased
+## v0.1.31
 
 - **A VM that Orchard restarted is enrolled into Nomad again.** Orchard's OnFailure restart boots a
   fresh clone under the same VM UID, without the certificate the last enrolment wrote, and grove
