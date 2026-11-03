@@ -2,6 +2,8 @@ package nomadjobs
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,9 +16,8 @@ import (
 // TestTaskImageInterpolationRealNomad proves, against a real Nomad dev agent and a real docker
 // daemon, that a docker task's `image = "${NOMAD_META_task_image}"` resolves from dispatch meta,
 // with the same entrypoint/args/user/image_pull_timeout shape build.nomad.hcl uses for its main
-// task. It needs a nomad binary (GROVE_NOMAD_BIN, set in CI), a running docker daemon, the
-// default Nomad ports free on 127.0.0.1 and network access to pull GROVE_TEST_IMAGE (default
-// alpine:3.20); it is skipped otherwise.
+// task. It needs a nomad binary (GROVE_NOMAD_BIN, set in CI), a running docker daemon and
+// network access to pull GROVE_TEST_IMAGE (default alpine:3.20); it is skipped otherwise.
 func TestTaskImageInterpolationRealNomad(t *testing.T) {
 	bin := os.Getenv("GROVE_NOMAD_BIN")
 	if bin == "" {
@@ -43,8 +44,12 @@ func TestTaskImageInterpolationRealNomad(t *testing.T) {
 
 	dir := t.TempDir()
 	// Cloud fingerprinters only slow a test agent down (or fail behind a proxy).
+	// Other packages' real-Nomad tests (run in parallel by go test ./...) hold the default ports
+	// 4646-4648, so this agent takes free ones.
+	httpPort, rpcPort, serfPort := freePort(t), freePort(t), freePort(t)
+	addr := fmt.Sprintf("http://127.0.0.1:%d", httpPort)
 	extras := filepath.Join(dir, "extras.hcl")
-	if err := os.WriteFile(extras, []byte(`client {
+	if err := os.WriteFile(extras, []byte(fmt.Sprintf("ports {\n  http = %d\n  rpc  = %d\n  serf = %d\n}\n", httpPort, rpcPort, serfPort)+`client {
   options {
     "fingerprint.denylist" = "env_aws,env_gce,env_azure,env_digitalocean"
   }
@@ -74,16 +79,16 @@ advertise {
 	nomadCmd := func(args ...string) string {
 		t.Helper()
 		cmd := exec.CommandContext(ctx, bin, args...)
-		cmd.Env = append(os.Environ(), "NOMAD_ADDR=http://127.0.0.1:4646")
+		cmd.Env = append(os.Environ(), "NOMAD_ADDR="+addr)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("nomad %s: %v\n%s", strings.Join(args, " "), err, out)
 		}
 		return string(out)
 	}
-	for deadline := time.Now().Add(2*time.Minute); ; time.Sleep(time.Second) {
+	for deadline := time.Now().Add(2 * time.Minute); ; time.Sleep(time.Second) {
 		cmd := exec.CommandContext(ctx, bin, "node", "status")
-		cmd.Env = append(os.Environ(), "NOMAD_ADDR=http://127.0.0.1:4646")
+		cmd.Env = append(os.Environ(), "NOMAD_ADDR="+addr)
 		out, err := cmd.CombinedOutput()
 		if err == nil && strings.Contains(string(out), "ready") {
 			break
@@ -163,4 +168,15 @@ func (b *lockedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+// freePort returns a TCP port that was free on 127.0.0.1 a moment ago.
+func freePort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port
 }
