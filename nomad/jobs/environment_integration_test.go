@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -29,13 +30,46 @@ func TestTaskImageInterpolationRealNomad(t *testing.T) {
 		image = "alpine:3.20"
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
-	agent := exec.CommandContext(ctx, bin, "agent", "-dev", "-bind=127.0.0.1", "-data-dir="+t.TempDir())
+
+	// Pull by tag, then dispatch the immutable digest: that is what grove dispatches in practice.
+	if out, err := exec.CommandContext(ctx, "docker", "pull", image).CombinedOutput(); err != nil {
+		t.Skipf("cannot pull %s: %v\n%s", image, err, out)
+	}
+	if out, err := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{index .RepoDigests 0}}", image).Output(); err == nil && strings.Contains(string(out), "@sha256:") {
+		image = strings.TrimSpace(string(out))
+	}
+
+	dir := t.TempDir()
+	// Cloud fingerprinters only slow a test agent down (or fail behind a proxy).
+	extras := filepath.Join(dir, "extras.hcl")
+	if err := os.WriteFile(extras, []byte(`client {
+  options {
+    "fingerprint.denylist" = "env_aws,env_gce,env_azure,env_digitalocean"
+  }
+}
+advertise {
+  http = "127.0.0.1"
+  rpc  = "127.0.0.1"
+  serf = "127.0.0.1"
+}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var agentLog lockedBuffer
+	agent := exec.Command(bin, "agent", "-dev", "-bind=127.0.0.1", "-config="+extras, "-data-dir="+filepath.Join(dir, "data"))
+	agent.Stdout, agent.Stderr = &agentLog, &agentLog
 	if err := agent.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = agent.Process.Kill(); _ = agent.Wait() })
+	t.Cleanup(func() {
+		_ = agent.Process.Kill()
+		_ = agent.Wait()
+		if t.Failed() {
+			t.Logf("--- nomad agent output ---\n%s", agentLog.String())
+		}
+	})
 
 	nomadCmd := func(args ...string) string {
 		t.Helper()
@@ -47,14 +81,15 @@ func TestTaskImageInterpolationRealNomad(t *testing.T) {
 		}
 		return string(out)
 	}
-	for deadline := time.Now().Add(time.Minute); ; time.Sleep(time.Second) {
+	for deadline := time.Now().Add(2*time.Minute); ; time.Sleep(time.Second) {
 		cmd := exec.CommandContext(ctx, bin, "node", "status")
 		cmd.Env = append(os.Environ(), "NOMAD_ADDR=http://127.0.0.1:4646")
-		if out, err := cmd.CombinedOutput(); err == nil && strings.Contains(string(out), "ready") {
+		out, err := cmd.CombinedOutput()
+		if err == nil && strings.Contains(string(out), "ready") {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("dev agent never became ready")
+			t.Fatalf("dev agent never became ready (last `nomad node status`: err=%v\n%s)", err, out)
 		}
 	}
 
@@ -106,7 +141,26 @@ func TestTaskImageInterpolationRealNomad(t *testing.T) {
 		}
 	}
 	logs := nomadCmd("alloc", "logs", "-job", child, "main")
+	// An unresolved ${NOMAD_META_task_image} could not have started a container at all.
 	if !strings.Contains(logs, "probe-ran-in-") {
 		t.Fatalf("task did not run in the image from meta task_image=%s:\n%s", image, logs)
 	}
+}
+
+// lockedBuffer is an io.Writer safe for a child process's stdout and stderr at once.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
