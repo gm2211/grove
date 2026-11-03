@@ -1,8 +1,10 @@
 package fleet
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -77,12 +79,13 @@ func TestBuildStartupScript_LinuxMatchesV010(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Turning Tailscale off, the home fence and the broker block are the intended changes since
-	// v0.1.10: every Linux VM is recreated once to get them. Everything else must stay
-	// byte-identical.
+	// Turning Tailscale off, the home fence, the broker block and the login-shell exit guard are
+	// the intended changes since v0.1.10: every Linux VM is recreated once to get them. Everything
+	// else must stay byte-identical.
 	got := BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", "")
 	got = strings.Replace(got, tailscaleOffScript+"\n", "", 1)
 	got = strings.Replace(got, homeFenceScript(Pool{Name: "linux"})+"\n"+brokerScript()+"\n", "", 1)
+	got = strings.TrimSuffix(got, loginShellExitScript)
 	if got != string(want) {
 		t.Fatalf("Linux startup script drifted from v0.1.10; this would recreate healthy Linux workers\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
@@ -600,7 +603,8 @@ func TestBuildStartupScript_AppendsPoolScript(t *testing.T) {
 	pool := Pool{Name: "linux", StartupScript: "echo custom-startup"}
 	script := BuildStartupScript(pool, "mac1", "linux-mac1-0", "")
 
-	want := "# --- pool.startupScript ---\necho custom-startup\n"
+	// Last but for the login-shell exit guard, which only turns errexit off once it has run.
+	want := "# --- pool.startupScript ---\necho custom-startup\n" + loginShellExitScript
 	if !strings.HasSuffix(script, want) {
 		t.Errorf("startup script missing appended pool script %q at the end:\n%s", want, script)
 	}
@@ -849,5 +853,65 @@ esac
 				t.Errorf("anchor =\n%s\nwant:\n%s", got, want)
 			}
 		})
+	}
+}
+
+// Orchard runs a startup script as "set -e", the script, "exit", typed into a login shell. On
+// Ubuntu, bash then runs ~/.bash_logout, whose clear_console fails without a terminal: with -e
+// still on, every Linux script that finished exited 1, and Orchard restarted the VM onto a fresh
+// disk right after its enrolment let the script finish.
+func TestBuildStartupScript_LinuxEndsSafeFromTheLoginShellsLogout(t *testing.T) {
+	for name, pool := range map[string]Pool{
+		"shared":      {Name: "linux"},
+		"user script": {Name: "linux", StartupScript: "echo hello"},
+		"sealed":      {Name: "linux-sealed", Network: NetworkIsolated},
+	} {
+		script := buildStartupScript(pool, "mac1", VMName(pool.Name, "mac1", 0), Options{NodeTLS: testNodeTLS})
+		if !strings.HasSuffix(script, loginShellExitScript) {
+			t.Errorf("%s: startup script does not end with the login-shell exit guard:\n%s", name, script)
+		}
+	}
+	for _, pool := range []Pool{{Name: "macos"}, {Name: "macos", HostXcode: &HostXcodeConfig{Path: "/Applications/Xcode.app", BuildVersion: "27A266a"}}} {
+		if script := buildStartupScript(pool, "mac1", "macos-mac1-0", Options{}); strings.Contains(script, loginShellExitScript) {
+			t.Errorf("a macOS guest's shell is zsh: its script (and spec) must not change:\n%s", script)
+		}
+	}
+}
+
+// TestLoginShellExitScript_KeepsAFinishedScriptSuccessful replays what Orchard does, against a
+// ~/.bash_logout whose last command fails the way clear_console does with no terminal.
+func TestLoginShellExitScript_KeepsAFinishedScriptSuccessful(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash")
+	}
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".bash_logout"), []byte("[ -x /bin/sh ] && false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func(script string) int {
+		t.Helper()
+		cmd := exec.Command(bash, "--login", "--noprofile")
+		cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin"}
+		cmd.Dir = home
+		cmd.Stdin = strings.NewReader("set -e\n" + script + "\nexit\n")
+		err := cmd.Run()
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return exitErr.ExitCode()
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		return 0
+	}
+	const body = "#!/bin/sh\nset -eu\necho done\n"
+	if code := run(body); code != 1 {
+		t.Fatalf("without the guard a finished script exits %d; want 1, or this test proves nothing", code)
+	}
+	if code := run(body + loginShellExitScript); code != 0 {
+		t.Fatalf("a finished script exits %d with the guard, want 0", code)
+	}
+	if code := run("#!/bin/sh\nset -eu\nexit 1\n" + loginShellExitScript); code != 1 {
+		t.Fatalf("a script that fails exits %d with the guard, want 1", code)
 	}
 }

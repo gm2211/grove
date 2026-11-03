@@ -46,6 +46,7 @@ func buildStartupScript(pool Pool, worker, vmName string, opts Options) string {
 			b.WriteString(buildHostXcodeStartupScript(*pool.HostXcode))
 		}
 		appendUserScript(&b, "pool.startupScript", pool.StartupScript)
+		appendLoginShellExit(&b, pool)
 		return b.String()
 	}
 	if pool.HostXcode != nil {
@@ -105,8 +106,27 @@ func buildStartupScript(pool Pool, worker, vmName string, opts Options) string {
 	}
 
 	appendUserScript(&b, "pool.startupScript", pool.StartupScript)
+	appendLoginShellExit(&b, pool)
 
 	return b.String()
+}
+
+// loginShellExitScript ends every Linux guest's startup script. Orchard runs a startup script by
+// writing "set -e", the script and "exit" into a login shell over SSH, and on that exit bash runs
+// ~/.bash_logout. Ubuntu's default one runs clear_console, which fails with no terminal, and with
+// -e still on, bash then exits 1: a script that finished counts as a failed VM, which Orchard
+// restarts onto a fresh clone of the image. By this line everything above has succeeded (an
+// explicit exit 1 keeps its status), so errexit has nothing left to guard. macOS guests' admin
+// shell is zsh, which has no such file, so their scripts (and specs) stay as they are.
+const loginShellExitScript = `
+# Orchard's login shell runs ~/.bash_logout after this line; its failure must not fail the VM.
+set +e
+`
+
+func appendLoginShellExit(b *strings.Builder, pool Pool) {
+	if !pool.MacOS() {
+		b.WriteString(loginShellExitScript)
+	}
 }
 
 // writeNomadRPCConfig points the guest's Nomad client at the control plane's RPC listener, an
