@@ -361,3 +361,34 @@ func TestLoad_EnvironmentsRefused(t *testing.T) {
 		})
 	}
 }
+
+func TestLoad_Toolchains(t *testing.T) {
+	spec, err := Load(writeTempSpec(t, `
+pools:
+  - name: macos
+    image: ghcr.io/example/macos:latest
+    perWorker: 1
+    toolchains:
+      enabled: true
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := spec.Pools[0].Toolchains; got == nil || !got.Enabled {
+		t.Errorf("toolchains = %+v", got)
+	}
+}
+
+func TestLoad_ToolchainsRefused(t *testing.T) {
+	for name, pool := range map[string]string{
+		"linux pool":         "name: linux\n    image: x\n    perWorker: 1\n    toolchains:\n      enabled: true",
+		"sealed macos":       "name: macos\n    image: x\n    perWorker: 1\n    network: isolated\n    toolchains:\n      enabled: true",
+		"macos environments": "name: macos\n    image: x\n    perWorker: 1\n    toolchains:\n      enabled: true\n    environments:\n      allow: [ghcr.io/acme/]",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(writeTempSpec(t, "pools:\n  - "+pool+"\n")); err == nil {
+				t.Fatal("Load accepted it")
+			}
+		})
+	}
+}

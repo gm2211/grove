@@ -74,8 +74,9 @@ type JobRequest struct {
 	// Environment asks for the image the job's script runs in (kind build only, for now). The
 	// control plane decides: the image must be pinned by digest and allowed by the pool's
 	// fleet.yaml `environments.allow`, or Submit refuses with a 400. A job with an environment
-	// never falls back to another pool (macOS has no containers), whatever PinPool says. See
-	// docs/JOBS.md "Job environments".
+	// stays in its pool (macOS has no containers) unless it carries a Toolchain, in which case it
+	// may fall back to a macOS pool that has toolchains enabled. See docs/JOBS.md "Job
+	// environments".
 	Environment *Environment `json:"environment,omitempty"`
 }
 
@@ -83,6 +84,10 @@ type JobRequest struct {
 type Environment struct {
 	// Image is "<registry>/<repository>@sha256:<64 hex>": explicit registry host, digest, no tag.
 	Image string `json:"image"`
+	// Toolchain asks for native tool versions instead of (on a macOS pool) or as well as (on a
+	// Linux pool, where it makes the job eligible to fall back to macOS) the image. The control
+	// plane validates it (ValidateToolchain) and hands the worker only the re-marshalled form.
+	Toolchain *Toolchain `json:"toolchain,omitempty"`
 }
 
 // Credential is one JobRequest.Credentials entry.

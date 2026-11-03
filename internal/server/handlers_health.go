@@ -14,7 +14,7 @@ type HealthzResponse struct {
 	Nomad      string `json:"nomad"`   // "up" | "down"
 	ServerTime string `json:"serverTime"`
 	// Features names optional API capabilities this server has, so a client can ask for one only
-	// where it is understood: "environment" is JobRequest.Environment.
+	// where it is understood: "environment" is JobRequest.Environment, "toolchain" is Environment.Toolchain.
 	Features []string `json:"features"`
 }
 
@@ -22,7 +22,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	resp := HealthzResponse{OK: true, Version: s.opts.Version, ServerTime: time.Now().UTC().Format(time.RFC3339), Features: []string{"environment"}}
+	resp := HealthzResponse{OK: true, Version: s.opts.Version, ServerTime: time.Now().UTC().Format(time.RFC3339), Features: []string{"environment", "toolchain"}}
 
 	if err := s.orchard.Ping(ctx); err != nil {
 		resp.Orchard = "down"

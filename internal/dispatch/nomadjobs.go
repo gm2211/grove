@@ -48,6 +48,10 @@ type PoolConfig struct {
 	// prefixes ending in "/" a job's Environment.Image may come from (see
 	// ValidateEnvironmentImage). Empty means the pool accepts no environment.
 	AllowedImages []string
+	// Toolchains is fleet.yaml `toolchains.enabled` for a shared macOS pool: its workers install
+	// and run the native Toolchain of a job's Environment, so such a job may be submitted to it or
+	// fall back to it. Never set on a Linux or sealed pool.
+	Toolchains bool
 }
 
 // templateData is what a nomad/jobs/<kind>.nomad.hcl template is rendered with — see

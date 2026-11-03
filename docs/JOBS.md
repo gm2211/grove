@@ -123,8 +123,11 @@ shared `macos` pool instead of waiting:
   process of the `_grovejob` user, not in the runner container.
 - **Opting out:** `"pinPool": true` on the JobRequest keeps a job in its pool (use it for scripts
   that need Linux: docker, apt-get, ELF binaries). A job with an `environment` (see "Job
-  environments") never falls back, whatever `pinPool` says: macOS has no containers to run its
-  image in. Per pool, fleet.yaml `fallback: none` turns it off, or `fallback: <pool>` picks
+  environments") falls back only when it carries a `toolchain` and the fallback pool is a macOS
+  pool with `toolchains` enabled (see "Native toolchain on macOS"); an image-only environment
+  never falls back, since macOS has no containers to run its image in. `pinPool` always wins. A
+  job with `resources` also never falls back to a pool whose per-job size (`jobCPU`/`jobMemory`) is
+  smaller than the hint. Per pool, fleet.yaml `fallback: none` turns it off, or `fallback: <pool>` picks
   another shared pool. Sealed (`network: isolated`) pools never fall back or take fallback jobs.
 - **Learning what doesn't work there:** jobs are grouped by kind, pool and repo. When the last 3
   fallback runs of a group all failed (timeouts and cancels don't count), that group stops falling
@@ -153,7 +156,8 @@ either. So today, `JobRequest.Resources` is **validated only**: `Service.Submit`
 Memory defaults with a 400 (`dispatch: requested cpu=...MHz exceeds pool "..."'s job default
 ...`), via `Options.Pools` (the same `[]PoolConfig` `internal/cli/serve.go` also hands to
 `EnsureJobs`). A hint within budget is otherwise a no-op — the dispatched job runs at the pool's
-one fixed size regardless of what `Resources` says. A pool the service has no config for at all
+one fixed size regardless of what `Resources` says. (Fallback does check it: a job doesn't move to
+a pool whose per-job size is smaller than its hint.) A pool the service has no config for at all
 (`Options.Pools` didn't mention it) accepts any hint without validating it, since there's nothing
 to check it against.
 
@@ -497,8 +501,51 @@ the trust decision: an allowed repository is code the operator vouches for, pinn
 the vouching can't be changed under them. Jobs still get no docker socket (`allowDockerSocket` is
 refused), so an environment image gains nothing over the runner image except its contents.
 
-The feature is advertised as `features: ["environment"]` in `/healthz`, so a client can tell a
-server that would silently ignore the field from one that enforces it.
+The feature is advertised as `features: ["environment", "toolchain"]` in `/healthz`, so a client
+can tell a server that would silently ignore a field from one that enforces it.
+
+### Native toolchain on macOS
+
+macOS has no containers, so an image can't be the environment there. An `environment` can instead
+carry a `toolchain`: exact versions of native tools, installed on the macOS worker by a dedicated
+user and cached by the hash of the spec.
+
+```json
+{"kind": "build", "pool": "linux", "repo": "https://github.com/acme/app", "script": "cargo test",
+ "environment": {"image": "ghcr.io/acme/builder@sha256:<64 hex>",
+   "toolchain": {"rust": {"version": "1.99.1", "components": ["clippy", "rustfmt"]},
+                 "node": {"version": "22.11.0"}, "python": {"version": "3.12.7"}}}}
+```
+
+`Submit` returns 400 unless the toolchain passes these checks:
+
+- The tools are a fixed set: `rust`, `node`, `python`. At least one; any other key is refused.
+- Versions are exact: rust `1.x.y`, node `x.y.z`, python `3.x.y`. `"22"`, `"latest"`, `"nightly"`,
+  ranges and prefixes like `v22.11.0` are refused, so the same spec always installs the same bytes.
+- rust `components` are a subset of `clippy`, `rustfmt`, `rust-src`, `llvm-tools`.
+- The canonical encoding (below) is at most 1 KiB.
+
+grove does not forward the caller's JSON. It re-marshals the validated spec (keys sorted, components
+sorted and unique, no whitespace) and sets meta `toolchain_json` to that, and `toolchain_hash` to the
+hex sha256 of `"grove-toolchain/1\n"` followed by it. `Submit` is the only place either is set; a
+caller's `Meta` never reaches them. A redispatch carries both unchanged and refuses to send a
+toolchain job that lost them.
+
+Where such a job can run:
+
+- **A Linux pool:** as above, with the image required and validated (the image is what runs there).
+  Because it carries a toolchain it may fall back to macOS (see "Falling back to macOS"), even
+  though an image-only environment may not.
+- **A macOS pool, submitted directly:** only a shared macOS pool with `toolchains: {enabled: true}`
+  in fleet.yaml, and only an environment with a toolchain. `image` is optional and ignored; the
+  job's `task_image` is the pool's runner image. `fleet.Load` accepts `toolchains` only on the
+  shared `macos` pool, never on a Linux or sealed pool, and still refuses `environments` there.
+- **Falling back to macOS:** the target must be a macOS pool with toolchains enabled and its per-job
+  size must cover the job's `resources`. A pool without toolchains, a sealed pool or a smaller pool
+  is never a target.
+
+On the worker the installer runs as `_grovetool` from root-owned code and writes the cache; the job
+runs as `_grovejob`, which can read the cache but not write it (spec S22).
 
 [hashicorp/nomad#6247]: https://github.com/hashicorp/nomad/issues/6247
 

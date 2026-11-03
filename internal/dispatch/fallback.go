@@ -55,8 +55,18 @@ func (s *service) fallbackTarget(rec *record, evals []nomad.Evaluation, now time
 	if _, ok := s.pools[target]; !ok {
 		return "", ""
 	}
-	if len(req.Credentials) > 0 && s.pools[target].Isolated {
+	tpc := s.pools[target]
+	if len(req.Credentials) > 0 && tpc.Isolated {
 		// A sealed pool's VMs can't reach the credential broker.
+		return "", ""
+	}
+	if req.Environment != nil && !tpc.acceptsToolchain() {
+		// Only a job with a toolchain gets here (effectivePin); it runs natively, and only on a
+		// macOS pool that has toolchains enabled. Never into a pool that would ignore it.
+		return "", ""
+	}
+	if req.Resources != nil && !tpc.fits(*req.Resources) {
+		// The target's jobs are smaller than the job asked for.
 		return "", ""
 	}
 
@@ -153,6 +163,9 @@ func (s *service) redispatch(ctx context.Context, rec *record, pool string) erro
 			return err
 		}
 		meta = withMeta(meta, "task_image", image)
+	}
+	if env := rec.Request.Environment; env != nil && env.Toolchain != nil && (meta["toolchain_json"] == "" || meta["toolchain_hash"] == "") {
+		return fmt.Errorf("job %s asked for a toolchain but its dispatch carries no toolchain_json and toolchain_hash", rec.ID)
 	}
 	name := jobName(rec.Request.Kind, pool)
 	res, err := s.nomad.Dispatch(ctx, name, meta, payload)
