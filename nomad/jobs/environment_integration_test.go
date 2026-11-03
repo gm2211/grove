@@ -129,7 +129,7 @@ advertise {
 	fields := strings.Fields(out)
 	var child string
 	for i, f := range fields {
-		if f == "ID" && i+2 < len(fields) {
+		if child == "" && f == "ID" && i+2 < len(fields) { // first is the dispatched job; the next is the evaluation
 			child = fields[i+2]
 		}
 	}
