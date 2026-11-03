@@ -4,6 +4,8 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+## v0.1.35
+
 - **`grove install --admin <account>` runs the pending root steps through an admin account.** From
   a standard user such as `argos` (`ssh -t argos@<mac> grove install --role worker --admin
   gm2211`), grove renders the same root script `--no-sudo` would print, from the live checks, and
