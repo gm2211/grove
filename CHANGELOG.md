@@ -2,8 +2,15 @@
 
 All notable changes to grove are documented here.
 
-## v0.1.33
+## Unreleased
 
+- **An enrolment counts only when the guest script itself confirms it.** Each enrolment exec now
+  carries a random nonce on stdin, and grove takes the exec as an enrolment only when the guest
+  prints `grove: enrolled <nonce>` as a line of its own. Before, matching the bare line was enough,
+  and the script's own source holds that line: an exec answered before the guest had booted came
+  back with the command echoed and exit 0, grove logged "enrolled", and the VM waited out its
+  30-minute enrolment timeout, was restarted, and did the same again, so no shared VM ever joined
+  Nomad. A false confirmation is now an error, retried on the next tick.
 - **Linux VMs no longer restart the moment their startup script finishes.** Orchard runs a startup
   script by typing `set -e`, the script and `exit` into a login shell. On that exit, bash runs
   `~/.bash_logout`, whose `clear_console` fails without a terminal on Ubuntu, and with `-e` still

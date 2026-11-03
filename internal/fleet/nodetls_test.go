@@ -216,7 +216,7 @@ func TestNodeTLS_StartupAndEnrolmentWriteRootOnlyFiles(t *testing.T) {
 	}
 
 	cert, _ := (&fakeNodeCerts{}).IssueNode("linux-mac1-0", time.Now(), time.Hour)
-	if code, out := g.runEnrol(t, enrolPayload("the-jwt", cert)); code != 0 {
+	if code, out := g.runEnrol(t, enrolPayload("0123abcd", "the-jwt", cert)); code != 0 {
 		t.Fatalf("enrolment exited %d:\n%s", code, out)
 	}
 	// The startup script carries on once enrolled.
@@ -268,7 +268,7 @@ func TestEnrolGuestScript_RefusesABadPayload(t *testing.T) {
 	g := newGuestDirs(t)
 	for name, stdin := range map[string]string{
 		"no header":      "\n\n-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n",
-		"no key":         enrolPayloadHeader + "\n\n-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n",
+		"no key":         enrolPayloadHeader + "\n0123abcd\n\n-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n",
 		"nothing at all": "",
 	} {
 		if code, out := g.runEnrol(t, stdin); code == 0 {
@@ -523,6 +523,57 @@ func TestEnrol_AFailedExecIsRetriedNextTick(t *testing.T) {
 	}
 	if len(f.execs) != 2 {
 		t.Fatalf("want a retry, got %d execs", len(f.execs))
+	}
+}
+
+// An exec answered before the guest booted came back with exit 0 and the command echoed, and the
+// command holds the guest script's source, confirmation line and all. That was logged as an
+// enrolment, and the VM waited out EnrolTimeout (30 minutes) for files that never arrived.
+func TestEnrol_AnEchoedCommandIsNotAnEnrolment(t *testing.T) {
+	for name, reply := range map[string]func(command []string, stdin string) string{
+		"echoed command":      func(command []string, _ string) string { return strings.Join(command, " ") },
+		"another nonce":       func([]string, string) string { return enrolledLine + " 00ff00ff00ff00ff00ff00ff00ff00ff\n" },
+		"the bare line":       func([]string, string) string { return enrolledLine + "\n" },
+		"nonce inside a line": func(_ []string, stdin string) string { return "x " + stdin },
+	} {
+		f := newEnrolFixture(t)
+		f.client.exec = func(_ string, command []string, stdin string) (int, string) {
+			f.execs = append(f.execs, strings.Join(command, " "))
+			return 0, reply(command, stdin)
+		}
+		if err := f.enrol(); err == nil || !strings.Contains(err.Error(), "without confirming") {
+			t.Fatalf("%s: want an unconfirmed enrolment reported, got %v", name, err)
+		}
+		if len(f.state.Enrolled) != 0 {
+			t.Fatalf("%s: counted as enrolled: %v", name, f.state.Enrolled)
+		}
+	}
+}
+
+func TestEnrol_EachExecGetsItsOwnNonce(t *testing.T) {
+	f := newEnrolFixture(t)
+	var nonces []string
+	f.client.exec = func(_ string, command []string, stdin string) (int, string) {
+		f.execs = append(f.execs, strings.Join(command, " "))
+		nonces = append(nonces, strings.SplitN(stdin, "\n", 3)[1])
+		return f.guest.runEnrol(t, stdin)
+	}
+	if err := f.enrol(); err != nil {
+		t.Fatal(err)
+	}
+	f.client.vms[0].RestartCount++
+	if err := f.enrol(); err != nil {
+		t.Fatal(err)
+	}
+	if len(nonces) != 2 || nonces[0] == nonces[1] || len(nonces[0]) != 32 {
+		t.Fatalf("nonces = %q, want two different 32-hex values", nonces)
+	}
+	for _, cmd := range f.execs {
+		for _, n := range nonces {
+			if strings.Contains(cmd, n) {
+				t.Fatalf("a nonce is on the exec's command line: %s", cmd)
+			}
+		}
 	}
 }
 
