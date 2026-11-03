@@ -90,8 +90,28 @@ func ValidateEnvironmentImage(ref string, allow []string) error {
 	return fmt.Errorf("environment image repository %q is not allowed by pool's environments.allow", repo)
 }
 
-// effectivePin is whether req's job must stay in its pool: it said so, or it has an environment,
-// since the pools it could fall back to (macOS) have no containers to run it in.
+// effectivePin is whether req's job must stay in its pool: it said so, or it has an environment
+// with no native toolchain, since the pools it could fall back to (macOS) have no containers to run
+// the image in. An environment with a toolchain can run natively on a macOS pool with toolchains
+// enabled; fallbackTarget checks the target is one.
 func effectivePin(req JobRequest) bool {
-	return req.PinPool || req.Environment != nil
+	return req.PinPool || (req.Environment != nil && req.Environment.Toolchain == nil)
+}
+
+// acceptsToolchain is whether pc is a shared macOS pool with toolchains enabled: the only kind of
+// pool that runs an environment's native toolchain.
+func (pc PoolConfig) acceptsToolchain() bool {
+	return pc.Toolchains && pc.OS == "darwin" && !pc.Isolated
+}
+
+// fits is whether pc's per-job size covers hint. A pool with no known size (0) is not refused,
+// as in validateResources.
+func (pc PoolConfig) fits(hint ResourceHint) bool {
+	if pc.CPU > 0 && hint.CPU > pc.CPU {
+		return false
+	}
+	if pc.Memory > 0 && hint.Memory > pc.Memory {
+		return false
+	}
+	return true
 }

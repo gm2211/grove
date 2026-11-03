@@ -29,7 +29,7 @@ images/                         Packer templates
 nomad/jobs/                     parameterized Nomad job HCL
 scripts/install.sh              curl | sh → brew tap + grove install
 docs/                            INSTALL.md, OPERATIONS.md
-spec/                            21 properties: Quint models, Lean proofs, CodeQL queries, Specify spec (spec/grove.spec); spec/check.sh (see spec/README.md)
+spec/                            22 properties: Quint models, Lean proofs, CodeQL queries, Specify spec (spec/grove.spec); spec/check.sh (see spec/README.md)
 ```
 
 **Contract packages** (`config`, `orchard`, `nomad`, `dispatch`, `fleet` *types*) define the Go
@@ -236,7 +236,8 @@ found with no record). The bit is set iff a reason is present. Keep it that way:
 ## Job environments — keep it that way
 
 A shared-pool job's image is its pool's runner image or a digest-pinned image its pool allows,
-chosen by the control plane; the clone token runs only in the runner image (spec S11).
+chosen by the control plane; the clone token runs only in the runner image or the root source task
+(spec S11). A native toolchain is likewise chosen by the control plane (spec S22).
 
 - `dispatch.Service.Submit` (`taskImage`) is the only place a build's `task_image` meta is set:
   the environment image after `ValidateEnvironmentImage` (digest, no tag, explicit registry, in the
@@ -244,9 +245,14 @@ chosen by the control plane; the clone token runs only in the runner image (spec
   or any other field into it, and never forward `Meta["image"]` (the old passthrough was a bug).
 - build.nomad.hcl's `source` task stays on `{{.RunnerImage}}`: it holds the clone token. Only `main`
   uses `${NOMAD_META_task_image}`, and a missing value must fail the task, not default to an image.
-- A job with an environment never falls back to another pool (`effectivePin`); macOS and sealed
-  pools refuse environments (`fleet.Load` and `Submit`).
-- `internal/dispatch/environment_test.go` and `nomad/jobs/nomadjobs_test.go` assert it;
+- A job with an environment falls back only to a macOS pool with toolchains enabled, and only when
+  it carries a toolchain (`effectivePin`, `fallbackTarget`); Submit is the only place
+  `toolchain_json` is set, from the validated, re-marshalled spec (`ValidateToolchain`,
+  `canonical`), never from a caller's bytes or `Meta`; the installer runs as `_grovetool` from
+  root-owned code and `_grovejob` can't write the cache. Sealed pools refuse environments, and
+  `fleet.Load` refuses `environments` on macOS and `toolchains` anywhere but a shared macOS pool.
+- `internal/dispatch/environment_test.go`, `internal/dispatch/toolchain_test.go` and
+  `nomad/jobs/nomadjobs_test.go` assert it;
   `TestTaskImageInterpolationRealNomad` (real Nomad + docker, `GROVE_NOMAD_BIN`) proves the
   interpolation.
 

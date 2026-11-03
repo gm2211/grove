@@ -150,7 +150,7 @@ func newInstallerHarness(t *testing.T) *installerHarness {
 	fakeMise := filepath.Join(base, "mise")
 	// mise runs under env -i, so the fake finds its flags and log next to itself, not in its env.
 	body := "#!/bin/bash\nFAKE_BASE=" + base + "\n" + `
-echo "mise $* | cwd=$PWD HOME=$HOME DATA=$MISE_DATA_DIR CACHE=$MISE_CACHE_DIR GLOBAL=$MISE_GLOBAL_CONFIG_FILE COMPILE=$MISE_PYTHON_COMPILE RUSTUP_HOME=$RUSTUP_HOME CARGO_HOME=$CARGO_HOME YES=$MISE_YES TOKEN=${GROVE_CLONE_TOKEN:-}" >> "$FAKE_BASE/mise.log"
+echo "mise $* | cwd=$(pwd -P) HOME=$HOME DATA=$MISE_DATA_DIR CACHE=$MISE_CACHE_DIR GLOBAL=$MISE_GLOBAL_CONFIG_FILE COMPILE=$MISE_PYTHON_COMPILE RUSTUP_HOME=$RUSTUP_HOME CARGO_HOME=$CARGO_HOME YES=$MISE_YES TOKEN=${GROVE_CLONE_TOKEN:-}" >> "$FAKE_BASE/mise.log"
 case "$1" in
   --version) echo "2026.10.24 macos-arm64 (2026-10-30)" ;;
   install)
@@ -244,8 +244,13 @@ func TestToolchainInstallerInstallsAndCaches(t *testing.T) {
 		t.Errorf("paths = %q", paths)
 	}
 	log := h.mise()
+	// pwd -P: the temp dir may sit behind a symlink (macOS /var -> /private/var).
+	realDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, want := range []string{
-		"mise install | cwd=" + dir, "HOME=/var/empty", "DATA=" + dir + "/data", "CACHE=" + dir + "/cache",
+		"mise install | cwd=" + realDir, "HOME=/var/empty", "DATA=" + dir + "/data", "CACHE=" + dir + "/cache",
 		"GLOBAL=/dev/null", "COMPILE=0", "RUSTUP_HOME=" + dir + "/rustup", "CARGO_HOME=" + dir + "/cargo", "YES=1",
 		"mise exec -- rustup default 1.99.1", "TOKEN=\n",
 	} {

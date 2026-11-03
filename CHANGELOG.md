@@ -16,6 +16,16 @@ All notable changes to grove are documented here.
   puts the entry's paths on the job's `PATH` only if they lie inside it. All job templates accept
   the two meta keys; Linux pools ignore them. See docs/OPERATIONS.md "Native toolchains on macOS".
 
+- **Environment jobs can carry a validated native toolchain and fall back to macOS.**
+  `environment.toolchain` names exact versions of `rust` (with `clippy`, `rustfmt`, `rust-src`,
+  `llvm-tools`), `node` and `python`; the control plane refuses channels, ranges and partial
+  versions, re-marshals the spec deterministically and sets `toolchain_json` and `toolchain_hash`
+  (sha256) itself, never from a caller's bytes or `meta`. An environment with a toolchain may be
+  submitted to, or fall back to, a shared macOS pool with the new `toolchains: {enabled: true}`
+  block, and only to one whose job size covers the job's `resources`; an image-only environment
+  still never falls back. `fleet.yaml` refuses `toolchains` on Linux and sealed pools.
+  `/healthz` features now read `["environment", "toolchain"]`. Spec S22 added; S11 reworded.
+
 ## v0.1.35
 
 - **`grove install --admin <account>` runs the pending root steps through an admin account.** From
