@@ -2,7 +2,7 @@
 
 All notable changes to grove are documented here.
 
-## Unreleased
+## v0.1.33
 
 - **An enrolment counts only when the guest script itself confirms it.** Each enrolment exec now
   carries a random nonce on stdin, and grove takes the exec as an enrolment only when the guest
