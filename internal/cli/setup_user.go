@@ -213,6 +213,13 @@ func setupForUser(ctx context.Context, r install.Runner, base install.Options, h
 	opts.Role = install.RoleWorker
 	opts.Controller = h.ControllerURL // "" for a repair: only the user's wrapper holds it
 	opts.ServerURL = h.ServerURL
+	// The user's config.yaml says whether the worker is rootless, and the user's home is not
+	// readable by this account: ask as the user, and fail rather than guess.
+	rootless, err := install.WorkerRootless(ctx, r, opts)
+	if err != nil {
+		return install.RootNone, fmt.Errorf("cannot tell whether %s's worker is rootless, so not rendering root steps for it: %w", base.User, err)
+	}
+	opts.Rootless, opts.NoAutoRootless = rootless, !rootless
 	steps, err := install.PendingRootSteps(ctx, r, opts)
 	if err != nil {
 		return install.RootNone, fmt.Errorf("render the root steps for %s: %w", base.User, err)

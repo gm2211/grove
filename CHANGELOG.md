@@ -4,6 +4,20 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **`grove install --admin <account>` runs the pending root steps through an admin account.** From
+  a standard user such as `argos` (`ssh -t argos@<mac> grove install --role worker --admin
+  gm2211`), grove renders the same root script `--no-sudo` would print, from the live checks, and
+  pipes it to `su <account> -c '/usr/bin/sudo /bin/sh -e'`; `su` and `sudo` ask for the admin's
+  password on the terminal (no terminal: it says to use `ssh -t`). The plan then runs once more in
+  the same invocation, so steps that waited for the root ones apply immediately, and nothing is asked
+  when no root step is pending. The account must exist and be in the `admin` group; `--admin` excludes
+  `--no-sudo`. `grove setup --admin` works the same way. The account is not remembered in config.
+- **`grove setup --user` honours a rootless worker.** The admin's grove read the worker user's
+  `config.yaml` itself, could not (their home is mode 750), and treated that as "not rootless", so it
+  would install root worker and broker LaunchDaemons over a rootless worker. It now reads the file as
+  the worker user (through `sudo -u`), and fails when the setting can't be determined; the install
+  path likewise fails on a `config.yaml` it can't read instead of assuming root mode.
+
 ## v0.1.34
 
 - **Switching a root worker to `--rootless` retires its LaunchDaemons.** Before, `grove install

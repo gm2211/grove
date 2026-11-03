@@ -3,8 +3,10 @@ package install
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -24,8 +26,12 @@ type RootOptions struct {
 	Yes bool
 	// NoSudo never runs sudo: the script is only printed, for an admin.
 	NoSudo bool
-	In     io.Reader
-	Out    io.Writer
+	// Admin names an admin account to run the script through, from an account that has no sudo:
+	// `su <Admin> -c '/usr/bin/sudo /bin/sh -e'` with the script on stdin. Needs a terminal (su and
+	// sudo read <Admin>'s password from /dev/tty). Excludes NoSudo.
+	Admin string
+	In    io.Reader
+	Out   io.Writer
 }
 
 // RootOutcome is what RunRootSteps did with the root steps.
@@ -55,6 +61,17 @@ func RunRootSteps(ctx context.Context, r Runner, steps []Step, opts RootOptions)
 	if len(steps) == 0 {
 		return RootNone, nil
 	}
+	if opts.Admin != "" {
+		if opts.NoSudo {
+			return RootNone, errors.New("--admin and --no-sudo exclude each other")
+		}
+		if err := CheckAdminAccount(ctx, r, opts.Admin); err != nil {
+			return RootNone, err
+		}
+		if !opts.Interactive {
+			return RootNone, fmt.Errorf("--admin needs a terminal for %s's password: run it from a terminal (over ssh, use `ssh -t`)", opts.Admin)
+		}
+	}
 	script := "set -e\n"
 	for _, s := range steps {
 		if s.Root == nil {
@@ -65,6 +82,18 @@ func RunRootSteps(ctx context.Context, r Runner, steps []Step, opts RootOptions)
 			return RootNone, fmt.Errorf("root script for %s: %w", s.Name, err)
 		}
 		script += "echo " + shQuote("grove: "+s.Name) + "\n" + strings.TrimRight(body, "\n") + "\n"
+	}
+
+	if opts.Admin != "" {
+		fmt.Fprintf(opts.Out, "\n%d step(s) need root, run through %s's account (su, then sudo; both ask for %s's password):\n\n%s\n", len(steps), opts.Admin, opts.Admin, indent(script))
+		if err := r.RunStreaming(ctx, script, "/usr/bin/su", opts.Admin, "-c", "/usr/bin/sudo /bin/sh -e"); err != nil {
+			return RootNone, fmt.Errorf("root steps through %s: %w", opts.Admin, err)
+		}
+		if err := recheckRootSteps(ctx, steps); err != nil {
+			return RootNone, err
+		}
+		fmt.Fprintf(opts.Out, "root steps done (%d).\n", len(steps))
+		return RootRan, nil
 	}
 
 	usable, reason := sudoUsable(ctx, r, opts)
@@ -87,6 +116,15 @@ func RunRootSteps(ctx context.Context, r Runner, steps []Step, opts RootOptions)
 	if err := r.RunAttached(ctx, "/usr/bin/sudo", "/bin/sh", "-e", "-c", script); err != nil {
 		return RootNone, fmt.Errorf("root steps: %w", err)
 	}
+	if err := recheckRootSteps(ctx, steps); err != nil {
+		return RootNone, err
+	}
+	fmt.Fprintf(opts.Out, "root steps done (%d).\n", len(steps))
+	return RootRan, nil
+}
+
+// recheckRootSteps waits for every step's check to pass after the root script ran.
+func recheckRootSteps(ctx context.Context, steps []Step) error {
 	for _, s := range steps {
 		var ok bool
 		var err error
@@ -99,14 +137,30 @@ func RunRootSteps(ctx context.Context, r Runner, steps []Step, opts RootOptions)
 			}
 		}
 		if err != nil {
-			return RootNone, fmt.Errorf("check %s after the root steps: %w", s.Name, err)
+			return fmt.Errorf("check %s after the root steps: %w", s.Name, err)
 		}
 		if !ok {
-			return RootNone, fmt.Errorf("%s is still not satisfied after the root steps ran", s.Name)
+			return fmt.Errorf("%s is still not satisfied after the root steps ran", s.Name)
 		}
 	}
-	fmt.Fprintf(opts.Out, "root steps done (%d).\n", len(steps))
-	return RootRan, nil
+	return nil
+}
+
+// adminAccountRE is what an account name may contain; it is passed to su and dscl as an argument.
+var adminAccountRE = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._-]*$`)
+
+// CheckAdminAccount refuses an --admin account that does not exist or is not in the admin group.
+func CheckAdminAccount(ctx context.Context, r Runner, name string) error {
+	if !adminAccountRE.MatchString(name) || name == "root" {
+		return fmt.Errorf("--admin %q is not an admin account name", name)
+	}
+	if _, _, err := r.Run(ctx, "/usr/bin/dscl", ".", "-read", "/Users/"+name, "UniqueID"); err != nil {
+		return fmt.Errorf("--admin %s: no such account on this Mac", name)
+	}
+	if _, _, err := r.Run(ctx, "/usr/sbin/dseditgroup", "-o", "checkmember", "-m", name, "admin"); err != nil {
+		return fmt.Errorf("--admin %s is not an admin (not in the admin group), so it cannot use sudo", name)
+	}
+	return nil
 }
 
 // PendingRootSteps builds opts's plan and returns its privileged steps that are not yet satisfied,
