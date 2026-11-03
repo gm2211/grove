@@ -176,12 +176,15 @@ func agentInstalled(ctx context.Context, r Runner, opts Options, d daemon) (bool
 // daemons) and load them in gui/<uid>. An agent that already has the label, of this or an older
 // shape, is replaced in place. Jobs already right and loaded are left running, so a re-run with
 // nothing to change restarts nothing. It fails unless each job is running afterwards.
-func workerAgentsStep(r Runner, opts Options, ds []daemon) Step {
+func workerAgentsStep(r Runner, opts Options, ds []daemon, out io.Writer) Step {
 	return Step{
 		Name: "worker-agents",
 		Description: fmt.Sprintf("Install the worker and broker as LaunchAgents in %s (no root; they run while this user is logged in) and load them in %s.",
 			opts.LaunchAgentsDir(), agentDomain(opts)),
 		Check: func(ctx context.Context) (bool, error) {
+			if rootDaemonsPresent(ctx, r, opts, ds) {
+				return false, nil
+			}
 			for _, d := range ds {
 				ok, err := agentInstalled(ctx, r, opts, d)
 				if err != nil || !ok {
@@ -191,6 +194,14 @@ func workerAgentsStep(r Runner, opts Options, ds []daemon) Step {
 			return true, nil
 		},
 		Apply: func(ctx context.Context) error {
+			if rootDaemonsPresent(ctx, r, opts, ds) {
+				// Loading the agents now would run a second worker and broker next to the root
+				// ones. Nothing is written either: a plist in ~/Library/LaunchAgents would start at
+				// the next login even if the admin never runs the block. Not a failure: the plan
+				// lists retire-worker-daemons for an admin, and a re-run loads the agents.
+				fmt.Fprintf(out, "        the root worker/broker LaunchDaemons are still installed; an admin runs the %s block above (or `grove install` as an admin), then re-run `grove install --role worker --rootless`\n", retireWorkerDaemonsStepName)
+				return nil
+			}
 			for _, d := range ds {
 				if ok, err := agentInstalled(ctx, r, opts, d); err != nil {
 					return err
@@ -220,6 +231,75 @@ func workerAgentsStep(r Runner, opts Options, ds []daemon) Step {
 			return nil
 		},
 	}
+}
+
+const retireWorkerDaemonsStepName = "retire-worker-daemons"
+
+// rootDaemonPlist is where the root install put d's LaunchDaemon.
+func rootDaemonPlist(opts Options, d daemon) string {
+	return filepath.Join(opts.launchDaemonsDir(), d.Label+".plist")
+}
+
+// rootDaemonPresent reports whether d is still a root LaunchDaemon: its plist is installed or
+// launchd has the label loaded in the system domain.
+func rootDaemonPresent(ctx context.Context, r Runner, opts Options, d daemon) bool {
+	if _, err := os.Stat(rootDaemonPlist(opts, d)); err == nil {
+		return true
+	}
+	return daemonLoaded(ctx, r, d)
+}
+
+// rootDaemonsPresent reports whether any of the worker or broker is still a root LaunchDaemon.
+func rootDaemonsPresent(ctx context.Context, r Runner, opts Options, ds []daemon) bool {
+	for _, d := range ds {
+		if rootDaemonPresent(ctx, r, opts, d) {
+			return true
+		}
+	}
+	return false
+}
+
+// retireWorkerDaemonsStep is the root step a switch from a root install to --rootless needs: boot
+// the worker and broker LaunchDaemons out of the system domain and delete their plists, so the
+// LaunchAgents that worker-agents loads are the only ones running. It touches those two labels
+// only: com.grove.pf-vm (the VM firewall) and every other daemon stay. pmset disablesleep from the
+// old install is left as it is (harmless).
+func retireWorkerDaemonsStep(r Runner, opts Options, ds []daemon) Step {
+	return Step{
+		Name:       retireWorkerDaemonsStepName,
+		Privileged: true,
+		Description: "Remove the root worker and broker LaunchDaemons (" + orchardWorkerLabel + ", " + brokerLabel +
+			") so the LaunchAgents replace them; the VM firewall and any other daemon stay.",
+		Root: func(context.Context) (string, error) { return retireDaemonsRootScript(opts, ds), nil },
+		Check: func(ctx context.Context) (bool, error) {
+			return !rootDaemonsPresent(ctx, r, opts, ds), nil
+		},
+		Apply: func(ctx context.Context) error {
+			for _, d := range ds {
+				_, _, _ = r.Run(ctx, "sudo", "launchctl", "bootout", "system/"+d.Label) // not loaded is fine
+				waitSystemUnloaded(ctx, r, d.Label)
+				if _, _, err := r.Run(ctx, "sudo", "rm", "-f", rootDaemonPlist(opts, d)); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// retireDaemonsRootScript is the root text of retireWorkerDaemonsStep: for each job, boot it out
+// of the system domain (not loaded is fine), wait (bounded, 10s) until launchd has unloaded it,
+// then remove its plist.
+func retireDaemonsRootScript(opts Options, ds []daemon) string {
+	var lines []string
+	for _, d := range ds {
+		target := "system/" + d.Label // a fixed com.grove.* label: nothing to quote
+		lines = append(lines,
+			fmt.Sprintf("/bin/launchctl bootout %s 2>/dev/null || true", target),
+			fmt.Sprintf("i=0; while /bin/launchctl print %s >/dev/null 2>&1 && [ \"$i\" -lt 20 ]; do /bin/sleep 0.5; i=$((i+1)); done", target),
+			fmt.Sprintf("/bin/rm -f %s", shQuote(rootDaemonPlist(opts, d))))
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 // waitAgentRunning fails unless launchd shows d running its program within a few seconds.
@@ -429,7 +509,7 @@ func checkWorkerAgent(ctx context.Context, r Runner, opts Options) CheckResult {
 		return CheckResult{Name: name, OK: false, Detail: d.Label + " is loaded but not running", Remediation: "see " + strings.Join(d.Logs, " and ")}
 	}
 	if _, err := os.Stat(filepath.Join(opts.launchDaemonsDir(), d.Label+".plist")); err == nil {
-		return CheckResult{Name: name, OK: false, Detail: "a LaunchDaemon for " + d.Label + " is installed too and would run a second worker", Remediation: "an admin removes it, or re-run the install without --rootless"}
+		return CheckResult{Name: name, OK: false, Detail: "a LaunchDaemon for " + d.Label + " is installed too and would run a second worker", Remediation: "re-run `grove install --role worker --rootless` and have an admin run the block it prints (it retires the root worker and broker, keeps the firewall), or re-run the install without --rootless"}
 	}
 	return CheckResult{Name: name, OK: true, Detail: d.Label + " runs as a LaunchAgent of " + opts.userLabel() + " (needs that user logged in)"}
 }

@@ -207,7 +207,12 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 		// that wait for the root script (retire, rename) run in this same plan, after them.
 		steps = append(steps, keepAwakeStep(r, opts))
 		steps = append(steps, brokerSteps(r, opts, daemons[1])...)
-		steps = append(steps, workerAgentsStep(r, opts, daemons))
+		if rootDaemonsPresent(context.Background(), r, opts, daemons) {
+			// Switching an existing root install: an admin retires its LaunchDaemons first, or the
+			// agents would run a second worker and broker beside them.
+			steps = append(steps, retireWorkerDaemonsStep(r, opts, daemons))
+		}
+		steps = append(steps, workerAgentsStep(r, opts, daemons, out))
 		// Another account's superseded stack is not this user's to remove (that is a root step):
 		// `grove doctor` reports it through worker-shape instead.
 		steps = append(steps, workerFinishSteps(r, opts, daemons, bk, out)...)

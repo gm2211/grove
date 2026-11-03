@@ -2,6 +2,18 @@
 
 All notable changes to grove are documented here.
 
+## Unreleased
+
+- **Switching a root worker to `--rootless` retires its LaunchDaemons.** Before, `grove install
+  --role worker --rootless` on a Mac whose worker and broker were root LaunchDaemons only loaded the
+  LaunchAgents beside them, so two `orchard worker run` and two `grove broker` processes ran. The
+  plan now has a root step, `retire-worker-daemons` (before `worker-agents`), that boots
+  `com.grove.orchard-worker` and `com.grove.broker` out of the system domain and removes their
+  plists; it touches nothing else (`com.grove.pf-vm` stays, so `--firewall` keeps the VM fence).
+  `worker-agents` loads no agent, and writes no plist, while those daemons exist: it says so and
+  waits, and the re-run after an admin ran the printed block loads them. The `pmset disablesleep`
+  the root install set is left alone.
+
 ## v0.1.33
 
 - **An enrolment counts only when the guest script itself confirms it.** Each enrolment exec now
