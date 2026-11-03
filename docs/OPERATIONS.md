@@ -582,6 +582,43 @@ Names are shell variable names; `PATH`, `HOME` and the like, and the `NOMAD_`/`G
 are refused. Values may be multi-line (up to 64 KiB). The same operations are
 `GET /api/v1/secrets` and `PUT`/`DELETE /api/v1/secrets/{name}`.
 
+## Native toolchains on macOS
+
+A job's environment may name a rust, node or python toolchain (exact versions; the control plane
+sets the dispatch meta `toolchain_json` and `toolchain_hash`, see nomad/jobs/README.md). A macOS
+worker VM installs it natively, once, and every job with the same spec reuses it.
+
+- **Who installs.** The `source` task, after the clone token is gone, runs the root-owned
+  `/usr/local/libexec/grove-toolchain` as `_grovetool` (UID/GID 7462, no shell, home `/var/empty`),
+  never in the job's checkout and never as root or the job user. It re-validates the spec with `jq`
+  and recomputes the hash (a mismatch is refused), writes the only `mise.toml` mise sees (`[tools]`
+  only), and runs the VM's pinned `mise` with `HOME=/var/empty`, no global config,
+  `MISE_PYTHON_COMPILE=0` (prebuilt Python), and `RUSTUP_HOME`/`CARGO_HOME`/`MISE_DATA_DIR`/
+  `MISE_CACHE_DIR` inside the entry, under a 20-minute watchdog. mise's rust support drives rustup,
+  which mise fetches (`rustup-init`) when the entry has none; the installer then sets the version as
+  rustup's default. `_grovetool` is in the pf anchor beside the job users: it reaches the public
+  internet (which the downloads need), not home networks, and not SSH.
+- **Where.** `/private/var/grove-toolchains/mise-<mise version>-<spec hash>/`, owned by
+  `_grovetool`, mode 0755: jobs can run it, not write it. A finished entry has `.complete`, a
+  `paths` file (`mise bin-paths`, each line inside the entry) and `.lastuse`; an installer in
+  progress holds `.lock-mise-<...>` (a lock older than 30 minutes is taken over; a waiting install
+  of the same spec reuses the other's result). The cache lives on the VM's disk: a recycled VM
+  starts empty, and the first job with a spec pays the download; a new mise version in the image
+  makes new entries.
+- **Eviction.** After each install or hit, entries unused for 24 hours are removed, oldest first,
+  until at most three remain; an entry a job is using is never removed. `run.sh` marks use with a
+  file `<entry>.<alloc id>` in the sticky `/private/var/grove-toolchains/.use` directory (removed
+  when the job ends, and ignored once 24 hours old).
+- **Image rollout.** The mise binary is baked by `images/macos-worker` at a pinned release with a
+  checked SHA-256 (`mise_version`/`mise_sha256` in the template). To change it, bump both together
+  and roll the image as above. The `_grovetool` user, cache directory and installer come from the
+  fleet startup script, so they appear on any VM created or restarted by a new grove, with no new
+  image; the installer needs the image's mise, and a job whose environment names a toolchain on an
+  older image fails with exit 70 and "mise: not found" in its log.
+- **Debugging.** The installer's output (mise, rustup) is in the job's log, since `run.sh` replays
+  the source step's. On the VM: `ls -la /private/var/grove-toolchains`, and a failed entry is
+  deleted, so rerun the job.
+
 ## Letting jobs clone private repos (and turning it back off)
 
 Grove has no GitHub credential until you give it one, so a job against a private repository fails

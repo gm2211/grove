@@ -256,6 +256,7 @@ func homeFenceScript(pool Pool) string {
 			"@PUBLIC_DNS@", strings.TrimSuffix(macosPublicDNSScript, "\n"),
 			"@PF_INSTALL@", strings.TrimSuffix(macosPFInstall(macosHomeFenceRules, macosHomeFenceLoader), "\n"),
 			"@SOURCE_USER@", strings.TrimSuffix(macosSourceUserScript, "\n"),
+			"@TOOLCHAIN_USER@", strings.TrimSuffix(macosToolchainUserScript, "\n"),
 		).Replace(macosHomeFenceTemplate)
 	}
 	return strings.NewReplacer(
@@ -317,8 +318,8 @@ GROVE_EGRESS_FENCE_NOW
 // It also keeps both users off SSH anywhere, the VM itself included: an SSH login as admin is the
 // one way a process without root could use admin's password, should it ever learn it.
 var macosHomeFenceRules = `grove_home = "{ 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, fc00::/7, fe80::/10 }"
-block return out quick proto { tcp, udp } from any to $grove_home user { ` + MacOSJobUser + `, ` + MacOSSourceUser + ` }
-` + macosSSHBlockRule(MacOSJobUser, MacOSSourceUser)
+block return out quick proto { tcp, udp } from any to $grove_home user { ` + MacOSJobUser + `, ` + MacOSSourceUser + `, ` + MacOSToolchainUser + ` }
+` + macosSSHBlockRule(MacOSJobUser, MacOSSourceUser, MacOSToolchainUser)
 
 // macosSSHBlockRule is the pf rule that keeps users off SSH (TCP port 22), to any address.
 func macosSSHBlockRule(users ...string) string {
@@ -421,12 +422,13 @@ func macosPFInstall(rules, loader string) string {
 }
 
 const macosHomeFenceTemplate = `# --- jobs reach the internet, not home ---
-# Processes of the job user, and of the user each job's clone runs as, may not open connections to
+# Processes of the job user, and of the users each job's clone and toolchain install run as, may not open connections to
 # private, tailnet or link-local addresses (the job user may reach the host's credential broker on
 # the default gateway, and nothing else there); this VM's own Nomad client and Tailscale are not
 # affected. Name lookups go to public resolvers, not the host Mac.
 @PUBLIC_DNS@
 @SOURCE_USER@
+@TOOLCHAIN_USER@
 @PF_INSTALL@
 `
 

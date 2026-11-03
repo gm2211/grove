@@ -54,7 +54,8 @@ Every rendered job:
 - `type = "batch"`.
 - `parameterized { payload = "required" meta_required = ["requester"] meta_optional = ["repo",
   "ref", "env_json", "timeout_seconds", "grove_meta_json", "artifact_prefix", "image",
-  "task_image", "retry_lost"] }` (`retry_lost` is read only by the sealed-pool template) — a
+  "task_image", "retry_lost", "toolchain_json", "toolchain_hash"] }` (`retry_lost` is read only by
+  the sealed-pool template; the two `toolchain_*` keys only by the macOS `build` template, below) — a
   `JobRequest` (see `internal/dispatch/dispatch.go`) maps onto these dispatch meta keys 1:1, plus
   the request's `Script` becomes the dispatch payload (for build/agent behind a
   `grove-payload/1` header line and a clone-token line, read only by the `source` task).
@@ -98,6 +99,30 @@ stays on `{{.RunnerImage}}`. The other kinds still run the pool's fixed `runnerI
 and ignored; grove no longer sets it. No job gets the VM's docker socket: it would give the job
 root on the guest, past the fence that keeps jobs off home networks. See docs/JOBS.md "Job
 environments".
+
+### Native toolchains on macOS (`toolchain_json`, `toolchain_hash`)
+
+A job's environment may carry a typed toolchain spec (`{"rust":{"version":"1.99.1","components":
+["clippy","rustfmt"]},"node":{"version":"22.11.0"},"python":{"version":"3.12.3"}}`: tools rust,
+node, python, exact versions, at most 1 KiB). The control plane validates it and dispatches its
+canonical JSON as meta `toolchain_json` and `toolchain_hash` = hex SHA-256 of
+`"grove-toolchain/1\n" + canonical JSON`. Every template lists both keys; only the macOS `build`
+template acts on them (the Linux templates, and macOS `agent`, ignore them):
+
+- **source** (root) runs, after the clone and once the clone token's file and variables are gone,
+  `sudo -n -H -u _grovetool /usr/local/libexec/grove-toolchain <hash>` from `/` with the JSON on
+  stdin. `_grovetool` is a fourth unprivileged user (UID 7462, no shell, home `/var/empty`, fenced
+  off home networks and SSH like the job user); the installer is root-owned 0755, installed by the
+  fleet startup script. A failure ends the step with exit 70 and the installer's output in the
+  job's log. The printed directory goes to `$state/toolchain.dir`.
+- **main** (`_grovejob`) reads `toolchain.dir`, requires it to be `/private/var/grove-toolchains/
+  mise-*` with a `.complete` marker, and puts each line of its `paths` file first on `PATH`, only
+  if the line lies inside that directory (anything else exits 70). It also exports `RUSTUP_HOME`
+  (inside the directory, read-only to the job), `RUSTUP_AUTO_INSTALL=0`, `CARGO_HOME=$HOME/.cargo-grove`
+  and `GROVE_TOOLCHAIN_DIR`, and unsets `RUSTUP_TOOLCHAIN`. `env_json` is applied afterwards, as for
+  any job.
+
+See docs/OPERATIONS.md "Native toolchains on macOS".
 
 ### kind differences
 

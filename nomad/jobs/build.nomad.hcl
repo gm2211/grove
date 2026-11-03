@@ -14,7 +14,7 @@ job "grove-{{.Kind}}-{{.Pool}}" {
   parameterized {
     payload       = "required"
     meta_required = ["requester"]
-    meta_optional = ["repo", "ref", "env_json", "timeout_seconds", "grove_meta_json", "artifact_prefix", "image", "task_image", "retry_lost"]
+    meta_optional = ["repo", "ref", "env_json", "timeout_seconds", "grove_meta_json", "artifact_prefix", "image", "task_image", "retry_lost", "toolchain_json", "toolchain_hash"]
   }
 
   # Node-meta constraint. ${meta.pool} is set on the client node itself (client.hcl's
@@ -116,10 +116,30 @@ job "grove-{{.Kind}}-{{.Pool}}" {
           cp "$req" "$state/script.sh"
         fi
         rm -f "$req"
-
+{{if eq .Pool "macos"}}
+        # A job whose environment names a native toolchain (dispatch meta toolchain_json, with its
+        # hash) gets it installed here, once the clone token is gone. The installer is root-owned
+        # and runs as its own unprivileged user (_grovetool, fenced off home networks like the job
+        # user), from /, never in the checkout; it re-checks the spec against the hash, builds or
+        # reuses a read-only directory under /private/var/grove-toolchains, and prints it. sudo
+        # drops the environment, so nothing of this task's reaches it. "main" only gets the
+        # finished directory on its PATH (run.sh).
+        install_toolchain() {
+          [ -n "$${NOMAD_META_toolchain_json:-}" ] || return 0
+          local tc_dir
+          if ! tc_dir="$(cd / && printf '%s' "$NOMAD_META_toolchain_json" | sudo -n -H -u _grovetool /usr/local/libexec/grove-toolchain "$${NOMAD_META_toolchain_hash:-}" 2>> "$log")" || [ -z "$tc_dir" ]; then
+            echo "grove: installing the job's toolchain failed" >> "$log"
+            finish 70
+          fi
+          printf '%s\n' "$tc_dir" > "$state/toolchain.dir"
+        }
+{{end}}
         repo="$${NOMAD_META_repo:-}"
         ref="$${NOMAD_META_ref:-HEAD}"
         if [ -z "$repo" ]; then
+{{if eq .Pool "macos"}}
+          install_toolchain
+{{end}}
           finish 0
         fi
 
@@ -184,6 +204,13 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         fi
         unset GROVE_CLONE_TOKEN
         cp "$state/script.sh" "$work/script.sh"
+{{if eq .Pool "macos"}}
+        # The clone is done: the token's file and variable go before any toolchain code runs.
+        [ -z "$tokdir" ] || rm -rf "$tokdir"
+        tokdir=""
+        token=""
+        install_toolchain
+{{end}}
         finish 0
         EOF
         destination = "local/source.sh"
@@ -281,6 +308,42 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         # directory the fleet startup script creates.
         export HOME=/private/var/grove-job USER=_grovejob LOGNAME=_grovejob
         export TMPDIR="$(dirname "$NOMAD_TASK_DIR")/tmp"
+
+        # The job's native toolchain, if its environment named one: the read-only directory the
+        # source task installed (see there). Its paths go first on PATH, only if they lie inside
+        # it. The job user can run it but not write it; cargo's own state is the job's.
+        if [ -n "$${NOMAD_META_toolchain_hash:-}" ]; then
+          tc_root=/private/var/grove-toolchains
+          tc_dir="$(cat "$state/toolchain.dir" 2>/dev/null || true)"
+          case "$tc_dir" in
+            "$tc_root"/mise-*) ;;
+            *) echo "grove: the toolchain step left no toolchain directory" >&2; exit 70 ;;
+          esac
+          case "$tc_dir" in
+            *..* | *[!A-Za-z0-9._/+-]*) echo "grove: refusing a malformed toolchain directory" >&2; exit 70 ;;
+          esac
+          if [ ! -f "$tc_dir/.complete" ] || [ ! -f "$tc_dir/paths" ]; then
+            echo "grove: the toolchain in $tc_dir is not complete" >&2
+            exit 70
+          fi
+          tc_path=""
+          while IFS= read -r tc_bin; do
+            case "$tc_bin" in
+              *..* | *[!A-Za-z0-9._/+-]*) echo "grove: refusing a malformed toolchain path" >&2; exit 70 ;;
+              "$tc_dir"/*) ;;
+              *) echo "grove: refusing a toolchain path outside $tc_dir" >&2; exit 70 ;;
+            esac
+            tc_path="$tc_path$tc_bin:"
+          done < "$tc_dir/paths"
+          export PATH="$tc_path$PATH"
+          export RUSTUP_HOME="$tc_dir/rustup" RUSTUP_AUTO_INSTALL=0 CARGO_HOME="$HOME/.cargo-grove" GROVE_TOOLCHAIN_DIR="$tc_dir"
+          unset RUSTUP_TOOLCHAIN
+          mkdir -p "$CARGO_HOME"
+          # Tells the installer's eviction this entry is in use.
+          tc_marker="$tc_root/.use/$(basename "$tc_dir").$${NOMAD_ALLOC_ID:-0}"
+          touch "$tc_marker" 2>/dev/null || true
+          trap 'rm -f "$tc_marker"' EXIT
+        fi
 {{end}}
         if [ -n "$${NOMAD_META_env_json:-}" ]; then
           eval "$(printf '%s' "$NOMAD_META_env_json" | jq -r 'to_entries[] | select(.key | test("^[A-Za-z_][A-Za-z0-9_]*$")) | "export " + .key + "=" + (.value|tostring|@sh)')"

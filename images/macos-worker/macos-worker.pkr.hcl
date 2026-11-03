@@ -47,6 +47,18 @@ variable "xcode_profile" {
   description = "Enable Xcode license and first-launch setup. Set only through xcode.pkrvars.hcl."
 }
 
+variable "mise_version" {
+  type        = string
+  default     = "2026.10.24"
+  description = "Pinned mise release baked into /usr/local/bin/mise. The toolchain installer (internal/fleet/toolchain.go) names its cache entries after this version, so changing it starts a fresh cache. Bump it together with mise_sha256."
+}
+
+variable "mise_sha256" {
+  type        = string
+  default     = "ac0ee145cb145affe3ea60623a4abdb253e5ad1f938def299e633e816c0b8523"
+  description = "SHA-256 of mise-v<mise_version>-macos-arm64 (the bare binary) from the release's SHASUMS256.txt; the build fails on a mismatch."
+}
+
 variable "ssh_username" {
   type        = string
   default     = "admin"
@@ -140,6 +152,30 @@ build {
       "echo '==> installing tailscale (brew formula, not cask)'",
       "brew install tailscale",
       "sudo /opt/homebrew/bin/brew services start tailscale || true", # tailscaled itself; `tailscale up` (join) is done by the fleet startup script with an ephemeral auth key.
+    ]
+  }
+
+  # mise, pinned: installs the native toolchains (rust, node, python) a job's environment names, as
+  # an unprivileged user into /private/var/grove-toolchains (internal/fleet/toolchain.go). A
+  # specific release is downloaded and its SHA-256 checked here, not brew's moving formula. mise's
+  # rust support drives rustup, and fetches rustup-init itself when none is set up in the
+  # RUSTUP_HOME it is given, so no rustup is baked: the installer's per-spec RUSTUP_HOME/CARGO_HOME
+  # make mise ignore any rustup on the image anyway (docs/IMAGES.md "Native toolchains").
+  provisioner "shell" {
+    environment_vars = [
+      "GROVE_MISE_VERSION=${var.mise_version}",
+      "GROVE_MISE_SHA256=${var.mise_sha256}",
+    ]
+    inline = [
+      "set -eu",
+      "export PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+      "echo \"==> installing mise $GROVE_MISE_VERSION (pinned, checksum-verified)\"",
+      "curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/grove-mise \"https://github.com/jdx/mise/releases/download/v$GROVE_MISE_VERSION/mise-v$GROVE_MISE_VERSION-macos-arm64\"",
+      "test \"$(shasum -a 256 /tmp/grove-mise | awk '{print $1}')\" = \"$GROVE_MISE_SHA256\" || { echo 'FATAL: mise checksum mismatch'; rm -f /tmp/grove-mise; exit 1; }",
+      "sudo mkdir -p /usr/local/bin",
+      "sudo install -o root -g wheel -m 0755 /tmp/grove-mise /usr/local/bin/mise",
+      "rm /tmp/grove-mise",
+      "test \"$(/usr/local/bin/mise --version | awk '{print $1; exit}')\" = \"$GROVE_MISE_VERSION\"",
     ]
   }
 

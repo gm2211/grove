@@ -4,6 +4,18 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **macOS worker: native toolchain installer (execution side).** A shared macOS pool's `build` job
+  whose dispatch meta carries `toolchain_json` and `toolchain_hash` (nothing in the control plane
+  sets them yet) gets rust, node and/or python installed natively. The fleet startup script creates
+  `_grovetool` (UID 7462, no shell, home `/var/empty`, in the pf fence beside the job users, no SSH),
+  `/private/var/grove-toolchains` and the root-owned `/usr/local/libexec/grove-toolchain`. The
+  `source` task runs that installer as `_grovetool` after the clone token is gone (failure: exit 70);
+  it re-validates the spec with `jq`, recomputes the hash, installs with the image's now-pinned,
+  checksum-verified mise into a read-only `mise-<version>-<hash>` directory under a lock and a
+  20-minute watchdog, and evicts idle entries (24 hours, keeping three, never one in use). `run.sh`
+  puts the entry's paths on the job's `PATH` only if they lie inside it. All job templates accept
+  the two meta keys; Linux pools ignore them. See docs/OPERATIONS.md "Native toolchains on macOS".
+
 ## v0.1.35
 
 - **`grove install --admin <account>` runs the pending root steps through an admin account.** From
