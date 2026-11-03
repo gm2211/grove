@@ -92,7 +92,7 @@ func TestRenderAllKindsAndPools(t *testing.T) {
 				for _, want := range []string{
 					`payload       = "required"`,
 					`meta_required = ["requester"]`,
-					`meta_optional = ["repo", "ref", "env_json", "timeout_seconds", "grove_meta_json", "artifact_prefix", "image", "retry_lost"]`,
+					`meta_optional = ["repo", "ref", "env_json", "timeout_seconds", "grove_meta_json", "artifact_prefix", "image", "task_image", "retry_lost"]`,
 					`attempts = 0`, // reschedule/restart
 					`dispatch_payload`,
 					`destination = "local/run.sh"`,
@@ -274,10 +274,13 @@ func TestRenderedHCLParsesWithJobspec2(t *testing.T) {
 					if source.Lifecycle == nil || source.Lifecycle.Hook != "prestart" || source.Lifecycle.Sidecar {
 						t.Errorf("source task lifecycle = %+v, want a non-sidecar prestart", source.Lifecycle)
 					}
-					// macOS jobs never run the caller's script as root.
+					// macOS jobs never run the caller's script as root; a Linux build's main task is
+					// root in its container whatever its image's USER says (job environments).
 					wantUser := ""
 					if pool == "macos" {
 						wantUser = "_grovejob"
+					} else if kind == "build" {
+						wantUser = "root"
 					}
 					if main.User != wantUser {
 						t.Errorf("main task user = %q, want %q", main.User, wantUser)
@@ -879,6 +882,58 @@ if [ -n "${SSL_CERT_FILE:-}" ]; then cat "$SSL_CERT_FILE"; fi
 		}
 		if warned := strings.Contains(out, "no credential broker"); warned != strings.Contains(name, "placeholders") {
 			t.Errorf("%s: warned=%v:\n%s", name, warned, out)
+		}
+	}
+}
+
+// TestBuildMainTaskTakesItsImageFromDispatchMeta pins the job-environment design: the main task
+// of a shared Linux build runs the image grove put in meta task_image (an allowed, digest-pinned
+// environment or the pool's runner image), while the source task, which holds the clone token,
+// stays on the pool's trusted runner image. Every template accepts task_image.
+func TestBuildMainTaskTakesItsImageFromDispatchMeta(t *testing.T) {
+	const runner = "ghcr.io/acme/runner:1"
+	job, err := jobspec2.ParseWithConfig(&jobspec2.ParseConfig{
+		Path: "job.hcl",
+		Body: []byte(render(t, "build.nomad.hcl", renderData{Kind: "build", Pool: "linux", RunnerImage: runner})),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var source, main *nomadapi.Task
+	for _, task := range job.TaskGroups[0].Tasks {
+		switch task.Name {
+		case "source":
+			source = task
+		case "main":
+			main = task
+		}
+	}
+	if source == nil || main == nil {
+		t.Fatal("build job needs source and main tasks")
+	}
+	if got := source.Config["image"]; got != runner {
+		t.Errorf("source image = %v, want the pool's runner image %q (it holds the clone token)", got, runner)
+	}
+	if got := main.Config["image"]; got != "${NOMAD_META_task_image}" {
+		t.Errorf("main image = %v, want ${NOMAD_META_task_image}", got)
+	}
+	if ep, _ := main.Config["entrypoint"].([]interface{}); len(ep) != 1 || ep[0] != "/bin/bash" {
+		t.Errorf("main entrypoint = %v, want [/bin/bash]", main.Config["entrypoint"])
+	}
+	if _, has := main.Config["command"]; has {
+		t.Errorf("main sets command, which the docker driver would put after the entrypoint")
+	}
+	if main.User != "root" {
+		t.Errorf("main user = %q, want root", main.User)
+	}
+	if main.Config["image_pull_timeout"] != "15m" {
+		t.Errorf("main image_pull_timeout = %v, want 15m", main.Config["image_pull_timeout"])
+	}
+
+	for _, file := range []string{"build.nomad.hcl", "agent.nomad.hcl", "shell.nomad.hcl", "sandbox.nomad.hcl"} {
+		out := render(t, file, renderData{Kind: strings.TrimSuffix(file, ".nomad.hcl"), Pool: "linux", GroveBin: "/usr/local/bin/grove", Slots: 1})
+		if !strings.Contains(out, `"task_image"`) {
+			t.Errorf("%s: meta_optional does not list task_image", file)
 		}
 	}
 }

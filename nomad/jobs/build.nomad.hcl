@@ -14,7 +14,7 @@ job "grove-{{.Kind}}-{{.Pool}}" {
   parameterized {
     payload       = "required"
     meta_required = ["requester"]
-    meta_optional = ["repo", "ref", "env_json", "timeout_seconds", "grove_meta_json", "artifact_prefix", "image", "retry_lost"]
+    meta_optional = ["repo", "ref", "env_json", "timeout_seconds", "grove_meta_json", "artifact_prefix", "image", "task_image", "retry_lost"]
   }
 
   # Node-meta constraint. ${meta.pool} is set on the client node itself (client.hcl's
@@ -221,17 +221,28 @@ job "grove-{{.Kind}}-{{.Pool}}" {
 {{else}}
       driver = "docker"
 
+      # Root in the container whatever the image's USER says: run.sh reads task files only root
+      # owns, as it does in the runner image.
+      user = "root"
+
       config {
-        image   = "{{.RunnerImage}}"
-        command = "/bin/bash"
-        args    = ["${NOMAD_TASK_DIR}/run.sh"]
+        # The image comes from dispatch meta, which only grove sets: the pool's runner image, or
+        # the digest-pinned environment image the pool's fleet.yaml allows (internal/dispatch
+        # taskImage). grove ALWAYS sets task_image on a build dispatch; with it missing the
+        # interpolation stays empty and the task fails to start rather than guessing an image.
+        image = "${NOMAD_META_task_image}"
+        # An environment image's own ENTRYPOINT must not run in place of run.sh, so the entrypoint
+        # is bash and there is no `command` (the docker driver would put it after the entrypoint).
+        # A large image may take a while to pull on a fresh VM.
+        entrypoint         = ["/bin/bash"]
+        args               = ["${NOMAD_TASK_DIR}/run.sh"]
+        image_pull_timeout = "15m"
 
         # Public resolvers, never the VM's own: a shared VM's resolver is its host Mac, and the
         # egress fence lets a container reach no private address at all.
         dns_servers = ["1.1.1.1", "8.8.8.8"]
         # Never the VM's docker socket: it would give the job root on the guest, past the fence
-        # that keeps jobs off home networks. Nomad's docker driver can't take `image` from
-        # dispatch meta (hashicorp/nomad#6247), so a per-job "image" override is ignored.
+        # that keeps jobs off home networks.
       }
 {{end}}
 
@@ -245,7 +256,10 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         #!/bin/bash
         set -euo pipefail
 
-        DEFAULT_IMAGE="{{.RunnerImage}}"
+        if ! command -v jq >/dev/null 2>&1; then
+          echo "grove: this job's image has no jq; a job environment image needs /bin/bash, coreutils and jq" >&2
+          exit 127
+        fi
         state="$NOMAD_ALLOC_DIR/data/grove"
         T="$${NOMAD_META_timeout_seconds:-3600}"
 
@@ -381,8 +395,7 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         }
 
         set +e
-        # NOMAD_META_image is still accepted by the dispatch contract but ignored: every job runs
-        # in this fixed runner image, and no job can reach the VM's docker daemon.
+        # No job can reach the VM's docker daemon; the image is NOMAD_META_task_image (see above).
         run_with_timeout "$T" bash -eo pipefail "$script_src"
         code=$?
         set -e

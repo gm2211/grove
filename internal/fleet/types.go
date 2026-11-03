@@ -53,6 +53,9 @@ type Pool struct {
 	// RunnerImage selects the fixed outer container used by every Linux Nomad job in this pool.
 	// It is independent of the VM image above and opt-in per-dispatch nested Docker overrides.
 	RunnerImage string `yaml:"runnerImage,omitempty" json:"runnerImage,omitempty"`
+	// Environments lets this pool's build jobs name the image they run in (JobRequest.Environment).
+	// Unset, a job gets only RunnerImage. Not for macOS or sealed pools.
+	Environments *PoolEnvironments `yaml:"environments,omitempty" json:"environments,omitempty"`
 	// HostXcode shares one host-installed Xcode application read-only with guests in this pool.
 	// It is intentionally limited to the macos pool and pinned to the host app's build version.
 	HostXcode *HostXcodeConfig `yaml:"hostXcode,omitempty" json:"hostXcode,omitempty"`
@@ -77,6 +80,14 @@ type Pool struct {
 	// PerWorker is ignored. Unset, the pool runs exactly PerWorker VMs per worker, as always.
 	MinPerWorker *int `yaml:"minPerWorker,omitempty" json:"minPerWorker,omitempty"`
 	MaxPerWorker *int `yaml:"maxPerWorker,omitempty" json:"maxPerWorker,omitempty"`
+}
+
+// PoolEnvironments is Pool.Environments.
+type PoolEnvironments struct {
+	// Allow lists the repositories a job's environment image may come from: an exact repository
+	// ("ghcr.io/acme/builder") or a prefix ending in "/" ("ghcr.io/acme/"), each with an explicit
+	// registry host. The job still has to pin its image by digest.
+	Allow []string `yaml:"allow,omitempty" json:"allow,omitempty"`
 }
 
 // Bounds is how many of p's VMs each matching worker runs: at least min, at most max.

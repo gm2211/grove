@@ -91,10 +91,9 @@ func TestFallback_BusyPoolWaitsForFallbackAfter(t *testing.T) {
 	}
 }
 
-func TestFallback_PinPoolAndImageStay(t *testing.T) {
+func TestFallback_PinPoolStays(t *testing.T) {
 	for _, req := range []JobRequest{
 		{Kind: KindShell, Pool: "linux", Script: "docker build .", PinPool: true},
-		{Kind: KindShell, Pool: "linux", Script: "true", Meta: map[string]string{"image": "golang:1.26"}},
 	} {
 		nc := &fakeNomad{}
 		svc := fallbackService(t, nc)

@@ -11,6 +11,18 @@ All notable changes to grove are documented here.
   back with the command echoed and exit 0, grove logged "enrolled", and the VM waited out its
   30-minute enrolment timeout, was restarted, and did the same again, so no shared VM ever joined
   Nomad. A false confirmation is now an error, retried on the next tick.
+- **A build job can name its environment.** `JobRequest.environment.image` runs a `build` job's
+  script in a digest-pinned image (`<registry>/<repo>@sha256:...`, no tags) instead of the pool's
+  runner image. The control plane decides: the pool must allow the repository in fleet.yaml
+  `environments.allow` (exact repository or a `/` prefix, explicit registry), or the submit is a
+  400. Not for macOS or sealed pools, and a job with an environment never falls back to macOS. The
+  image reaches Nomad as meta `task_image`, set on every build dispatch (environment, else the
+  pool's runner image); the `source` step that holds the clone token always runs in the runner
+  image. `/healthz` reports `features: ["environment"]`. The Linux worker's docker plugin now
+  garbage-collects unused images after 24h. Details: docs/JOBS.md "Job environments".
+- **Security: a caller's `meta.image` no longer reaches Nomad.** It used to be copied into the
+  dispatch meta (ignored by the templates, but a trap for any template that read it). Caller meta
+  now only round-trips in `grove_meta_json`.
 - **Linux VMs no longer restart the moment their startup script finishes.** Orchard runs a startup
   script by typing `set -e`, the script and `exit` into a login shell. On that exit, bash runs
   `~/.bash_logout`, whose `clear_console` fails without a terminal on Ubuntu, and with `-e` still

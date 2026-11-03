@@ -1,9 +1,7 @@
 # grove-runner: default container image for linux "build"/"agent"/"shell" jobs dispatched to the
-# linux pool. Docker CLI (not just the daemon) is included deliberately: the Nomad docker driver
-# cannot interpolate its `image` config field from dispatch-time meta (hashicorp/nomad#6247), so a
-# per-job image override (`meta_optional` field "image" in the parameterized job contract, see
-# nomad/jobs/README.md) is honored by nesting a `docker run` against the host's docker socket
-# rather than by changing this container's own image at schedule time.
+# linux pool, and the trusted image a build's `source` step (which holds the clone token) always
+# runs in. A build's main step runs this image unless the job names an environment image the pool
+# allows (nomad/jobs/build.nomad.hcl, docs/JOBS.md "Job environments"). Jobs get no docker socket.
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \

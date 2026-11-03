@@ -55,3 +55,13 @@ behaviors:
         maxSteps: 30
         samples: 2000
         seed: 1
+  - id: job-image-is-allowlisted-and-pinned
+    description: >-
+      A shared-pool job's image is its pool's runner image or a digest-pinned image its pool
+      allows, chosen by the control plane; the clone token runs only in the runner image.
+    details: >-
+      S11. Attacker J (a caller choosing its own image through the request's environment or its
+      meta). Submit refuses an environment with a tag, no registry, an unallowed repository, a
+      macOS or sealed pool, or a non-build kind; build.nomad.hcl's source task stays on the runner
+      image. Go tests in internal/dispatch/environment_test.go and nomad/jobs/nomadjobs_test.go.
+    tags: [security, s11]

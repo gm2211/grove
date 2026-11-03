@@ -71,6 +71,18 @@ type JobRequest struct {
 	// pool (see PoolConfig.Fallback). For a job that needs the pool's OS, e.g. one that runs
 	// docker or apt-get.
 	PinPool bool `json:"pinPool,omitempty"`
+	// Environment asks for the image the job's script runs in (kind build only, for now). The
+	// control plane decides: the image must be pinned by digest and allowed by the pool's
+	// fleet.yaml `environments.allow`, or Submit refuses with a 400. A job with an environment
+	// never falls back to another pool (macOS has no containers), whatever PinPool says. See
+	// docs/JOBS.md "Job environments".
+	Environment *Environment `json:"environment,omitempty"`
+}
+
+// Environment is JobRequest.Environment.
+type Environment struct {
+	// Image is "<registry>/<repository>@sha256:<64 hex>": explicit registry host, digest, no tag.
+	Image string `json:"image"`
 }
 
 // Credential is one JobRequest.Credentials entry.

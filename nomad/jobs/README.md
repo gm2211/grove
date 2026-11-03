@@ -54,7 +54,7 @@ Every rendered job:
 - `type = "batch"`.
 - `parameterized { payload = "required" meta_required = ["requester"] meta_optional = ["repo",
   "ref", "env_json", "timeout_seconds", "grove_meta_json", "artifact_prefix", "image",
-  "retry_lost"] }` (`retry_lost` is read only by the sealed-pool template) — a
+  "task_image", "retry_lost"] }` (`retry_lost` is read only by the sealed-pool template) — a
   `JobRequest` (see `internal/dispatch/dispatch.go`) maps onto these dispatch meta keys 1:1, plus
   the request's `Script` becomes the dispatch payload (for build/agent behind a
   `grove-payload/1` header line and a clone-token line, read only by the `source` task).
@@ -86,14 +86,18 @@ Every rendered job:
   every other pool. `fleet.yaml`'s optional `pools[].runnerImage` selects that pool's fixed outer
   image; it defaults to `ghcr.io/gm2211/grove-runner:latest`.
 
-### Why the image isn't just `image = "${NOMAD_META_image}"`
+### Which image a build's `main` task runs
 
-Nomad's docker driver does not support interpolating its `image` config field from dispatch-time
-meta ([hashicorp/nomad#6247](https://github.com/hashicorp/nomad/issues/6247) — confirmed still
-open); `${NOMAD_META_x}` only resolves reliably in fields like `args`/`env`, not `image`. So the
-outer container is always the pool's registered `runnerImage`, and the `image` meta is ignored on
-every pool. No job ever gets the VM's docker socket: it would give the job root on the guest, past
-the fence that keeps jobs off home networks (see docs/JOBS.md).
+build.nomad.hcl's `main` task has `image = "${NOMAD_META_task_image}"` (Nomad interpolates
+`NOMAD_META_*` in the docker `image` field; hashicorp/nomad#6247 is closed), with
+`entrypoint = ["/bin/bash"]`, `user = "root"` and `image_pull_timeout = "15m"`. grove ALWAYS sets
+`task_image` on a build dispatch: the job's validated, allowlisted, digest-pinned
+`environment.image`, else the pool's `runnerImage`. The `source` task, which holds the clone token,
+stays on `{{.RunnerImage}}`. The other kinds still run the pool's fixed `runnerImage`; they list
+`task_image` in `meta_optional` for symmetry and ignore it. The legacy `image` meta is accepted
+and ignored; grove no longer sets it. No job gets the VM's docker socket: it would give the job
+root on the guest, past the fence that keeps jobs off home networks. See docs/JOBS.md "Job
+environments".
 
 ### kind differences
 

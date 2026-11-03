@@ -44,6 +44,10 @@ type PoolConfig struct {
 	// Fallback is the pool this pool's jobs move to when none of its nodes can place them (see
 	// fleet.Spec.FallbackFor), or "" to keep them waiting here.
 	Fallback string
+	// AllowedImages is fleet.yaml `environments.allow` for this pool: exact repositories or
+	// prefixes ending in "/" a job's Environment.Image may come from (see
+	// ValidateEnvironmentImage). Empty means the pool accepts no environment.
+	AllowedImages []string
 }
 
 // templateData is what a nomad/jobs/<kind>.nomad.hcl template is rendered with — see

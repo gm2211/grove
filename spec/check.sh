@@ -100,7 +100,7 @@ total=$(python3 -B -c 'import importlib.util,sys; s=importlib.util.spec_from_fil
 row S1 mutants "old bugs caught by conformance" "$total/$total" "$killed/$total"
 [ "$killed" = "$total" ] || fail=1
 
-# grove.spec: the 20 properties as Specify behaviors. Its formal links (Quint invariants by seeded
+# grove.spec: the 21 properties as Specify behaviors. Its formal links (Quint invariants by seeded
 # simulation, Lean theorems) must all pass; temporal properties stay with the TLC rows above.
 if [ -n "${SPECIFY:-}" ]; then
 	out=$(cd "$spec/.." && LEAN_PATH="$spec/lean/.lake/build/lib/lean" "$SPECIFY" formal check \
@@ -110,7 +110,7 @@ if [ -n "${SPECIFY:-}" ]; then
 	[ "$got" = 18/18 ] || fail=1
 fi
 
-# grove.spec: the 20 properties as Specify behaviors. Its formal links (Quint invariants by seeded
+# grove.spec: the 21 properties as Specify behaviors. Its formal links (Quint invariants by seeded
 # simulation, Lean theorems) must all pass; temporal properties stay with the TLC rows above.
 if [ -n "${SPECIFY:-}" ]; then
 	out=$(cd "$spec/.." && LEAN_PATH="$spec/lean/.lake/build/lib/lean" "$SPECIFY" formal check \

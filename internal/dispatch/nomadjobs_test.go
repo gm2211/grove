@@ -90,7 +90,7 @@ func TestEnsureJobs_RendersDefaultAndCustomRunnerImages(t *testing.T) {
 		t.Fatalf("registered %d jobs, want %d", len(nc.registerCalls), len(allKinds))
 	}
 	for _, hcl := range nc.registerCalls {
-		if !strings.Contains(hcl, `image   = "`+custom+`"`) || !strings.Contains(hcl, `DEFAULT_IMAGE="`+custom+`"`) {
+		if !strings.Contains(hcl, `image   = "`+custom+`"`) {
 			t.Errorf("custom runner image missing from rendered job:\n%s", hcl)
 		}
 	}
