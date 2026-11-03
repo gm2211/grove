@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/gm2211/grove/internal/config"
 )
 
@@ -49,14 +51,52 @@ const rootlessLost = `  - No VM firewall (host-firewall): VMs on this Mac are no
 
 // applyRootlessConfig turns Rootless on for an install of a worker that config.yaml records as
 // rootless, so re-runs stay rootless without the flag. --rootless=false (NoAutoRootless) wins.
-func applyRootlessConfig(opts Options) Options {
+func applyRootlessConfig(opts Options) (Options, error) {
 	if opts.Rootless || opts.NoAutoRootless {
-		return opts
+		return opts, nil
 	}
-	if cfg, err := config.LoadFrom(configFilePath(opts)); err == nil && cfg.Worker.Rootless {
+	path := configFilePath(opts)
+	cfg, err := config.LoadFrom(path)
+	switch {
+	case errors.Is(err, config.ErrNotFound):
+		return opts, nil
+	case err != nil:
+		// Unreadable is not "not rootless": guessing wrong would install the wrong shape.
+		return opts, fmt.Errorf("read %s to learn whether this worker is rootless: %w", path, err)
+	}
+	if cfg.Worker.Rootless {
 		opts.Rootless = true
 	}
-	return opts
+	return opts, nil
+}
+
+// noConfigMarker is what WorkerRootless's shell prints when the user has no config.yaml.
+const noConfigMarker = "GROVE_NO_CONFIG"
+
+// WorkerRootless reads whether opts.User's worker is recorded as rootless in that user's
+// config.yaml, as that user (`sudo -n -u`): an admin cannot read it, the home is mode 750. A
+// missing file is "not rootless"; a file that cannot be read or parsed is an error.
+func WorkerRootless(ctx context.Context, r Runner, opts Options) (bool, error) {
+	user, err := opts.workerUser()
+	if err != nil {
+		return false, err
+	}
+	path := configFilePath(opts)
+	stdout, stderr, err := r.Run(ctx, "/usr/bin/sudo", "-n", "-u", user, "/bin/sh", "-c",
+		`if [ -e "$1" ]; then exec /bin/cat -- "$1"; fi; echo `+noConfigMarker, "sh", path)
+	if err != nil {
+		return false, fmt.Errorf("read %s's %s through sudo: %w %s", user, path, err, strings.TrimSpace(stderr))
+	}
+	if strings.TrimSpace(stdout) == noConfigMarker {
+		return false, nil
+	}
+	var cfg struct {
+		Worker config.WorkerConfig `yaml:"worker"`
+	}
+	if err := yaml.Unmarshal([]byte(stdout), &cfg); err != nil {
+		return false, fmt.Errorf("parse %s's %s: %w", user, path, err)
+	}
+	return cfg.Worker.Rootless, nil
 }
 
 // AutoRootless decides whether `grove install --role worker` should be rootless without being

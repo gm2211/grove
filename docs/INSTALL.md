@@ -189,13 +189,41 @@ grove recognises this failure and retries such a VM once an hour instead of ever
    Homebrew's owner, then re-run setup. A registry login also cannot reach `argos`'s Keychain; setup
    warns and keeps the login in `credentials/registry`, which is all the worker needs.
 
-   Without an admin at hand you can still do it the long way: `su - argos`, `grove setup --server
+   `grove setup --user` learns whether `argos`'s worker is rootless from `argos`'s own
+   `config.yaml` (read as `argos`, since its home is not readable by the admin), so a rootless
+   worker is never given root LaunchDaemons. If that file can't be read, setup fails instead of
+   guessing.
+
+   From `argos`'s own account, with the admin's password at hand, `--admin` finishes the root steps
+   in one re-runnable command (see "Finishing the root steps from the worker account" below).
+   Without any admin at hand you can still do it the long way: `su - argos`, `grove setup --server
    ...`; `argos` cannot use `sudo`, so setup prints the root steps as one block for an admin to
    paste, and then `grove setup` runs again as `argos`.
 3. Setup does not store this device's dispatch credential for `argos` (there is no Keychain to put
    it in from `sudo -u` or `su -`). That is expected; the worker is unaffected. Run `grove setup`
    once from a login session of that user if you also want to use `grove ui` or dispatch jobs as
    it.
+
+#### Finishing the root steps from the worker account (`--admin`)
+
+When the worker's user is a standard user (`argos`) and the admin account (say `gm2211`) can't be
+reached directly, `--admin` runs the pending root steps through the admin account, from the worker
+user's own session. Over ssh, use `-t` so the password prompts have a terminal:
+
+```bash
+ssh -t argos@<mac> grove install --role worker --admin gm2211
+```
+
+grove plans as usual, renders the root script from the live checks (the same script `--no-sudo`
+would print), and pipes it to `su gm2211 -c '/usr/bin/sudo /bin/sh -e'`. `su` and then `sudo` ask
+for `gm2211`'s password on the terminal. The plan then runs once more in the same invocation, so
+steps that waited for the root ones (`worker-agents` after `retire-worker-daemons`) apply
+immediately. Nothing is asked when no root step is pending, and the command is safe to re-run any
+time: the script is rendered fresh, never a stale copy. The account must exist and be in the
+`admin` group, and `--admin` excludes `--no-sudo`; without a terminal it fails and says so.
+`grove setup --admin <account>` works the same way. Printing the block (`--no-sudo`, or an account
+that can't use `--admin`) stays as the fallback. The admin account is not remembered; pass it each
+time.
 
 #### A worker with no root (`--rootless`)
 
@@ -223,7 +251,7 @@ re-runs rootless. `--rootless=false` keeps the root-based install, and clears th
 **Switching an existing root worker to rootless.** Run `grove install --role worker --rootless --firewall`
 as the worker's user. The plan adds one root step, `retire-worker-daemons`, which removes the root
 `com.grove.orchard-worker` and `com.grove.broker` LaunchDaemons (the `com.grove.pf-vm` firewall stays);
-an admin runs the block it prints once. Until then `worker-agents` loads nothing, so no second worker
+an admin runs the block it prints once (or pass `--admin <account>` and grove runs it itself and loads the agents in the same run). Until then `worker-agents` loads nothing, so no second worker
 starts. Then re-run the same command: it loads the LaunchAgents. `pmset disablesleep` from the root
 install is left as it was; the caffeinate agent is installed as usual.
 
@@ -357,6 +385,7 @@ manually provisioned environments.
 | `--softnet` | also install Softnet and add its one-time root step (worker role; only for Macs that run `network: isolated` pools, see [OPERATIONS.md](OPERATIONS.md#isolating-a-pools-network)) |
 | `--yes` | run the root steps through sudo without asking (needs a terminal, or cached sudo credentials); as root, apply them directly |
 | `--no-sudo` | never run sudo; print the root steps as one block for an admin |
+| `--admin` | admin account to run the root steps through (`su <admin>` then sudo, passwords on the terminal; over ssh use `ssh -t`); excludes `--no-sudo`. See [Finishing the root steps](#finishing-the-root-steps-from-the-worker-account---admin) |
 | `--firewall` | with a rootless worker, still install the VM firewall (`host-firewall`): one root step for an admin, the worker stays LaunchAgents |
 | `--rootless` | install the worker with no root at all: per-user LaunchAgents, a caffeinate keep-awake agent, no VM firewall (worker role; chosen automatically for a user who isn't an admin; `--rootless=false` keeps the root-based install; see [A worker with no root](#a-worker-with-no-root---rootless)) |
 | `--dry-run` | print the whole plan, change nothing |

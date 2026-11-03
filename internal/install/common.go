@@ -38,7 +38,10 @@ func BuildPlan(r Runner, opts Options, out io.Writer) ([]Step, error) {
 		if opts.Controller == "" {
 			return nil, errors.New("this Mac has no worker installed yet, so it needs --controller and --token; `grove setup` supplies both when it joins")
 		}
-		opts = applyRootlessConfig(opts)
+		var cfgErr error
+		if opts, cfgErr = applyRootlessConfig(opts); cfgErr != nil {
+			return nil, cfgErr
+		}
 		steps = append(steps, buildWorkerSteps(r, opts, out)...)
 	case RoleControlPlane:
 		steps = append(steps, buildControlPlaneSteps(r, opts, out)...)

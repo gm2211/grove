@@ -27,6 +27,7 @@ import (
 var setupServer string
 var setupRegistryUser string
 var setupYes bool
+var setupAdmin string
 var setupNoSudo bool
 var setupRootless bool
 var setupUser string
@@ -57,6 +58,7 @@ func init() {
 	setupCmd.Flags().StringVar(&setupServer, "server", "", "Grove server URL; normally discovered over Tailscale")
 	setupCmd.Flags().BoolVar(&setupYes, "yes", false, "join the discovered control plane without asking, when exactly one answers (several always need --server), and run the root steps through sudo without asking")
 	setupCmd.Flags().BoolVar(&setupNoSudo, "no-sudo", false, "never run sudo; print the root steps for an admin")
+	setupCmd.Flags().StringVar(&setupAdmin, "admin", "", "admin account to run the root steps through (`su <admin>` then sudo), for an account with no sudo; excludes --no-sudo and --user. Over ssh use `ssh -t`")
 	setupCmd.Flags().BoolVar(&setupRootless, "rootless", false, "install the worker with no root, as this user's own LaunchAgents (chosen automatically for a user who isn't an admin; --rootless=false keeps the root-based install; see docs/INSTALL.md)")
 	setupCmd.Flags().StringVar(&setupRegistryUser, "registry-user", "", "registry username; password/PAT is read from GROVE_REGISTRY_TOKEN")
 	setupCmd.Flags().StringVar(&setupUser, "user", "", "run from an admin account: set this Mac up as a worker that runs as this (standard) user, with one sudo password prompt and no `su`")
@@ -82,6 +84,12 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	}
 	if runtimeOS() != "darwin" {
 		return errors.New("`grove setup` currently joins Apple Silicon worker Macs; use `grove install --role control-plane` to create a control plane")
+	}
+	if err := checkAdminFlag(setupAdmin, setupNoSudo); err != nil {
+		return err
+	}
+	if setupAdmin != "" && setupUser != "" {
+		return errors.New("--admin is for the worker account that has no sudo; --user already runs from an admin account, drop --admin")
 	}
 	r := install.ExecRunner{}
 	var target *workerTarget
@@ -170,7 +178,7 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	if result.BrokerToken == "" {
 		fmt.Fprintln(cmd.ErrOrStderr(), "warning: the control plane sent no broker credential, so jobs on this Mac can't use credentials yet. Update Grove on the control plane, then run `grove setup` here again.")
 	}
-	rootOutcome, err := applyInstall(cmd, opts, false, setupYes, setupNoSudo)
+	rootOutcome, err := applyInstall(cmd, opts, false, setupYes, setupNoSudo, setupAdmin)
 	if err != nil {
 		return err
 	}

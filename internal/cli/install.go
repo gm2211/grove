@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -24,6 +25,7 @@ var installFlags struct {
 	force         bool
 	yes           bool
 	noSudo        bool
+	admin         string
 	rootless      bool
 	firewall      bool
 	dryRun        bool
@@ -80,6 +82,7 @@ func init() {
 	installCmd.Flags().BoolVar(&installFlags.force, "force", false, "rename a worker on a host that is not the control plane: print the fleet.yaml change it needs instead of refusing (worker role)")
 	installCmd.Flags().BoolVar(&installFlags.yes, "yes", false, "run the root steps through sudo without asking (or, as root, apply them directly)")
 	installCmd.Flags().BoolVar(&installFlags.noSudo, "no-sudo", false, "never run sudo; print the root steps for an admin")
+	installCmd.Flags().StringVar(&installFlags.admin, "admin", "", "admin account to run the root steps through (`su <admin>` then sudo; asks for its password on the terminal), for a worker account that has no sudo; excludes --no-sudo. Over ssh use `ssh -t`")
 	installCmd.Flags().BoolVar(&installFlags.firewall, "firewall", false, "with a rootless worker, still install the VM firewall (host-firewall): its one root step is run or printed for an admin, and the worker stays LaunchAgents")
 	installCmd.Flags().BoolVar(&installFlags.rootless, "rootless", false, "install the worker with no root: per-user LaunchAgents, a caffeinate keep-awake agent, no VM firewall (worker role; chosen automatically for a user who isn't an admin; --rootless=false keeps the root-based install)")
 	installCmd.Flags().BoolVar(&installFlags.dryRun, "dry-run", false, "print the plan; change nothing")
@@ -95,6 +98,9 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--role must be %q, %q or %q (got %q)", install.RoleWorker, install.RoleControlPlane, install.RoleClient, installFlags.role)
 	}
 
+	if err := checkAdminFlag(installFlags.admin, installFlags.noSudo); err != nil {
+		return err
+	}
 	registryToken := installFlags.registryToken
 	if registryToken == "" {
 		// Falling back to the environment lets the token skip shell history/process-listing
@@ -121,8 +127,16 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	opts.Rootless, opts.NoAutoRootless = rootlessFlag(cmd, installFlags.rootless)
 	opts = withControlPlaneBrokerToken(cmd.Context(), opts, installFlags.dryRun, cmd.ErrOrStderr())
 
-	_, err := applyInstall(cmd, opts, installFlags.dryRun, installFlags.yes, installFlags.noSudo)
+	_, err := applyInstall(cmd, opts, installFlags.dryRun, installFlags.yes, installFlags.noSudo, installFlags.admin)
 	return err
+}
+
+// checkAdminFlag rejects --admin together with --no-sudo.
+func checkAdminFlag(admin string, noSudo bool) error {
+	if admin != "" && noSudo {
+		return errors.New("--admin and --no-sudo exclude each other: --admin runs the root steps, --no-sudo only prints them")
+	}
+	return nil
 }
 
 // rootlessFlag turns --rootless into the install options: --rootless asks for it, --rootless=false
@@ -134,48 +148,31 @@ func rootlessFlag(cmd *cobra.Command, rootless bool) (on, off bool) {
 	return false, false
 }
 
-// applyInstall runs the role's plan, then the privileged steps it left (root script, one sudo).
-// The outcome says whether those ran, or were printed for an admin and are still to do.
-func applyInstall(cmd *cobra.Command, opts install.Options, dryRun, yes, noSudo bool) (install.RootOutcome, error) {
+// applyInstall runs the role's plan, then the privileged steps it left (root script, one sudo, or
+// through the admin account's su + sudo). The outcome says whether those ran, or were printed for
+// an admin and are still to do. After root steps ran through admin, the plan runs once more in
+// this same invocation, so steps that waited for them (worker-agents after retire-worker-daemons)
+// apply without a re-run.
+func applyInstall(cmd *cobra.Command, opts install.Options, dryRun, yes, noSudo bool, admin string) (install.RootOutcome, error) {
 	out := cmd.OutOrStdout()
 	runner := install.ExecRunner{}
 	if opts.Role == install.RoleWorker && install.AutoRootless(cmd.Context(), runner, opts, out) {
 		opts.Rootless = true
 	}
-	steps, results, err := runInstallPlan(cmd, runner, opts, dryRun, yes)
+	ro := install.RootOptions{
+		Interactive: stdinIsTerminal(),
+		Yes:         yes,
+		NoSudo:      noSudo,
+		Admin:       admin,
+		In:          cmd.InOrStdin(),
+		Out:         out,
+	}
+	plan := func(dry bool) ([]install.Step, []install.StepResult, error) {
+		return runInstallPlan(cmd, runner, opts, dry, yes)
+	}
+	outcome, err := driveInstall(cmd, runner, plan, string(opts.Role), dryRun, ro)
 	if err != nil {
-		return install.RootNone, err
-	}
-	needed := false
-	for _, res := range results {
-		needed = needed || res.Needed
-	}
-	if !dryRun && !needed {
-		fmt.Fprintf(out, "\nnothing to change: %s is already up to date; nothing was touched or restarted.\n", opts.Role)
-	}
-	outcome := install.RootNone
-	if !dryRun {
-		var rootSteps []install.Step
-		for _, res := range results {
-			if !res.Skipped {
-				continue
-			}
-			for _, s := range steps {
-				if s.Name == res.Step && s.Privileged {
-					rootSteps = append(rootSteps, s)
-				}
-			}
-		}
-		outcome, err = install.RunRootSteps(cmd.Context(), runner, rootSteps, install.RootOptions{
-			Interactive: stdinIsTerminal(),
-			Yes:         yes,
-			NoSudo:      noSudo,
-			In:          cmd.InOrStdin(),
-			Out:         out,
-		})
-		if err != nil {
-			return outcome, fmt.Errorf("install: %w", err)
-		}
+		return outcome, err
 	}
 	if outcome == install.RootPrinted {
 		return outcome, nil
@@ -189,6 +186,57 @@ func applyInstall(cmd *cobra.Command, opts install.Options, dryRun, yes, noSudo 
 	}
 	fmt.Fprintln(out, "\nrun `grove doctor` to verify.")
 	return outcome, nil
+}
+
+// driveInstall runs plan, then the privileged steps it left, and (when those ran through an admin
+// account) plan once more.
+func driveInstall(cmd *cobra.Command, runner install.Runner, plan func(dryRun bool) ([]install.Step, []install.StepResult, error), role string, dryRun bool, ro install.RootOptions) (install.RootOutcome, error) {
+	out := ro.Out
+	steps, results, err := plan(dryRun)
+	if err != nil {
+		return install.RootNone, err
+	}
+	needed := false
+	for _, res := range results {
+		needed = needed || res.Needed
+	}
+	if !dryRun && !needed {
+		fmt.Fprintf(out, "\nnothing to change: %s is already up to date; nothing was touched or restarted.\n", role)
+	}
+	if dryRun {
+		return install.RootNone, nil
+	}
+	outcome, err := runPendingRoot(cmd, runner, steps, results, ro)
+	if err != nil {
+		return outcome, fmt.Errorf("install: %w", err)
+	}
+	if outcome == install.RootRan && ro.Admin != "" {
+		fmt.Fprintf(out, "\nroot steps done; running the plan again for what waited on them.\n")
+		steps, results, err = plan(false)
+		if err != nil {
+			return outcome, err
+		}
+		if _, err = runPendingRoot(cmd, runner, steps, results, ro); err != nil {
+			return outcome, fmt.Errorf("install: %w", err)
+		}
+	}
+	return outcome, nil
+}
+
+// runPendingRoot runs the privileged steps a plan run left (RunPlan marked them Skipped).
+func runPendingRoot(cmd *cobra.Command, runner install.Runner, steps []install.Step, results []install.StepResult, ro install.RootOptions) (install.RootOutcome, error) {
+	var rootSteps []install.Step
+	for _, res := range results {
+		if !res.Skipped {
+			continue
+		}
+		for _, s := range steps {
+			if s.Name == res.Step && s.Privileged {
+				rootSteps = append(rootSteps, s)
+			}
+		}
+	}
+	return install.RunRootSteps(cmd.Context(), runner, rootSteps, ro)
 }
 
 // runInstallPlan builds the role's plan and runs it, leaving the privileged steps (listed [root])
