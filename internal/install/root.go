@@ -31,7 +31,7 @@ type RootOptions struct {
 	// sudo read <Admin>'s password from /dev/tty). Excludes NoSudo.
 	Admin string
 	In    io.Reader
-	Out    io.Writer
+	Out   io.Writer
 }
 
 // RootOutcome is what RunRootSteps did with the root steps.
