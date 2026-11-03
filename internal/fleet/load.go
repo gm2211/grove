@@ -100,6 +100,15 @@ func (s *Spec) Validate() error {
 			}
 		}
 
+		if p.Toolchains != nil {
+			if !p.MacOS() {
+				return fmt.Errorf("pool %q: toolchains is only supported on the macOS pool (Linux pools use environments)", p.Name)
+			}
+			if p.Isolated() {
+				return fmt.Errorf("pool %q: toolchains is not supported on a sealed pool", p.Name)
+			}
+		}
+
 		if p.HostXcode != nil {
 			if p.Name != "macos" {
 				return fmt.Errorf("pool %q: hostXcode is only supported for the macos pool", p.Name)

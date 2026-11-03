@@ -263,6 +263,11 @@ func validate(req JobRequest) error {
 	if req.Environment != nil && req.Kind != KindBuild {
 		return fmt.Errorf("dispatch: environment is only supported for kind %q", KindBuild)
 	}
+	if req.Environment != nil {
+		if err := ValidateToolchain(req.Environment.Toolchain); err != nil {
+			return fmt.Errorf("dispatch: %w", err)
+		}
+	}
 	seen := make(map[string]struct{}, len(req.Secrets))
 	for _, name := range req.Secrets {
 		if !envKeyPattern.MatchString(name) {
@@ -330,22 +335,34 @@ func artifactPrefix(id string) string {
 
 // taskImage is the image a build job's main task runs in ("" for the other kinds, whose
 // templates don't take one): req.Environment once the pool allows it, else the pool's runner
-// image. It refuses an environment on a pool that can't honour it.
+// image. It refuses an environment on a pool that can't honour it. A shared macOS pool with
+// toolchains enabled accepts an environment that carries a toolchain and runs it natively, with
+// the pool's runner image as task_image (its template ignores it) and whatever Image says ignored.
 func (s *service) taskImage(req JobRequest) (string, error) {
 	pc := s.pools[req.Pool]
-	if req.Environment != nil {
+	if env := req.Environment; env != nil {
 		switch {
 		case pc.Isolated:
 			return "", fmt.Errorf("dispatch: pool %s is sealed and does not support job environments", req.Pool)
 		case pc.OS == "darwin":
-			return "", fmt.Errorf("dispatch: pool %s is macOS and does not support job environments", req.Pool)
+			if env.Toolchain == nil || !pc.Toolchains {
+				return "", fmt.Errorf("dispatch: pool %s is macOS and accepts a job environment only with a toolchain, on a pool with toolchains enabled", req.Pool)
+			}
+			if len(env.Image) > maxImageRef {
+				return "", fmt.Errorf("dispatch: environment image exceeds %d bytes", maxImageRef)
+			}
+			image, err := RunnerImageOrDefault(pc.RunnerImage)
+			if err != nil {
+				return "", fmt.Errorf("dispatch: pool %s runner image: %w", req.Pool, err)
+			}
+			return image, nil
 		case len(pc.AllowedImages) == 0:
 			return "", fmt.Errorf("dispatch: pool %s has no environments.allow in fleet.yaml, so it accepts no job environment", req.Pool)
 		}
-		if err := ValidateEnvironmentImage(req.Environment.Image, pc.AllowedImages); err != nil {
+		if err := ValidateEnvironmentImage(env.Image, pc.AllowedImages); err != nil {
 			return "", fmt.Errorf("dispatch: %w", err)
 		}
-		return req.Environment.Image, nil
+		return env.Image, nil
 	}
 	if req.Kind != KindBuild {
 		return "", nil
@@ -448,6 +465,12 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	// grove_meta_json). build.nomad.hcl interpolates it and fails closed when it is missing.
 	if taskImage != "" {
 		meta["task_image"] = taskImage
+	}
+	// The toolchain a worker installs is the validated one, re-marshalled here and only here:
+	// never the caller's bytes, and never anything from Meta. The hash is derived from it.
+	if req.Environment != nil && req.Environment.Toolchain != nil {
+		meta["toolchain_json"] = req.Environment.Toolchain.canonical()
+		meta["toolchain_hash"] = req.Environment.Toolchain.hash()
 	}
 
 	name := jobName(req.Kind, req.Pool)

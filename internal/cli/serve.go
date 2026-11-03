@@ -557,6 +557,7 @@ func poolConfigs(cfg *config.Config) ([]dispatch.PoolConfig, error) {
 		if p.Environments != nil {
 			pc.AllowedImages = p.Environments.Allow
 		}
+		pc.Toolchains = p.Toolchains != nil && p.Toolchains.Enabled
 		pools = append(pools, pc)
 	}
 	return pools, nil

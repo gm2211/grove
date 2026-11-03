@@ -20,8 +20,8 @@ func TestHealthz_OK(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)
 	}
-	if len(out.Features) != 1 || out.Features[0] != "environment" {
-		t.Errorf("features = %v, want [environment]", out.Features)
+	if len(out.Features) != 2 || out.Features[0] != "environment" || out.Features[1] != "toolchain" {
+		t.Errorf("features = %v, want [environment toolchain]", out.Features)
 	}
 }
 

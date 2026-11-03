@@ -56,6 +56,9 @@ type Pool struct {
 	// Environments lets this pool's build jobs name the image they run in (JobRequest.Environment).
 	// Unset, a job gets only RunnerImage. Not for macOS or sealed pools.
 	Environments *PoolEnvironments `yaml:"environments,omitempty" json:"environments,omitempty"`
+	// Toolchains lets a job's native toolchain (JobRequest.Environment.Toolchain) run on this pool,
+	// and lets such a job fall back to it from a Linux pool. Only for the shared macOS pool.
+	Toolchains *PoolToolchains `yaml:"toolchains,omitempty" json:"toolchains,omitempty"`
 	// HostXcode shares one host-installed Xcode application read-only with guests in this pool.
 	// It is intentionally limited to the macos pool and pinned to the host app's build version.
 	HostXcode *HostXcodeConfig `yaml:"hostXcode,omitempty" json:"hostXcode,omitempty"`
@@ -88,6 +91,11 @@ type PoolEnvironments struct {
 	// ("ghcr.io/acme/builder") or a prefix ending in "/" ("ghcr.io/acme/"), each with an explicit
 	// registry host. The job still has to pin its image by digest.
 	Allow []string `yaml:"allow,omitempty" json:"allow,omitempty"`
+}
+
+// PoolToolchains is Pool.Toolchains.
+type PoolToolchains struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
 }
 
 // Bounds is how many of p's VMs each matching worker runs: at least min, at most max.

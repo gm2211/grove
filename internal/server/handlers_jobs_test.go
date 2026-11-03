@@ -155,6 +155,41 @@ func TestPostJobs_EnvironmentIsDecodedAndRefusalIs400(t *testing.T) {
 	}
 }
 
+// TestPostJobs_ToolchainIsDecodedAndRefusalIs400: the wire form of Environment.Toolchain reaches
+// dispatch, its refusal is a 400, and an unknown tool never reaches dispatch at all.
+func TestPostJobs_ToolchainIsDecodedAndRefusalIs400(t *testing.T) {
+	refusal := dispatch.ValidateToolchain(&dispatch.Toolchain{Node: &dispatch.ToolVersion{Version: "22"}})
+	if refusal == nil {
+		t.Fatal("a major-only node version must be refused")
+	}
+	post := func(srv http.Handler, toolchain string) *httptest.ResponseRecorder {
+		body := `{"kind":"build","pool":"macos","repo":"https://github.com/x/y","script":"x","environment":{"toolchain":` + toolchain + `}}`
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(body)))
+		return rec
+	}
+	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{}, submitErr: refusal}
+	srv := newTestServer(nil, nil, ds, Options{InsecureNoAuth: true})
+	if rec := post(srv, `{"node":{"version":"22"},"rust":{"version":"1.99.1","components":["clippy"]}}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", rec.Code, rec.Body.String())
+	}
+	if len(ds.submitCalls) != 1 {
+		t.Fatalf("submit calls = %d", len(ds.submitCalls))
+	}
+	tc := ds.submitCalls[0].Environment.Toolchain
+	if tc == nil || tc.Node == nil || tc.Node.Version != "22" || tc.Rust == nil || tc.Rust.Components[0] != "clippy" {
+		t.Fatalf("toolchain did not reach dispatch: %+v", tc)
+	}
+	for _, bad := range []string{`{"go":{"version":"1.22.0"}}`, `{"rust":{"version":"1.99.1","channel":"nightly"}}`} {
+		if rec := post(srv, bad); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", bad, rec.Code)
+		}
+	}
+	if len(ds.submitCalls) != 1 {
+		t.Errorf("a request with an unknown tool reached dispatch")
+	}
+}
+
 func TestGetJob(t *testing.T) {
 	job := &dispatch.Job{ID: "job-1", Status: dispatch.StatusRunning}
 	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{"job-1": job}}
