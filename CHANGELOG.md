@@ -23,6 +23,19 @@ All notable changes to grove are documented here.
 - **Security: a caller's `meta.image` no longer reaches Nomad.** It used to be copied into the
   dispatch meta (ignored by the templates, but a trap for any template that read it). Caller meta
   now only round-trips in `grove_meta_json`.
+- **Linux VMs no longer restart the moment their startup script finishes.** Orchard runs a startup
+  script by typing `set -e`, the script and `exit` into a login shell. On that exit, bash runs
+  `~/.bash_logout`, whose `clear_console` fails without a terminal on Ubuntu, and with `-e` still
+  on, every Linux script that got to its end exited 1. With Nomad mTLS, the script only gets to its
+  end once the VM is enrolled, so each enrolment was followed within two seconds by a "failed"
+  VM, an Orchard restart onto a fresh clone (no certificate, no key), a 30-minute wait and,
+  after three of those, a rebuild: no Linux node ever registered. The generated script now ends
+  with `set +e` on Linux guests. Their startup script changes, so every Linux VM is recreated once.
+- **`grove serve` logs its version when it starts** (`grove serve: listening … version=…`). A
+  control plane that had a new binary installed but kept running an older `grove serve` (which
+  enrolled a VM restarted by Orchard only 30 minutes later, not on the next tick) looked the same
+  as an upgraded one. Re-run `grove install --role control-plane` after upgrading, which restarts
+  it, or restart the service yourself (docs/OPERATIONS.md "Upgrading").
 
 ## v0.1.32
 

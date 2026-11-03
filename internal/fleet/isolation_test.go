@@ -262,7 +262,8 @@ func TestBuildStartupScript_Isolated(t *testing.T) {
 
 	pool := isolatedPool()
 	pool.StartupScript = "echo custom"
-	if script := buildStartupScript(pool, "mac1", "linux-mac1-0", Options{}); !strings.HasSuffix(script, "# --- pool.startupScript ---\necho custom\n") {
+	// Last but for the login-shell exit guard, which only turns errexit off once it has run.
+	if script := buildStartupScript(pool, "mac1", "linux-mac1-0", Options{}); !strings.HasSuffix(script, "# --- pool.startupScript ---\necho custom\n"+loginShellExitScript) {
 		t.Errorf("the pool's own startup script must run last:\n%s", script)
 	}
 }
