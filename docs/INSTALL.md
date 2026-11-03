@@ -220,6 +220,13 @@ re-runs rootless. `--rootless=false` keeps the root-based install, and clears th
 | `softnet-root` (with `--softnet`) | skipped: Softnet can't be made setuid root, so `network: isolated` pools can't run on this Mac |
 | the root script, one `sudo` | none: no sudo, no block, exit status 0 when everything succeeded |
 
+**Switching an existing root worker to rootless.** Run `grove install --role worker --rootless --firewall`
+as the worker's user. The plan adds one root step, `retire-worker-daemons`, which removes the root
+`com.grove.orchard-worker` and `com.grove.broker` LaunchDaemons (the `com.grove.pf-vm` firewall stays);
+an admin runs the block it prints once. Until then `worker-agents` loads nothing, so no second worker
+starts. Then re-run the same command: it loads the LaunchAgents. `pmset disablesleep` from the root
+install is left as it was; the caffeinate agent is installed as usual.
+
 `retire-launchagents` still removes the pieces of an earlier install (`run-worker.sh`,
 `worker-bootstrap`, extra plists) once the new agent runs, but never the agents this mode installed.
 `grove doctor` checks `worker-agent` and `keep-awake` instead of `worker-daemon`. Every plist uses

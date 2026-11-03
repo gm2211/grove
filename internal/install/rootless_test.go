@@ -497,3 +497,137 @@ func TestRootless_FirewallKeepsTheRootStepOnly(t *testing.T) {
 		t.Error("an installed firewall must stay in the rootless plan")
 	}
 }
+
+// rootDaemonsInstalled lays down the root install's worker and broker LaunchDaemons (and the VM
+// firewall's), as on a Mac switching from root to rootless.
+func (e *healEnv) rootDaemonsInstalled(opts Options) {
+	for _, d := range workerDaemons(opts) {
+		e.write(rootDaemonPlist(opts, d), "daemon", 0o644)
+	}
+	e.write(filepath.Join(opts.launchDaemonsDir(), "com.grove.pf-vm.plist"), "pf", 0o644)
+}
+
+func TestRootless_SwitchRetiresTheRootWorkerAndBrokerBeforeLoadingAgents(t *testing.T) {
+	e, opts := rootlessEnv(t)
+	opts.Firewall = true
+	e.rootDaemonsInstalled(opts)
+	scriptTailscaleUp(e.r)
+	scriptPinnedDownloads(e.r, opts)
+	var out bytes.Buffer
+	steps, err := BuildPlan(e.r, opts, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retire, agents := -1, -1
+	for i, s := range steps {
+		switch s.Name {
+		case "retire-worker-daemons":
+			retire = i
+		case "worker-agents":
+			agents = i
+		}
+	}
+	if retire < 0 || agents < 0 || retire > agents {
+		t.Fatalf("want retire-worker-daemons before worker-agents: %v", stepNames(steps))
+	}
+	if !steps[retire].Privileged {
+		t.Error("retire-worker-daemons must be a root step")
+	}
+	for _, want := range []string{"host-firewall-stage", "host-firewall"} {
+		if !hasStep(steps, want) {
+			t.Errorf("--firewall plan lacks %s: %v", want, stepNames(steps))
+		}
+	}
+	root, err := steps[retire].Root(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range workerDaemons(opts) {
+		for _, want := range []string{"/bin/launchctl bootout system/" + d.Label, "/bin/launchctl print system/" + d.Label, "/bin/rm -f '" + rootDaemonPlist(opts, d) + "'"} {
+			if !strings.Contains(root, want) {
+				t.Errorf("root script lacks %q:\n%s", want, root)
+			}
+		}
+	}
+	if strings.Contains(root, "pf-vm") || strings.Contains(root, "gui/") {
+		t.Errorf("root script must touch only the worker and broker daemons:\n%s", root)
+	}
+
+	results, err := RunPlan(context.Background(), steps, PlanOptions{Out: &out})
+	if err != nil {
+		t.Fatalf("a deferral is not a failure: %v\n%s", err, out.String())
+	}
+	if n := needed(results, "retire-worker-daemons", "worker-agents"); len(n) != 2 {
+		t.Errorf("both steps still needed until the admin block runs: %v", n)
+	}
+	if !strings.Contains(out.String(), "LaunchDaemons are still installed") {
+		t.Errorf("worker-agents should say why it waited:\n%s", out.String())
+	}
+	if countCalls(e.r, "launchctl bootstrap") != countCalls(e.r, "launchctl bootstrap gui/"+fmt.Sprint(os.Getuid())+" "+agentPlistPath(opts, keepAwakeLabel)) {
+		t.Errorf("no worker/broker agent may be loaded beside the daemons: %v", e.r.Calls)
+	}
+	for _, d := range workerDaemons(opts) {
+		if !e.gone(agentPlistPath(opts, d.Label)) {
+			t.Errorf("%s agent plist must not be written while the daemon exists", d.Label)
+		}
+	}
+
+	// The admin block runs: the two daemons are gone (pf-vm stays); the re-run loads the agents.
+	for _, d := range workerDaemons(opts) {
+		if err := os.Remove(rootDaemonPlist(opts, d)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if e.gone(filepath.Join(opts.launchDaemonsDir(), "com.grove.pf-vm.plist")) {
+		t.Fatal("test setup lost the firewall plist")
+	}
+	results, out2, err := e.install(opts)
+	if err != nil {
+		t.Fatalf("re-run: %v\n%s", err, out2)
+	}
+	if hasStepResult(results, "retire-worker-daemons") {
+		t.Errorf("no retire step once the daemons are gone:\n%s", out2)
+	}
+	for _, d := range workerDaemons(opts) {
+		if e.gone(agentPlistPath(opts, d.Label)) || callIndex(e.r, fmt.Sprintf("launchctl bootstrap gui/%d %s", os.Getuid(), agentPlistPath(opts, d.Label))) < 0 {
+			t.Errorf("re-run should load the %s agent", d.Label)
+		}
+	}
+}
+
+func hasStepResult(results []StepResult, name string) bool {
+	for _, r := range results {
+		if r.Step == name {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRootless_LoadedDaemonWithoutPlistStillNeedsRetiring(t *testing.T) {
+	e, opts := rootlessEnv(t)
+	d := workerDaemons(opts)[0]
+	e.r.Script("launchctl print system/"+d.Label, FakeResult{Stdout: "program = " + d.Program + "\n"})
+	scriptTailscaleUp(e.r)
+	scriptPinnedDownloads(e.r, opts)
+	steps, err := BuildPlan(e.r, opts, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasStep(steps, "retire-worker-daemons") {
+		t.Errorf("a label loaded in system/ needs retiring: %v", stepNames(steps))
+	}
+}
+
+func TestRootless_NoDaemonsMeansNoRetireStep(t *testing.T) {
+	e, opts := rootlessEnv(t)
+	scriptTailscaleUp(e.r)
+	scriptPinnedDownloads(e.r, opts)
+	steps, err := BuildPlan(e.r, opts, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasStep(steps, "retire-worker-daemons") {
+		t.Errorf("nothing to retire: %v", stepNames(steps))
+	}
+}
