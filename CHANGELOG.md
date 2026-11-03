@@ -4,6 +4,13 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **An enrolment counts only when the guest script itself confirms it.** Each enrolment exec now
+  carries a random nonce on stdin, and grove takes the exec as an enrolment only when the guest
+  prints `grove: enrolled <nonce>` as a line of its own. Before, matching the bare line was enough,
+  and the script's own source holds that line: an exec answered before the guest had booted came
+  back with the command echoed and exit 0, grove logged "enrolled", and the VM waited out its
+  30-minute enrolment timeout, was restarted, and did the same again, so no shared VM ever joined
+  Nomad. A false confirmation is now an error, retried on the next tick.
 - **A build job can name its environment.** `JobRequest.environment.image` runs a `build` job's
   script in a digest-pinned image (`<registry>/<repo>@sha256:...`, no tags) instead of the pool's
   runner image. The control plane decides: the pool must allow the repository in fleet.yaml
