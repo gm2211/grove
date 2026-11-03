@@ -4,6 +4,8 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+## v0.1.34
+
 - **Switching a root worker to `--rootless` retires its LaunchDaemons.** Before, `grove install
   --role worker --rootless` on a Mac whose worker and broker were root LaunchDaemons only loaded the
   LaunchAgents beside them, so two `orchard worker run` and two `grove broker` processes ran. The
