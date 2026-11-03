@@ -2,6 +2,16 @@
 
 All notable changes to grove are documented here.
 
+## Unreleased
+
+- **An enrolment counts only when the guest script itself confirms it.** Each enrolment exec now
+  carries a random nonce on stdin, and grove takes the exec as an enrolment only when the guest
+  prints `grove: enrolled <nonce>` as a line of its own. Before, matching the bare line was enough,
+  and the script's own source holds that line: an exec answered before the guest had booted came
+  back with the command echoed and exit 0, grove logged "enrolled", and the VM waited out its
+  30-minute enrolment timeout, was restarted, and did the same again, so no shared VM ever joined
+  Nomad. A false confirmation is now an error, retried on the next tick.
+
 ## v0.1.32
 
 - **The control plane's own worker gets a broker credential.** Workers elsewhere get one from join

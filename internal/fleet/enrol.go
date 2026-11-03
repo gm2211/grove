@@ -3,6 +3,8 @@ package fleet
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -239,9 +241,13 @@ func (r *Reconciler) enrolVM(ctx context.Context, state *EnrolState, vm orchard.
 		}
 	}
 
+	nonce, err := enrolNonce()
+	if err != nil {
+		return time.Time{}, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, enrolExecTimeout)
 	defer cancel()
-	payload := enrolPayload(token, cert)
+	payload := enrolPayload(nonce, token, cert)
 	session, err := r.Client.Exec(ctx, vm.Name, []string{"sudo", "-n", "/bin/sh", "-c", shQuote(enrolGuestScript)},
 		orchard.ExecOptions{Stdin: strings.NewReader(payload), Wait: enrolExecTimeout / 2})
 	if err != nil {
@@ -259,23 +265,49 @@ func (r *Reconciler) enrolVM(ctx context.Context, state *EnrolState, vm orchard.
 	if code != 0 {
 		return time.Time{}, fmt.Errorf("enrolment exited %d: %s", code, strings.TrimSpace(out.String()))
 	}
-	// Only the guest script's last line says the files are in place: an exec that reports 0
-	// without it ran somewhere else, or not at all.
-	if !strings.Contains(out.String(), enrolledLine) {
+	// Only the guest script's last line says the files are in place, and only with this
+	// enrolment's nonce, which travels on stdin alone: an exec that reports 0 without it ran
+	// somewhere else, or not at all. Matching the bare line was not enough: the script's own
+	// source holds it, so anything that echoed the command back (an exec answered before the
+	// guest had booted) passed for an enrolment, and the VM then waited out EnrolTimeout.
+	if !confirmsEnrolment(out.String(), nonce) {
 		return time.Time{}, fmt.Errorf("enrolment exited 0 without confirming: %q", strings.TrimSpace(out.String()))
 	}
 	return cert.NotAfter, nil
 }
 
-// enrolPayloadHeader starts what an enrolment exec reads on stdin: then the introduction token
-// line (empty for a renewal), then the certificate and key PEM.
-const enrolPayloadHeader = "grove-enrol/1"
+// enrolPayloadHeader starts what an enrolment exec reads on stdin: then the enrolment's nonce,
+// then the introduction token line (empty for a renewal), then the certificate and key PEM.
+const enrolPayloadHeader = "grove-enrol/2"
 
-// enrolledLine is what enrolGuestScript prints once the VM's files are in place.
+// enrolledLine is what enrolGuestScript prints, followed by a space and the enrolment's nonce,
+// once the VM's files are in place.
 const enrolledLine = "grove: enrolled"
 
-func enrolPayload(token string, cert pki.NodeCert) string {
-	return enrolPayloadHeader + "\n" + token + "\n" + cert.Cert + cert.Key
+func enrolPayload(nonce, token string, cert pki.NodeCert) string {
+	return enrolPayloadHeader + "\n" + nonce + "\n" + token + "\n" + cert.Cert + cert.Key
+}
+
+// enrolNonce is a fresh random value for one enrolment exec. It is not a secret: it only proves
+// that the guest script itself ran to its end, since nothing but stdin carries it.
+func enrolNonce() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("enrolment nonce: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+// confirmsEnrolment reports whether out has the guest script's last line for this nonce, as a
+// line of its own.
+func confirmsEnrolment(out, nonce string) bool {
+	want := enrolledLine + " " + nonce
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimRight(line, "\r") == want {
+			return true
+		}
+	}
+	return false
 }
 
 // enrolGuestScript runs as root in the VM (sudo -n, which logs its argv: there is nothing secret
@@ -297,6 +329,13 @@ if [ "$grove_header" != "` + enrolPayloadHeader + `" ]; then
   echo "grove: unknown enrolment payload" >&2
   exit 2
 fi
+IFS= read -r grove_nonce
+case "$grove_nonce" in
+  ""|*[!0-9a-f]*)
+    echo "grove: enrolment payload has no nonce" >&2
+    exit 2
+    ;;
+esac
 IFS= read -r grove_token
 mkdir -p "$grove_nomad_tls"
 chmod 0700 "$grove_nomad_tls"
@@ -320,5 +359,5 @@ if [ -f "$grove_nomad_tls/enrolled" ]; then
   pkill -HUP -x nomad || true
 fi
 touch "$grove_nomad_tls/enrolled"
-echo "` + enrolledLine + `"
+echo "` + enrolledLine + ` $grove_nonce"
 `
