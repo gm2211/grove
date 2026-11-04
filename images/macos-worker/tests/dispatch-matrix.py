@@ -101,6 +101,36 @@ try:
    assert job.get('allocId') and result['nomadDriver']=='raw_exec',result
    assert job.get('placement',{}).get('vmId')=='grove-matrix-'+MODE,result
    assert marker in logs,result
+  if MODE=='shared' or os.environ.get('GROVE_MATRIX_TOOLCHAIN'):
+   # Native toolchain: the control plane does not set toolchain_json yet, so dispatch the build job
+   # straight to Nomad with the canonical spec and its hash in meta, as the control plane will.
+   # Needs the guest's pinned mise and network; the installer runs as _grovetool in the source task.
+   import base64,hashlib
+   spec=json.dumps({'node':{'version':'22.11.0'}},separators=(',',':'),sort_keys=True)
+   spec_hash=hashlib.sha256(('grove-toolchain/1\n'+spec).encode()).hexdigest()
+   script='set -eu\ncommand -v node\nnode --version\ntest -n "$GROVE_TOOLCHAIN_DIR"\ncase "$(command -v node)" in /private/var/grove-toolchains/mise-*) echo GROVE_TOOLCHAIN_OK ;; *) echo "node is not the grove toolchain: $(command -v node)"; exit 1 ;; esac\nid -un\n'
+   payload=base64.b64encode(('grove-payload/1\n\n'+script).encode()).decode()
+   body=json.dumps({'Payload':payload,'Meta':{'requester':'dispatch-matrix','toolchain_json':spec,'toolchain_hash':spec_hash,'timeout_seconds':'1200'}}).encode()
+   request=urllib.request.Request('http://127.0.0.1:4646/v1/job/grove-build-macos/dispatch',data=body,method='POST',headers={'Content-Type':'application/json'})
+   with urllib.request.urlopen(request,timeout=30) as response: dispatched=json.load(response)['DispatchedJobID']
+   JOB_IDS.append(dispatched)
+   print('SUBMITTED '+json.dumps({'mode':MODE,'task':'toolchain','nomadJobID':dispatched}),flush=True)
+   deadline=time.monotonic()+1500
+   alloc_id=None
+   while time.monotonic()<deadline:
+    allocs=nomad('/v1/job/'+urllib.parse.quote(dispatched,safe='')+'/allocations')
+    if allocs and allocs[0]['ClientStatus'] in ('complete','failed','lost'): alloc_id=allocs[0]['ID']; break
+    time.sleep(3)
+   else: raise RuntimeError('Toolchain job did not terminate: '+dispatched)
+   def task_log(task,kind):
+    url='http://127.0.0.1:4646/v1/client/fs/logs/'+alloc_id+'?task='+task+'&type='+kind+'&plain=true&origin=start&offset=0'
+    with urllib.request.urlopen(url,timeout=30) as r: return r.read().decode(errors='replace')
+   logs=task_log('main','stdout')+task_log('main','stderr')
+   alloc=nomad('/v1/allocation/'+alloc_id)
+   result={'mode':MODE,'task':'toolchain','nomadJobID':dispatched,'allocID':alloc_id,'clientStatus':alloc['ClientStatus'],'logs':logs}
+   RESULTS.append(result)
+   print('RESULT '+json.dumps(result),flush=True)
+   assert alloc['ClientStatus']=='complete' and 'GROVE_TOOLCHAIN_OK' in logs and '_grovejob' in logs,result
   print('MATRIX_PASS '+MODE,flush=True)
 finally:
  cleanup()

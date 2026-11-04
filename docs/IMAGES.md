@@ -184,6 +184,22 @@ The image build remains a local Apple Silicon workflow; CI does not automaticall
 VMs. Review OS/tool updates and re-run acceptance before rebuilding. A pinned source checksum
 and build manifest are provenance controls, not a vulnerability scan or signed release.
 
+## Native toolchains (mise)
+
+The macOS image bakes one pinned [mise](https://mise.jdx.dev) release at `/usr/local/bin/mise`:
+a specific GitHub release asset, downloaded in the Packer template and checked against a pinned
+SHA-256 (`mise_version`, `mise_sha256`), not Homebrew's moving formula. It installs the rust, node
+and python toolchains a job's environment names (docs/OPERATIONS.md "Native toolchains on macOS");
+nothing else is installed system-wide for it. No `rustup` is baked: mise's rust backend uses
+rustup and fetches `rustup-init` itself when the `RUSTUP_HOME` it is given has none, and the
+installer always gives each toolchain entry its own. Brew's `node` and `python@3.12` stay for the
+image's own tooling and are not the job's toolchain. The installer, its user (`_grovetool`) and the
+cache directory are not in the image: the fleet startup script creates them on every boot.
+
+To bump mise: pick a release at least 72 hours old, take the macOS arm64 binary's hash from the
+release's `SHASUMS256.txt`, change both variables and rebuild. Cache entries are named after the
+mise version, so the new version never reuses an old entry.
+
 ## Size expectations
 
 Tart images are full macOS/Linux disk images, not layered containers — expect them to be large

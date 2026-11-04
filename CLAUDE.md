@@ -256,6 +256,19 @@ chosen by the control plane; the clone token runs only in the runner image or th
   `TestTaskImageInterpolationRealNomad` (real Nomad + docker, `GROVE_NOMAD_BIN`) proves the
   interpolation.
 
+## Native toolchains on macOS — keep it that way
+
+A job's environment may name a rust/node/python toolchain; a shared macOS VM installs it with its
+pinned mise (`internal/fleet/toolchain.go`, `nomad/jobs/build.nomad.hcl`).
+
+- The install runs only in the `source` task, as `_grovetool` (never root, never the job user), from
+  `/`, after the clone token's file and variables are gone, through the root-owned
+  `/usr/local/libexec/grove-toolchain`. The installer re-validates the spec and recomputes its hash;
+  the only `mise.toml` mise reads is the one it writes. Nothing a job controls reaches mise's config.
+- The result is read-only to the job: `run.sh` prepends a toolchain path to `PATH` only if it lies
+  inside the entry's directory. `_grovetool` stays in the pf fence and the SSH block.
+- `internal/fleet/toolchain_test.go` and `nomad/jobs/toolchain_test.go` assert it.
+
 ## Local socket (`server.socket`)
 
 `internal/server/localsock.go` lets a client on the control-plane Mac (Argos) reach the API

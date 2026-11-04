@@ -16,6 +16,11 @@ lean row expects the Xcode job to fail with exit 78 and the full-Xcode-required 
 rows verify returned allocation IDs, placement metadata, exit codes, and stdout/stderr. The
 scripts use the developer directory selected by worker startup, not an injected SDK override.
 
+The `shared` row (or any row with `GROVE_MATRIX_TOOLCHAIN=1`) also dispatches the build job straight to
+Nomad with `toolchain_json` and `toolchain_hash` set by hand (nothing in the control plane sets them
+yet): the source task must install node 22.11.0 with the guest's pinned mise as `_grovetool`, and the
+job, as `_grovejob`, must find that `node` on its PATH. It needs network.
+
 This does not exercise live Orchard placement, simulator boot, or signing. Packer separately
 runs `scripts/verify-nomad.sh` as a mandatory image-build gate, so a broken Nomad client cannot
 produce a successful image build.
