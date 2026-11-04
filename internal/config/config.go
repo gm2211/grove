@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gm2211/grove/internal/secfile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -49,19 +50,19 @@ type EnrollmentConfig struct {
 	// IssuerToken belongs to a control-plane-only Orchard account with the narrow
 	// service-account:issue-worker role. Grove uses it only after operator approval to mint one
 	// worker-scoped credential per enrolled Mac.
-	IssuerToken string `yaml:"issuerToken,omitempty"`
+	IssuerToken string `yaml:"issuerToken,omitempty" secret:"true"`
 }
 
 type TailscaleConfig struct {
 	// AuthKey is no longer used: no worker VM joins the tailnet. A shared VM reaches the control
 	// plane's Nomad through its host Mac's NAT, and a key in a VM's startup script was readable by
 	// anything that could list Orchard's VMs. Kept so existing config files still load.
-	AuthKey string `yaml:"authKey,omitempty"`
+	AuthKey string `yaml:"authKey,omitempty" secret:"true"`
 }
 
 type Endpoint struct {
 	URL   string `yaml:"url"`
-	Token string `yaml:"token,omitempty"`
+	Token string `yaml:"token,omitempty" secret:"true"`
 
 	// The rest is Nomad's mutual TLS, written by `grove install --role control-plane` (see
 	// internal/pki). CACert verifies the server; ClientCert/ClientKey are grove's own client
@@ -81,7 +82,7 @@ type ServerConfig struct {
 	Listen string `yaml:"listen"`
 	// URL clients use to reach the server, e.g. "http://grove-cp.tailnet.ts.net:6120".
 	URL   string `yaml:"url"`
-	Token string `yaml:"token,omitempty"`
+	Token string `yaml:"token,omitempty" secret:"true"`
 	// TokenKeychain names the macOS Keychain account holding a device-scoped client token.
 	TokenKeychain string `yaml:"tokenKeychain,omitempty"`
 	// Tailscale lets tailnet peers call the API with no token at all, authenticated by their
@@ -214,9 +215,9 @@ type ArtifactsConfig struct {
 	// Deprecated: see Endpoint.
 	Bucket string `yaml:"bucket,omitempty"`
 	// Deprecated: see Endpoint.
-	AccessKey string `yaml:"accessKey,omitempty"`
+	AccessKey string `yaml:"accessKey,omitempty" secret:"true"`
 	// Deprecated: see Endpoint.
-	SecretKey string `yaml:"secretKey,omitempty"`
+	SecretKey string `yaml:"secretKey,omitempty" secret:"true"`
 }
 
 // LegacyKeys names the deprecated S3/MinIO keys set in c ("artifacts.endpoint", …), so callers
@@ -293,7 +294,7 @@ func Load() (*Config, string, error) {
 
 // LoadFrom reads a config file from an explicit path.
 func LoadFrom(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	data, err := secfile.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, ErrNotFound

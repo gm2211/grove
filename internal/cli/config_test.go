@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -78,5 +79,75 @@ func TestSetConfigKey_LocalSocket(t *testing.T) {
 	}
 	if cfg.Server.Socket != "/Users/Shared/grove/api.sock" || strings.Join(cfg.Server.SocketUsers, "|") != "giulio|argos" {
 		t.Fatalf("server = %+v", cfg.Server)
+	}
+}
+
+func TestConfigShowNeverPrintsSecrets(t *testing.T) {
+	path := t.TempDir() + "/config.yaml"
+	t.Setenv("GROVE_CONFIG", path)
+	cfg := &config.Config{}
+	cfg.Nomad.Token = "nomad-SECRET-1"
+	cfg.Orchard.Token = "orchard-SECRET-2"
+	cfg.Server.Token = "server-SECRET-3"
+	cfg.Enrollment.IssuerToken = "issuer-SECRET-4"
+	cfg.Orchard.URL = "http://orchard.example"
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	configShowCmd.SetOut(&out)
+	t.Cleanup(func() { configShowCmd.SetOut(nil) })
+	if err := configShowCmd.RunE(configShowCmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "SECRET") {
+		t.Fatalf("config show printed a secret:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "<set, len 14>") || !strings.Contains(out.String(), "http://orchard.example") {
+		t.Fatalf("unexpected output:\n%s", out.String())
+	}
+}
+
+func TestConfigSetWarnsOnArgvSecret(t *testing.T) {
+	t.Setenv("GROVE_CONFIG", t.TempDir()+"/config.yaml")
+	var stderr, stdout strings.Builder
+	configSetCmd.SetErr(&stderr)
+	configSetCmd.SetOut(&stdout)
+	t.Cleanup(func() { configSetCmd.SetErr(nil); configSetCmd.SetOut(nil) })
+	if err := configSetCmd.RunE(configSetCmd, []string{"nomad.token", "argv-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "grove config set nomad.token -") || strings.Contains(stderr.String()+stdout.String(), "argv-secret") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+	stderr.Reset()
+	if err := configSetCmd.RunE(configSetCmd, []string{"nomad.url", "http://x"}); err != nil || stderr.Len() != 0 {
+		t.Fatalf("non-secret key warned: %v %q", err, stderr.String())
+	}
+}
+
+func TestResolveInstallToken(t *testing.T) {
+	var warn strings.Builder
+	if tok, err := resolveInstallToken(strings.NewReader("from-stdin\n"), &warn, "", "-", "env"); err != nil || tok != "from-stdin" || warn.Len() != 0 {
+		t.Fatalf("stdin: %q %v %q", tok, err, warn.String())
+	}
+	f := t.TempDir() + "/tok"
+	if err := os.WriteFile(f, []byte(" from-file \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if tok, err := resolveInstallToken(nil, &warn, "", f, ""); err != nil || tok != "from-file" {
+		t.Fatalf("file: %q %v", tok, err)
+	}
+	if tok, err := resolveInstallToken(nil, &warn, "", "", "from-env"); err != nil || tok != "from-env" || warn.Len() != 0 {
+		t.Fatalf("env: %q %v", tok, err)
+	}
+	if tok, err := resolveInstallToken(nil, &warn, "argv", "", "env"); err != nil || tok != "argv" || !strings.Contains(warn.String(), "--token-file") {
+		t.Fatalf("flag: %q %v %q", tok, err, warn.String())
+	}
+	if _, err := resolveInstallToken(nil, &warn, "a", f, ""); err == nil {
+		t.Fatal("--token with --token-file accepted")
+	}
+	if _, err := resolveInstallToken(strings.NewReader("\n"), &warn, "", "-", ""); err == nil {
+		t.Fatal("empty stdin accepted")
 	}
 }

@@ -26,7 +26,18 @@ the management token in `config.yaml` (`nomad.token`, file mode 0600); `grove se
 send it on every Nomad call. A request without a token (from the tailnet, or from inside a job)
 gets nothing. An install made while ACLs were off is migrated by re-running the installer: it
 re-renders `server.hcl`, restarts Nomad once, and bootstraps. If Nomad was already bootstrapped by
-hand, set the existing management token with `grove config set nomad.token <secret>`.
+hand, set the existing management token with `grove config set nomad.token -` (paste the token on stdin).
+
+Secrets stay off the screen and off argv. `grove config show` prints every secret field
+(`nomad.token`, `orchard.token`, `server.token`, `enrollment.issuerToken` and the retired
+`tailscale.authKey` / `artifacts.accessKey` / `artifacts.secretKey`) as `<set, len N>`, never the
+value; read `config.yaml` itself (mode 0600) if you need it. `grove config set <secret-key> -`
+reads the value from stdin, and a secret given as an argument prints a warning. The files that
+hold secrets (`config.yaml`, `secrets.json`, `devices.json`, `github.json`) are refused when they
+are a symlink, not a regular file or owned by another user, and are tightened to mode 0600 when
+they are not; `grove doctor`-style fixes are `rm` the link and put the real file in place.
+`grove install --token` still works but warns; use `--token-file -` (stdin), `--token-file <path>`
+or `$GROVE_TOKEN`.
 
 With `nomad.token` set, the fleet reconciler also gives each VM it creates:
 

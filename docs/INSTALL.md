@@ -325,7 +325,7 @@ was installed in: it heals the worker in place rather than orphaning it. It neve
 4. **Is idempotent:** with nothing to change it says so and touches and restarts nothing.
 
 **Renaming** (`--name` or `--labels` differing from the installed identity) needs a bootstrap
-credential minted for the new name, so pass `--token`. On the control plane host (a `config.yaml`
+credential minted for the new name, so pass the token (`--token-file`, `$GROVE_TOKEN`, or `--token`). On the control plane host (a `config.yaml`
 that names a local `fleet.yaml`) the install also rewrites the `workerSelector` entries that
 matched the old labels (comments kept, `fleet.yaml` backed up) and deletes the old Orchard worker
 record, once the renamed worker is loaded; an interrupted rename is retried by the next run. On
@@ -375,7 +375,8 @@ manually provisioned environments.
 | `--controller` | Orchard controller URL |
 | `--nomad` | Nomad HTTP API URL |
 | `--server` | grove server URL |
-| `--token` | bootstrap/server token (meaning depends on `--role`) |
+| `--token` | bootstrap/server token (meaning depends on `--role`). Warns: argv shows in the process list and shell history |
+| `--token-file` | read the token from a file, or from stdin when it is `-`; also read from `$GROVE_TOKEN` |
 | `--registry` | container registry a worker authenticates to (worker role; default `ghcr.io`) |
 | `--registry-user` | registry username for `tart login` (worker role) |
 | `--registry-token` | registry password/PAT for `tart login` (worker role); also read from `$GROVE_REGISTRY_TOKEN` |
