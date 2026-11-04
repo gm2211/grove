@@ -92,6 +92,7 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 	}
 
 	results = append(results, checkServiceUnits(opts))
+	results = append(results, checkOrchardControllerDrift(ctx, r, opts, cfg)...)
 	results = append(results, checkTart(ctx, r, opts)...)
 	if _, err := opts.lookPath()("tart"); err == nil && opts.goos() == "darwin" {
 		results = append(results, checkSoftnet(ctx, r, opts, cfg))

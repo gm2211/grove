@@ -49,6 +49,7 @@ func buildControlPlaneSteps(r Runner, opts Options, out io.Writer) []Step {
 	steps = append(steps, controlPlaneConfigSteps(r, opts, cfgDir, destOrchard, nomadConfigChanged, sandboxConfigChanged)...)
 	steps = append(steps, controlPlaneServiceSteps(r, opts, cfgDir, destOrchard, isDarwin)...)
 	steps = append(steps, controlPlaneStartStep(r, opts, "orchard-controller", isDarwin, orchardRebuilt))
+	steps = append(steps, orchardControllerDriftStep(r, opts, cfgDir, out))
 	steps = append(steps, Step{
 		Name:        "orchard-service-account",
 		Description: "Create Orchard `grove` service account (compute:read, compute:write, compute:connect); retrieve its generated token without placing it in argv.",
@@ -464,6 +465,8 @@ func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string
 	nomadConf := filepath.Join(cfgDir, "nomad", "server.hcl")
 	nomadDataDir := filepath.Join(cfgDir, "nomad", "data")
 	orchardHome := controlPlaneOrchardHome(cfgDir)
+	orchardAddr := hostPortOrDefault(opts.Controller, resolvedTailnetHost(r, opts), defaultOrchardControllerPort)
+	fleetPath := filepath.Join(cfgDir, "fleet.yaml")
 
 	units := []struct {
 		name        string
@@ -472,8 +475,11 @@ func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string
 		// program is an absolute path, or a bare name resolved by supervisorProgram when the
 		// unit is rendered: launchd and systemd --user start jobs with a minimal PATH that
 		// holds neither ~/.local/bin nor Homebrew, so a bare name never starts.
-		program    string
-		args       []string
+		program string
+		args    []string
+		// argsFn, when set, computes args at render time (the controller's host-dirs flag follows
+		// fleet.yaml, which an earlier config step may only just have written).
+		argsFn     func() []string
 		env        map[string]string
 		workingDir string
 	}{
@@ -482,8 +488,10 @@ func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string
 			label:       "com.grove.orchard-controller",
 			description: "Orchard controller",
 			program:     destOrchard,
-			args:        []string{"controller", "run"},
-			env:         map[string]string{"ORCHARD_HOME": orchardHome},
+			argsFn: func() []string {
+				return OrchardControllerArgs(orchardAddr, fleetNeedsHostDirs(fleetPath))
+			},
+			env: map[string]string{"ORCHARD_HOME": orchardHome},
 		},
 		{
 			name:        "nomad",
@@ -512,6 +520,12 @@ func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string
 	var steps []Step
 	for _, u := range units {
 		u := u
+		argv := func() []string {
+			if u.argsFn != nil {
+				return u.argsFn()
+			}
+			return u.args
+		}
 		if isDarwin {
 			plistPath := filepath.Join(opts.LaunchAgentsDir(), u.label+".plist")
 			logDir := opts.LogDir()
@@ -521,7 +535,7 @@ func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string
 				Check: fileHasContent(plistPath, func() (string, error) {
 					program := supervisorProgram(opts, u.program)
 					return RenderLaunchAgent(LaunchAgentSpec{
-						Label: u.label, Program: program, Args: u.args, Env: u.env,
+						Label: u.label, Program: program, Args: argv(), Env: u.env,
 						WorkingDir: u.workingDir, KeepAlive: true, RunAtLoad: true,
 						StdoutPath: filepath.Join(logDir, u.name+".log"),
 						StderrPath: filepath.Join(logDir, u.name+".err.log"),
@@ -530,7 +544,7 @@ func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string
 				Apply: func(ctx context.Context) error {
 					program := supervisorProgram(opts, u.program)
 					content, err := RenderLaunchAgent(LaunchAgentSpec{
-						Label: u.label, Program: program, Args: u.args, Env: u.env,
+						Label: u.label, Program: program, Args: argv(), Env: u.env,
 						WorkingDir: u.workingDir, KeepAlive: true, RunAtLoad: true,
 						StdoutPath: filepath.Join(logDir, u.name+".log"),
 						StderrPath: filepath.Join(logDir, u.name+".err.log"),
@@ -555,14 +569,14 @@ func controlPlaneServiceSteps(r Runner, opts Options, cfgDir, destOrchard string
 				Check: fileHasContent(unitPath, func() (string, error) {
 					program := supervisorProgram(opts, u.program)
 					return RenderSystemdUnit(SystemdUnitSpec{
-						Description: u.description, Program: program, Args: u.args,
+						Description: u.description, Program: program, Args: argv(),
 						Env: u.env, WorkingDir: u.workingDir,
 					})
 				}),
 				Apply: func(ctx context.Context) error {
 					program := supervisorProgram(opts, u.program)
 					content, err := RenderSystemdUnit(SystemdUnitSpec{
-						Description: u.description, Program: program, Args: u.args,
+						Description: u.description, Program: program, Args: argv(),
 						Env: u.env, WorkingDir: u.workingDir,
 					})
 					if err != nil {

@@ -193,6 +193,8 @@ func TestRenderOrchardControllerEnv(t *testing.T) {
 		t.Fatalf("RenderOrchardControllerEnv: %v", err)
 	}
 	want := "# Managed by grove install. Re-run `grove install --role control-plane` to regenerate.\n" +
+		"# Informational: launchd and systemd do not read this file and Orchard has no ORCHARD_ADDRESS. The\n" +
+		"# controller's listen address and TLS/host-dirs flags are in its unit's arguments.\n" +
 		"ORCHARD_HOME=/home/bob/.config/grove/orchard-controller/data\n" +
 		"ORCHARD_ADDRESS=100.64.0.5:6120\n"
 	if got != want {
