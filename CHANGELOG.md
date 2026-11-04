@@ -2,7 +2,7 @@
 
 All notable changes to grove are documented here.
 
-## Unreleased
+## v0.1.36
 
 - **Secrets hygiene.** `grove config show` redacts every secret field (`<set, len N>`; fields are
   tagged `secret:"true"` in `internal/config`, so a new one only needs the tag). The Nomad
