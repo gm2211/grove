@@ -4,11 +4,21 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os/exec"
 	"strings"
 	"testing"
 )
 
-const suLine = "/usr/bin/su gm2211 -c /usr/bin/sudo /bin/sh -e"
+func calledSu(r *FakeRunner) bool { _, ok := suCall(r); return ok }
+
+func suCall(r *FakeRunner) (Call, bool) {
+	for _, c := range r.Calls {
+		if c.Name == "/usr/bin/su" {
+			return c, true
+		}
+	}
+	return Call{}, false
+}
 
 func adminAccountRunner() *FakeRunner {
 	r := NewFakeRunner()
@@ -16,37 +26,113 @@ func adminAccountRunner() *FakeRunner {
 	return r
 }
 
-// Pending root steps go through one `su <admin> -c 'sudo sh -e'` with the same script the printed
-// block would hold on stdin, and no sudo of this account's own.
+// Pending root steps go through one attached `su <admin> -c '/usr/bin/sudo /bin/sh -e -c <script>'`
+// with the same script the printed block would hold, and no sudo of this account's own. The script
+// is in argv, not stdin (su reads the password from stdin).
 func TestRunRootSteps_AdminRunsTheScriptThroughSu(t *testing.T) {
 	ok := false
 	steps := rootSteps(&ok)
 	r := adminAccountRunner()
-	// The script "runs": the steps' checks pass afterwards.
-	r.Script(suLine, FakeResult{})
 	var out strings.Builder
 	for i := range steps {
-		steps[i].Check = func(context.Context) (bool, error) { return r.CalledWith(suLine), nil }
+		steps[i].Check = func(context.Context) (bool, error) { _, called := suCall(r); return called, nil }
 	}
 	outcome, err := RunRootSteps(context.Background(), r, steps, RootOptions{Admin: "gm2211", Interactive: true, In: strings.NewReader(""), Out: &out})
 	if err != nil || outcome != RootRan {
 		t.Fatalf("= %v, %v\n%s", outcome, err, out.String())
 	}
-	stdin, called := r.StdinFor(suLine)
+	c, called := suCall(r)
 	if !called {
 		t.Fatalf("no su call: %v", r.Calls)
 	}
+	if !c.Attached || c.Streamed || c.Stdin != "" {
+		t.Errorf("su must be attached to the terminal with nothing on stdin: %+v", c)
+	}
+	if len(c.Args) != 3 || c.Args[0] != "gm2211" || c.Args[1] != "-c" {
+		t.Fatalf("su args = %q", c.Args)
+	}
+	cmd := c.Args[2]
+	const prefix = "/usr/bin/sudo /bin/sh -e -c "
+	if !strings.HasPrefix(cmd, "/usr/bin/sudo /bin/sh -e -c '") {
+		t.Errorf("command = %q", cmd)
+	}
+	script := unquoteSingle(t, strings.TrimPrefix(cmd, prefix))
 	for _, want := range []string{"set -e\n", "echo 'grove: disable-sleep'", "/usr/bin/pmset -a disablesleep 1", "bootstrap system"} {
-		if !strings.Contains(stdin, want) {
-			t.Errorf("script lacks %q:\n%s", want, stdin)
+		if !strings.Contains(script, want) {
+			t.Errorf("script lacks %q:\n%s", want, script)
 		}
 	}
 	for _, c := range r.Calls {
-		if c.Name == "/usr/bin/sudo" || c.Name == "sudo" || c.Attached {
+		if c.Name == "/usr/bin/sudo" || c.Name == "sudo" {
 			t.Errorf("unexpected own-sudo call %q", c.String())
 		}
-		if c.String() == suLine && !c.Streamed {
-			t.Error("su must be streamed so it keeps the terminal for the password")
+	}
+}
+
+// unquoteSingle undoes shQuote the way a POSIX shell would for one word.
+func unquoteSingle(t *testing.T, word string) string {
+	var out strings.Builder
+	for i := 0; i < len(word); {
+		switch {
+		case word[i] == '\'':
+			j := strings.IndexByte(word[i+1:], '\'')
+			if j < 0 {
+				t.Fatalf("unterminated quote in %q", word)
+			}
+			out.WriteString(word[i+1 : i+1+j])
+			i += j + 2
+		case word[i] == '\\' && i+1 < len(word):
+			out.WriteByte(word[i+1])
+			i += 2
+		default:
+			t.Fatalf("unquoted %q at %d in %q", word[i], i, word)
+		}
+	}
+	return out.String()
+}
+
+// A quote-, dollar- and newline-heavy script reaches `sh -e -c` byte for byte through su's shell.
+func TestAdminSuCommand_RoundTripsAHostileScript(t *testing.T) {
+	script := "set -e\necho 'it'\\''s' \"$HOME\" `id` $(id)\nprintf '%s\\n' \"a b\" ; # c\n/bin/sh -c 'x'\\''y'\n"
+	cmd := adminSuCommand(script)
+	const prefix = "/usr/bin/sudo /bin/sh -e -c "
+	if !strings.HasPrefix(cmd, prefix) {
+		t.Fatal(cmd)
+	}
+	if got := unquoteSingle(t, strings.TrimPrefix(cmd, prefix)); got != script {
+		t.Errorf("round trip:\n got %q\nwant %q", got, script)
+	}
+	if sh, err := exec.LookPath("sh"); err == nil {
+		out, err := exec.Command(sh, "-c", "printf %s "+strings.TrimPrefix(cmd, prefix)).Output()
+		if err != nil || string(out) != script {
+			t.Errorf("sh saw %q, %v", out, err)
+		}
+	}
+}
+
+// The script handed to su holds no credential: Root texts are built from paths and names only.
+func TestRunRootSteps_AdminScriptHoldsNoSecret(t *testing.T) {
+	opts := adminOptionsFor(t, "worker-user")
+	opts.Token = "SECRET-BOOTSTRAP-TOKEN"
+	opts.BrokerToken = "SECRET-BROKER-TOKEN"
+	opts.RegistryToken = "SECRET-REGISTRY-TOKEN"
+	r := NewFakeRunner()
+	scriptTailscaleUp(r)
+	steps, err := PendingRootSteps(context.Background(), r, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var script strings.Builder
+	for _, s := range steps {
+		body, err := s.Root(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		script.WriteString(body)
+	}
+	for _, secret := range []string{opts.Token, opts.BrokerToken, opts.RegistryToken} {
+		if strings.Contains(script.String(), secret) {
+			t.Errorf("root script contains %q", secret)
 		}
 	}
 }
@@ -65,7 +151,7 @@ func TestRunRootSteps_AdminRefusals(t *testing.T) {
 		r := adminAccountRunner()
 		r.Script("/usr/sbin/dseditgroup -o checkmember -m gm2211 admin", FakeResult{Err: errors.New("no")})
 		_, err := RunRootSteps(context.Background(), r, rootSteps(&ok), RootOptions{Admin: "gm2211", Interactive: true, Out: io.Discard})
-		if err == nil || !strings.Contains(err.Error(), "not an admin") || r.CalledWith(suLine) {
+		if err == nil || !strings.Contains(err.Error(), "not an admin") || calledSu(r) {
 			t.Errorf("err %v, calls %v", err, r.Calls)
 		}
 	})
@@ -73,14 +159,14 @@ func TestRunRootSteps_AdminRefusals(t *testing.T) {
 		r := adminAccountRunner()
 		r.Script("/usr/bin/dscl . -read /Users/gm2211 UniqueID", FakeResult{Err: errors.New("no")})
 		_, err := RunRootSteps(context.Background(), r, rootSteps(&ok), RootOptions{Admin: "gm2211", Interactive: true, Out: io.Discard})
-		if err == nil || !strings.Contains(err.Error(), "no such account") || r.CalledWith(suLine) {
+		if err == nil || !strings.Contains(err.Error(), "no such account") || calledSu(r) {
 			t.Errorf("err %v", err)
 		}
 	})
 	t.Run("no terminal", func(t *testing.T) {
 		r := adminAccountRunner()
 		_, err := RunRootSteps(context.Background(), r, rootSteps(&ok), RootOptions{Admin: "gm2211", Yes: true, Out: io.Discard})
-		if err == nil || !strings.Contains(err.Error(), "ssh -t") || r.CalledWith(suLine) {
+		if err == nil || !strings.Contains(err.Error(), "ssh -t") && strings.Contains(err.Error(), "interactive terminal") || calledSu(r) {
 			t.Errorf("err %v", err)
 		}
 	})

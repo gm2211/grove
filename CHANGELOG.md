@@ -4,6 +4,12 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Install: `--admin` keeps `su` and `sudo` on the terminal.** The root script was piped to
+  `su <admin> -c 'sudo sh -e'` on stdin, but macOS `su` reads the password from stdin, so it failed
+  at once with `su: Sorry` and never prompted. The script now rides in argv
+  (`sudo /bin/sh -e -c '<script>'`, single-quoted for the admin's login shell; it never holds a
+  secret) and `su` runs attached, so both `su` and `sudo` prompt for the admin's password. Without
+  an interactive stdin, `--admin` fails up front with a clear message.
 - **Secrets hygiene.** `grove config show` redacts every secret field (`<set, len N>`; fields are
   tagged `secret:"true"` in `internal/config`, so a new one only needs the tag). The Nomad
   bootstrap hint now says `grove config set nomad.token -` (stdin), and `grove config set` warns
