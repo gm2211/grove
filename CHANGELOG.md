@@ -4,6 +4,15 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Secrets hygiene.** `grove config show` redacts every secret field (`<set, len N>`; fields are
+  tagged `secret:"true"` in `internal/config`, so a new one only needs the tag). The Nomad
+  bootstrap hint now says `grove config set nomad.token -` (stdin), and `grove config set` warns
+  when a secret key's value is given on the command line. `grove install` gains `--token-file`
+  (a path, or `-` for stdin) and reads `$GROVE_TOKEN`; `--token` still works but warns.
+  `config.yaml`, `secrets.json`, `devices.json` and `github.json` readers now refuse a symlink, a
+  non-regular file or a file owned by another user (new `internal/secfile`, same rules as
+  `internal/install/credfile.go`) before tightening the mode to 0600.
+
 - **macOS worker: native toolchain installer (execution side).** A shared macOS pool's `build` job
   whose dispatch meta carries `toolchain_json` and `toolchain_hash` (nothing in the control plane
   sets them yet) gets rust, node and/or python installed natively. The fleet startup script creates

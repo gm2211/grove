@@ -23,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gm2211/grove/internal/secfile"
 )
 
 // DefaultHost is the git host an armed Store covers when the operator names none.
@@ -133,7 +135,7 @@ func NewStore(path string) (*Store, error) {
 		return nil, errors.New("gitauth: store path is required")
 	}
 	s := &Store{path: path, state: state{Version: 1}}
-	data, err := os.ReadFile(path)
+	data, err := secfile.ReadFile(path)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("gitauth: read store: %w", err)
@@ -142,9 +144,6 @@ func NewStore(path string) (*Store, error) {
 			return nil, fmt.Errorf("gitauth: create store: %w", err)
 		}
 		return s, nil
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		return nil, fmt.Errorf("gitauth: secure store: %w", err)
 	}
 	var loaded state
 	if err := json.Unmarshal(data, &loaded); err != nil {

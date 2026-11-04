@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gm2211/grove/internal/secfile"
 )
 
 // Scopes control what an enrolled Grove device may do through the HTTP API.
@@ -130,7 +132,7 @@ func NewAccessStore(path string) (*AccessStore, error) {
 	}
 
 	s := &AccessStore{path: path, credentials: make(map[string]accessRecord)}
-	data, err := os.ReadFile(path)
+	data, err := secfile.ReadFile(path)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("read access store: %w", err)
@@ -139,9 +141,6 @@ func NewAccessStore(path string) (*AccessStore, error) {
 			return nil, fmt.Errorf("create access store: %w", err)
 		}
 		return s, nil
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		return nil, fmt.Errorf("secure access store: %w", err)
 	}
 
 	var file accessFile

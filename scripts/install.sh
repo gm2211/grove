@@ -142,7 +142,7 @@ main() {
 	printf '\n'
 	printf '    grove setup                         # join this Mac as a worker\n'
 	printf '    grove install --role control-plane\n'
-	printf '    grove install --role client --server https://<your-control-plane>.<tailnet>.ts.net:6130 --token <token>\n'
+	printf '    grove install --role client --server https://<your-control-plane>.<tailnet>.ts.net:6130 --token-file -   # token on stdin\n'
 	printf '\n'
 	log "grove setup discovers your control plane over Tailscale and guides approval."
 }

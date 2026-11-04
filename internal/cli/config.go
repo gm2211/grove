@@ -52,7 +52,7 @@ var configInitCmd = &cobra.Command{
 
 var configShowCmd = &cobra.Command{
 	Use:   "show",
-	Short: "Print the resolved configuration.",
+	Short: "Print the resolved configuration, with secrets redacted.",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, path, err := loadConfig()
@@ -60,7 +60,9 @@ var configShowCmd = &cobra.Command{
 			return err
 		}
 
-		out, err := yaml.Marshal(cfg)
+		// Secrets are never printed (they would land in terminal scrollback, CI logs and chat
+		// pastes); the shape and each secret's length are enough to see what is configured.
+		out, err := yaml.Marshal(config.Redacted(cfg))
 		if err != nil {
 			return err
 		}
@@ -76,7 +78,8 @@ var configSetCmd = &cobra.Command{
 	Short: "Set a single configuration key (dotted path, e.g. orchard.url) and save.",
 	Long: "Set a single configuration key (dotted path, e.g. orchard.url) and save.\n\n" +
 		"A value of - reads the value from standard input instead, so a secret such as\n" +
-		"tailscale.authKey never appears in the process list or shell history.",
+		"nomad.token or server.token never appears in the process list or shell history\n" +
+		"(setting a secret key with the value on the command line prints a warning).",
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path, err := config.DefaultPath()
@@ -93,6 +96,10 @@ var configSetCmd = &cobra.Command{
 		}
 
 		value := args[1]
+		if value != "-" && config.IsSecretKey(args[0]) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s is a secret and a value on the command line shows in the process list and shell history; "+
+				"use `grove config set %s -` and pipe the value on stdin instead\n", args[0], args[0])
+		}
 		if value == "-" {
 			if value, err = readConfigValue(cmd.InOrStdin()); err != nil {
 				return err

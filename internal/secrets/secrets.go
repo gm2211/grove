@@ -24,6 +24,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gm2211/grove/internal/secfile"
 )
 
 // MaxValueLen bounds a secret's value: room for a multi-line credential file (a Codex auth.json),
@@ -110,7 +112,7 @@ func NewStore(path string) (*Store, error) {
 		return nil, errors.New("secrets: store path is required")
 	}
 	s := &Store{path: path, records: map[string]record{}}
-	data, err := os.ReadFile(path)
+	data, err := secfile.ReadFile(path)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("secrets: read store: %w", err)
@@ -119,9 +121,6 @@ func NewStore(path string) (*Store, error) {
 			return nil, fmt.Errorf("secrets: create store: %w", err)
 		}
 		return s, nil
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		return nil, fmt.Errorf("secrets: secure store: %w", err)
 	}
 	var f file
 	if err := json.Unmarshal(data, &f); err != nil {

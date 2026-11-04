@@ -70,7 +70,7 @@ func nomadACLBootstrapStep(r Runner, opts Options, isDarwin bool) Step {
 				switch {
 				case strings.Contains(msg, "bootstrap already done"):
 					return errors.New("Nomad's ACLs were already bootstrapped but config.yaml has no nomad.token: " +
-						"set the existing management token with `grove config set nomad.token <secret>`, " +
+						"set the existing management token with `grove config set nomad.token -` (the token on stdin), " +
 						"or reset the bootstrap (Nomad docs: \"Reset the ACL system\") and re-run this install")
 				case strings.Contains(msg, "ACL support disabled") && !restarted:
 					if err := restartNomadService(ctx, r, isDarwin); err != nil {
