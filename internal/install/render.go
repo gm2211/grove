@@ -288,6 +288,8 @@ type OrchardControllerEnvSpec struct {
 }
 
 var orchardControllerEnvTemplate = template.Must(template.New("orchard-controller").Parse(`# Managed by grove install. Re-run ` + "`grove install --role control-plane`" + ` to regenerate.
+# Informational: launchd and systemd do not read this file and Orchard has no ORCHARD_ADDRESS. The
+# controller's listen address and TLS/host-dirs flags are in its unit's arguments.
 ORCHARD_HOME={{.Home}}
 ORCHARD_ADDRESS={{.Address}}
 `))

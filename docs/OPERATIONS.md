@@ -913,6 +913,93 @@ copies out of sealed VMs. Only sealed pools' builds produce artifacts today.
 
 `grove doctor` any time — it's read-only, 3s-timeout HTTP checks, and never hangs.
 
+## Restarting the Orchard controller onto the rendered unit
+
+`grove install --role control-plane` renders the controller's LaunchAgent (or systemd unit) with
+the flags grove's config expects: `orchard controller run --listen <tailnet-ip>:6120
+--insecure-no-tls`, plus `--insecure-allow-host-dirs` only when `fleet.yaml` has a pool with
+`hostXcode`. Orchard reads no environment variable for any of that (only `PORT`, and
+`ORCHARD_HOME` for its data), and launchd/systemd never source
+`~/.config/grove/orchard-controller/env`. An older grove rendered the unit with bare
+`controller run`, so a controller restarted from that unit listens on `:6120` on every interface
+with auto-generated TLS and no host-dirs: every worker and grove (all plain `http://<ip>:6120`)
+then fails to connect, and Xcode host mounts are refused. A launchd job also keeps the arguments
+and environment of the plist it was bootstrapped from, so re-rendering the file changes nothing
+until the job is reloaded. `grove doctor` (`orchard-controller-unit`) and `grove install` report a
+running controller that differs from the rendered unit; install never restarts it.
+
+Restart onto the rendered unit (control plane, as the user that owns the controller):
+
+1. Re-render: `grove install --role control-plane` (or `--dry-run` first). Check the plist:
+   `plutil -p ~/Library/LaunchAgents/com.grove.orchard-controller.plist` must show `--listen`,
+   `--insecure-no-tls` and no `ORCHARD_BOOTSTRAP_ADMIN_TOKEN` (Linux: `systemctl --user cat
+   grove-orchard-controller.service`).
+2. Pick a quiet moment. Workers reconnect on their own; running VMs and jobs keep running, but
+   scheduling pauses while the controller is down (seconds). Note `orchard list workers` and
+   `orchard list vms` for comparison.
+3. Reload the job (macOS): `launchctl bootout gui/$(id -u)/com.grove.orchard-controller`, then
+   `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.grove.orchard-controller.plist`
+   (Linux: `systemctl --user daemon-reload && systemctl --user restart grove-orchard-controller`).
+   Use bootout/bootstrap, not `kickstart`: only a reload picks up the new arguments and drops the
+   old environment.
+4. Verify: `grove doctor` shows `orchard-controller`, `orchard-controller-unit` and
+   `orchard-controller-credential` passing, `orchard list workers` shows every worker back
+   within a minute or two, and `tail ~/Library/Logs/grove/orchard-controller.err.log` has no TLS
+   or bind errors. If a worker does not return, its Orchard URL is wrong, not the controller's:
+   compare it with `orchard.url` in `config.yaml`.
+5. Roll back (the plist is the only thing that changed): restore the previous plist and repeat
+   step 3. Never paste a token into the plist to do so.
+
+## Deleting the bootstrap admin service account
+
+If a controller was ever started with `ORCHARD_BOOTSTRAP_ADMIN_TOKEN` set (by a hand-edited plist,
+`launchctl setenv`, or a shell), Orchard created a `bootstrap-admin` service account holding
+**every** role (`admin:write`, `worker:issue`, `host-process:*`, `compute:*`) with that token, and
+re-creates it with the same token on every start while the variable is set. Grove never sets the
+variable and never needs that account: grove's own account is `grove` (`compute:read`,
+`compute:write`, `compute:connect`, token in `config.yaml`), plus the narrow issuer account.
+`grove doctor` (`orchard-controller-credential`) fails while the running controller's environment
+holds the variable. Treat the token as compromised if it was ever typed, logged or shared.
+
+Order matters: the account comes back on every start while the variable is set, so first remove
+the variable, restart, and only then delete.
+
+1. Remove the variable from every place it lives: the controller's plist
+   `EnvironmentVariables`, `launchctl getenv ORCHARD_BOOTSTRAP_ADMIN_TOKEN` (clear with
+   `launchctl unsetenv ORCHARD_BOOTSTRAP_ADMIN_TOKEN`), shell profiles, 1Password/Keychain notes
+   you do not need.
+2. Restart onto the rendered unit (previous section). Without the variable and with other
+   service accounts present, Orchard leaves `bootstrap-admin` alone instead of re-creating it.
+3. Confirm grove works without it. From the control plane: `grove doctor`, and
+   `ORCHARD_URL=http://<ip>:6120 ORCHARD_SERVICE_ACCOUNT_NAME=grove ORCHARD_SERVICE_ACCOUNT_TOKEN=...
+   orchard list workers` (put the token in the environment from `config.yaml`, never on the
+   command line).
+4. Identify the account. You need an admin credential for the next commands, and the only admin
+   is the one you are deleting, so use the `bootstrap-context` Orchard saved under
+   `$ORCHARD_HOME` (`orchard context list`; `orchard context default bootstrap-context`):
+   ```
+   orchard list service-accounts
+   ```
+   The one named `bootstrap-admin` with all eight roles is the target. Do not touch `grove`, the
+   issuer account or any other. Check `config.yaml` (`orchard.token`, `server.*`) and `orchard get
+   service-account grove` to be sure none of them is the one you are about to delete.
+5. Delete it: `orchard delete service-account bootstrap-admin`. Then drop the saved context that
+   holds its token: `orchard context delete bootstrap-context`. Grove's `grove` account is
+   untouched, so `grove serve`, dispatch and the fleet reconciler keep working, and workers keep
+   their own connections.
+6. Verify: `orchard list service-accounts` (as `grove`, which lacks `admin:read`, it will be
+   refused: that is expected, use the admin context if you kept one) and `grove doctor` all
+   passing.
+
+What you lose: nothing in grove needs `admin:write` at run time, but creating a service account or
+worker-issuer later (for example `grove install` on a rebuilt control plane, which creates `grove`
+through the bootstrap context) needs an admin. The supported way to get one is a fresh control
+plane install (empty database: Orchard bootstraps a random-token `bootstrap-admin`). On a
+running one, create a named admin account first (`orchard create service-account ops-admin
+--roles admin:read --roles admin:write --roles worker:issue`, token to a 0600 file or the
+Keychain, never the controller's environment) before deleting `bootstrap-admin`, and delete that
+one when you are done.
+
 ## Troubleshooting
 
 **Tart flashes in the Dock on a worker Mac.** Something ran Homebrew's `tart` instead of the

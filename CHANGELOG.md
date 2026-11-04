@@ -12,6 +12,19 @@ All notable changes to grove are documented here.
   `config.yaml`, `secrets.json`, `devices.json` and `github.json` readers now refuse a symlink, a
   non-regular file or a file owned by another user (new `internal/secfile`, same rules as
   `internal/install/credfile.go`) before tightening the mode to 0600.
+- **Install: the Orchard controller unit carries its listen/TLS flags; doctor flags drift and a
+  bootstrap admin token.** The LaunchAgent / systemd unit ran bare `orchard controller run`, so a
+  restart (launchd keeps the arguments of the plist it loaded, so nothing showed until then) would
+  have listened on `:6120` on every interface with auto-generated TLS and no host-dirs, breaking
+  every worker and grove client that speaks `http://<tailnet-ip>:6120`. The env file's
+  `ORCHARD_ADDRESS` was never read by Orchard or launchd. The unit now runs
+  `controller run --listen <addr> --insecure-no-tls`, plus `--insecure-allow-host-dirs` only when
+  `fleet.yaml` has a `hostXcode` pool, and never carries a token. `grove doctor` adds
+  `orchard-controller-unit` (running program/flags vs the rendered unit, from `launchctl print` /
+  `systemctl show`) and `orchard-controller-credential` (fails when the running controller's
+  environment holds `ORCHARD_BOOTSTRAP_ADMIN_TOKEN`); `grove install` reports both and never
+  restarts the controller. docs/OPERATIONS.md has the restart procedure and how to delete the
+  `bootstrap-admin` service account.
 
 - **macOS worker: native toolchain installer (execution side).** A shared macOS pool's `build` job
   whose dispatch meta carries `toolchain_json` and `toolchain_hash` (nothing in the control plane
