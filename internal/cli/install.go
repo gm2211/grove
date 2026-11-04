@@ -3,7 +3,9 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -16,6 +18,7 @@ var installFlags struct {
 	nomad         string
 	server        string
 	token         string
+	tokenFile     string
 	registry      string
 	registryUser  string
 	registryToken string
@@ -72,7 +75,8 @@ func init() {
 	installCmd.Flags().StringVar(&installFlags.controller, "controller", "", "Orchard controller URL")
 	installCmd.Flags().StringVar(&installFlags.nomad, "nomad", "", "Nomad HTTP API URL")
 	installCmd.Flags().StringVar(&installFlags.server, "server", "", "grove server URL")
-	installCmd.Flags().StringVar(&installFlags.token, "token", "", "bootstrap/server token (meaning depends on --role)")
+	installCmd.Flags().StringVar(&installFlags.token, "token", "", "bootstrap/server token (meaning depends on --role); visible in the process list and shell history, so prefer --token-file or $GROVE_TOKEN")
+	installCmd.Flags().StringVar(&installFlags.tokenFile, "token-file", "", "read the --token value from this file, or from stdin when it is -; also read from $GROVE_TOKEN")
 	installCmd.Flags().StringVar(&installFlags.registry, "registry", "ghcr.io", "container registry a worker authenticates to for private image pulls (worker role; see docs/INSTALL.md)")
 	installCmd.Flags().StringVar(&installFlags.registryUser, "registry-user", "", "registry username for `tart login` (worker role)")
 	installCmd.Flags().StringVar(&installFlags.registryToken, "registry-token", "", "registry password/PAT for `tart login` (worker role); also read from $GROVE_REGISTRY_TOKEN so it needn't be in shell history")
@@ -101,6 +105,10 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	if err := checkAdminFlag(installFlags.admin, installFlags.noSudo); err != nil {
 		return err
 	}
+	token, err := resolveInstallToken(cmd.InOrStdin(), cmd.ErrOrStderr(), installFlags.token, installFlags.tokenFile, os.Getenv("GROVE_TOKEN"))
+	if err != nil {
+		return err
+	}
 	registryToken := installFlags.registryToken
 	if registryToken == "" {
 		// Falling back to the environment lets the token skip shell history/process-listing
@@ -114,7 +122,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		Controller:    installFlags.controller,
 		NomadAddr:     installFlags.nomad,
 		ServerURL:     installFlags.server,
-		Token:         installFlags.token,
+		Token:         token,
 		Registry:      installFlags.registry,
 		RegistryUser:  installFlags.registryUser,
 		RegistryToken: registryToken,
@@ -127,7 +135,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	opts.Rootless, opts.NoAutoRootless = rootlessFlag(cmd, installFlags.rootless)
 	opts = withControlPlaneBrokerToken(cmd.Context(), opts, installFlags.dryRun, cmd.ErrOrStderr())
 
-	_, err := applyInstall(cmd, opts, installFlags.dryRun, installFlags.yes, installFlags.noSudo, installFlags.admin)
+	_, err = applyInstall(cmd, opts, installFlags.dryRun, installFlags.yes, installFlags.noSudo, installFlags.admin)
 	return err
 }
 
@@ -268,4 +276,35 @@ func dryRunSuffix(dryRun bool) string {
 		return ", dry-run"
 	}
 	return ""
+}
+
+// resolveInstallToken picks the install token from, in order, --token-file (a path, or - for
+// stdin), --token (kept working, but it warns: argv shows in the process list and shell
+// history) and $GROVE_TOKEN. Giving more than one of the first two is an error.
+func resolveInstallToken(stdin io.Reader, warn io.Writer, flagToken, tokenFile, envToken string) (string, error) {
+	if flagToken != "" && tokenFile != "" {
+		return "", errors.New("--token and --token-file are mutually exclusive")
+	}
+	if tokenFile != "" {
+		var data []byte
+		var err error
+		if tokenFile == "-" {
+			data, err = io.ReadAll(io.LimitReader(stdin, 64<<10))
+		} else {
+			data, err = os.ReadFile(tokenFile)
+		}
+		if err != nil {
+			return "", fmt.Errorf("read --token-file: %w", err)
+		}
+		tok := strings.TrimSpace(string(data))
+		if tok == "" {
+			return "", errors.New("--token-file is empty")
+		}
+		return tok, nil
+	}
+	if flagToken != "" {
+		fmt.Fprintln(warn, "warning: --token puts the token in the process list and shell history; use --token-file <path> (or - for stdin) or $GROVE_TOKEN instead")
+		return flagToken, nil
+	}
+	return strings.TrimSpace(envToken), nil
 }

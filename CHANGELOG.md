@@ -4,6 +4,14 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Secrets hygiene.** `grove config show` redacts every secret field (`<set, len N>`; fields are
+  tagged `secret:"true"` in `internal/config`, so a new one only needs the tag). The Nomad
+  bootstrap hint now says `grove config set nomad.token -` (stdin), and `grove config set` warns
+  when a secret key's value is given on the command line. `grove install` gains `--token-file`
+  (a path, or `-` for stdin) and reads `$GROVE_TOKEN`; `--token` still works but warns.
+  `config.yaml`, `secrets.json`, `devices.json` and `github.json` readers now refuse a symlink, a
+  non-regular file or a file owned by another user (new `internal/secfile`, same rules as
+  `internal/install/credfile.go`) before tightening the mode to 0600.
 - **Install: the Orchard controller unit carries its listen/TLS flags; doctor flags drift and a
   bootstrap admin token.** The LaunchAgent / systemd unit ran bare `orchard controller run`, so a
   restart (launchd keeps the arguments of the plist it loaded, so nothing showed until then) would
