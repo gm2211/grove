@@ -27,8 +27,10 @@ type RootOptions struct {
 	// NoSudo never runs sudo: the script is only printed, for an admin.
 	NoSudo bool
 	// Admin names an admin account to run the script through, from an account that has no sudo:
-	// `su <Admin> -c '/usr/bin/sudo /bin/sh -e'` with the script on stdin. Needs a terminal (su and
-	// sudo read <Admin>'s password from /dev/tty). Excludes NoSudo.
+	// `su <Admin> -c '/usr/bin/sudo /bin/sh -e -c <script>'`, attached to the terminal. The script
+	// travels in argv, never on stdin: macOS su reads the password from stdin, so a piped script
+	// makes PAM fail at once ("su: Sorry") without a prompt, and the inner sudo needs the terminal
+	// too. Needs a terminal (stdin is checked up front). Excludes NoSudo.
 	Admin string
 	In    io.Reader
 	Out   io.Writer
@@ -69,7 +71,7 @@ func RunRootSteps(ctx context.Context, r Runner, steps []Step, opts RootOptions)
 			return RootNone, err
 		}
 		if !opts.Interactive {
-			return RootNone, fmt.Errorf("--admin needs a terminal for %s's password: run it from a terminal (over ssh, use `ssh -t`)", opts.Admin)
+			return RootNone, fmt.Errorf("--admin needs an interactive terminal for %s's password: run it from Terminal over `ssh -t`", opts.Admin)
 		}
 	}
 	script := "set -e\n"
@@ -86,7 +88,7 @@ func RunRootSteps(ctx context.Context, r Runner, steps []Step, opts RootOptions)
 
 	if opts.Admin != "" {
 		fmt.Fprintf(opts.Out, "\n%d step(s) need root, run through %s's account (su, then sudo; both ask for %s's password):\n\n%s\n", len(steps), opts.Admin, opts.Admin, indent(script))
-		if err := r.RunStreaming(ctx, script, "/usr/bin/su", opts.Admin, "-c", "/usr/bin/sudo /bin/sh -e"); err != nil {
+		if err := r.RunAttached(ctx, "/usr/bin/su", opts.Admin, "-c", adminSuCommand(script)); err != nil {
 			return RootNone, fmt.Errorf("root steps through %s: %w", opts.Admin, err)
 		}
 		if err := recheckRootSteps(ctx, steps); err != nil {
@@ -121,6 +123,13 @@ func RunRootSteps(ctx context.Context, r Runner, steps []Step, opts RootOptions)
 	}
 	fmt.Fprintf(opts.Out, "root steps done (%d).\n", len(steps))
 	return RootRan, nil
+}
+
+// adminSuCommand is the command string for `su <admin> -c`: the admin's login shell parses it, so
+// the script is shQuote'd (single quotes mean the same in sh, bash and zsh) and reaches
+// `sh -e -c` intact. The script is Root texts only, which never hold a secret, so argv is fine.
+func adminSuCommand(script string) string {
+	return "/usr/bin/sudo /bin/sh -e -c " + shQuote(script)
 }
 
 // recheckRootSteps waits for every step's check to pass after the root script ran.

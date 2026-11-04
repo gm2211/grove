@@ -215,12 +215,15 @@ ssh -t argos@<mac> grove install --role worker --admin gm2211
 ```
 
 grove plans as usual, renders the root script from the live checks (the same script `--no-sudo`
-would print), and pipes it to `su gm2211 -c '/usr/bin/sudo /bin/sh -e'`. `su` and then `sudo` ask
-for `gm2211`'s password on the terminal. The plan then runs once more in the same invocation, so
+would print), and runs `su gm2211 -c '/usr/bin/sudo /bin/sh -e -c <script>'` attached to your
+terminal. The script goes in the command line, not on stdin (macOS `su` reads the password from
+stdin, so a piped script made it fail with `su: Sorry` before any prompt); it holds no secret. `su`
+and then `sudo` ask for `gm2211`'s password on the terminal. The plan then runs once more in the same invocation, so
 steps that waited for the root ones (`worker-agents` after `retire-worker-daemons`) apply
 immediately. Nothing is asked when no root step is pending, and the command is safe to re-run any
 time: the script is rendered fresh, never a stale copy. The account must exist and be in the
-`admin` group, and `--admin` excludes `--no-sudo`; without a terminal it fails and says so.
+`admin` group, and `--admin` excludes `--no-sudo`; without an interactive terminal (stdin not a tty) it fails up front and says to run it from
+Terminal over `ssh -t`.
 `grove setup --admin <account>` works the same way. Printing the block (`--no-sudo`, or an account
 that can't use `--admin`) stays as the fallback. The admin account is not remembered; pass it each
 time.

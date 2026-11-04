@@ -27,12 +27,20 @@ func TestCheckAdminFlag(t *testing.T) {
 // invocation, so a step that waited for them (as worker-agents waits for retire-worker-daemons)
 // applies without a re-run.
 func TestDriveInstall_AdminReplansAfterTheRootSteps(t *testing.T) {
-	const su = "/usr/bin/su gm2211 -c /usr/bin/sudo /bin/sh -e"
 	r := install.NewFakeRunner()
+	suRan := func() int {
+		n := 0
+		for _, c := range r.Calls {
+			if c.Name == "/usr/bin/su" && c.Attached {
+				n++
+			}
+		}
+		return n
+	}
 	rootDone, deferredApplied := false, 0
 	steps := []install.Step{
 		{Name: "retire", Privileged: true, Description: "root",
-			Check: func(context.Context) (bool, error) { return r.CalledWith(su), nil },
+			Check: func(context.Context) (bool, error) { return suRan() > 0, nil },
 			Root:  func(context.Context) (string, error) { return "echo retire\n", nil }},
 		{Name: "agents", Description: "waits for retire",
 			Check: func(context.Context) (bool, error) { return deferredApplied > 0, nil },
@@ -48,7 +56,7 @@ func TestDriveInstall_AdminReplansAfterTheRootSteps(t *testing.T) {
 	plans := 0
 	plan := func(dry bool) ([]install.Step, []install.StepResult, error) {
 		plans++
-		if r.CalledWith(su) {
+		if suRan() > 0 {
 			rootDone = true
 		}
 		res, err := install.RunPlan(context.Background(), steps, install.PlanOptions{DryRun: dry, Out: io.Discard})
@@ -64,12 +72,7 @@ func TestDriveInstall_AdminReplansAfterTheRootSteps(t *testing.T) {
 	if plans != 2 || deferredApplied != 1 {
 		t.Errorf("plans %d, deferred step applied %d times; want 2 and 1", plans, deferredApplied)
 	}
-	n := 0
-	for _, c := range r.Calls {
-		if c.String() == su {
-			n++
-		}
-	}
+	n := suRan()
 	if n != 1 {
 		t.Errorf("su ran %d times, want once", n)
 	}
