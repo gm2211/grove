@@ -67,14 +67,21 @@ func newLockedKeychain(t *testing.T, home, password string) string {
 	if err := os.MkdirAll(filepath.Dir(kc), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("/usr/bin/security", "create-keychain", "-p", password, kc).CombinedOutput(); err != nil {
+	// security names a new keychain itself: create "login.keychain" and use the file it writes
+	// (login.keychain-db on current macOS).
+	if out, err := exec.Command("/usr/bin/security", "create-keychain", "-p", password, strings.TrimSuffix(kc, "-db")).CombinedOutput(); err != nil {
 		t.Fatalf("create-keychain: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(kc); err != nil {
+		entries, _ := os.ReadDir(filepath.Dir(kc))
+		t.Fatalf("create-keychain didn't write %s: %v (dir holds %v)", kc, err, entries)
 	}
 	t.Cleanup(func() { _ = exec.Command("/usr/bin/security", "delete-keychain", kc).Run() })
 	// Control: the keychain takes this password through argv, so a failure below is the
 	// interactive path's.
 	if out, err := exec.Command("/usr/bin/security", "unlock-keychain", "-p", password, kc).CombinedOutput(); err != nil {
-		t.Fatalf("control unlock-keychain on argv: %v\n%s", err, out)
+		entries, _ := os.ReadDir(filepath.Dir(kc))
+		t.Fatalf("control unlock-keychain on argv: %v\n%s (dir holds %v)", err, out, entries)
 	}
 	if out, err := exec.Command("/usr/bin/security", "lock-keychain", kc).CombinedOutput(); err != nil {
 		t.Fatalf("lock-keychain: %v\n%s", err, out)
