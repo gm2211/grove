@@ -60,7 +60,7 @@ func place(nc *fakeNomad, nomadJobID, worker, status string) {
 }
 
 func TestSubmit_CredentialsBecomePlaceholders(t *testing.T) {
-	nc := &fakeNomad{}
+	nc := fakeWithReadyPools()
 	storePath := filepath.Join(t.TempDir(), "jobs.json")
 	svc := newCredService(t, nc, storePath)
 	req := credRequest()
@@ -106,7 +106,7 @@ func TestSubmit_CredentialsBecomePlaceholders(t *testing.T) {
 
 func TestBrokerEntries_FollowPlacementAndJobEnd(t *testing.T) {
 	ctx := context.Background()
-	nc := &fakeNomad{}
+	nc := fakeWithReadyPools()
 	svc := newCredService(t, nc, "")
 	job, _, err := svc.Submit(ctx, credRequest())
 	if err != nil {
@@ -158,7 +158,7 @@ func TestBrokerEntries_FollowPlacementAndJobEnd(t *testing.T) {
 
 func TestReconcilerForgetsEndedJobsTokens(t *testing.T) {
 	ctx := context.Background()
-	nc := &fakeNomad{}
+	nc := fakeWithReadyPools()
 	svc := newCredService(t, nc, "")
 	job, _, err := svc.Submit(ctx, credRequest())
 	if err != nil {
@@ -188,7 +188,7 @@ func TestReconcilerForgetsEndedJobsTokens(t *testing.T) {
 
 func TestUpdateCredentials(t *testing.T) {
 	ctx := context.Background()
-	nc := &fakeNomad{}
+	nc := fakeWithReadyPools()
 	storePath := filepath.Join(t.TempDir(), "jobs.json")
 	svc := newCredService(t, nc, storePath)
 	job, _, err := svc.Submit(ctx, credRequest())
@@ -250,7 +250,7 @@ func entriesByPlaceholder(t *testing.T, svc *service, worker string) map[string]
 }
 
 func TestSubmit_CredentialsRefusedOnSealedPools(t *testing.T) {
-	nc := &fakeNomad{}
+	nc := fakeWithReadyPools()
 	svc := newCredService(t, nc, "", PoolConfig{Name: "linux", Fallback: "sealed"}, PoolConfig{Name: "sealed", Isolated: true})
 	req := credRequest()
 	req.Pool = "sealed"
@@ -290,7 +290,7 @@ func TestSubmit_RejectsBadCredentials(t *testing.T) {
 	}
 	for name, req := range cases {
 		req.Kind, req.Pool, req.Script = KindShell, "linux", "true"
-		nc := &fakeNomad{}
+		nc := fakeWithReadyPools()
 		svc := newCredService(t, nc, "")
 		if _, _, err := svc.Submit(context.Background(), req); err == nil {
 			t.Fatalf("%s: accepted", name)

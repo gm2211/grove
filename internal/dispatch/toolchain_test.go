@@ -170,7 +170,7 @@ func toolchainService(t *testing.T, nc *fakeNomad) *service {
 var goodToolchain = func() *Toolchain { return tc("1.99.1", []string{"rustfmt", "clippy"}, "22.11.0", "") }
 
 func TestSubmit_ToolchainSetsMetaFromCanonicalForm(t *testing.T) {
-	nc := &fakeNomad{}
+	nc := fakeWithReadyPools()
 	svc := toolchainService(t, nc)
 	image := "ghcr.io/acme/builder@" + digest
 	req := buildReq("linux", &Environment{Image: image, Toolchain: goodToolchain()})
@@ -187,7 +187,7 @@ func TestSubmit_ToolchainSetsMetaFromCanonicalForm(t *testing.T) {
 		t.Errorf("task_image = %q", meta["task_image"])
 	}
 	// No toolchain, no keys.
-	nc2 := &fakeNomad{}
+	nc2 := fakeWithReadyPools()
 	svc2 := toolchainService(t, nc2)
 	r2 := buildReq("linux", &Environment{Image: image})
 	r2.Meta = map[string]string{"toolchain_json": "evil"}
@@ -200,7 +200,7 @@ func TestSubmit_ToolchainSetsMetaFromCanonicalForm(t *testing.T) {
 }
 
 func TestSubmit_ToolchainOnMacOS(t *testing.T) {
-	nc := &fakeNomad{}
+	nc := fakeWithReadyPools()
 	svc := toolchainService(t, nc)
 	// Image is optional and ignored; the pool's runner image is task_image.
 	for _, img := range []string{"", "ghcr.io/anything:latest"} {
@@ -257,7 +257,7 @@ func TestEffectivePin_Toolchain(t *testing.T) {
 // fallsBack submits req to its pool, reports no nodes there, and says whether the job moved.
 func fallsBack(t *testing.T, req JobRequest) (*fakeNomad, bool) {
 	t.Helper()
-	nc := &fakeNomad{}
+	nc := fakeWithReadyPools()
 	svc := toolchainService(t, nc)
 	job, _, err := svc.Submit(context.Background(), req)
 	if err != nil {
@@ -304,7 +304,7 @@ func TestFallback_ToolchainJobNeverMovesToTheWrongPool(t *testing.T) {
 		})
 	}
 	t.Run("macos job size smaller than requested", func(t *testing.T) {
-		nc := &fakeNomad{}
+		nc := fakeWithReadyPools()
 		svc := envService(t, nc,
 			PoolConfig{Name: "linux", Fallback: "macos", AllowedImages: []string{"ghcr.io/acme/"}, CPU: 8000, Memory: 16384},
 			PoolConfig{Name: "macos", OS: "darwin", Toolchains: true, CPU: 2000, Memory: 4096},
@@ -338,7 +338,7 @@ func TestFallback_ImageOnlyEnvironmentStillPinned(t *testing.T) {
 }
 
 func TestRedispatch_ToolchainCarriedAndFailsClosed(t *testing.T) {
-	nc := &fakeNomad{}
+	nc := fakeWithReadyPools()
 	svc := toolchainService(t, nc)
 	job, _, err := svc.Submit(context.Background(), buildReq("linux", &Environment{Image: "ghcr.io/acme/b@" + digest, Toolchain: goodToolchain()}))
 	if err != nil {

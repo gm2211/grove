@@ -4,6 +4,11 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Dispatch never falls back into a pool with no ready node** (none, down, draining or
+  ineligible). The job stays pending in its own pool, and its pending reason says why it wasn't moved.
+  Before, a Linux job whose nodes were busy moved to a macOS pool whose only VM was boot-looping
+  and sat there until it timed out.
+
 - **macOS VMs boot with nobody logged in: `grove worker remember-login`.** A macOS guest needs the
   worker user's login keychain unlocked (Virtualization.framework keeps its host key there), and a
   GUI login, the only way to get that so far, ends at every reboot or crash, so the macOS pool died
