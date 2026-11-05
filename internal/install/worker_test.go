@@ -171,7 +171,10 @@ func TestWorkerPlan_AppliesCommandsAndGatesPrivilegedSteps(t *testing.T) {
 	if strings.Contains(string(wrapper), opts.Token) || !strings.Contains(string(wrapper), "--bootstrap-token-stdin") {
 		t.Fatalf("worker wrapper must feed the credential over stdin without embedding it: %s", wrapper)
 	}
-	if !strings.Contains(string(wrapper), `< "`+credFile+`"`) || strings.Contains(string(wrapper), "security") {
+	// The wrapper runs security(1) only to unlock the login keychain (loginkeychain.go), never to
+	// read a credential out of it.
+	if !strings.Contains(string(wrapper), `< "`+credFile+`"`) || strings.Contains(string(wrapper), "find-generic-password") ||
+		strings.Contains(string(wrapper), "find-internet-password") {
 		t.Fatalf("worker wrapper must read the credential file, not Keychain: %s", wrapper)
 	}
 	if !strings.Contains(string(wrapper), " --guest-agent-transport ") {

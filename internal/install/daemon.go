@@ -263,8 +263,11 @@ func checkLoginSession(ctx context.Context, r Runner, opts Options) CheckResult 
 	if _, _, err := r.Run(ctx, "launchctl", "print", fmt.Sprintf("gui/%d", opts.workerUID())); err == nil {
 		return CheckResult{Name: name, OK: true, Detail: opts.userLabel() + " is logged in, so macOS VMs can boot"}
 	}
+	if LoginRemembered(opts) {
+		return CheckResult{Name: name, OK: true, Detail: opts.userLabel() + " isn't logged in, but the worker unlocks its login keychain itself (grove worker remember-login), so macOS VMs can boot"}
+	}
 	return CheckResult{Name: name, OK: true, Warn: true,
-		Detail: opts.userLabel() + " has no login session here: Linux VMs run, but macOS VMs fail with \"security error … Failed to get current host key\" until " + opts.userLabel() + " logs in (fast user switching is enough, or auto-login)"}
+		Detail: opts.userLabel() + " has no login session here: Linux VMs run, but macOS VMs fail with \"security error … Failed to get current host key\" until " + opts.userLabel() + " logs in, or until " + opts.userLabel() + " runs `grove worker remember-login` once so the worker unlocks its keychain itself at every boot"}
 }
 
 // daemonsRemediation is what `grove doctor` tells an operator to do about a daemon that isn't
