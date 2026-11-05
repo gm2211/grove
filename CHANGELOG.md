@@ -2,6 +2,21 @@
 
 All notable changes to grove are documented here.
 
+## Unreleased
+
+- **macOS VMs boot with nobody logged in: `grove worker remember-login`.** A macOS guest needs the
+  worker user's login keychain unlocked (Virtualization.framework keeps its host key there), and a
+  GUI login, the only way to get that so far, ends at every reboot or crash, so the macOS pool died
+  with it until someone logged in again. Run `grove worker remember-login` once as the worker user
+  (for example `sudo -u argos -H grove worker remember-login`): it checks the password against that
+  user's login keychain, keeps it in `~/.config/grove/credentials/login-keychain` (0600), and the
+  worker's wrapper unlocks the keychain inside the worker daemon's own session before Orchard
+  starts, and again every 5 minutes. The password goes to `security -i` on stdin, never on argv.
+  Verified on a worker Mac: a macOS guest that failed with "Failed to get current host key" booted
+  with nobody logged in. `grove doctor`'s `login-session` check accepts it; `--forget` removes it.
+  Re-run `grove setup` (or `grove install --role worker`) after upgrading, which rewrites the
+  wrapper.
+
 ## v0.1.37
 
 - **Install: `--admin` keeps `su` and `sudo` on the terminal.** The root script was piped to
