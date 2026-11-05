@@ -46,9 +46,19 @@ func TestWorkerWrapper_UnlocksTheLoginKeychainWithoutTheSecret(t *testing.T) {
 	}
 }
 
-// macOS only: a real keychain with a password that needs every escape, unlocked the way
+// macOS only: real keychains, with passwords that need each escape, unlocked the way
 // RememberLogin and the wrapper do it.
-func newLockedKeychain(t *testing.T, home string) string {
+var keychainPasswords = map[string]string{
+	"plain":      "plainpassword1",
+	"space":      "two words",
+	"quote":      `say"hi`,
+	"backslash":  `back\slash`,
+	"apostrophe": "it's",
+	"shell":      "a$b`c",
+	"all":        trickyPassword,
+}
+
+func newLockedKeychain(t *testing.T, home, password string) string {
 	t.Helper()
 	if runtime.GOOS != "darwin" {
 		t.Skip("needs macOS security(1)")
@@ -57,10 +67,15 @@ func newLockedKeychain(t *testing.T, home string) string {
 	if err := os.MkdirAll(filepath.Dir(kc), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("/usr/bin/security", "create-keychain", "-p", trickyPassword, kc).CombinedOutput(); err != nil {
+	if out, err := exec.Command("/usr/bin/security", "create-keychain", "-p", password, kc).CombinedOutput(); err != nil {
 		t.Fatalf("create-keychain: %v\n%s", err, out)
 	}
 	t.Cleanup(func() { _ = exec.Command("/usr/bin/security", "delete-keychain", kc).Run() })
+	// Control: the keychain takes this password through argv, so a failure below is the
+	// interactive path's.
+	if out, err := exec.Command("/usr/bin/security", "unlock-keychain", "-p", password, kc).CombinedOutput(); err != nil {
+		t.Fatalf("control unlock-keychain on argv: %v\n%s", err, out)
+	}
 	if out, err := exec.Command("/usr/bin/security", "lock-keychain", kc).CombinedOutput(); err != nil {
 		t.Fatalf("lock-keychain: %v\n%s", err, out)
 	}
@@ -68,42 +83,50 @@ func newLockedKeychain(t *testing.T, home string) string {
 }
 
 func TestUnlockLoginKeychain_RealKeychain(t *testing.T) {
-	kc := newLockedKeychain(t, t.TempDir())
-	if err := UnlockLoginKeychain(context.Background(), ExecRunner{}, "wrong", kc); err == nil {
-		t.Fatal("a wrong password unlocked the keychain")
-	}
-	if err := UnlockLoginKeychain(context.Background(), ExecRunner{}, trickyPassword, kc); err != nil {
-		t.Fatalf("the right password: %v", err)
+	for name, password := range keychainPasswords {
+		t.Run(name, func(t *testing.T) {
+			kc := newLockedKeychain(t, t.TempDir(), password)
+			if err := UnlockLoginKeychain(context.Background(), ExecRunner{}, "wrong", kc); err == nil {
+				t.Fatal("a wrong password unlocked the keychain")
+			}
+			if err := UnlockLoginKeychain(context.Background(), ExecRunner{}, password, kc); err != nil {
+				t.Fatalf("the right password: %v", err)
+			}
+		})
 	}
 }
 
 func TestWorkerWrapperUnlockScript_RealKeychain(t *testing.T) {
-	home := t.TempDir()
-	newLockedKeychain(t, home)
-	zsh, err := exec.LookPath("zsh")
-	if err != nil {
-		t.Skip("no zsh")
-	}
-	cred := filepath.Join(home, "cred")
-	run := func(password string) (string, error) {
-		if err := os.WriteFile(cred, []byte(password+"\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		// Only the function: the background re-unlock loop isn't wanted in a test.
-		script := workerWrapperUnlockScript(cred)
-		script = script[:strings.Index(script, "if [ -f \"$grove_login_keychain\" ]; then\n  grove_unlock")]
-		cmd := exec.Command(zsh, "-c", "set -eu\n"+script+"grove_unlock_login_keychain")
-		cmd.Env = append(os.Environ(), "HOME="+home)
-		out, err := cmd.CombinedOutput()
-		return string(out), err
-	}
-	if out, err := run("wrong"); err == nil {
-		t.Fatalf("a wrong password unlocked the keychain: %s", out)
-	} else if strings.Contains(out, "wrong") {
-		t.Fatalf("the failure message shows the password: %s", out)
-	}
-	if out, err := run(trickyPassword); err != nil {
-		t.Fatalf("the right password: %v\n%s", err, out)
+	for name, password := range keychainPasswords {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			newLockedKeychain(t, home, password)
+			zsh, err := exec.LookPath("zsh")
+			if err != nil {
+				t.Skip("no zsh")
+			}
+			cred := filepath.Join(home, "cred")
+			run := func(pw string) (string, error) {
+				if err := os.WriteFile(cred, []byte(pw+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				// Only the function: the background re-unlock loop isn't wanted in a test.
+				script := workerWrapperUnlockScript(cred)
+				script = script[:strings.Index(script, "if [ -f \"$grove_login_keychain\" ]; then\n  grove_unlock")]
+				cmd := exec.Command(zsh, "-c", "set -eu\n"+script+"grove_unlock_login_keychain")
+				cmd.Env = append(os.Environ(), "HOME="+home)
+				out, err := cmd.CombinedOutput()
+				return string(out), err
+			}
+			if out, err := run("wrong"); err == nil {
+				t.Fatalf("a wrong password unlocked the keychain: %s", out)
+			} else if strings.Contains(out, "-p \"wrong\"") {
+				t.Fatalf("the failure message shows the password: %s", out)
+			}
+			if out, err := run(password); err != nil {
+				t.Fatalf("the right password: %v\n%s", err, out)
+			}
+		})
 	}
 }
 
