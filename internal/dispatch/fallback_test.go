@@ -32,7 +32,7 @@ func noLinuxNodes() []nomad.Evaluation {
 }
 
 func TestFallback_NoLinuxNodes_MovesToMacOS(t *testing.T) {
-	nc := &fakeNomad{}
+	nc := fakeWithReadyPools()
 	svc := fallbackService(t, nc)
 	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindBuild, Pool: "linux", Repo: "https://github.com/gm2211/argos", Ref: "abc", Script: "bash scripts/lint-all.sh", Env: map[string]string{"CI": "1"}})
 	if err != nil {
@@ -73,7 +73,7 @@ func TestFallback_NoLinuxNodes_MovesToMacOS(t *testing.T) {
 }
 
 func TestFallback_BusyPoolWaitsForFallbackAfter(t *testing.T) {
-	nc := &fakeNomad{}
+	nc := fakeWithReadyPools()
 	svc := fallbackService(t, nc)
 	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
 	if err != nil {
@@ -95,7 +95,7 @@ func TestFallback_PinPoolStays(t *testing.T) {
 	for _, req := range []JobRequest{
 		{Kind: KindShell, Pool: "linux", Script: "docker build .", PinPool: true},
 	} {
-		nc := &fakeNomad{}
+		nc := fakeWithReadyPools()
 		svc := fallbackService(t, nc)
 		job, _, err := svc.Submit(context.Background(), req)
 		if err != nil {
@@ -113,7 +113,7 @@ func TestFallback_PinPoolStays(t *testing.T) {
 }
 
 func TestFallback_StopsAfterRepeatedFailuresThere(t *testing.T) {
-	nc := &fakeNomad{}
+	nc := fakeWithReadyPools()
 	svc := fallbackService(t, nc)
 	req := JobRequest{Kind: KindBuild, Pool: "linux", Repo: "https://github.com/gm2211/argos", Script: "apt-get install -y foo"}
 	now := time.Now().UTC()
@@ -149,5 +149,48 @@ func TestFallback_StopsAfterRepeatedFailuresThere(t *testing.T) {
 	}
 	if _, blocked := svc.fallbackBlockedUntil(req, now); blocked {
 		t.Fatal("a recent success on macOS must keep the fallback on")
+	}
+}
+
+// fakeWithReadyPools is a fake Nomad with one ready, eligible node in each pool these tests name,
+// so a due fallback is never held back for want of a node in its target.
+func fakeWithReadyPools() *fakeNomad {
+	nc := &fakeNomad{}
+	for _, pool := range []string{"linux", "macos", "sealed"} {
+		nc.nodes = append(nc.nodes, nomad.Node{ID: "n-" + pool, Name: "n-" + pool, Status: "ready", Eligibility: "eligible", Meta: map[string]string{"pool": pool}})
+	}
+	return nc
+}
+
+func TestFallback_SkipsAPoolWithNoReadyNode(t *testing.T) {
+	for name, macos := range map[string]*nomad.Node{
+		"none":     nil,
+		"down":     {Status: "down", Eligibility: "eligible"},
+		"draining": {Status: "ready", Eligibility: "eligible", Drain: true},
+		"inelig":   {Status: "ready", Eligibility: "ineligible"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			nc := &fakeNomad{}
+			if macos != nil {
+				macos.Meta = map[string]string{"pool": "macos"}
+				nc.nodes = []nomad.Node{*macos}
+			}
+			svc := fallbackService(t, nc)
+			job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindBuild, Pool: "linux", Repo: "https://github.com/gm2211/argos", Ref: "abc", Script: "true"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			nc.evaluationsByJob = map[string][]nomad.Evaluation{"grove-build-linux/dispatch-1": noLinuxNodes()}
+			got, err := svc.Get(context.Background(), job.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Fallback != nil || len(nc.dispatchCalls) != 1 {
+				t.Fatalf("moved to a pool with no ready node: %+v", got.Fallback)
+			}
+			if !strings.Contains(got.PendingReason, "not moving to macos: it has no ready node") {
+				t.Fatalf("pending reason %q doesn't say why it stayed", got.PendingReason)
+			}
+		})
 	}
 }

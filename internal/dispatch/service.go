@@ -798,6 +798,14 @@ func (s *service) maybeFallBack(ctx context.Context, rec *record, job *Job, eval
 	if target == "" {
 		return
 	}
+	if ready, err := s.poolHasReadyNode(ctx, target); err != nil {
+		slog.Warn("dispatch: listing nodes for a fallback failed", "id", rec.ID, "to", target, "err", err)
+		return
+	} else if !ready {
+		// Moving would only trade one wait for another, in a pool that can't run it either.
+		job.PendingReason = fmt.Sprintf("%s; not moving to %s: it has no ready node", reason, target)
+		return
+	}
 	if err := s.fallBack(ctx, rec, target, reason, now); err != nil {
 		slog.Warn("dispatch: falling back to another pool failed", "id", rec.ID, "from", rec.Request.Pool, "to", target, "err", err)
 		return
@@ -805,6 +813,25 @@ func (s *service) maybeFallBack(ctx context.Context, rec *record, job *Job, eval
 	slog.Info("dispatch: job moved to its fallback pool", "id", rec.ID, "from", rec.Request.Pool, "to", target, "reason", reason)
 	job.Fallback = rec.Fallback
 	job.PendingReason = ""
+}
+
+// poolHasReadyNode says whether pool has a Nomad node that can take a job now: ready, eligible,
+// not draining. A sealed pool's jobs run through the control plane's own client, not a node of
+// the pool, so it always counts as ready here.
+func (s *service) poolHasReadyNode(ctx context.Context, pool string) (bool, error) {
+	if s.pools[pool].Isolated {
+		return true, nil
+	}
+	nodes, err := s.nomad.ListNodes(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, n := range nodes {
+		if n.Meta["pool"] == pool && n.Status == "ready" && !n.Drain && n.Eligibility != "ineligible" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // applyAttempts folds a sealed pool's attempt record into job: the driver runs on the control

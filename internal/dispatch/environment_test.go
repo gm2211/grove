@@ -123,7 +123,7 @@ func buildReq(pool string, env *Environment) JobRequest {
 }
 
 func TestSubmit_EnvironmentSetsTaskImage(t *testing.T) {
-	nc := &fakeNomad{}
+	nc := fakeWithReadyPools()
 	svc := envService(t, nc)
 	image := "ghcr.io/acme/builder@" + digest
 	job, _, err := svc.Submit(context.Background(), buildReq("linux", &Environment{Image: image}))
@@ -157,7 +157,7 @@ func TestSubmit_RejectsEnvironmentThePoolCannotHonour(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			nc := &fakeNomad{}
+			nc := fakeWithReadyPools()
 			svc.nomad = nc
 			if _, _, err := svc.Submit(context.Background(), tc.req); err == nil {
 				t.Fatal("expected a refusal")
@@ -170,7 +170,7 @@ func TestSubmit_RejectsEnvironmentThePoolCannotHonour(t *testing.T) {
 }
 
 func TestSubmit_CallerMetaImageIsNeverForwarded(t *testing.T) {
-	nc := &fakeNomad{}
+	nc := fakeWithReadyPools()
 	svc := envService(t, nc)
 	req := buildReq("linux", nil)
 	req.Meta = map[string]string{"image": "evil.example/x:latest", "task_image": "evil.example/y:latest"}
@@ -196,7 +196,7 @@ func TestSubmit_BuildAlwaysGetsTaskImage(t *testing.T) {
 		{{Name: "linux", RunnerImage: "ghcr.io/acme/runner:2"}},
 		{{Name: "linux", Isolated: true}},
 	} {
-		nc := &fakeNomad{}
+		nc := fakeWithReadyPools()
 		svc := envService(t, nc, pools...)
 		if _, _, err := svc.Submit(context.Background(), buildReq("linux", nil)); err != nil {
 			t.Fatal(err)
@@ -206,7 +206,7 @@ func TestSubmit_BuildAlwaysGetsTaskImage(t *testing.T) {
 		}
 	}
 	// The other kinds' templates don't take one.
-	nc := &fakeNomad{}
+	nc := fakeWithReadyPools()
 	svc := envService(t, nc)
 	if _, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"}); err != nil {
 		t.Fatal(err)
@@ -217,7 +217,7 @@ func TestSubmit_BuildAlwaysGetsTaskImage(t *testing.T) {
 }
 
 func TestFallback_EnvironmentNeverFallsBack(t *testing.T) {
-	nc := &fakeNomad{}
+	nc := fakeWithReadyPools()
 	svc := envService(t, nc)
 	job, _, err := svc.Submit(context.Background(), buildReq("linux", &Environment{Image: "ghcr.io/acme/builder@" + digest}))
 	if err != nil {
@@ -233,7 +233,7 @@ func TestFallback_EnvironmentNeverFallsBack(t *testing.T) {
 	}
 
 	// The same job without an environment does fall back, so the test above isolates the cause.
-	nc2 := &fakeNomad{}
+	nc2 := fakeWithReadyPools()
 	svc2 := envService(t, nc2)
 	job2, _, _ := svc2.Submit(context.Background(), buildReq("linux", nil))
 	nc2.evaluationsByJob = map[string][]nomad.Evaluation{"grove-build-linux/dispatch-1": noLinuxNodes()}
@@ -262,7 +262,7 @@ func TestUnplaceableReason_EnvironmentIsPinned(t *testing.T) {
 }
 
 func TestRedispatch_KeepsTaskImage(t *testing.T) {
-	nc := &fakeNomad{}
+	nc := fakeWithReadyPools()
 	svc := envService(t, nc)
 	image := "ghcr.io/acme/builder@" + digest
 	job, _, err := svc.Submit(context.Background(), buildReq("linux", &Environment{Image: image}))
