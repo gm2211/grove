@@ -46,6 +46,11 @@ func TestWorkerWrapper_UnlocksTheLoginKeychainWithoutTheSecret(t *testing.T) {
 	}
 }
 
+// testKeychainPath is where the real-keychain tests put theirs, relative to a temporary home. Not
+// "login": on a CI runner, a new keychain named login.keychain refused even its own password on
+// argv, so a test there couldn't tell the code's failures from the runner's.
+const testKeychainPath = "Library/Keychains/grove-test.keychain-db"
+
 // macOS only: real keychains, with passwords that need each escape, unlocked the way
 // RememberLogin and the wrapper do it.
 var keychainPasswords = map[string]string{
@@ -63,7 +68,7 @@ func newLockedKeychain(t *testing.T, home, password string) string {
 	if runtime.GOOS != "darwin" {
 		t.Skip("needs macOS security(1)")
 	}
-	kc := filepath.Join(home, loginKeychainPath)
+	kc := filepath.Join(home, testKeychainPath)
 	if err := os.MkdirAll(filepath.Dir(kc), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +123,7 @@ func TestWorkerWrapperUnlockScript_RealKeychain(t *testing.T) {
 					t.Fatal(err)
 				}
 				// Only the function: the background re-unlock loop isn't wanted in a test.
-				script := workerWrapperUnlockScript(cred)
+				script := strings.ReplaceAll(workerWrapperUnlockScript(cred), loginKeychainPath, testKeychainPath)
 				script = script[:strings.Index(script, "if [ -f \"$grove_login_keychain\" ]; then\n  grove_unlock")]
 				cmd := exec.Command(zsh, "-c", "set -eu\n"+script+"grove_unlock_login_keychain")
 				cmd.Env = append(os.Environ(), "HOME="+home)
