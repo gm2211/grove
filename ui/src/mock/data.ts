@@ -166,7 +166,13 @@ export const state: { fleet: FleetResponse } = {
     const workers = makeWorkers();
     const vms = makeVMs();
     const nodes = makeNodes(vms);
-    return { workers, vms, nodes };
+    // One stuck VM, so the Map's "stuck" panel shows in mock mode and screenshots.
+    const mac = vms.find((v) => v.pool === "macos");
+    const problems: FleetResponse["problems"] = mac
+      ? [{ kind: "needs-unlock", vm: mac.name, pool: "macos", worker: mac.host, restarts: 10,
+          detail: `the worker user on ${mac.host} has no login session (macOS guests need its unlocked login keychain)` }]
+      : [];
+    return { workers, vms, nodes, problems };
   })(),
 };
 

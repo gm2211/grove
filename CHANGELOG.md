@@ -4,6 +4,11 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **The Map shows stuck VMs, and why.** `GET /api/v1/fleet` has a new `problems` list
+  (`fleet.Problems`): every VM that can't take jobs, as `needs-unlock` (its worker user's login
+  keychain is locked), `boot-loop`, `failed`, or `not-joined` (running 5 minutes with no ready
+  Nomad node). The Map lists them under "stuck", so that answer no longer needs `grove status` on
+  the control plane.
 - **Dispatch never falls back into a pool with no ready node** (none, down, draining or
   ineligible). The job stays pending in its own pool, and its pending reason says why it wasn't moved.
   Before, a Linux job whose nodes were busy moved to a macOS pool whose only VM was boot-looping
