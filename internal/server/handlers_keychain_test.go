@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gm2211/grove/internal/dispatch"
+	"github.com/gm2211/grove/internal/orchard"
 )
 
 func TestKeychainUnlock_OperatorQueuesOnlyThatWorkersBrokerCollectsOnce(t *testing.T) {
@@ -62,5 +64,42 @@ func TestKeychainUnlock_OperatorQueuesOnlyThatWorkersBrokerCollectsOnce(t *testi
 		if rec := peerRequest(srv, http.MethodPost, "/api/v1/workers/mac-1/unlock-keychain", b, "127.0.0.1:1", "operator"); rec.Code != http.StatusBadRequest {
 			t.Fatalf("%s: %d", name, rec.Code)
 		}
+	}
+}
+
+func TestKeychainUnlock_CollectionRebuildsOnlyThatWorkersLockedVMs(t *testing.T) {
+	access, err := NewAccessStore(filepath.Join(t.TempDir(), "devices.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked := "VZErrorDomain -9: Failed to get current host key"
+	oc := &fakeOrchard{vms: []orchard.VM{
+		{Name: "macos-mac-1-0", Worker: "mac-1", Status: "failed", StatusMessage: locked},
+		{Name: "macos-mac-1-1", Worker: "mac-1", Status: "failed", StatusMessage: "disk full"},
+		{Name: "linux-mac-1-0", Worker: "mac-1", Status: "running"},
+		{Name: "macos-mac-2-0", Worker: "mac-2", Status: "failed", StatusMessage: locked},
+	}}
+	srv := newTestServer(oc, nil, &fakeDispatch{jobs: map[string]*dispatch.Job{}}, Options{Token: "operator", AccessStore: access})
+	zero := time.Duration(0)
+	srv.keychainUnlocks.rebuildDelay = &zero
+	mac1, _, _ := access.Issue("mac-1", []string{ScopeBroker})
+	peerRequest(srv, http.MethodPost, "/api/v1/workers/mac-1/unlock-keychain", `{"password":"pw"}`, "127.0.0.1:1", "operator")
+	peerRequest(srv, http.MethodGet, "/api/v1/broker/entries", "", "127.0.0.1:1", mac1)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		oc.mu.Lock()
+		calls := append([]string(nil), oc.deleteCalls...)
+		oc.mu.Unlock()
+		if len(calls) > 0 {
+			if len(calls) != 1 || calls[0] != "macos-mac-1-0" {
+				t.Fatalf("deleted %v, want only macos-mac-1-0", calls)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("nothing rebuilt")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

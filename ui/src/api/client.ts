@@ -94,6 +94,22 @@ export const api = {
     await request<void>(`/api/v1/vms/${encodeURIComponent(name)}/recycle`, { method: "POST" });
   },
 
+  /**
+   * Hands a worker's login password to its broker, which unlocks the worker user's keychain so
+   * macOS VMs boot. The control plane keeps it in memory until that broker collects it; nothing
+   * stores it.
+   */
+  async unlockKeychain(worker: string, password: string): Promise<void> {
+    if (isMock) {
+      mock.unlockKeychain(worker);
+      return delay(undefined);
+    }
+    await request<unknown>(`/api/v1/workers/${encodeURIComponent(worker)}/unlock-keychain`, {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    });
+  },
+
   async pauseWorker(name: string): Promise<void> {
     if (isMock) {
       mock.pauseWorker(name);

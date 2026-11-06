@@ -1,11 +1,14 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gm2211/grove/internal/fleet"
 )
 
 // Unlocking a worker's login keychain from the control panel, with the password kept nowhere.
@@ -41,6 +44,8 @@ type keychainUnlocks struct {
 	mu  sync.Mutex
 	m   map[string]pendingUnlock
 	now func() time.Time
+	// rebuildDelay overrides keychainRebuildDelay (tests).
+	rebuildDelay *time.Duration
 }
 
 func (k *keychainUnlocks) clock() time.Time {
@@ -139,4 +144,37 @@ func (s *Server) handleKeychainUnlockStatus(w http.ResponseWriter, r *http.Reque
 		st.Pending, st.ExpiresAt = true, &exp
 	}
 	s.writeJSON(w, http.StatusOK, st)
+}
+
+// keychainRebuildDelay is how long after its broker collects a password the control plane waits
+// before rebuilding the worker's failed macOS VMs: long enough for the broker's handoff and the
+// wrapper's unlock, both of which take seconds.
+const keychainRebuildDelay = 45 * time.Second
+
+// rebuildLockedVMs deletes worker's VMs that failed for a locked keychain, so the reconciler
+// recreates them now, with the keychain unlocked, instead of after fleet.LoginSessionRetry (an
+// hour). A boot-looping VM needs nothing: Orchard restarts it anyway.
+func (s *Server) rebuildLockedVMs(worker string) {
+	delay := keychainRebuildDelay
+	if d := s.keychainUnlocks.rebuildDelay; d != nil {
+		delay = *d
+	}
+	time.Sleep(delay)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	vms, err := s.orchard.ListVMs(ctx)
+	if err != nil {
+		s.log.Warn("keychain unlock: listing VMs to rebuild failed", "worker", worker, "err", err)
+		return
+	}
+	for _, vm := range vms {
+		if vm.Worker != worker || vm.Status != "failed" || !fleet.NeedsLoginSession(vm.StatusMessage) {
+			continue
+		}
+		if err := s.orchard.DeleteVM(ctx, vm.Name); err != nil {
+			s.log.Warn("keychain unlock: deleting a VM that failed for the locked keychain failed", "vm", vm.Name, "err", err)
+			continue
+		}
+		s.log.Info("keychain unlock: deleted a VM that failed for the locked keychain; the reconciler recreates it", "vm", vm.Name)
+	}
 }

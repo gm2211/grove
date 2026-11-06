@@ -353,6 +353,10 @@ export function resumeWorker(name: string): void {
   }
 }
 
+export function unlockKeychain(worker: string): void {
+  state.fleet.problems = (state.fleet.problems ?? []).filter((p) => !(p.kind === "needs-unlock" && p.worker === worker));
+}
+
 export function recycleVM(name: string): void {
   const idx = state.fleet.vms.findIndex((v) => v.name === name);
   if (idx === -1) return;

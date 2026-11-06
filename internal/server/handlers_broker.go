@@ -38,6 +38,7 @@ func (s *Server) handleBrokerEntries(w http.ResponseWriter, r *http.Request) {
 	if pw, ok := s.keychainUnlocks.take(p.Name); ok {
 		resp.KeychainUnlock = pw
 		s.log.Info("keychain unlock collected by the worker's broker", "worker", p.Name)
+		go s.rebuildLockedVMs(p.Name)
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	s.writeJSON(w, http.StatusOK, resp)
