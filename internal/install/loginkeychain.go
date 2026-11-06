@@ -122,7 +122,9 @@ func LoginRemembered(opts Options) bool {
 //     and unlocks with each. The password lives only in this shell's memory and is kept nowhere.
 //
 // A failure only warns: Linux VMs need no keychain. Both loops live as long as Orchard, their
-// parent after the exec.
+// parent after the exec, and no longer: each checks that pid, so a wrapper that exits never leaves
+// one holding its output open. The FIFO loop opens the FIFO read-write so the open never blocks
+// and reads with a timeout, which is what lets it notice.
 func workerWrapperUnlockScript(credPath, fifoPath string) string {
 	return fmt.Sprintf(`grove_login_keychain=%q
 grove_unlock_fifo=%q
@@ -147,19 +149,19 @@ grove_unlock_login_keychain() {
 }
 if [ -f "$grove_login_keychain" ]; then
   grove_unlock_login_keychain || true
-  ( while sleep %s; do grove_unlock_login_keychain >/dev/null 2>&1 || true; done ) &!
+  ( while sleep %s && kill -0 $$ 2>/dev/null; do grove_unlock_login_keychain >/dev/null 2>&1 || true; done ) &!
 fi
 if [ ! -p "$grove_unlock_fifo" ]; then
   rm -f "$grove_unlock_fifo" 2>/dev/null
   /usr/bin/mkfifo -m 600 "$grove_unlock_fifo" 2>/dev/null || true
 fi
 if [ -p "$grove_unlock_fifo" ]; then
-  ( while :; do
+  grove_wrapper_pid=$$
+  ( exec {grove_fd}<>"$grove_unlock_fifo" || exit 0
+    while kill -0 "$grove_wrapper_pid" 2>/dev/null; do
       grove_pw=""
-      if IFS= read -r grove_pw < "$grove_unlock_fifo" && [ -n "$grove_pw" ]; then
+      if IFS= read -r -t 2 -u $grove_fd grove_pw && [ -n "$grove_pw" ]; then
         if grove_unlock_keychain_with; then print -u2 -r -- "grove: unlocked the login keychain from the control panel"; fi
-      else
-        sleep 1
       fi
       grove_pw=""
     done ) &!
