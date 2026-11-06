@@ -28,7 +28,7 @@ func TestBrokerFetchReadsItsCredentialOnceFound(t *testing.T) {
 			return "", errors.New("no broker credential in Keychain")
 		}
 		return "broker-token", nil
-	})
+	}, nil)
 	ctx := context.Background()
 	if _, err := fetch(ctx); err == nil {
 		t.Fatal("fetch without a credential succeeded")

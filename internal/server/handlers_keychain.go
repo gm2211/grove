@@ -1,0 +1,142 @@
+package server
+
+import (
+	"encoding/json"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+)
+
+// Unlocking a worker's login keychain from the control panel, with the password kept nowhere.
+//
+// A macOS guest boots only while its worker user's login keychain is unlocked (fleet's
+// NeedsLoginSession). An operator who would rather not store that user's password on the Mac
+// (`grove worker remember-login`) types it into the panel instead:
+//
+//	POST /workers/{name}/unlock-keychain {"password": "..."}   operator scope
+//
+// The control plane holds it in memory, for that worker only, for keychainUnlockTTL. The worker's
+// credential broker collects it on its next poll of GET /broker/entries (BrokerEntriesResponse's
+// KeychainUnlock: only the broker credential named after that worker gets it, and the route stays
+// the only one a broker credential reaches, spec S5), which removes it here, and hands it to the
+// worker daemon's wrapper through a FIFO; the wrapper unlocks the keychain in the daemon's own
+// security session. The password is never written to disk, logged, put in an API response other
+// than that one collection, or kept after it. After a reboot the keychain is locked again and the
+// Map shows the worker's macOS VMs as needs-unlock until someone unlocks it again.
+
+// keychainUnlockTTL is how long a typed password waits for its worker's broker before it is dropped.
+const keychainUnlockTTL = 10 * time.Minute
+
+// maxKeychainPassword bounds a password: a login password, not a payload.
+const maxKeychainPassword = 1024
+
+type pendingUnlock struct {
+	password string
+	expires  time.Time
+}
+
+// keychainUnlocks holds at most one pending password per worker, in memory only.
+type keychainUnlocks struct {
+	mu  sync.Mutex
+	m   map[string]pendingUnlock
+	now func() time.Time
+}
+
+func (k *keychainUnlocks) clock() time.Time {
+	if k.now != nil {
+		return k.now()
+	}
+	return time.Now()
+}
+
+// put queues password for worker, replacing any earlier one, and says when it expires.
+func (k *keychainUnlocks) put(worker, password string) time.Time {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.m == nil {
+		k.m = map[string]pendingUnlock{}
+	}
+	exp := k.clock().Add(keychainUnlockTTL)
+	k.m[worker] = pendingUnlock{password: password, expires: exp}
+	return exp
+}
+
+// take removes and returns worker's pending password, if one is waiting and unexpired.
+func (k *keychainUnlocks) take(worker string) (string, bool) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	p, ok := k.m[worker]
+	delete(k.m, worker)
+	if !ok || k.clock().After(p.expires) {
+		return "", false
+	}
+	return p.password, true
+}
+
+// pending says whether worker has a password waiting, and until when.
+func (k *keychainUnlocks) pending(worker string) (time.Time, bool) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	p, ok := k.m[worker]
+	if !ok || k.clock().After(p.expires) {
+		return time.Time{}, false
+	}
+	return p.expires, true
+}
+
+// KeychainUnlockRequest is the body of POST /workers/{name}/unlock-keychain.
+type KeychainUnlockRequest struct {
+	Password string `json:"password"`
+}
+
+// KeychainUnlockStatus is what POST and GET /workers/{name}/unlock-keychain answer. It never
+// carries the password.
+type KeychainUnlockStatus struct {
+	Worker    string     `json:"worker"`
+	Pending   bool       `json:"pending"`
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+}
+
+func (s *Server) handleQueueKeychainUnlock(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !validWorkerName(name) {
+		http.Error(w, "invalid worker name", http.StatusBadRequest)
+		return
+	}
+	var req KeychainUnlockRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4*maxKeychainPassword)).Decode(&req); err != nil {
+		http.Error(w, "body must be {\"password\": \"...\"}", http.StatusBadRequest)
+		return
+	}
+	switch {
+	case req.Password == "":
+		http.Error(w, "password is empty", http.StatusBadRequest)
+		return
+	case len(req.Password) > maxKeychainPassword:
+		http.Error(w, "password is too long", http.StatusBadRequest)
+		return
+	case strings.ContainsAny(req.Password, "\r\n\x00"):
+		// The worker reads it as one line.
+		http.Error(w, "password must be one line", http.StatusBadRequest)
+		return
+	}
+	exp := s.keychainUnlocks.put(name, req.Password)
+	req.Password = ""
+	s.log.Info("keychain unlock queued for a worker's broker", "worker", name, "by", principalFromContext(r.Context()).Name)
+	w.Header().Set("Cache-Control", "no-store")
+	s.writeJSON(w, http.StatusAccepted, KeychainUnlockStatus{Worker: name, Pending: true, ExpiresAt: &exp})
+}
+
+func (s *Server) handleKeychainUnlockStatus(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !validWorkerName(name) {
+		http.Error(w, "invalid worker name", http.StatusBadRequest)
+		return
+	}
+	st := KeychainUnlockStatus{Worker: name}
+	if exp, ok := s.keychainUnlocks.pending(name); ok {
+		st.Pending, st.ExpiresAt = true, &exp
+	}
+	s.writeJSON(w, http.StatusOK, st)
+}

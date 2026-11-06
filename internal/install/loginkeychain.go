@@ -110,22 +110,28 @@ func LoginRemembered(opts Options) bool {
 	return err == nil && info.Mode().IsRegular() && info.Size() > 0
 }
 
-// workerWrapperUnlockScript defines and runs grove_unlock_login_keychain in the worker's wrapper
-// (zsh). It reads the stored password from the credential file each time, escapes it for one
-// `security -i` argument, and pipes the command in: print is a builtin, so the password is never
-// in any process's argv. A failure only warns: Linux VMs need no keychain. A background loop
-// unlocks again every loginKeychainRelock seconds; it lives as long as Orchard, its parent after
-// the exec.
-func workerWrapperUnlockScript(credPath string) string {
+// workerWrapperUnlockScript defines the wrapper's (zsh) login-keychain unlocking and starts it.
+//
+//   - grove_unlock_keychain_with unlocks with the password in $grove_pw: escaped for one
+//     `security -i` argument and piped in. print is a builtin, so the password is never in any
+//     process's argv.
+//   - With a stored password (`grove worker remember-login`, credPath), it unlocks before Orchard
+//     starts and again every loginKeychainRelock seconds.
+//   - Without one, it can still be unlocked from the control panel: a loop reads lines from the
+//     FIFO fifoPath, which only the worker's credential broker writes (DeliverKeychainUnlock),
+//     and unlocks with each. The password lives only in this shell's memory and is kept nowhere.
+//
+// A failure only warns: Linux VMs need no keychain. Both loops live as long as Orchard, their
+// parent after the exec.
+func workerWrapperUnlockScript(credPath, fifoPath string) string {
 	return fmt.Sprintf(`grove_login_keychain=%q
-grove_unlock_login_keychain() {
-  local pw out
-  [ -f "$grove_login_keychain" ] || return 0
-  IFS= read -r pw < "$grove_login_keychain" || [ -n "$pw" ] || return 0
-  pw=${pw//\\/\\\\}
-  pw=${pw//\"/\\\"}
-  out=$(print -r -- "unlock-keychain -p \"$pw\" \"$HOME/%s\"" | /usr/bin/security -i 2>&1)
-  pw=""
+grove_unlock_fifo=%q
+grove_unlock_keychain_with() {
+  local out
+  grove_pw=${grove_pw//\\/\\\\}
+  grove_pw=${grove_pw//\"/\\\"}
+  out=$(print -r -- "unlock-keychain -p \"$grove_pw\" \"$HOME/%s\"" | /usr/bin/security -i 2>&1)
+  grove_pw=""
   if [[ "$out" == *"security: "* || "$out" == *SecKeychain* ]]; then
     print -u2 -r -- "grove: could not unlock the login keychain (macOS VMs need it): ${out}"
     return 1
@@ -133,9 +139,39 @@ grove_unlock_login_keychain() {
   /usr/bin/security set-keychain-settings "$HOME/%s" >/dev/null 2>&1 || true
   return 0
 }
+grove_unlock_login_keychain() {
+  local grove_pw
+  [ -f "$grove_login_keychain" ] || return 0
+  IFS= read -r grove_pw < "$grove_login_keychain" || [ -n "$grove_pw" ] || return 0
+  grove_unlock_keychain_with
+}
 if [ -f "$grove_login_keychain" ]; then
   grove_unlock_login_keychain || true
   ( while sleep %s; do grove_unlock_login_keychain >/dev/null 2>&1 || true; done ) &!
 fi
-`, credPath, loginKeychainPath, loginKeychainPath, loginKeychainRelock)
+if [ ! -p "$grove_unlock_fifo" ]; then
+  rm -f "$grove_unlock_fifo" 2>/dev/null
+  /usr/bin/mkfifo -m 600 "$grove_unlock_fifo" 2>/dev/null || true
+fi
+if [ -p "$grove_unlock_fifo" ]; then
+  ( while :; do
+      grove_pw=""
+      if IFS= read -r grove_pw < "$grove_unlock_fifo" && [ -n "$grove_pw" ]; then
+        if grove_unlock_keychain_with; then print -u2 -r -- "grove: unlocked the login keychain from the control panel"; fi
+      else
+        sleep 1
+      fi
+      grove_pw=""
+    done ) &!
+fi
+`, credPath, fifoPath, loginKeychainPath, loginKeychainPath, loginKeychainRelock)
 }
+
+// KeychainUnlockFIFOName is the FIFO, in the credentials directory, through which the worker's
+// credential broker hands the wrapper a login password typed into the control panel
+// (POST /workers/{name}/unlock-keychain). The wrapper creates it and reads it; nothing stores the
+// password: it passes from the broker's memory through the kernel's pipe buffer to `security -i`.
+const KeychainUnlockFIFOName = "keychain-unlock.fifo"
+
+// ErrNoUnlockReader is DeliverKeychainUnlock's error when no wrapper is reading the FIFO yet.
+var ErrNoUnlockReader = errors.New("no worker wrapper is reading the keychain-unlock FIFO")
