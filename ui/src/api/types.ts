@@ -104,10 +104,23 @@ export interface FleetEntry {
   raw?: Record<string, unknown>;
 }
 
+/** A VM that can't take jobs, and why (GET /fleet `problems`, grove's fleet.Problems). */
+export interface FleetProblem {
+  kind: "needs-unlock" | "boot-loop" | "failed" | "not-joined";
+  vm: string;
+  pool?: string;
+  worker?: string;
+  restarts?: number;
+  since?: string;
+  detail: string;
+}
+
 export interface FleetResponse {
   workers: FleetEntry[];
   vms: FleetEntry[];
   nodes: FleetEntry[];
+  /** Absent from an older control plane. */
+  problems?: FleetProblem[];
 }
 
 export interface HealthResponse {
