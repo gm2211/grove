@@ -6,6 +6,7 @@ import type { Job } from "../api/types";
 import { View, ViewHead } from "../components/Layout";
 import { RefreshIcon } from "../components/Icons";
 import { TONES, toneOf, type Tone } from "../components/StatusPill";
+import { StuckVMs } from "../components/StuckVMs";
 import { PendingJoins } from "../components/PendingJoins";
 import { MapDetail } from "../components/MapDetail";
 import { buildFleetModel, workerStatus, type FleetModel, type VMView, type WorkerView } from "../lib/fleetModel";
@@ -93,6 +94,7 @@ export function MapPage() {
       />
 
       <PendingJoins />
+      <StuckVMs problems={fleet.data?.problems} />
 
       {view === "graph" ? (
         <>

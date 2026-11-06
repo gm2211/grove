@@ -51,6 +51,9 @@ type FleetResponse struct {
 	FetchedAt time.Time             `json:"fetchedAt"`
 	Totals    FleetTotals           `json:"totals"`
 	Reconcile FleetReconcileSummary `json:"reconcile"`
+	// Problems are the VMs that can't take jobs, and why (fleet.Problems): boot loops, locked
+	// keychains, failures, VMs that never joined Nomad. Empty, never null, when all is well.
+	Problems []fleet.Problem `json:"problems"`
 }
 
 // FleetTotals is a set of at-a-glance counts derived from the same fleet snapshot as
@@ -166,6 +169,10 @@ func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp.Reconcile = s.fleetReconcile.summary()
+	resp.Problems = fleet.Problems(vms, nodes, now)
+	if resp.Problems == nil {
+		resp.Problems = []fleet.Problem{}
+	}
 
 	s.writeJSON(w, http.StatusOK, resp)
 }
