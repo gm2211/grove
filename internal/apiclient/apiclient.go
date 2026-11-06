@@ -103,6 +103,16 @@ func (c *Client) BrokerEntries(ctx context.Context) ([]broker.Entry, error) {
 	return out.Entries, nil
 }
 
+// BrokerSync is BrokerEntries plus the rest of the answer: a login password an operator typed
+// into the control panel for this worker, handed over once.
+func (c *Client) BrokerSync(ctx context.Context) (*server.BrokerEntriesResponse, error) {
+	var out server.BrokerEntriesResponse
+	if err := c.doJSON(ctx, http.MethodGet, "/broker/entries", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // Fleet returns the normalised fleet view: {workers, vms, nodes}.
 func (c *Client) Fleet(ctx context.Context) (*server.FleetResponse, error) {
 	var out server.FleetResponse

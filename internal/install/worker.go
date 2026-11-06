@@ -420,7 +420,7 @@ if [ -f "$registry_credential" ]; then
 fi
 %sexec %q worker run --name %q --labels %q --guest-agent-transport --bootstrap-token-stdin %q < %q
 `, groveTartBinDir(opts), credentialPath(opts, registryCredentialName),
-		workerWrapperUnlockScript(credentialPath(opts, loginKeychainCredentialName)), orchardBin, opts.hostname(), opts.workerLabels(), opts.Controller,
+		workerWrapperUnlockScript(credentialPath(opts, loginKeychainCredentialName), credentialPath(opts, KeychainUnlockFIFOName)), orchardBin, opts.hostname(), opts.workerLabels(), opts.Controller,
 		credentialPath(opts, workerBootstrapCredentialName))
 }
 

@@ -4,6 +4,16 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Unlock a worker's keychain from the panel, with the password stored nowhere.** A macOS VM
+  that can't boot because its worker user's login keychain is locked now has an "Unlock keychain"
+  button in the Map's stuck panel. The operator types that user's password once
+  (`POST /api/v1/workers/{name}/unlock-keychain`, operator only). The control plane keeps it in
+  memory until that worker's broker collects it with its next `GET /broker/entries`, the only
+  route a broker credential reaches (spec S5 unchanged). The broker passes it through a FIFO in
+  the credentials directory to the worker's wrapper, which unlocks the keychain in the worker
+  daemon's own session. Grove then rebuilds the VMs that failed for the locked keychain, without
+  the hour-long retry. Nothing writes the password to disk or logs it, so after a reboot you unlock
+  again. `grove worker remember-login` remains the way to store it instead.
 - **The Map shows stuck VMs, and why.** `GET /api/v1/fleet` has a new `problems` list
   (`fleet.Problems`): every VM that can't take jobs, as `needs-unlock` (its worker user's login
   keychain is locked), `boot-loop`, `failed`, or `not-joined` (running 5 minutes with no ready

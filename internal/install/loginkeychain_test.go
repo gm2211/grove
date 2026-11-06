@@ -123,7 +123,7 @@ func TestWorkerWrapperUnlockScript_RealKeychain(t *testing.T) {
 					t.Fatal(err)
 				}
 				// Only the function: the background re-unlock loop isn't wanted in a test.
-				script := strings.ReplaceAll(workerWrapperUnlockScript(cred), loginKeychainPath, testKeychainPath)
+				script := strings.ReplaceAll(workerWrapperUnlockScript(cred, filepath.Join(home, "fifo")), loginKeychainPath, testKeychainPath)
 				script = script[:strings.Index(script, "if [ -f \"$grove_login_keychain\" ]; then\n  grove_unlock")]
 				cmd := exec.Command(zsh, "-c", "set -eu\n"+script+"grove_unlock_login_keychain")
 				cmd.Env = append(os.Environ(), "HOME="+home)

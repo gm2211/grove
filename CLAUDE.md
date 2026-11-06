@@ -98,6 +98,13 @@ calls, returns scripted results) is for tests. This is what makes `--dry-run` ac
   older grove are only a migration source. A secret never appears in argv, a plist, the wrapper's
   text, a step description or a log: the wrapper reads the files (`< file`, or `read` into
   `TART_REGISTRY_USERNAME`/`TART_REGISTRY_PASSWORD`). `daemon_test.go` asserts it.
+- The worker user's login password unlocks its keychain (macOS VMs need it) two ways, both into the
+  worker daemon's own session: stored by `grove worker remember-login` (`loginkeychain.go`, 0600
+  credential), or typed into the panel and never stored (`POST /workers/{name}/unlock-keychain`:
+  control-plane memory, then the broker's `GET /broker/entries` answer, then the FIFO
+  `credentials/keychain-unlock.fifo` that only the wrapper reads, then `security -i` on stdin).
+  Keep it that way: never a new route for a broker credential (spec S5), never a file or log on
+  the way, and `DeliverKeychainUnlock` writes only into a FIFO this user owns.
 
 Adding a step: add it to the relevant `build<Role>Steps` function in `worker.go` /
 `controlplane.go` / `client.go`, keep `Check`/`Apply` going through `Runner`, and add a

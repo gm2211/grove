@@ -72,7 +72,10 @@ type Server struct {
 	log       *slog.Logger
 
 	workerHosts *workerHosts
-	handler     http.Handler
+	// keychainUnlocks holds passwords typed into the panel until their worker's broker collects them
+	// (handlers_keychain.go). Memory only.
+	keychainUnlocks *keychainUnlocks
+	handler         http.Handler
 
 	// recycleDone, if non-nil, receives the vm name every time a background recycle finishes
 	// deleting a VM. Only set by tests, to synchronize on the async recycle flow.
@@ -111,15 +114,16 @@ func New(oc orchard.Client, nc nomad.Client, ds dispatch.Service, ac artifacts.C
 		opts.RecyclePollInterval = 5 * time.Second
 	}
 	s := &Server{
-		orchard:        oc,
-		nomad:          nc,
-		dispatch:       ds,
-		artifacts:      ac,
-		opts:           opts,
-		log:            log,
-		fleetReconcile: &FleetReconcileStatus{},
-		joins:          newJoinStore(),
-		workerHosts:    &workerHosts{},
+		orchard:         oc,
+		nomad:           nc,
+		dispatch:        ds,
+		artifacts:       ac,
+		opts:            opts,
+		log:             log,
+		fleetReconcile:  &FleetReconcileStatus{},
+		joins:           newJoinStore(),
+		workerHosts:     &workerHosts{},
+		keychainUnlocks: &keychainUnlocks{},
 	}
 	s.handler = s.routes()
 	return s
@@ -164,6 +168,8 @@ func (s *Server) routes() http.Handler {
 	api.HandleFunc("PUT /github/sourcing", s.handleEnableGitHubSourcing)
 	api.HandleFunc("DELETE /github/sourcing", s.handleDisableGitHubSourcing)
 	api.HandleFunc("GET /broker/entries", s.handleBrokerEntries)
+	api.HandleFunc("POST /workers/{name}/unlock-keychain", s.handleQueueKeychainUnlock)
+	api.HandleFunc("GET /workers/{name}/unlock-keychain", s.handleKeychainUnlockStatus)
 
 	root := http.NewServeMux()
 	root.Handle("/api/v1/", http.StripPrefix("/api/v1", s.withMiddleware(api)))

@@ -9,6 +9,10 @@ import (
 // BrokerEntriesResponse is GET /broker/entries: every live entry for the calling worker's broker.
 type BrokerEntriesResponse struct {
 	Entries []broker.Entry `json:"entries"`
+	// KeychainUnlock is the worker user's login password, when an operator typed it into the
+	// panel for this worker (POST /workers/{name}/unlock-keychain) and no earlier poll took it. It
+	// is handed over once and then forgotten (handlers_keychain.go).
+	KeychainUnlock string `json:"keychainUnlock,omitempty"`
 }
 
 // handleBrokerEntries serves a worker's broker its entries, real tokens included. It is the only
@@ -30,6 +34,12 @@ func (s *Server) handleBrokerEntries(w http.ResponseWriter, r *http.Request) {
 	if entries == nil {
 		entries = []broker.Entry{}
 	}
+	resp := BrokerEntriesResponse{Entries: entries}
+	if pw, ok := s.keychainUnlocks.take(p.Name); ok {
+		resp.KeychainUnlock = pw
+		s.log.Info("keychain unlock collected by the worker's broker", "worker", p.Name)
+		go s.rebuildLockedVMs(p.Name)
+	}
 	w.Header().Set("Cache-Control", "no-store")
-	s.writeJSON(w, http.StatusOK, BrokerEntriesResponse{Entries: entries})
+	s.writeJSON(w, http.StatusOK, resp)
 }
