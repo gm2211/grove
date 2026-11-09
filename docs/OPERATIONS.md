@@ -397,6 +397,45 @@ If workers log in to `ghcr.io` (rather than the packages being made public — s
    image (see docs/IMAGES.md "Size expectations") — the first real signal is the next VM the fleet
    reconciler creates (`grove vm ls`'s STATUS column) or the worker's Orchard log.
 
+## Pulling private images on the Linux pools (arming, rotating, turning it off)
+
+A Linux job runs in a container the VM's docker pulls: the pool's `runnerImage` and, for a job with
+an `environment`, its image. A private image (`ghcr.io/gm2211/argos-ci`) fails with an
+authorization error unless the VM has a login. Arm one through the control plane; there is no
+config.yaml key or environment variable for it, and it is separate from `grove registry login`
+(which logs a worker *Mac* in for the Tart VM images):
+
+```bash
+# GHCR needs a classic personal access token with ONLY the read:packages scope
+pbpaste | grove registry pull enable --user gm2211 --repo gm2211/argos-ci
+grove registry pull status      # registry, user, repos and a token fingerprint, never the token
+grove registry pull disable     # wipes it from the control plane and, next tick, from the VMs
+```
+
+- The token comes from stdin or `$GROVE_REGISTRY_TOKEN`, never an argument. `--repo owner/name`
+  (repeatable, `owner/*` allowed) is required and `--registry` defaults to `ghcr.io`.
+- Applying it: within one fleet tick, `grove serve` writes `/etc/grove/registry/config.json`
+  (root:root, 0600, in a 0700 directory) into each running Linux VM, over Orchard exec with the
+  secret on stdin only. A VM gets the login only if its pool's `runnerImage` or `environments.allow`
+  names a repository in scope; every other Linux VM is given `{"auths":{}}`. The tick that
+  follows arming, **rotating** (run `enable` again with the new token) or `disable` pushes the
+  change; an unchanged login is not pushed again. A new VM is covered when it first enrols. VMs
+  created before this release are recreated once for the new startup script.
+- The login is not part of any job: not its spec, `env_json`, meta, record or logs, and a job's
+  script never sees it. It sits on the VM's disk for as long as the credential is armed, readable
+  by root only, so pools that run untrusted code in the image get it only if you list their images
+  in scope. Use a token that can read only those packages.
+- Environment images may be given as tags: the control plane resolves the tag to a digest with
+  this same credential at submit (docs/JOBS.md "Job environments"). With nothing armed that works
+  for public images only.
+- Not covered: sealed (`network: isolated`) pools pull inside their own VM (`internal/sandbox`) and
+  take no registry login yet.
+- Troubleshooting: `pull access denied` or `unauthorized` in a job's failure reason means the VM
+  has no login for that image (check `grove registry pull status` repos against the pool's
+  `runnerImage`/`environments.allow`, then wait one tick), or the token lost `read:packages` or
+  access to the package. A `runnerImage` with no registry host (`grove-runner:v1`) is read by
+  docker as `docker.io/library/…`; `grove serve` logs a warning for it.
+
 ## Where grove listens
 
 grove is only ever reachable over the tailnet. `grove serve` binds `server.listen` from

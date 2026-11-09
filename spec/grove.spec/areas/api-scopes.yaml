@@ -24,7 +24,8 @@ behaviors:
   - id: scope-boundaries
     description: >-
       read can't submit, cancel or re-key a job; plain dispatch can't run a shell job; access,
-      secrets, GitHub, VMs, workers and join approval are operator-only.
+      secrets, GitHub, registry pull credentials, VMs, workers and join approval are
+      operator-only.
     details: S7. Attackers C and J. Proved for every route with any parameters.
     tags: [security, s7]
     formal:

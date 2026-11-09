@@ -33,6 +33,16 @@ plugin "docker" {
       image       = true
       image_delay = "24h"
     }
+
+    # Private registry login. Nomad's docker driver reads this Docker config.json at every pull.
+    # The fleet startup script creates it (empty) and the control plane's enrolment fills it in
+    # when the VM's pool runs an image the operator-armed registry credential covers. A VM built
+    # before this block existed gets the same complete plugin block from the startup script
+    # (grove-docker.hcl): a later plugin block REPLACES this one's config rather than merging
+    # into it, so keep this block equal to fleet.linuxDockerPluginBlock (docs/IMAGES.md).
+    auth {
+      config = "/etc/grove/registry/config.json"
+    }
   }
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
 	"github.com/gm2211/grove/internal/pki"
@@ -25,6 +27,15 @@ type NodeCertIssuer interface {
 // (see nomad.NodePurger).
 type NodeLister interface {
 	ListNodeSummaries(ctx context.Context) ([]nomad.NodeSummary, error)
+}
+
+// RegistryPull supplies the Docker config.json a Linux VM pulls its pool's images with.
+// *registryauth.Store implements it.
+type RegistryPull interface {
+	// PullConfig returns the config.json for a VM that runs images, and a fingerprint that changes
+	// exactly when the config does. It returns an empty-auths config when no credential covers any
+	// of the images.
+	PullConfig(images []string) (config, fingerprint string)
 }
 
 const (
@@ -78,6 +89,9 @@ type enrolled struct {
 	instance string
 	at       time.Time
 	notAfter time.Time
+	// registryFP names the registry login last pushed to the VM ("" when none was); a change
+	// pushes the new one.
+	registryFP string
 }
 
 // Enrol gives every running shared-pool VM its Nomad identity, after boot and over Orchard exec,
@@ -154,20 +168,22 @@ func (r *Reconciler) Enrol(ctx context.Context, state *EnrolState) error {
 			continue
 		}
 		live[vm.Name] = true
+		registryConfig, registryFP := r.registryPullConfig(pool)
 		rec, have := state.vms[vm.Name]
 		switch {
 		case !have || rec.instance != vmInstance(vm):
+		case rec.registryFP != registryFP:
 		case now.After(rec.notAfter.Add(-nodeCertRenewBefore)):
 		case !present[vm.Name] && now.Sub(rec.at) > enrolRetryUnregistered:
 		default:
 			continue
 		}
-		notAfter, err := r.enrolVM(ctx, state, vm, pool, !registered[vm.Name], now)
+		notAfter, err := r.enrolVM(ctx, state, vm, pool, !registered[vm.Name], registryConfig, now)
 		if err != nil {
 			errs = append(errs, &EnrolError{VM: vm.Name, Pool: pool, Err: err})
 			continue
 		}
-		state.vms[vm.Name] = enrolled{instance: vmInstance(vm), at: now, notAfter: notAfter}
+		state.vms[vm.Name] = enrolled{instance: vmInstance(vm), at: now, notAfter: notAfter, registryFP: registryFP}
 		state.Enrolled = append(state.Enrolled, vm.Name)
 	}
 	for name := range state.vms {
@@ -221,7 +237,7 @@ func (r *Reconciler) enrolRefusal(vm orchard.VM, poolName, worker string, worker
 	return fmt.Sprintf("no pool %q in the fleet spec", poolName)
 }
 
-func (r *Reconciler) enrolVM(ctx context.Context, state *EnrolState, vm orchard.VM, pool string, withToken bool, now time.Time) (time.Time, error) {
+func (r *Reconciler) enrolVM(ctx context.Context, state *EnrolState, vm orchard.VM, pool string, withToken bool, registryConfig string, now time.Time) (time.Time, error) {
 	o := r.Options
 	cert, err := o.NodeCerts.IssueNode(vm.Name, now, pki.NodeCertValidity)
 	if err != nil {
@@ -247,7 +263,7 @@ func (r *Reconciler) enrolVM(ctx context.Context, state *EnrolState, vm orchard.
 	}
 	ctx, cancel := context.WithTimeout(ctx, enrolExecTimeout)
 	defer cancel()
-	payload := enrolPayload(nonce, token, cert)
+	payload := enrolPayload(nonce, token, registryConfig, cert)
 	session, err := r.Client.Exec(ctx, vm.Name, []string{"sudo", "-n", "/bin/sh", "-c", shQuote(enrolGuestScript)},
 		orchard.ExecOptions{Stdin: strings.NewReader(payload), Wait: enrolExecTimeout / 2})
 	if err != nil {
@@ -277,15 +293,53 @@ func (r *Reconciler) enrolVM(ctx context.Context, state *EnrolState, vm orchard.
 }
 
 // enrolPayloadHeader starts what an enrolment exec reads on stdin: then the enrolment's nonce,
-// then the introduction token line (empty for a renewal), then the certificate and key PEM.
-const enrolPayloadHeader = "grove-enrol/2"
+// then the introduction token line (empty for a renewal), then the registry login line (the
+// base64 of a Docker config.json, empty when the VM takes none), then the certificate and key PEM.
+const enrolPayloadHeader = "grove-enrol/3"
 
 // enrolledLine is what enrolGuestScript prints, followed by a space and the enrolment's nonce,
 // once the VM's files are in place.
 const enrolledLine = "grove: enrolled"
 
-func enrolPayload(nonce, token string, cert pki.NodeCert) string {
-	return enrolPayloadHeader + "\n" + nonce + "\n" + token + "\n" + cert.Cert + cert.Key
+func enrolPayload(nonce, token, registryConfig string, cert pki.NodeCert) string {
+	registry := ""
+	if registryConfig != "" {
+		registry = base64.StdEncoding.EncodeToString([]byte(registryConfig))
+	}
+	return enrolPayloadHeader + "\n" + nonce + "\n" + token + "\n" + registry + "\n" + cert.Cert + cert.Key
+}
+
+// registryPullConfig is the Docker config.json a Linux pool's VM is given, and a label that
+// changes when it does. A macOS or sealed pool has no docker to pull with, and a reconciler with
+// no registry credential store changes nothing: both return "", "".
+func (r *Reconciler) registryPullConfig(poolName string) (config, fingerprint string) {
+	if r.Options.RegistryPull == nil || r.Spec == nil {
+		return "", ""
+	}
+	for _, p := range r.Spec.Pools {
+		if p.Name != poolName {
+			continue
+		}
+		if p.MacOS() || p.Isolated() {
+			return "", ""
+		}
+		return r.Options.RegistryPull.PullConfig(poolImages(p))
+	}
+	return "", ""
+}
+
+// poolImages are the images a shared Linux pool's VMs pull: its runner image and whatever its
+// job environments may name.
+func poolImages(p Pool) []string {
+	runner := p.RunnerImage
+	if runner == "" {
+		runner = dispatch.DefaultRunnerImage
+	}
+	images := []string{runner}
+	if p.Environments != nil {
+		images = append(images, p.Environments.Allow...)
+	}
+	return images
 }
 
 // enrolNonce is a fresh random value for one enrolment exec. It is not a secret: it only proves
@@ -337,6 +391,7 @@ case "$grove_nonce" in
     ;;
 esac
 IFS= read -r grove_token
+IFS= read -r grove_registry
 mkdir -p "$grove_nomad_tls"
 chmod 0700 "$grove_nomad_tls"
 cat >"$grove_nomad_tls/.enrol"
@@ -352,6 +407,21 @@ if [ -n "$grove_token" ]; then
   mkdir -p "$(dirname "$grove_intro")"
   printf '%s' "$grove_token" >"$grove_intro.new"
   mv -f "$grove_intro.new" "$grove_intro"
+fi
+if [ -n "$grove_registry" ]; then
+  # The docker login Nomad's docker driver pulls images with (plugin "docker" auth.config). Root
+  # only, written whole and renamed into place, before the enrolled marker lets Nomad start.
+  grove_registry_dir=/etc/grove/registry
+  mkdir -p "$grove_registry_dir"
+  chmod 0700 "$grove_registry_dir"
+  printf '%s' "$grove_registry" | base64 -d >"$grove_registry_dir/.config.json.new"
+  if [ ! -s "$grove_registry_dir/.config.json.new" ]; then
+    rm -f "$grove_registry_dir/.config.json.new"
+    echo "grove: enrolment payload has an unreadable registry login" >&2
+    exit 2
+  fi
+  chmod 0600 "$grove_registry_dir/.config.json.new"
+  mv -f "$grove_registry_dir/.config.json.new" "$grove_registry_dir/config.json"
 fi
 mv -f "$grove_nomad_tls/.node-key.pem" "$grove_nomad_tls/node-key.pem"
 mv -f "$grove_nomad_tls/.node.pem" "$grove_nomad_tls/node.pem"

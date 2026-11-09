@@ -84,6 +84,8 @@ func buildStartupScript(pool Pool, worker, vmName string, opts Options) string {
 		b.WriteString("\n")
 	} else {
 		writeNomadRPCConfig(&b, "/etc/nomad.d", opts.NomadRPCAddress)
+		b.WriteString(linuxDockerAuthScript)
+		b.WriteString("\n")
 	}
 
 	// Before Nomad comes back with this VM's meta and can take a job.
@@ -529,6 +531,54 @@ const linuxCPUTotalComputeScript = `  case "$(uname -m)" in
     aarch64|arm64) grove_cpu_total_compute=$(( $(nproc) * 2000 )) ;;
     *) grove_cpu_total_compute="" ;;
   esac
+`
+
+// LinuxDockerAuthConfigPath is the Docker config.json on a Linux VM that Nomad's docker driver
+// pulls images with (plugin "docker" auth.config). Enrol writes it; see linuxDockerAuthScript.
+const LinuxDockerAuthConfigPath = "/etc/grove/registry/config.json"
+
+// linuxDockerPluginBlock is the Linux VM's complete `plugin "docker"` block: the same settings as
+// images/linux-worker/files/client.hcl (a test keeps the two equal) plus auth.config.
+const linuxDockerPluginBlock = `plugin "docker" {
+  config {
+    volumes {
+      enabled = false
+    }
+    allow_privileged = false
+    gc {
+      image       = true
+      image_delay = "24h"
+    }
+    auth {
+      config = "` + LinuxDockerAuthConfigPath + `"
+    }
+  }
+}
+`
+
+// linuxDockerAuthScript makes Nomad's docker driver on a Linux VM pull with the registry login
+// Enrol writes to LinuxDockerAuthConfigPath, on VMs whose image predates the auth block in
+// client.hcl (no rebake needed). It creates the login file (an empty one if Enrol hasn't written
+// yet: the driver fails a pull when the file named by auth.config is missing; O_EXCL, so it never
+// clobbers one Enrol just wrote) and a complete docker plugin block in grove-docker.hcl.
+//
+// Why a COMPLETE block, not just `auth`: Nomad loads the agent's config files in name order and
+// merges their plugin blocks by plugin name, but a later block's `config` map REPLACES the
+// earlier one's wholesale (nomad/structs/config.PluginConfig.Merge: `if len(o.Config) != 0 {
+// m.Config = o.Config }`, read in hashicorp/nomad v1.11.3). A grove-docker.hcl holding only `auth`
+// would silently drop client.hcl's volumes.enabled = false and allow_privileged = false, turning
+// host bind mounts back on: those are the fence between a job and root on the VM. So
+// grove-docker.hcl ("g" sorts after client.hcl) restates every setting and replaces client.hcl's
+// block outright. Named so TestBuildStartupScript_LinuxMatchesV010 can list it as an intended
+// change.
+const linuxDockerAuthScript = `# grove:docker-auth begin
+grove_priv mkdir -p /etc/grove/registry
+grove_priv chmod 0700 /etc/grove/registry
+grove_priv /bin/sh -c 'umask 077; set -C; echo "{\"auths\":{}}" > ` + LinuxDockerAuthConfigPath + `' 2>/dev/null || true
+grove_priv chmod 0600 ` + LinuxDockerAuthConfigPath + `
+grove_priv tee /etc/nomad.d/grove-docker.hcl >/dev/null <<'GROVE_NOMAD_DOCKER'
+` + linuxDockerPluginBlock + `GROVE_NOMAD_DOCKER
+# grove:docker-auth end
 `
 
 const nomadMetaScript = `if [ "$(uname -s)" = "Darwin" ]; then

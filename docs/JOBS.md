@@ -460,8 +460,19 @@ The caller only *requests* an image; the control plane decides. `Submit` returns
 these hold:
 
 - The reference is `<registry>/<repository>@sha256:<64 lowercase hex>`: an explicit registry host
-  (`ghcr.io/…`, `host:5000/…`, `localhost/…`), a lowercase OCI path, a digest, **no tag**, at most
-  512 bytes. A tag can be repointed after review; a digest cannot.
+  (`ghcr.io/…`, `host:5000/…`, `localhost/…`), a lowercase OCI path, a digest, at most 512 bytes. A
+  tag can be repointed after review; a digest cannot.
+- **A tag is accepted, but the control plane pins it.** `ghcr.io/acme/builder:v1` is accepted when
+  the pool allows `ghcr.io/acme/builder` (see below) and the control plane can resolve the tag: at
+  submit it asks the registry for the tag's digest (an OCI distribution `HEAD
+  /v2/<repo>/manifests/<tag>`, authenticated with the credential armed by `grove registry pull
+  enable` when that covers the repository, anonymous otherwise) and runs the job as
+  `ghcr.io/acme/builder@sha256:…`. The job record, dispatch meta (`task_image`) and the Nomad job all
+  carry only that digest, so a tag moved after submit changes nothing for this job, and a retry
+  runs the same bytes. If the registry can't be reached, refuses the credential or has no such
+  tag, `Submit` returns 400 naming the image; it never falls back to the tag. A reference with no
+  tag at all (`ghcr.io/acme/builder`) is refused too. A macOS toolchain job ignores `image`, so it
+  is not resolved.
 - The job's pool lists the repository in fleet.yaml `environments.allow`:
 
   ```yaml

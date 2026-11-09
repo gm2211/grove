@@ -114,6 +114,11 @@ type Options struct {
 	// Job.Request, so it never lands in the on-disk job history nor in any API response;
 	// Job.RepoCredentialUsed records that one was used.
 	RepoAuth RepoAuth
+	// ImageResolver, when non-nil, lets a job name its environment image by tag
+	// ("<registry>/<repo>:<tag>", repository allowed by the pool's environments.allow): Submit
+	// resolves the tag to a digest and pins it into the job, or refuses the submission. Nil means
+	// tags are refused, as before.
+	ImageResolver ImageResolver
 	// Secrets resolves JobRequest.Secrets names to values at Submit time (internal/secrets.Store).
 	// Each value is exported to the job under its name, through env_json like Env, and never
 	// stored on the Job record. Who may name which secret is decided before Submit, by the API
@@ -374,11 +379,53 @@ func (s *service) taskImage(req JobRequest) (string, error) {
 	return image, nil
 }
 
+// pinEnvironment returns req with an environment image given as "<registry>/<repository>:<tag>"
+// replaced by "<registry>/<repository>@sha256:<digest>", resolved through Options.ImageResolver.
+// It acts only on a tagged image whose repository the (shared Linux) pool allows; everything else
+// is returned unchanged for taskImage to judge, so a digest, a macOS toolchain job or a pool with
+// no allow list behave exactly as before. A tag that cannot be resolved is an error naming the
+// image; it is never used as it is.
+func (s *service) pinEnvironment(ctx context.Context, req JobRequest) (JobRequest, error) {
+	env := req.Environment
+	pc := s.pools[req.Pool]
+	if env == nil || s.opts.ImageResolver == nil || strings.Contains(env.Image, "@") ||
+		pc.Isolated || pc.OS == "darwin" || len(pc.AllowedImages) == 0 {
+		return req, nil
+	}
+	repo, ok := ParseTagRef(env.Image)
+	if !ok {
+		return req, nil // taskImage says what is wrong with it
+	}
+	if err := checkRepository(repo); err != nil {
+		return req, fmt.Errorf("dispatch: environment image: %w", err)
+	}
+	if !repositoryAllowed(repo, pc.AllowedImages) {
+		return req, fmt.Errorf("dispatch: environment image repository %q is not allowed by pool's environments.allow", repo)
+	}
+	pinned, err := s.opts.ImageResolver.ResolveTag(ctx, env.Image)
+	if err != nil {
+		return req, fmt.Errorf("dispatch: environment image %q: could not resolve the tag to a digest: %w", env.Image, err)
+	}
+	if !strings.HasPrefix(pinned, repo+"@") {
+		return req, fmt.Errorf("dispatch: environment image %q: resolver answered %q, which is not a digest of that repository", env.Image, pinned)
+	}
+	pinnedEnv := *env
+	pinnedEnv.Image = pinned
+	req.Environment = &pinnedEnv
+	return req, nil
+}
+
 func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error) {
 	if err := validate(req); err != nil {
 		return nil, false, err
 	}
 	if err := s.validateResources(req); err != nil {
+		return nil, false, err
+	}
+	// A tag becomes a digest here, before anything else looks at the image: from this line on the
+	// job carries only the pinned reference (record, meta and task_image alike).
+	req, err := s.pinEnvironment(ctx, req)
+	if err != nil {
 		return nil, false, err
 	}
 	taskImage, err := s.taskImage(req)

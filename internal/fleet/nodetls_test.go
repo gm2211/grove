@@ -164,18 +164,19 @@ func TestNodeTLS_SealedPoolsGetNone(t *testing.T) {
 // guestDirs are a fake VM's Nomad config and state directories, standing in for /etc/nomad.d and
 // /opt/nomad/data in the generated shell.
 type guestDirs struct {
-	nomad, state string
+	nomad, state, registry string
 }
 
 func newGuestDirs(t *testing.T) guestDirs {
 	root := t.TempDir()
-	return guestDirs{nomad: filepath.Join(root, "nomad.d"), state: filepath.Join(root, "data")}
+	return guestDirs{nomad: filepath.Join(root, "nomad.d"), state: filepath.Join(root, "data"), registry: filepath.Join(root, "registry")}
 }
 
 func (g guestDirs) rewrite(script string) string {
 	return strings.NewReplacer(
 		"/usr/local/etc/nomad.d", g.nomad,
 		"/etc/nomad.d", g.nomad,
+		"/etc/grove/registry", g.registry,
 		"/opt/nomad/data", g.state,
 	).Replace(script)
 }
@@ -216,7 +217,7 @@ func TestNodeTLS_StartupAndEnrolmentWriteRootOnlyFiles(t *testing.T) {
 	}
 
 	cert, _ := (&fakeNodeCerts{}).IssueNode("linux-mac1-0", time.Now(), time.Hour)
-	if code, out := g.runEnrol(t, enrolPayload("0123abcd", "the-jwt", cert)); code != 0 {
+	if code, out := g.runEnrol(t, enrolPayload("0123abcd", "the-jwt", "", cert)); code != 0 {
 		t.Fatalf("enrolment exited %d:\n%s", code, out)
 	}
 	// The startup script carries on once enrolled.
@@ -268,7 +269,7 @@ func TestEnrolGuestScript_RefusesABadPayload(t *testing.T) {
 	g := newGuestDirs(t)
 	for name, stdin := range map[string]string{
 		"no header":      "\n\n-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n",
-		"no key":         enrolPayloadHeader + "\n0123abcd\n\n-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n",
+		"no key":         enrolPayloadHeader + "\n0123abcd\n\n\n-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n",
 		"nothing at all": "",
 	} {
 		if code, out := g.runEnrol(t, stdin); code == 0 {

@@ -56,6 +56,10 @@ type Options struct {
 	NodeIntros nomad.NodeIntros
 	Nodes      NodeLister
 	NodePools  nomad.NodePools
+	// RegistryPull, when set, gives every shared Linux VM the docker login its pool's images need
+	// (see Enrol and registryauth.Store): the operator-armed registry credential when it covers
+	// one of the pool's images, else an empty login. Nil leaves the VMs' login as it is.
+	RegistryPull RegistryPull
 	// Load sizes elastic pools (see Pool.MaxPerWorker and autoscale.go). Nil keeps each elastic
 	// pool at its current size, clamped to its bounds.
 	Load *JobLoad

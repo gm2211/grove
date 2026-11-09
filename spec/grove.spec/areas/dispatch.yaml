@@ -58,13 +58,16 @@ behaviors:
   - id: job-image-is-allowlisted-and-pinned
     description: >-
       A shared-pool job's image is its pool's runner image or a digest-pinned image its pool
-      allows, chosen by the control plane; a job with an environment leaves its pool only for a
-      macOS pool that accepts its control-plane-validated native toolchain; the clone token runs
-      only in the runner image or the root source task.
+      allows (the control plane pins a tag to its digest at submit), chosen by the control
+      plane; a job with an environment leaves its pool only for a macOS pool that accepts its
+      control-plane-validated native toolchain; the clone token runs only in the runner image or
+      the root source task.
     details: >-
       S11. Attacker J (a caller choosing its own image through the request's environment or its
-      meta). Submit refuses an environment with a tag, no registry, an unallowed repository, a
-      sealed pool, a macOS pool without a validated toolchain, or a non-build kind; fallbackTarget
+      meta). A tag is accepted only for an allowed repository, and only once the control plane has
+      resolved it to a digest through the registry (internal/registryauth); a tag it cannot
+      resolve is refused, never used as it is. Submit refuses an environment with no registry, an
+      unallowed repository, an unresolvable tag, a sealed pool, a macOS pool without a validated toolchain, or a non-build kind; fallbackTarget
       moves an environment job only to a macOS pool with toolchains enabled and only when it
       carries a toolchain; build.nomad.hcl's source task stays on the runner image. Go tests in
       internal/dispatch/environment_test.go, internal/dispatch/toolchain_test.go and

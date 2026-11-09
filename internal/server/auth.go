@@ -78,11 +78,12 @@ func requiredScope(r *http.Request) string {
 		return SnoozeScope(worker)
 	}
 	// /github/ is operator-only for reads too: its status names the repositories and the window
-	// the control plane is currently willing to clone privately.
+	// the control plane is currently willing to clone privately. /registry/ likewise: it names
+	// the registry login and the repositories it covers.
 	if path == "/access" || strings.HasPrefix(path, "/access/") || path == "/secrets" || strings.HasPrefix(path, "/secrets/") || strings.HasPrefix(path, "/join/approve/") ||
 		path == "/join/pending" ||
 		strings.HasPrefix(path, "/vms/") || strings.HasPrefix(path, "/workers/") ||
-		strings.HasPrefix(path, "/github/") {
+		strings.HasPrefix(path, "/github/") || strings.HasPrefix(path, "/registry/") {
 		return ScopeOperator
 	}
 	if path == "/broker/entries" {

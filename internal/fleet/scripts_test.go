@@ -79,11 +79,13 @@ func TestBuildStartupScript_LinuxMatchesV010(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Turning Tailscale off, the home fence, the broker block, the login-shell exit guard and the
-	// arm64 cpu_total_compute are the intended changes since v0.1.10: every Linux VM is recreated
-	// once to get them. Everything else must stay byte-identical.
+	// Turning Tailscale off, the home fence, the broker block, the login-shell exit guard, the
+	// arm64 cpu_total_compute and the docker registry-login block are the intended changes since
+	// v0.1.10: every Linux VM is recreated once to get them. Everything else must stay
+	// byte-identical.
 	got := BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", "")
 	got = strings.Replace(got, linuxCPUTotalComputeScript, "  grove_cpu_total_compute=\"\"\n", 1)
+	got = strings.Replace(got, linuxDockerAuthScript+"\n", "", 1)
 	got = strings.Replace(got, tailscaleOffScript+"\n", "", 1)
 	got = strings.Replace(got, homeFenceScript(Pool{Name: "linux"})+"\n"+brokerScript()+"\n", "", 1)
 	got = strings.TrimSuffix(got, loginShellExitScript)

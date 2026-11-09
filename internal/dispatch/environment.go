@@ -70,7 +70,7 @@ func ValidateEnvironmentImage(ref string, allow []string) error {
 	}
 	repo, digest, ok := strings.Cut(ref, "@")
 	if !ok {
-		return fmt.Errorf("environment image %q must be pinned by digest (<registry>/<repository>@sha256:<64 hex>); tags are not accepted", ref)
+		return fmt.Errorf("environment image %q must be pinned by digest (<registry>/<repository>@sha256:<64 hex>); a <registry>/<repository>:<tag> is accepted only when the control plane can resolve it (the pool allows the repository and a registry resolver is configured)", ref)
 	}
 	if !digestPattern.MatchString(digest) {
 		return fmt.Errorf("environment image digest %q must be sha256: followed by 64 lowercase hex digits", digest)
@@ -78,16 +78,39 @@ func ValidateEnvironmentImage(ref string, allow []string) error {
 	if err := checkRepository(repo); err != nil {
 		return fmt.Errorf("environment image: %w", err)
 	}
+	if repositoryAllowed(repo, allow) {
+		return nil
+	}
+	return fmt.Errorf("environment image repository %q is not allowed by pool's environments.allow", repo)
+}
+
+// repositoryAllowed is whether an allow entry permits repo: equal to it, or an entry ending in "/"
+// that repo starts with.
+func repositoryAllowed(repo string, allow []string) bool {
 	for _, entry := range allow {
 		if strings.HasSuffix(entry, "/") {
 			if strings.HasPrefix(repo, entry) && len(repo) > len(entry) {
-				return nil
+				return true
 			}
 		} else if repo == entry {
-			return nil
+			return true
 		}
 	}
-	return fmt.Errorf("environment image repository %q is not allowed by pool's environments.allow", repo)
+	return false
+}
+
+// ParseTagRef splits an environment image written "<registry>/<repository>:<tag>" into its
+// repository (no tag). It is false for a digest reference, a reference with no tag, and anything
+// else that isn't that shape; it does not check the repository (checkRepository does).
+func ParseTagRef(ref string) (repo string, ok bool) {
+	if len(ref) > maxImageRef || strings.Contains(ref, "@") {
+		return "", false
+	}
+	i := strings.LastIndex(ref, ":")
+	if i < 0 || strings.Contains(ref[i:], "/") || i == len(ref)-1 {
+		return "", false
+	}
+	return ref[:i], true
 }
 
 // effectivePin is whether req's job must stay in its pool: it said so, or it has an environment

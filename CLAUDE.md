@@ -19,6 +19,7 @@ internal/tsauth/              Tailscale identity (tailscale whois on the peer ad
 internal/secrets/             operator-set named job secrets (JobRequest.Secrets)
 internal/pki/                 grove's Nomad CA: server, grove-client and per-VM node certificates (mTLS)
 internal/gitauth/             operator-armed private-repo credential (see below)
+internal/registryauth/        operator-armed registry pull login for Linux pools' images (see below)
 internal/broker/              per-worker credential broker: placeholders in, real tokens out (see below)
 internal/health/              rebuilds VMs / pauses Macs that keep losing sealed-pool jobs
 internal/mcp/                 MCP server (stdio)
@@ -133,6 +134,39 @@ for it, deliberately.
   nothing.
 - Only `https://` repo URLs match: a token does nothing for an SSH remote, so handing one over
   there would be a leak with no upside.
+
+## `internal/registryauth` — pulling private job images
+
+Linux jobs run in containers the VM's docker pulls (the pool's `runnerImage`, a job's environment
+image). A private image needs a login, which exists only when an operator arms one at runtime
+(`grove registry pull enable`, `PUT /api/v1/registry/pull`); no config.yaml key, no environment
+variable. Same discipline as `internal/gitauth`:
+
+- `registryauth.Store` persists it (0600, atomic rename, `registry-pull.json` next to
+  `devices.json`; symlinks and foreign owners refused through `internal/secfile`). `grove serve`
+  builds ONE store for the HTTP API, the dispatch service (`Resolver`, tag resolution) and the fleet
+  reconciler (`Options.RegistryPull`, enrolment). `Status` and the API carry a fingerprint, never
+  the token. Arming always names repositories.
+- The token has exactly two destinations: the Docker `config.json` that `Reconciler.Enrol` writes
+  to `/etc/grove/registry/config.json` on a Linux VM (root, 0600, over Orchard exec, **stdin only**:
+  the payload's registry line, base64), and the `Resolver`'s requests to the registry it was armed
+  for (never another host: a token realm outside the registry host, or plain http, is refused;
+  redirects are never followed). Never argv, a VM spec or planned spec, a startup script, a log, an
+  API response, `env_json`, dispatch meta or payload, or the job record. The job spec has no
+  `auth` (`nomad/jobs/nomadjobs_test.go`). `spec/codeql/RegistryTokenLeak.ql` and the coverage row
+  assert it.
+- A VM gets a login only when its pool's `runnerImage` or `environments.allow` names a repository
+  in scope (`Store.PullConfig`); otherwise `{"auths":{}}`. The file must always exist because the
+  docker plugin points at it, so the startup script creates an empty one (`O_EXCL`, never clobbering
+  an enrolled one). Enrol keeps the pushed config's fingerprint and re-pushes only on change.
+- Nomad **replaces** a later `plugin "docker"` block's config instead of merging it. The startup
+  script therefore writes the complete block (`linuxDockerPluginBlock`) to `grove-docker.hcl`; never
+  an `auth`-only drop-in, which would re-enable volume mounts. A test keeps the block equal to
+  `images/linux-worker/files/client.hcl`.
+- `dispatch.Service.Submit` pins an `environment.image` tag (`pinEnvironment`) before anything else
+  reads it: allowed repository first, then `ImageResolver.ResolveTag`, then the usual digest
+  validation. A failure rejects the job naming the image; never fall back to the tag.
+  `internal/dispatch/environment_tag_test.go` and `internal/registryauth/resolve_test.go` assert it.
 
 ## Nomad mTLS and client introduction
 
