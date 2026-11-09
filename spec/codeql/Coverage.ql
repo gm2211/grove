@@ -2,7 +2,7 @@
  * @name S10 coverage: each secret DOES reach the one place it is allowed to go
  * @description Non-vacuity check for the S10 queries: with the same sources and the same taint
  *              tracking, each secret must be found at its allowed destination. A row missing here
- *              means the leak query above it would be vacuously empty. CI expects four rows.
+ *              means the leak query above it would be vacuously empty. CI expects five rows.
  * @kind problem
  * @problem.severity recommendation
  * @id grove/secret-coverage
@@ -39,6 +39,15 @@ predicate nodeSecret(DataFlow::Node n) {
   exists(DataFlow::MethodCallNode c | c.getTarget().getName() = "CreateIntroToken" and n = c.getResult(0))
 }
 
+predicate registryLogin(DataFlow::Node n) {
+  exists(DataFlow::MethodCallNode c |
+    c.getTarget().getName() = "PullConfig" and
+    c.getTarget().getPackage().getPath() =
+      ["github.com/gm2211/grove/internal/registryauth", "github.com/gm2211/grove/internal/fleet"] and
+    n = c.getResult(0)
+  )
+}
+
 /** The allowed destination of each kind of secret. */
 predicate allowed(string kind, DataFlow::Node n) {
   kind = "job secret -> dispatch meta (env_json)" and GroveSecrets::dispatchArg(n, 2)
@@ -50,7 +59,7 @@ predicate allowed(string kind, DataFlow::Node n) {
     w.writesField(_, f, n) and f.hasQualifiedName("github.com/gm2211/grove/internal/broker", "Entry", "Token")
   )
   or
-  kind = "node secret -> Orchard exec stdin" and
+  kind = ["node secret -> Orchard exec stdin", "registry login -> Orchard exec stdin"] and
   exists(DataFlow::MethodCallNode c |
     c.getTarget().getName() = "Exec" and
     c.getTarget().getPackage().getPath() = "github.com/gm2211/grove/internal/orchard" and
@@ -69,6 +78,8 @@ module Cfg implements DataFlow::StateConfigSig {
     brokerCredential(n) and s = "broker credential -> broker.Entry.Token"
     or
     nodeSecret(n) and s = "node secret -> Orchard exec stdin"
+    or
+    registryLogin(n) and s = "registry login -> Orchard exec stdin"
   }
 
   predicate isSink(DataFlow::Node n, FlowState s) { allowed(s, n) }

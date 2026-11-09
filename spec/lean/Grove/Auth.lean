@@ -64,7 +64,7 @@ def operatorOnly (p : Str) : Bool :=
   p == "/access".toList || startsWith p "/access/".toList || p == "/secrets".toList ||
   startsWith p "/secrets/".toList || startsWith p "/join/approve/".toList ||
   p == "/join/pending".toList || startsWith p "/vms/".toList || startsWith p "/workers/".toList ||
-  startsWith p "/github/".toList
+  startsWith p "/github/".toList || startsWith p "/registry/".toList
 
 def dispatchRoute (m : Method) (p : Str) : Bool :=
   (m == .POST && p == "/jobs".toList) ||
@@ -299,6 +299,9 @@ theorem route_secret (m : Method) (n : Str) :
     requiredScope m ("/secrets/".toList ++ n) = .operator := by route_scope
 
 theorem route_github (m : Method) : requiredScope m "/github/sourcing".toList = .operator := by
+  cases m <;> decide
+
+theorem route_registry_pull (m : Method) : requiredScope m "/registry/pull".toList = .operator := by
   cases m <;> decide
 
 -- snooze and wake: that worker's holder, or the operator

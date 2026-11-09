@@ -14,6 +14,7 @@ import (
 	"github.com/gm2211/grove/internal/gitauth"
 	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
+	"github.com/gm2211/grove/internal/registryauth"
 	"github.com/gm2211/grove/internal/secrets"
 	"github.com/gm2211/grove/internal/snooze"
 )
@@ -46,6 +47,10 @@ type Options struct {
 	// the dispatch service as its RepoAuth, so arming it here takes effect on the next dispatch
 	// with no restart — see internal/gitauth and internal/cli/serve.go.
 	GitAuth *gitauth.Store
+	// RegistryAuth holds the optional, operator-armed credential for pulling job images from a
+	// private registry. The fleet reconciler and the dispatch service read the same store, so
+	// arming it here takes effect on their next tick/submit — see internal/registryauth.
+	RegistryAuth *registryauth.Store
 	// Pauses records why each worker is paused (snooze, operator, health). Nil disables
 	// snoozing (POST /workers/{name}/snooze answers 503) and leaves pause/resume as plain Orchard
 	// calls. `grove serve` hands the same store to the expiry loop and the health monitor.
@@ -167,6 +172,9 @@ func (s *Server) routes() http.Handler {
 	api.HandleFunc("GET /github/sourcing", s.handleGitHubSourcing)
 	api.HandleFunc("PUT /github/sourcing", s.handleEnableGitHubSourcing)
 	api.HandleFunc("DELETE /github/sourcing", s.handleDisableGitHubSourcing)
+	api.HandleFunc("GET /registry/pull", s.handleRegistryPull)
+	api.HandleFunc("PUT /registry/pull", s.handleEnableRegistryPull)
+	api.HandleFunc("DELETE /registry/pull", s.handleDisableRegistryPull)
 	api.HandleFunc("GET /broker/entries", s.handleBrokerEntries)
 	api.HandleFunc("POST /workers/{name}/unlock-keychain", s.handleQueueKeychainUnlock)
 	api.HandleFunc("GET /workers/{name}/unlock-keychain", s.handleKeychainUnlockStatus)

@@ -229,7 +229,7 @@ ARCHITECTURE.md's fleet spec) every time a VM starts:
 | | macOS (`images/macos-worker`) | Linux (`images/linux-worker`) |
 |---|---|---|
 | Nomad config dir | `/usr/local/etc/nomad.d` | `/etc/nomad.d` |
-| Static file (baked into image) | `client.hcl` — `data_dir`, `client { enabled = true, node_class = "macos" }`, `raw_exec` plugin enabled | `client.hcl` — `data_dir`, `client { enabled = true, node_class = "linux" }`, `docker` (with `volumes.enabled = true`) + `raw_exec` plugins enabled |
+| Static file (baked into image) | `client.hcl` — `data_dir`, `client { enabled = true, node_class = "macos" }`, `raw_exec` plugin enabled | `client.hcl` — `data_dir`, `client { enabled = true, node_class = "linux" }`, `docker` (`volumes.enabled = false`, `allow_privileged = false`, image GC, and an `auth.config` pointing at `/etc/grove/registry/config.json`) + `raw_exec` plugins enabled |
 | Dynamic file (overwritten by the startup script every boot) | `grove-meta.hcl` — `client { servers = [...] meta { pool = "macos" host = "<worker>" } cpu_total_compute = <ncpu*2000> }` | same shape, `pool = "linux"`; `cpu_total_compute = <nproc*2000>` on arm64 only |
 | Supervisor | `launchd` — `/Library/LaunchDaemons/com.grove.nomad.plist` (`KeepAlive`, runs `nomad agent -config /usr/local/etc/nomad.d`) | `systemd` — `nomad.service` (`Restart=on-failure`, `nomad agent -config /etc/nomad.d`) |
 
@@ -250,6 +250,28 @@ static `client.hcl` — it's computed per boot instead, in the startup script
 `$(sysctl -n hw.ncpu) * 2000` MHz/core, and written into the dynamic `grove-meta.hcl`'s `client {}`
 block alongside `meta`. `grove doctor` also checks for this (see docs/OPERATIONS.md) by listing
 Nomad nodes and warning when a `macos`-class node's fingerprinted CPU is implausibly low.
+
+**The docker plugin's registry login.** A Linux VM's docker driver pulls the pool's `runnerImage` and
+each job's environment image anonymously unless it is given a login, which a private image
+(`ghcr.io/gm2211/argos-ci`) needs. `client.hcl`'s `plugin "docker"` block therefore names
+`auth { config = "/etc/grove/registry/config.json" }`, a Docker `config.json` the driver reads at
+every pull. The startup script creates it empty (`{"auths":{}}`; the driver fails a pull when the
+file is missing) and the control plane's enrolment (`Reconciler.Enrol`, over Orchard exec, secret on
+stdin) fills it in, root-only, when the VM's pool runs an image the operator-armed credential
+covers (`grove registry pull enable`, docs/OPERATIONS.md "Pulling private images").
+
+**Nomad does not merge a second `plugin "docker"` block into the first; it replaces it.** `nomad
+agent` merges the files in `-config` in name order, and `PluginConfigSetMerge` merges plugin blocks
+*by plugin name*, but `PluginConfig.Merge` then assigns the later block's whole `config` map
+(`if len(o.Config) != 0 { m.Config = o.Config }`, read in hashicorp/nomad v1.11.3). A drop-in with
+only `auth` would silently turn `volumes.enabled` back on (Nomad's default) and drop
+`allow_privileged = false`, which are what stop a job mounting the VM's filesystem. So the
+startup script writes `/etc/nomad.d/grove-docker.hcl` with the **complete** block
+(`fleet.linuxDockerPluginBlock`, which sorts after `client.hcl` and replaces its block outright)
+on every boot. That is how a VM built from an image older than the `auth` block gets the login
+with no rebake. `internal/fleet`'s `TestLinuxDockerPluginBlockMatchesTheImagesClientHCL` fails if
+`images/linux-worker/files/client.hcl` and `linuxDockerPluginBlock` ever differ. Change both
+together.
 
 `nomad agent -config <dir>` merges every `*.hcl` file in the directory, so shipping the static half
 in the image and letting the startup script drop in the dynamic half means: (a) the image never

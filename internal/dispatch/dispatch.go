@@ -231,6 +231,15 @@ type RepoAuth interface {
 	TokenFor(repoURL string) (token string, ok bool)
 }
 
+// ImageResolver pins an image tag to a digest at submit time. internal/registryauth's Resolver
+// implements it with an authenticated registry request.
+type ImageResolver interface {
+	// ResolveTag takes "<registry>/<repository>:<tag>" and returns
+	// "<registry>/<repository>@sha256:<64 hex>", or an error. A failure is never papered over
+	// with the tag.
+	ResolveTag(ctx context.Context, ref string) (pinned string, err error)
+}
+
 // SecretResolver turns named secrets into their values at dispatch time (internal/secrets.Store).
 type SecretResolver interface {
 	Resolve(names []string) (map[string]string, error)

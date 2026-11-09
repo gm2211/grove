@@ -2,9 +2,12 @@ package fleet
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/gm2211/grove/internal/dispatch"
@@ -33,8 +36,44 @@ func Load(path string) (*Spec, error) {
 	if err := spec.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	logSpecWarnings(&spec)
 
 	return &spec, nil
+}
+
+// Warnings lists things in the spec that are valid but probably not what its author meant.
+// Today: a pool's runnerImage that names no registry host. Docker reads
+// "grove-runner:studio-v1" as docker.io/library/grove-runner:studio-v1, which is almost never the
+// image someone built locally or pushed to their own registry.
+func (s *Spec) Warnings() []string {
+	var out []string
+	for _, p := range s.Pools {
+		if p.RunnerImage != "" && !imageHasRegistryHost(p.RunnerImage) {
+			out = append(out, fmt.Sprintf(
+				"pool %q: runnerImage %q has no registry host, so docker pulls it from docker.io/library/ (write the full reference, e.g. ghcr.io/<owner>/%s)",
+				p.Name, p.RunnerImage, p.RunnerImage))
+		}
+	}
+	return out
+}
+
+// imageHasRegistryHost is docker's own rule: the first path component is a registry host when it
+// holds a "." or ":" or is "localhost".
+func imageHasRegistryHost(image string) bool {
+	host, _, found := strings.Cut(image, "/")
+	return found && (strings.ContainsAny(host, ".:") || host == "localhost")
+}
+
+// warnedSpec remembers the warnings already logged, because the fleet loop reloads fleet.yaml on
+// every tick and a standing warning should be logged once.
+var warnedSpec sync.Map
+
+func logSpecWarnings(s *Spec) {
+	for _, w := range s.Warnings() {
+		if _, seen := warnedSpec.LoadOrStore(w, true); !seen {
+			slog.Warn("fleet spec: " + w)
+		}
+	}
 }
 
 // Validate checks Spec invariants: unique pool names, perWorker >= 1, image set.

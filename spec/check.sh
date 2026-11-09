@@ -121,7 +121,7 @@ if [ -n "${SPECIFY:-}" ]; then
 fi
 
 # S10: CodeQL taint queries. Each leak query must find nothing; the coverage query must find each
-# of the four secrets at its one allowed destination (else the leak queries would be vacuous).
+# of the five secrets at its one allowed destination (else the leak queries would be vacuous).
 if [ -n "${CODEQL:-}" ]; then
 	db=$(mktemp -d)/db
 	(cd "$spec/.." && "$CODEQL" database create "$db" --language=go --source-root=. --command="go build ./..." >/dev/null)
@@ -129,14 +129,14 @@ if [ -n "${CODEQL:-}" ]; then
 		"$CODEQL" query run --database="$db" --output="$db/$1.bqrs" "$spec/codeql/$1.ql" >/dev/null
 		"$CODEQL" bqrs decode --format=csv --no-titles "$db/$1.bqrs" | grep -c . || true
 	}
-	for q in JobSecretLeak RepoTokenLeak BrokerCredentialLeak NodeSecretLeak; do
+	for q in JobSecretLeak RepoTokenLeak BrokerCredentialLeak NodeSecretLeak RegistryTokenLeak; do
 		n=$(rows $q)
 		row S10 codeql "$q" 0 "$n"
 		[ "$n" = 0 ] || fail=1
 	done
 	n=$(rows Coverage)
-	row S10 codeql Coverage 4 "$n"
-	[ "$n" = 4 ] || fail=1
+	row S10 codeql Coverage 5 "$n"
+	[ "$n" = 5 ] || fail=1
 fi
 
 exit $fail

@@ -4,6 +4,21 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Linux pools can pull private images (GHCR), and environment images can be tags.** Nomad's docker
+  driver on a Linux VM pulled the pool's `runnerImage` and a job's environment image anonymously, so
+  `ghcr.io/gm2211/argos-ci` failed with `unauthorized`. `grove registry pull enable --user <u> --repo
+  <owner/name>` (token on stdin or `$GROVE_REGISTRY_TOKEN`; `GET/PUT/DELETE /api/v1/registry/pull`,
+  operator only, the token is never returned) arms a registry login that `grove serve`'s enrolment
+  writes into `/etc/grove/registry/config.json` on each Linux VM whose pool runs an image the
+  credential covers (an empty login everywhere else), as root, over Orchard exec with the secret on
+  stdin, and pushes again only when it changes (arm, rotate, `disable`). The docker plugin's
+  `auth.config` points at it. VMs from older images get a complete `plugin "docker"` block from the
+  startup script (Nomad *replaces* a later plugin block's config rather than merging it, so an
+  `auth`-only drop-in would have re-enabled host volume mounts); Linux VMs are recreated once. A job
+  may now name `environment.image` as `<registry>/<repo>:<tag>` when the pool's `environments.allow`
+  covers the repository: the control plane resolves it to a digest with the stored credential and
+  pins `repo@sha256:…` into the job, or refuses the submission, never falling back to the tag. A
+  `runnerImage` with no registry host now logs a warning. Sealed pools do not pull with it yet.
 - **A job whose clone or checkout failed says so.** When a build's `source` prestart task
   failed, `main` never ran, so the job ended `failed` with no exit code, no failure reason and
   an empty log. Argos's lints on the Studio's Linux VM failed this way in under a second, with

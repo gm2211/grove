@@ -937,3 +937,34 @@ func TestBuildMainTaskTakesItsImageFromDispatchMeta(t *testing.T) {
 		}
 	}
 }
+
+// A job spec never carries registry credentials: the docker driver on the VM pulls with the login
+// the fleet enrolment put in /etc/grove/registry/config.json (plugin "docker" auth.config), so a
+// task's docker config has no `auth` block and a job spec names no registry login, even though
+// both are readable by anyone who can read the Nomad job.
+func TestRenderedDockerTasksCarryNoRegistryAuth(t *testing.T) {
+	for _, file := range []string{"build.nomad.hcl", "agent.nomad.hcl", "shell.nomad.hcl"} {
+		out := render(t, file, renderData{Kind: strings.TrimSuffix(file, ".nomad.hcl"), Pool: "linux", RunnerImage: "ghcr.io/gm2211/argos-ci:v1"})
+		job, err := jobspec2.ParseWithConfig(&jobspec2.ParseConfig{Path: "job.hcl", Body: []byte(out)})
+		if err != nil {
+			t.Fatalf("%s: %v", file, err)
+		}
+		for _, group := range job.TaskGroups {
+			for _, task := range group.Tasks {
+				if task.Driver != "docker" {
+					continue
+				}
+				for _, key := range []string{"auth", "auth_soft_fail"} {
+					if _, has := task.Config[key]; has {
+						t.Errorf("%s task %s sets docker %s: registry credentials must not ride in a job spec", file, task.Name, key)
+					}
+				}
+			}
+		}
+		for _, leak := range []string{"registry/config.json", "x-docker-auth", "dockerconfigjson"} {
+			if strings.Contains(out, leak) {
+				t.Errorf("%s mentions %q", file, leak)
+			}
+		}
+	}
+}

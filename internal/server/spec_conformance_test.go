@@ -58,7 +58,7 @@ func specPaths(rng *rand.Rand) []string {
 		"/workers/%s/resume", "/workers/%s/snooze", "/workers/%s/wake", "/jobs", "/jobs/%s",
 		"/jobs/%s/cancel", "/jobs/%s/credentials", "/jobs/%s/logs", "/jobs/%s/artifacts/%s", "/healthz",
 		"/join/requests", "/join/requests/%s", "/join/pending", "/join/approve/%s", "/access/devices",
-		"/access/devices/%s", "/whoami", "/secrets", "/secrets/%s", "/github/sourcing", "/broker/entries",
+		"/access/devices/%s", "/whoami", "/secrets", "/secrets/%s", "/github/sourcing", "/registry/pull", "/broker/entries",
 		"/access", "/workers/%s", "/workers/%s/snooze/%s", "%s/broker/entries"}
 	var paths []string
 	for _, tpl := range templates {
@@ -71,7 +71,7 @@ func specPaths(rng *rand.Rand) []string {
 		}
 	}
 	alphabet := []string{"/", "workers", "jobs", "snooze", "wake", "cancel", "credentials", "access",
-		"secrets", "broker", "entries", "github", "vms", "join", "approve", "pending", "whoami", "a", ".", "..", "-", "é"}
+		"secrets", "broker", "entries", "github", "registry", "pull", "vms", "join", "approve", "pending", "whoami", "a", ".", "..", "-", "é"}
 	for range 3000 {
 		var b strings.Builder
 		for range 1 + rng.Intn(8) {

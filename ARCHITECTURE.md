@@ -232,7 +232,8 @@ Secrets never go into images: they arrive as Nomad `template`/env at dispatch ti
 
 A `build` job may also carry `environment: {image}`, the image its script runs in. The control
 plane picks the image; the caller only requests it: the reference must be pinned by digest
-(`<registry>/<repository>@sha256:<64 hex>`, no tag, explicit registry) and allowed by its pool's
+(`<registry>/<repository>@sha256:<64 hex>`, explicit registry; a `:<tag>` is resolved to its digest
+by the control plane at submit, or refused) and allowed by its pool's
 `environments.allow`, or `Submit` answers 400. grove delivers it as Nomad meta `task_image`
 (always set on a build: the environment image, else the pool's `runnerImage`), which build.nomad.hcl
 interpolates into the `main` task's docker `image`. The clone-token-holding `source` task stays on

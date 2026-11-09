@@ -24,6 +24,7 @@ import (
 	"github.com/gm2211/grove/internal/install"
 	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
+	"github.com/gm2211/grove/internal/registryauth"
 	"github.com/gm2211/grove/internal/sandbox"
 	"github.com/gm2211/grove/internal/secrets"
 	"github.com/gm2211/grove/internal/server"
@@ -110,6 +111,13 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 		return fmt.Errorf("private-repo credential store: %w", err)
 	}
 
+	// The registry pull credential: one store shared by dispatch (tag resolution), the HTTP API
+	// (where the operator arms it) and the fleet reconciler (which writes it into the VMs).
+	registryStore, err := registryauth.NewStore(filepath.Join(filepath.Dir(cfgPath), "registry-pull.json"))
+	if err != nil {
+		return fmt.Errorf("registry pull credential store: %w", err)
+	}
+
 	// Named job secrets: like the private-repo credential, one store shared by dispatch (which
 	// resolves names on submit) and the HTTP API (where the operator sets them and where each
 	// caller's right to name one is checked).
@@ -119,7 +127,8 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 	}
 
 	poolHealth := &fleet.PoolHealth{}
-	ds, err := dispatch.New(nc, dispatch.Options{PoolHealth: poolHealth, Artifacts: ac, ArtifactRetention: cfg.Artifacts.Retention, Pools: pools, RepoAuth: gitAuthStore, Secrets: secretStore})
+	ds, err := dispatch.New(nc, dispatch.Options{PoolHealth: poolHealth, Artifacts: ac, ArtifactRetention: cfg.Artifacts.Retention, Pools: pools, RepoAuth: gitAuthStore, Secrets: secretStore,
+		ImageResolver: &registryauth.Resolver{Store: registryStore}})
 	if err != nil {
 		return fmt.Errorf("dispatch service: %w", err)
 	}
@@ -179,7 +188,7 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 	serverOpts := server.Options{
 		Token: cfg.Server.Token, Version: Version,
 		ControllerURL: cfg.Orchard.URL, ServerURL: cfg.Server.URL,
-		GitAuth: gitAuthStore, Secrets: secretStore, Pauses: pauseStore,
+		GitAuth: gitAuthStore, RegistryAuth: registryStore, Secrets: secretStore, Pauses: pauseStore,
 	}
 	if ts := tailscaleAuthenticator(cfg.Server.Tailscale); ts != nil {
 		serverOpts.Tailscale = ts
@@ -221,6 +230,7 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 		}
 		loop := newFleetReconcileLoop(cfg, oc, srv.FleetReconcile())
 		loop.health = poolHealth
+		loop.registry = registryStore
 		if purger, ok := nomad.AsNodePurger(nc); ok {
 			loop.nodes = &fleet.NodeSweeper{Nodes: purger}
 		}
@@ -289,6 +299,9 @@ type fleetReconcileLoop struct {
 	health *fleet.PoolHealth
 	// warnedRollCall is the roll call error last logged.
 	warnedRollCall repeatedWarning
+	// registry is the operator-armed registry pull credential, which Enrol writes into the Linux
+	// VMs whose pools' images it covers; nil gives every VM an empty login.
+	registry *registryauth.Store
 
 	// jobs, vmLoads and tracker feed elastic pools' autoscaling (see fleet.JobLoad); nil leaves
 	// elastic pools at their current size.
@@ -386,6 +399,9 @@ func (l *fleetReconcileLoop) tick(ctx context.Context) {
 	}
 
 	options.Load = l.jobLoad(ctx, time.Now())
+	if l.registry != nil {
+		options.RegistryPull = l.registry
+	}
 	r := &fleet.Reconciler{
 		Client:  l.client,
 		Spec:    spec,

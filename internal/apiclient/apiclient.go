@@ -17,6 +17,7 @@ import (
 	"github.com/gm2211/grove/internal/broker"
 	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/gitauth"
+	"github.com/gm2211/grove/internal/registryauth"
 	"github.com/gm2211/grove/internal/secrets"
 	"github.com/gm2211/grove/internal/server"
 )
@@ -244,6 +245,35 @@ func (c *Client) EnableGitHubSourcing(ctx context.Context, req gitauth.EnableReq
 func (c *Client) DisableGitHubSourcing(ctx context.Context) (*gitauth.Status, error) {
 	var out gitauth.Status
 	if err := c.doJSON(ctx, http.MethodDelete, "/github/sourcing", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RegistryPull reports the registry pull credential the control plane has armed, if any. The
+// token itself is never returned.
+func (c *Client) RegistryPull(ctx context.Context) (*registryauth.Status, error) {
+	var out registryauth.Status
+	if err := c.doJSON(ctx, http.MethodGet, "/registry/pull", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// EnableRegistryPull arms a registry credential for pulling job images, replacing whatever was
+// armed. Operator credential only.
+func (c *Client) EnableRegistryPull(ctx context.Context, req registryauth.EnableRequest) (*registryauth.Status, error) {
+	var out registryauth.Status
+	if err := c.doJSON(ctx, http.MethodPut, "/registry/pull", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DisableRegistryPull disarms the registry pull credential and wipes the stored token.
+func (c *Client) DisableRegistryPull(ctx context.Context) (*registryauth.Status, error) {
+	var out registryauth.Status
+	if err := c.doJSON(ctx, http.MethodDelete, "/registry/pull", nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
