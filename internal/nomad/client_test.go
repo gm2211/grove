@@ -368,3 +368,34 @@ func TestEvaluationFromAPI_MapsFailedTGAllocs(t *testing.T) {
 		t.Errorf("nil metric should be skipped, got an entry for %q", "nilled")
 	}
 }
+
+// A failed "source" prestart task leaves "main" with no exit code; the allocation says which
+// task failed and how, instead of failing silently.
+func TestAllocFromStub_NamesAFailedSiblingTask(t *testing.T) {
+	stub := &nomadapi.AllocationListStub{
+		ID:           "a1",
+		ClientStatus: "failed",
+		TaskStates: map[string]*nomadapi.TaskState{
+			"main": {State: "dead", Failed: true, Events: []*nomadapi.TaskEvent{
+				{Type: "Received"}, {Type: "Sibling Task Failed", DisplayMessage: "Task's sibling \"source\" failed"},
+			}},
+			"source": {State: "dead", Failed: true, Events: []*nomadapi.TaskEvent{
+				{Type: "Started"}, {Type: "Terminated", ExitCode: 128, DisplayMessage: "Exit Code: 128"},
+			}},
+		},
+	}
+	out := allocFromStub(stub)
+	if out.ExitCode != nil {
+		t.Errorf("main never ran, so the job has no exit code; got %d", *out.ExitCode)
+	}
+	want := `task "source" failed with exit code 128: Exit Code: 128`
+	if out.FailureReason != want {
+		t.Errorf("FailureReason = %q, want %q", out.FailureReason, want)
+	}
+
+	// A main task that ran and exited keeps its own outcome.
+	stub.TaskStates["main"].Events = []*nomadapi.TaskEvent{{Type: "Terminated", ExitCode: 1}}
+	if out := allocFromStub(stub); out.FailureReason != "" || out.ExitCode == nil || *out.ExitCode != 1 {
+		t.Errorf("a main task that exited must keep its own outcome, got %+v", out)
+	}
+}

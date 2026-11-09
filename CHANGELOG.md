@@ -4,6 +4,11 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **A job whose clone or checkout failed says so.** When a build's `source` prestart task
+  failed, `main` never ran, so the job ended `failed` with no exit code, no failure reason and
+  an empty log. Argos's lints on the Studio's Linux VM failed this way in under a second, with
+  nothing to say why. The job's failure reason now names the failed task, its exit code and
+  Nomad's message, e.g. `task "source" failed with exit code 128: …`.
 - **Linux VMs on Apple Silicon take jobs.** Nomad reads CPU MHz from `/proc/cpuinfo`, which arm64
   Linux doesn't report, so a Linux VM on a Mac fingerprinted `cpu.totalcompute=0`: every job stayed
   pending with `resources exhausted (cpu=1)` on an idle node, and Argos ran its lint jobs locally
