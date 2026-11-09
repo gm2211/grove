@@ -79,10 +79,11 @@ func TestBuildStartupScript_LinuxMatchesV010(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Turning Tailscale off, the home fence, the broker block and the login-shell exit guard are
-	// the intended changes since v0.1.10: every Linux VM is recreated once to get them. Everything
-	// else must stay byte-identical.
+	// Turning Tailscale off, the home fence, the broker block, the login-shell exit guard and the
+	// arm64 cpu_total_compute are the intended changes since v0.1.10: every Linux VM is recreated
+	// once to get them. Everything else must stay byte-identical.
 	got := BuildStartupScript(Pool{Name: "linux"}, "mac1", "linux-mac1-0", "")
+	got = strings.Replace(got, linuxCPUTotalComputeScript, "  grove_cpu_total_compute=\"\"\n", 1)
 	got = strings.Replace(got, tailscaleOffScript+"\n", "", 1)
 	got = strings.Replace(got, homeFenceScript(Pool{Name: "linux"})+"\n"+brokerScript()+"\n", "", 1)
 	got = strings.TrimSuffix(got, loginShellExitScript)
@@ -229,6 +230,26 @@ func TestBuildStartupScript_MacOSCPUTotalCompute(t *testing.T) {
 	}
 	if !(clientOpen < metaIdx && metaIdx < cpuIdx && cpuIdx < closeIdx) {
 		t.Errorf("cpu_total_compute is not nested inside the client{} block as expected:\n%s", script)
+	}
+}
+
+// TestBuildStartupScript_ARM64LinuxCPUTotalCompute: Nomad fingerprints cpu.totalcompute=0 on
+// arm64 Linux (no MHz in /proc/cpuinfo), so the Studio's linux pool placed nothing. The Linux
+// branch must write the same ncpu * 2000 override on aarch64, inside the client block, and leave
+// x86 Linux to Nomad's fingerprint.
+func TestBuildStartupScript_ARM64LinuxCPUTotalCompute(t *testing.T) {
+	script := BuildStartupScript(Pool{Name: "linux"}, "studio", "linux-studio-0", "")
+	linux := script[strings.Index(script, "grove_meta_file=\"/etc/nomad.d/grove-meta.hcl\""):]
+	for _, want := range []string{
+		`aarch64|arm64) grove_cpu_total_compute=$(( $(nproc) * 2000 )) ;;`,
+		`*) grove_cpu_total_compute="" ;;`,
+	} {
+		if !strings.Contains(linux, want) {
+			t.Errorf("linux branch missing %q:\n%s", want, script)
+		}
+	}
+	if !strings.Contains(script, "cpu_total_compute = $grove_cpu_total_compute") {
+		t.Errorf("startup script never writes cpu_total_compute:\n%s", script)
 	}
 }
 

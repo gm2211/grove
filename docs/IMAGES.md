@@ -230,10 +230,15 @@ ARCHITECTURE.md's fleet spec) every time a VM starts:
 |---|---|---|
 | Nomad config dir | `/usr/local/etc/nomad.d` | `/etc/nomad.d` |
 | Static file (baked into image) | `client.hcl` — `data_dir`, `client { enabled = true, node_class = "macos" }`, `raw_exec` plugin enabled | `client.hcl` — `data_dir`, `client { enabled = true, node_class = "linux" }`, `docker` (with `volumes.enabled = true`) + `raw_exec` plugins enabled |
-| Dynamic file (overwritten by the startup script every boot) | `grove-meta.hcl` — `client { servers = [...] meta { pool = "macos" host = "<worker>" } cpu_total_compute = <ncpu*2000> }` | same shape, `pool = "linux"`, no `cpu_total_compute` override |
+| Dynamic file (overwritten by the startup script every boot) | `grove-meta.hcl` — `client { servers = [...] meta { pool = "macos" host = "<worker>" } cpu_total_compute = <ncpu*2000> }` | same shape, `pool = "linux"`; `cpu_total_compute = <nproc*2000>` on arm64 only |
 | Supervisor | `launchd` — `/Library/LaunchDaemons/com.grove.nomad.plist` (`KeepAlive`, runs `nomad agent -config /usr/local/etc/nomad.d`) | `systemd` — `nomad.service` (`Restart=on-failure`, `nomad agent -config /etc/nomad.d`) |
 
-**macOS-only: `cpu_total_compute`.** Nomad's stock CPU fingerprinter badly under-reports on Apple
+**`cpu_total_compute` (macOS, and arm64 Linux).** On arm64 Linux, Nomad reads CPU MHz from
+`/proc/cpuinfo`, which has none there, so a Linux VM on Apple Silicon fingerprints
+`cpu.totalcompute=0` and no job fits. The Linux branch writes the same `nproc * 2000` override when
+`uname -m` is `aarch64`/`arm64`; x86 Linux keeps Nomad's own fingerprint.
+
+**macOS:** Nomad's stock CPU fingerprinter badly under-reports on Apple
 Silicon — a real M5 Max worker fingerprinted `cpu.totalcompute=24` (`cpu.frequency=4`,
 `cpu.numcores=18`; it's effectively treating GHz as MHz-per-core instead of deriving a usable
 total). Since every job's `resources.cpu` is specified in MHz (see docs/JOBS.md), a node

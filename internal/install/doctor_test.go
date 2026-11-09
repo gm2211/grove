@@ -241,6 +241,22 @@ func TestCheckMacOSCPUFingerprint_WarnsOnLowCompute(t *testing.T) {
 	}
 }
 
+func TestCheckMacOSCPUFingerprint_WarnsOnZeroComputeAnyClass(t *testing.T) {
+	srv := newFakeNomadServer(t, []fakeNomadNode{
+		{ID: "n1", Name: "linux-studio-0", NodeClass: "linux", cpuMHz: 0}, // arm64 Linux, no MHz
+		{ID: "n2", Name: "linux-x86-0", NodeClass: "linux", cpuMHz: 48000},
+	})
+	cfg := &config.Config{Nomad: config.Endpoint{URL: srv.URL}}
+
+	r := checkMacOSCPUFingerprint(context.Background(), cfg)
+	if r.OK || !strings.Contains(r.Detail, "linux-studio-0(cpu.totalcompute=0)") {
+		t.Fatalf("expected the check to flag the zero-compute linux node, got %+v", r)
+	}
+	if strings.Contains(r.Detail, "linux-x86-0") {
+		t.Errorf("detail = %q, should not flag a healthy node", r.Detail)
+	}
+}
+
 func TestCheckMacOSCPUFingerprint_OKWhenHealthy(t *testing.T) {
 	srv := newFakeNomadServer(t, []fakeNomadNode{
 		{ID: "n1", Name: "macos-mac1-0", NodeClass: "macos", cpuMHz: 36000},
