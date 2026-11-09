@@ -482,7 +482,7 @@ done
 `
 
 // nomadMetaScript writes the Nomad client meta file naming this VM's pool/host/vm, at the path
-// appropriate for the guest OS. On macOS it also overrides cpu_total_compute — see docs/IMAGES.md
+// appropriate for the guest OS. On macOS and arm64 Linux it also overrides cpu_total_compute — see docs/IMAGES.md
 // "The two-file config contract" and docs/OPERATIONS.md "jobs pending with DimensionExhausted cpu
 // on macOS" for why this is necessary and computed here rather than baked into the image. Orchard
 // executes StartupScript as the configured guest user, so writes under /etc and /usr/local use the
@@ -520,6 +520,17 @@ grove_priv chown ` + MacOSJobUser + `:` + MacOSJobUser + ` ` + MacOSJobHome + `
 grove_priv chmod 0700 ` + MacOSJobHome + `
 `
 
+// linuxCPUTotalComputeScript sets the Linux branch's cpu_total_compute. Nomad reads CPU MHz from
+// /proc/cpuinfo, which arm64 Linux doesn't report, so a Linux VM on Apple Silicon fingerprints
+// cpu.totalcompute=0 and no job fits ("resources exhausted (cpu=1)" on an idle node; the Studio's
+// linux pool, 2026-11-07). Same ncpu * 2000 MHz/core convention as macOS; x86 Linux keeps Nomad's
+// own fingerprint. Named so TestBuildStartupScript_LinuxMatchesV010 can list it as an intended change.
+const linuxCPUTotalComputeScript = `  case "$(uname -m)" in
+    aarch64|arm64) grove_cpu_total_compute=$(( $(nproc) * 2000 )) ;;
+    *) grove_cpu_total_compute="" ;;
+  esac
+`
+
 const nomadMetaScript = `if [ "$(uname -s)" = "Darwin" ]; then
   grove_meta_file="/usr/local/etc/nomad.d/grove-meta.hcl"
   # Apple Silicon's stock Nomad fingerprinter reports cpu.totalcompute in the single digits of MHz
@@ -532,8 +543,7 @@ const nomadMetaScript = `if [ "$(uname -s)" = "Darwin" ]; then
   grove_cpu_total_compute=$(( $(sysctl -n hw.ncpu) * 2000 ))
 else
   grove_meta_file="/etc/nomad.d/grove-meta.hcl"
-  grove_cpu_total_compute=""
-fi
+` + linuxCPUTotalComputeScript + `fi
 
 grove_priv() {
   if [ "$(id -u)" -eq 0 ]; then

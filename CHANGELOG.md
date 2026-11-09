@@ -4,6 +4,12 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Linux VMs on Apple Silicon take jobs.** Nomad reads CPU MHz from `/proc/cpuinfo`, which arm64
+  Linux doesn't report, so a Linux VM on a Mac fingerprinted `cpu.totalcompute=0`: every job stayed
+  pending with `resources exhausted (cpu=1)` on an idle node, and Argos ran its lint jobs locally
+  instead. The startup script now writes `cpu_total_compute = nproc * 2000` on arm64 Linux, as it
+  already did on macOS; x86 Linux is unchanged. The new script recreates Linux VMs once.
+  `grove doctor`'s `macos-cpu-fingerprint` check also flags any node reporting 0.
 - **Unlock a worker's keychain from the panel, with the password stored nowhere.** A macOS VM
   that can't boot because its worker user's login keychain is locked now has an "Unlock keychain"
   button in the Map's stuck panel. The operator types that user's password once

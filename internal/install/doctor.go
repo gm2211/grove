@@ -398,10 +398,10 @@ func checkMacOSCPUFingerprint(ctx context.Context, cfg *config.Config) CheckResu
 
 	var low []string
 	for _, n := range nodes {
-		if n.NodeClass != "macos" {
-			continue
-		}
-		if n.CPUMHz > 0 && n.CPUMHz < minMacOSCPUTotalCompute {
+		// Zero on any node is no CPU fingerprint at all (arm64 Linux has no MHz in
+		// /proc/cpuinfo): nothing fits there either.
+		lowMacOS := n.NodeClass == "macos" && n.CPUMHz > 0 && n.CPUMHz < minMacOSCPUTotalCompute
+		if lowMacOS || n.CPUMHz == 0 {
 			low = append(low, fmt.Sprintf("%s(cpu.totalcompute=%d)", n.Name, n.CPUMHz))
 		}
 	}
@@ -410,10 +410,10 @@ func checkMacOSCPUFingerprint(ctx context.Context, cfg *config.Config) CheckResu
 			Name:        name,
 			OK:          false,
 			Detail:      "implausibly low CPU fingerprint on: " + strings.Join(low, ", "),
-			Remediation: "jobs will fail to place with DimensionExhausted cpu — see docs/OPERATIONS.md \"jobs pending with DimensionExhausted cpu on macOS\" (set cpu_total_compute in grove-meta.hcl and restart the node's Nomad client)",
+			Remediation: "jobs will fail to place with DimensionExhausted cpu — see docs/OPERATIONS.md \"jobs pending with DimensionExhausted cpu\" (set cpu_total_compute in grove-meta.hcl and restart the node's Nomad client)",
 		}
 	}
-	return CheckResult{Name: name, OK: true, Detail: "no undersized macOS CPU fingerprints found"}
+	return CheckResult{Name: name, OK: true, Detail: "no undersized CPU fingerprints found"}
 }
 
 // checkSandboxHost reports whether a sealed pool's jobs (fleet.yaml network: isolated) have

@@ -1010,7 +1010,10 @@ entries for `com.github.cirruslabs.tart` mean the foreground app was launched; t
 `grove install --role worker`, which re-makes the copy and re-renders the wrapper that puts it
 first on `PATH`.
 
-**Jobs pending with `DimensionExhausted cpu` on macOS.** Nomad's stock CPU fingerprinter badly
+**Jobs pending with `DimensionExhausted cpu`** (or `resources exhausted (cpu=1)` on a node with
+nothing running). On an arm64 Linux VM the cause is a zero fingerprint (`cpu.totalcompute=0`: no MHz
+in `/proc/cpuinfo`); the startup script now writes `cpu_total_compute = nproc * 2000` there, so
+recycle the VM to pick it up. On macOS: Nomad's stock CPU fingerprinter badly
 under-reports on Apple Silicon (a real M5 Max worker fingerprinted `cpu.totalcompute=24`), which
 fails placement for any job whose `resources.cpu` request is a realistic MHz value — every
 build/agent/shell job on that node stays `pending` forever. `internal/fleet/scripts.go`'s
@@ -1019,7 +1022,7 @@ guest's actual core count (`ncpu * 2000` MHz) and writing it into the dynamic `g
 docs/IMAGES.md's two-file config contract) — if you're hitting this anyway:
 
 1. Run `grove doctor` — it warns (`macos-cpu-fingerprint`) when any `macos`-class Nomad node
-   reports a fingerprinted CPU under 1000 MHz.
+   reports a fingerprinted CPU under 1000 MHz, or any node reports 0.
 2. On the affected Mac, check `/usr/local/etc/nomad.d/grove-meta.hcl` for a `cpu_total_compute`
    line inside its `client {}` block. Missing entirely usually means the startup script hasn't run
    since this fix shipped — recycle the VM (`grove` fleet reconciler recreates it, re-running the
