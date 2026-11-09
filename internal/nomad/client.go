@@ -324,6 +324,41 @@ func terminalTaskDetails(ts *nomadapi.TaskState) (exitCode, signal *int, failure
 	return exitCode, signal, ""
 }
 
+// siblingTaskFailure names the task that failed when the picked one never ran. A build's
+// "source" prestart task (the clone and checkout) failing leaves "main" with no Terminated
+// event, so the job failed with no exit code, no reason and an empty log: Argos's lints on
+// linux-studio-0 failed this way in under a second (2026-11-09) with nothing to say why.
+func siblingTaskFailure(states map[string]*nomadapi.TaskState, picked string) string {
+	names := make([]string, 0, len(states))
+	for name, ts := range states {
+		if name != picked && ts != nil && ts.Failed {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		ts := states[name]
+		exitCode, _, reason := terminalTaskDetails(ts)
+		if reason == "" {
+			for i := len(ts.Events) - 1; i >= 0; i-- {
+				if msg := ts.Events[i].DisplayMessage; msg != "" {
+					reason = msg
+					break
+				}
+			}
+		}
+		out := fmt.Sprintf("task %q failed", name)
+		if exitCode != nil {
+			out += fmt.Sprintf(" with exit code %d", *exitCode)
+		}
+		if reason != "" {
+			out += ": " + reason
+		}
+		return out
+	}
+	return ""
+}
+
 func finishedAt(ts *nomadapi.TaskState) *time.Time {
 	if ts == nil || ts.FinishedAt.IsZero() {
 		return nil
@@ -337,6 +372,9 @@ func finishedAt(ts *nomadapi.TaskState) *time.Time {
 func allocFromStub(a *nomadapi.AllocationListStub) Allocation {
 	taskName, ts := pickTask(a.TaskStates)
 	exitCode, signal, failureReason := terminalTaskDetails(ts)
+	if exitCode == nil && failureReason == "" {
+		failureReason = siblingTaskFailure(a.TaskStates, taskName)
+	}
 
 	return Allocation{
 		ID:            a.ID,
@@ -356,6 +394,9 @@ func allocFromStub(a *nomadapi.AllocationListStub) Allocation {
 func allocFromFull(a *nomadapi.Allocation) Allocation {
 	taskName, ts := pickTask(a.TaskStates)
 	exitCode, signal, failureReason := terminalTaskDetails(ts)
+	if exitCode == nil && failureReason == "" {
+		failureReason = siblingTaskFailure(a.TaskStates, taskName)
+	}
 
 	return Allocation{
 		ID:            a.ID,
