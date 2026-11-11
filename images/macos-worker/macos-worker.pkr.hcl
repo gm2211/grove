@@ -297,4 +297,28 @@ build {
       "sudo rm -rf /private/var/log/*.log || true",
     ]
   }
+
+  # --- scrub what the build Mac leaked into the guest ------------------------------------------
+  # vmnet's DHCP hands the guest the build Mac's DNS settings, so a tailnet search domain
+  # (<name>.ts.net) landed in /private/var/run/resolv.conf of a pushed image. An image may be
+  # public: remove the resolver files, DHCP leases and shell histories, then scan the guest and
+  # fail the build on anything host-derived. Last provisioner, so nothing runs after it; `make
+  # images-macos` scans the stopped VM's disk again from the host (images/scan/scan-tart-vm.sh),
+  # which also catches a resolv.conf that configd rewrote before shutdown.
+  provisioner "file" {
+    source      = "../scan/scan-root.sh"
+    destination = "/tmp/grove-scan-root.sh"
+  }
+  provisioner "shell" {
+    inline = [
+      "set -eu",
+      "echo '==> scrubbing host-derived network state and histories'",
+      "sudo rm -f /private/var/run/resolv.conf /private/etc/resolv.conf.grove-bak",
+      "sudo rm -rf /private/var/db/dhcpclient/leases",
+      "rm -f \"$HOME/.zsh_history\" \"$HOME/.bash_history\"; rm -rf \"$HOME/.zsh_sessions\"",
+      "sudo rm -f /private/var/root/.zsh_history /private/var/root/.bash_history",
+      "sudo /bin/bash /tmp/grove-scan-root.sh /",
+      "rm -f /tmp/grove-scan-root.sh",
+    ]
+  }
 }

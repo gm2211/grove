@@ -127,6 +127,17 @@ image as part of this migration. Select an `xcode-<git-sha>` tag for those fleet
 pool and Nomad `raw_exec` contract; this change does not add automatic toolchain routing or a
 new pool name. Prefer the existing Linux pool for jobs that do not require macOS.
 
+### Nothing from the build Mac may be in an image
+
+A guest built on a Mac gets that Mac's DNS settings over vmnet's DHCP. A tailnet's search domain
+(`<name>.ts.net`) reached `/private/var/run/resolv.conf` of a pushed image this way. The build's
+last provisioner now removes the resolver file, DHCP leases and shell histories and scans the
+guest (`images/scan/scan-root.sh`: tailnet names, tailnet addresses, Tailscale auth keys, GitHub
+tokens), and the `make images-macos*` targets scan the stopped VM's disk again from the host
+(`images/scan/scan-tart-vm.sh <vm>`). Either failing means: do not `tart push`. An image built
+before this check must be scanned, or rebuilt, before its package is ever made public, and making
+a package public exposes every version in it.
+
 ### Packages are private by default — workers need access too
 
 `tart push` creates a GHCR **package** the first time it runs, and GitHub Container Registry makes
