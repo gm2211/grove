@@ -47,16 +47,30 @@ all_files() {
 }
 
 # 1. Anywhere on the disk: a tailnet name, a Tailscale auth key, and the operator's identifiers.
-report "tailnet name" < <(all_files | xargs -0 grep -laE -e '[A-Za-z0-9-]+\.ts\.net' 2>/dev/null)
-report "Tailscale auth key" < <(all_files | xargs -0 grep -laE -e 'tskey-[A-Za-z0-9-]{12,}' 2>/dev/null)
-
+#    Reading every file is the slow part (minutes on a macOS guest), so it is done once, for all
+#    three at the same time; only the files that matched are read again to say what each holds.
+tailnet='[A-Za-z0-9-]+\.ts\.net'
+tskey='tskey-[A-Za-z0-9-]{12,}'
 ids=$(printf '%s\n' "${GROVE_SCAN_IDENTIFIERS:-}" | tr ',' '\n' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | awk 'length($0) >= 4')
+patterns=$(mktemp)
+idfile=$(mktemp)
+candidates=$(mktemp)
+trap 'rm -f "$patterns" "$idfile" "$candidates"' EXIT
+printf '%s\n%s\n' "$tailnet" "$tskey" > "$patterns"
 if [ -n "$ids" ]; then
-  idfile=$(mktemp)
   printf '%s\n' "$ids" > "$idfile"
-report "operator identifier" < <(  all_files | xargs -0 grep -laiF -f "$idfile" 2>/dev/null | grep -vxF "$idfile")
-  rm -f "$idfile"
+  # As regular expressions for the one pass: every character that is special in an ERE escaped.
+  printf '%s\n' "$ids" | sed -E 's/[][\.*^$+?(){}|/]/\\&/g' >> "$patterns"
 fi
+all_files | xargs -0 grep -laiE -f "$patterns" 2>/dev/null | grep -vxF -e "$patterns" -e "$idfile" > "$candidates"
+
+classify() { # classify <grep options and pattern...> : the candidates that match, one per line
+  [ -s "$candidates" ] || return 0
+  tr '\n' '\0' < "$candidates" | xargs -0 grep -la "$@" 2>/dev/null
+}
+report "tailnet name" < <(classify -iE -e "$tailnet")
+report "Tailscale auth key" < <(classify -iE -e "$tskey")
+[ -z "$ids" ] || report "operator identifier" < <(classify -iF -f "$idfile")
 
 # 2. Where host-derived state and credentials land (configuration, leases, home directories):
 #    a GitHub token, and a tailnet (CGNAT, 100.64.0.0/10) address. Not the whole disk: program
