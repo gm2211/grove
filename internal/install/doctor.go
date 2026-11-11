@@ -279,6 +279,16 @@ func checkRegistryLogin(opts Options, cfg *config.Config) *CheckResult {
 		return nil
 	}
 
+	// The worker wrapper records where its Tart login came from at each start (not a secret).
+	if b, err := os.ReadFile(registrySourcePath(opts)); err == nil {
+		switch strings.TrimSpace(string(b)) {
+		case "control-plane":
+			return &CheckResult{Name: "registry-login", OK: true, Detail: "ghcr.io login source: control plane (fetched in memory when the Orchard worker last started; nothing stored on this Mac)"}
+		case "legacy-file":
+			return &CheckResult{Name: "registry-login", OK: true, Detail: "ghcr.io login source: legacy file " + credentialPath(opts, registryCredentialName) + " (arm a scoped credential on the control plane with `grove registry pull scope --add <owner/name>` to stop storing it here)"}
+		}
+	}
+
 	marker := registryLoginMarkerPath(opts, ghcrHost)
 	if _, err := os.Stat(marker); err == nil {
 		return &CheckResult{Name: "registry-login", OK: true, Detail: "tart login ghcr.io recorded (" + marker + ")"}

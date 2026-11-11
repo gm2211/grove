@@ -189,6 +189,89 @@ func (s *Store) Enable(opts EnableOptions) (Status, error) {
 	return s.statusLocked(), nil
 }
 
+// ScopeRequest is the wire body of PATCH /api/v1/registry/pull: repositories to add to or remove
+// from the armed scope. It carries no token; the credential itself is never re-entered.
+type ScopeRequest struct {
+	Add    []string `json:"add,omitempty"`
+	Remove []string `json:"remove,omitempty"`
+}
+
+// UpdateScope edits the repositories the armed credential covers and nothing else. It refuses a
+// disarmed store, an empty change, and a result that covers nothing (disable instead).
+func (s *Store) UpdateScope(req ScopeRequest) (Status, error) {
+	if s == nil {
+		return Status{}, errors.New("registryauth: registry pull credentials are not configured on this control plane")
+	}
+	add, err := normalizeRepos(req.Add)
+	if err != nil {
+		return Status{}, err
+	}
+	remove, err := normalizeRepos(req.Remove)
+	if err != nil {
+		return Status{}, err
+	}
+	if len(add) == 0 && len(remove) == 0 {
+		return Status{}, errors.New("registryauth: name at least one repository to add or remove")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.state.Enabled {
+		return Status{}, errors.New("registryauth: no registry pull credential is armed; arm one with `grove registry pull enable` first")
+	}
+	drop := map[string]bool{}
+	for _, r := range remove {
+		drop[r] = true
+	}
+	var next []string
+	for _, r := range append(append([]string(nil), s.state.Repos...), add...) {
+		if !drop[r] {
+			next = append(next, r)
+		}
+	}
+	next, err = normalizeRepos(next)
+	if err != nil {
+		return Status{}, err
+	}
+	if len(next) == 0 {
+		return Status{}, errors.New("registryauth: that would leave the credential covering no repository; use `grove registry pull disable` instead")
+	}
+	previous := s.state
+	s.state.Repos = next
+	if err := s.persistLocked(); err != nil {
+		s.state = previous
+		return Status{}, fmt.Errorf("registryauth: persist scope: %w", err)
+	}
+	return s.statusLocked(), nil
+}
+
+// LoginForVMImages returns the credential for a worker Mac's host-side pull of its pools' VM
+// images (Tart pulls them before any VM exists), and ok=false unless the store is armed and at
+// least one image is on the armed registry host and inside the armed scope. The caller hands it
+// only to an authenticated worker, for its own pools' images (internal/server handleBrokerEntries).
+//
+// Tart presents TART_REGISTRY_* to whichever registry a pull goes to, so a login is withheld when
+// any of the images lives on another host (or has no parseable host): the token never reaches a
+// registry it wasn't armed for.
+func (s *Store) LoginForVMImages(images []string) (Credential, bool) {
+	if s == nil {
+		return Credential{}, false
+	}
+	var found Credential
+	covered := false
+	for _, image := range images {
+		host, _, ok := SplitImage(image)
+		if !ok {
+			return Credential{}, false
+		}
+		if c, ok := s.CredentialFor(image); ok {
+			found, covered = c, true
+		} else if st := s.Status(); !st.Enabled || host != st.Registry {
+			return Credential{}, false
+		}
+	}
+	return found, covered
+}
+
 // Disable disarms the store and wipes the token from disk. Disabling a disarmed store is a no-op.
 func (s *Store) Disable() (Status, error) {
 	if s == nil {

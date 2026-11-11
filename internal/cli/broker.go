@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -11,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -21,6 +23,7 @@ import (
 	"github.com/gm2211/grove/internal/broker"
 	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/install"
+	"github.com/gm2211/grove/internal/server"
 )
 
 var (
@@ -60,7 +63,59 @@ func init() {
 	brokerCmd.Flags().StringVar(&brokerServer, "server", "", "Grove server URL (default: server.url from the grove config)")
 	brokerCmd.Flags().StringVar(&brokerCADir, "ca-dir", "", "directory holding the broker CA (default: <grove config dir>/broker)")
 	brokerCmd.Flags().DurationVar(&brokerSyncInterval, "sync-interval", broker.DefaultSyncInterval, "how often to pull entries from the control plane")
+	brokerPullLoginCmd.Flags().StringVar(&brokerServer, "server", "", "Grove server URL (default: server.url from the grove config)")
+	brokerCmd.AddCommand(brokerPullLoginCmd)
 	Root.AddCommand(brokerCmd)
+}
+
+// brokerPullLoginCmd is what a worker's Orchard wrapper runs at start: it asks the control plane
+// (GET /broker/entries?vmImagePull=1, with this worker's broker credential) for the registry login
+// covering its pools' VM images, and prints the user and the token, one per line, on stdout for
+// the wrapper to read into TART_REGISTRY_* in memory. It prints nothing and exits non-zero when
+// there is nothing to hand over or the control plane can't be reached. Never a flag for the
+// token, never a log line with it.
+var brokerPullLoginCmd = &cobra.Command{
+	Use:    "pull-login",
+	Short:  "Print the registry login for this worker's VM images (used by the Orchard worker's wrapper).",
+	Hidden: true,
+	Args:   cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		serverURL := brokerServer
+		if serverURL == "" {
+			if cfg, _, err := config.Load(); err == nil {
+				serverURL = cfg.Server.URL
+			}
+		}
+		if serverURL == "" {
+			return errors.New("no control plane: pass --server, or set server.url in the grove config")
+		}
+		ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
+		defer cancel()
+		token, err := config.ResolveBrokerToken(ctx)
+		if err != nil {
+			return err
+		}
+		return printVMImagePullLogin(ctx, cmd.OutOrStdout(), apiclient.New(serverURL, token))
+	},
+}
+
+type vmImagePullFetcher interface {
+	BrokerVMImagePull(ctx context.Context) (*server.VMImagePullLogin, error)
+}
+
+func printVMImagePullLogin(ctx context.Context, out io.Writer, c vmImagePullFetcher) error {
+	login, err := c.BrokerVMImagePull(ctx)
+	if err != nil {
+		return err
+	}
+	if login == nil || login.User == "" || login.Token == "" {
+		return errors.New("the control plane has no registry login for this worker's VM images")
+	}
+	if strings.ContainsAny(login.User+login.Token, "\r\n") {
+		return errors.New("the control plane sent a malformed registry login")
+	}
+	_, err = fmt.Fprintf(out, "%s\n%s\n", login.User, login.Token)
+	return err
 }
 
 func runBroker(cmd *cobra.Command, _ []string) error {

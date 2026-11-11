@@ -184,6 +184,22 @@ type Spec struct {
 	Pools []Pool `yaml:"pools" json:"pools"`
 }
 
+// VMImagesFor lists the VM images (Pool.Image) of every pool whose WorkerSelector the labels
+// satisfy: what an Orchard worker with those labels pulls on its host. A nil labels map (a worker
+// Orchard does not list yet) satisfies only pools with no selector.
+func (s *Spec) VMImagesFor(labels map[string]string) []string {
+	if s == nil {
+		return nil
+	}
+	var images []string
+	for _, p := range s.Pools {
+		if p.Image != "" && labelsContain(labels, p.WorkerSelector) {
+			images = append(images, p.Image)
+		}
+	}
+	return images
+}
+
 // Duration is a time.Duration that (un)marshals as "12h" in YAML/JSON.
 type Duration time.Duration
 

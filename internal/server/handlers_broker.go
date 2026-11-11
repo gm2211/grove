@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/gm2211/grove/internal/broker"
@@ -13,6 +14,42 @@ type BrokerEntriesResponse struct {
 	// panel for this worker (POST /workers/{name}/unlock-keychain) and no earlier poll took it. It
 	// is handed over once and then forgotten (handlers_keychain.go).
 	KeychainUnlock string `json:"keychainUnlock,omitempty"`
+	// VMImagePull is the registry login for the VM images of the pools that select this worker,
+	// present only when the worker asked for it (?vmImagePull=1, once, from its Orchard wrapper
+	// at start) and an armed credential covers one of those images. Never in the broker's own
+	// polls, never for a job or VM identity (only this route's broker-scoped credential gets here).
+	VMImagePull *VMImagePullLogin `json:"vmImagePull,omitempty"`
+}
+
+// VMImagePullLogin is the registry login a worker's Orchard worker hands Tart to pull its pools' VM
+// images on the host. Its String and GoString never print the token.
+type VMImagePullLogin struct {
+	Registry string `json:"registry"`
+	User     string `json:"user"`
+	Token    string `json:"token"`
+}
+
+func (l VMImagePullLogin) String() string {
+	return "server.VMImagePullLogin{" + l.Registry + ", " + l.User + ", token elided}"
+}
+func (l VMImagePullLogin) GoString() string { return l.String() }
+
+// vmImagePullFor is the login for worker's pools' VM images, or nil: nothing armed, no fleet to
+// say which pools select the worker, or none of their images inside the armed scope.
+func (s *Server) vmImagePullFor(ctx context.Context, worker string) *VMImagePullLogin {
+	if s.opts.RegistryAuth == nil || s.opts.WorkerVMImages == nil {
+		return nil
+	}
+	images, err := s.opts.WorkerVMImages(ctx, worker)
+	if err != nil {
+		s.log.Warn("broker: cannot tell which VM images this worker pulls; handing it no registry login", "worker", worker, "err", err)
+		return nil
+	}
+	cred, ok := s.opts.RegistryAuth.LoginForVMImages(images)
+	if !ok {
+		return nil
+	}
+	return &VMImagePullLogin{Registry: cred.Registry, User: cred.User, Token: cred.Token}
 }
 
 // handleBrokerEntries serves a worker's broker its entries, real tokens included. It is the only
@@ -45,6 +82,12 @@ func (s *Server) handleBrokerEntries(w http.ResponseWriter, r *http.Request) {
 		resp.KeychainUnlock = pw
 		s.log.Info("keychain unlock collected by the worker's broker", "worker", p.Name)
 		go s.rebuildLockedVMs(p.Name)
+	}
+	if r.URL.Query().Get("vmImagePull") == "1" {
+		if login := s.vmImagePullFor(r.Context(), p.Name); login != nil {
+			resp.VMImagePull = login
+			s.log.Info("registry login for VM images collected by the worker", "worker", p.Name, "registry", login.Registry, "user", login.User)
+		}
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	s.writeJSON(w, http.StatusOK, resp)

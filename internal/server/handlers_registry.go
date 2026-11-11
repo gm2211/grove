@@ -13,6 +13,7 @@ import (
 //
 //	GET    /api/v1/registry/pull  → current state, never the token
 //	PUT    /api/v1/registry/pull  → arm a credential (registry, user, token, repos)
+//	PATCH  /api/v1/registry/pull  → add or remove covered repositories (no token; fingerprint stays)
 //	DELETE /api/v1/registry/pull  → disarm and wipe the stored token
 
 const registryNotConfigured = "registry pull credentials are not configured on this control plane"
@@ -43,6 +44,28 @@ func (s *Server) handleEnableRegistryPull(w http.ResponseWriter, r *http.Request
 	s.log.Info("registry pull credential enabled",
 		"by", status.EnabledBy, "registry", status.Registry, "user", status.User,
 		"repos", status.Repos, "fingerprint", status.TokenFingerprint)
+	s.writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) handleRegistryPullScope(w http.ResponseWriter, r *http.Request) {
+	if s.opts.RegistryAuth == nil {
+		http.Error(w, registryNotConfigured, http.StatusServiceUnavailable)
+		return
+	}
+	var in registryauth.ScopeRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
+	dec.DisallowUnknownFields() // a token in this body is a mistake, not something to ignore
+	if err := dec.Decode(&in); err != nil {
+		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	status, err := s.opts.RegistryAuth.UpdateScope(in)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.log.Info("registry pull scope changed", "by", principalFromContext(r.Context()).ID,
+		"add", in.Add, "remove", in.Remove, "repos", status.Repos, "fingerprint", status.TokenFingerprint)
 	s.writeJSON(w, http.StatusOK, status)
 }
 

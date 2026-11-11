@@ -192,6 +192,26 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 		ControllerURL: cfg.Orchard.URL, ServerURL: cfg.Server.URL,
 		GitAuth: gitAuthStore, RegistryAuth: registryStore, Secrets: secretStore, Pauses: pauseStore,
 	}
+	serverOpts.WorkerVMImages = func(ctx context.Context, worker string) ([]string, error) {
+		spec, err := fleet.Load(cfg.Fleet)
+		if err != nil {
+			return nil, err
+		}
+		workers, err := oc.ListWorkers(ctx)
+		if err != nil {
+			return nil, err
+		}
+		var labels map[string]string // a worker Orchard doesn't list yet matches only unselected pools
+		for _, w := range workers {
+			if w.Name == worker {
+				labels = w.Labels
+				if labels == nil {
+					labels = map[string]string{}
+				}
+			}
+		}
+		return spec.VMImagesFor(labels), nil
+	}
 	if ts := tailscaleAuthenticator(cfg.Server.Tailscale); ts != nil {
 		serverOpts.Tailscale = ts
 		serverOpts.TrustWorkerHosts = cfg.Server.Tailscale.TrustWorkerHosts

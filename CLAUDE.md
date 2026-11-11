@@ -111,7 +111,9 @@ calls, returns scripted results) is for tests. This is what makes `--dry-run` ac
   owners), because a boot-time daemon has no unlocked login Keychain. The Keychain items of an
   older grove are only a migration source. A secret never appears in argv, a plist, the wrapper's
   text, a step description or a log: the wrapper reads the files (`< file`, or `read` into
-  `TART_REGISTRY_USERNAME`/`TART_REGISTRY_PASSWORD`). `daemon_test.go` asserts it.
+  `TART_REGISTRY_USERNAME`/`TART_REGISTRY_PASSWORD`). `daemon_test.go` asserts it. The registry
+  login is fetched from the control plane at start instead when it holds one covering the worker's
+  VM images (see `internal/registryauth`); the file is then only the fallback.
 - The worker user's login password unlocks its keychain (macOS VMs need it) one way only, into the
   worker daemon's own session, never stored: typed into the panel (`POST /workers/{name}/unlock-keychain`:
   control-plane memory, then the broker's `GET /broker/entries` answer, then the FIFO
@@ -172,13 +174,28 @@ variable. Same discipline as `internal/gitauth`:
   builds ONE store for the HTTP API, the dispatch service (`Resolver`, tag resolution) and the fleet
   reconciler (`Options.RegistryPull`, enrolment). `Status` and the API carry a fingerprint, never
   the token. Arming always names repositories.
-- The token has exactly two destinations: the Docker `config.json` that `Reconciler.Enrol` writes
+- The token has exactly three destinations (the third is the worker Mac's host-side pull, below): the Docker `config.json` that `Reconciler.Enrol` writes
   to `/etc/grove/registry/config.json` on a Linux VM (root, 0600, over Orchard exec, **stdin only**:
   the payload's registry line, base64), and the `Resolver`'s requests to the registry it was armed
   for (never another host: a token realm outside the registry host, or plain http, is refused;
   redirects are never followed). Never argv, a VM spec or planned spec, a startup script, a log, an
   API response, `env_json`, dispatch meta or payload, or the job record. The job spec has no
   `auth` (`nomad/jobs/nomadjobs_test.go`). `spec/codeql/RegistryTokenLeak.ql` and the coverage row
+  assert it.
+- A worker Mac's Orchard worker pulls the pool's Tart image on the HOST before any VM exists, where
+  the broker never sees it. `Store.LoginForVMImages` gives the login to the worker through the
+  broker credential's existing answer, `GET /broker/entries?vmImagePull=1` (spec S5: no new route;
+  the plain poll never carries it): only to that worker's own broker-scoped, machine-bound
+  credential (never a job, VM, device or operator identity), only when every VM image of the
+  pools that select it (`fleet.Spec.VMImagesFor`, Orchard's labels for the worker) is on the armed
+  registry host (Tart presents `TART_REGISTRY_*` to any host) and at least one is in scope. The
+  worker wrapper runs the hidden `grove broker pull-login`, which prints user and token on stdout
+  into a pipe the wrapper `read`s, and exports `TART_REGISTRY_*` only into the Orchard process:
+  never a file, argv, plist, wrapper text or log (the wrapper writes only the non-secret
+  `registry-source` marker `grove doctor` reads). The legacy 0600 `credentials/registry` file is a
+  fallback only. `grove registry pull scope --add/--remove` (`PATCH /registry/pull`, operator-only,
+  unknown fields such as a token refused) edits repos without the token.
+  `internal/server/handlers_broker_vmpull_test.go` and `internal/install/workerwrapper_registry_test.go`
   assert it.
 - A VM gets a login only when its pool's `runnerImage` or `environments.allow` names a repository
   in scope (`Store.PullConfig`); otherwise `{"auths":{}}`. The file must always exist because the
