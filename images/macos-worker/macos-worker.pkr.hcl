@@ -117,7 +117,7 @@ build {
       "sudo killall -HUP mDNSResponder || true",
       "sleep 2",
       "if scutil --dns | grep -qE '[A-Za-z0-9-]+\\.ts\\.net'; then echo 'FATAL: the guest still has a tailnet search domain'; exit 1; fi",
-      "curl -fsS -o /dev/null --max-time 30 https://github.com || { echo 'FATAL: github.com unreachable with the build's DNS settings'; exit 1; }",
+      "curl -fsS -o /dev/null --max-time 30 https://github.com || { echo 'FATAL: github.com unreachable with the DNS settings of the build'; exit 1; }",
     ]
   }
 
