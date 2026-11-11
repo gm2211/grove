@@ -31,6 +31,21 @@ func tartUsable(opts Options) bool {
 	return onPath(opts.lookPath(), "tart") || isRegularFile(groveManagedTartExecutable(opts))
 }
 
+// tartCommand is the `tart` grove runs for its own registry login: the one on PATH, else grove's
+// managed link, else the managed bundle's executable, by absolute path. A shell with a bare PATH
+// (ssh, `su - user`, launchd) doesn't have ~/.local/bin, which is where grove installs its own.
+func tartCommand(opts Options) string {
+	if onPath(opts.lookPath(), "tart") {
+		return "tart"
+	}
+	for _, p := range []string{groveManagedTartLink(opts), groveManagedTartExecutable(opts)} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return "tart"
+}
+
 // tartBrewInstallPending reports whether the plan still has to install Tart through the
 // openai/tools tap: Tart is missing and Homebrew is usable by this user. When Homebrew is another
 // user's, the `tart` step installs the release tarball instead and the tap needs no trust.

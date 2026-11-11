@@ -294,7 +294,7 @@ func registryLoginStep(r Runner, opts Options, out io.Writer) *Step {
 			// `tart login` keeps the login in the Keychain, which serves a person at the Mac. The
 			// worker daemon starts before anyone has logged in, so it gets the same login from a
 			// file, through the TART_REGISTRY_* variables its wrapper exports.
-			if _, _, err := r.RunWithStdin(ctx, opts.RegistryToken, "tart", "login", registry,
+			if _, _, err := r.RunWithStdin(ctx, opts.RegistryToken, tartCommand(opts), "login", registry,
 				"--username", opts.RegistryUser, "--password-stdin"); err != nil {
 				if !isKeychainUnavailable(err) {
 					return fmt.Errorf("tart login %s: %w", registry, err)

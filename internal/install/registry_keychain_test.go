@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -60,5 +61,47 @@ func TestRunDoctor_RegistryLoginOKWithOnlyTheCredentialFile(t *testing.T) {
 	results := RunDoctor(context.Background(), NewFakeRunner(), opts, &config.Config{Fleet: fleetPath})
 	if r := findResult(t, results, "registry-login"); !r.OK {
 		t.Errorf("the credential file alone should satisfy registry-login, got %+v", r)
+	}
+}
+
+// Over ssh or `su - user`, PATH has no ~/.local/bin, which is where grove links its own tart:
+// the registry login must still find it, by absolute path.
+func TestTartCommand_FallsBackToGrovesOwnTart(t *testing.T) {
+	home := t.TempDir()
+	opts := testWorkerOptions(home)
+	if got := tartCommand(opts); got != "tart" {
+		t.Fatalf("with no tart anywhere: %q", got)
+	}
+	link := groveManagedTartLink(opts)
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(link, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := tartCommand(opts); got != link {
+		t.Fatalf("tart off PATH: got %q, want %q", got, link)
+	}
+	opts.RegistryUser, opts.RegistryToken = "gm2211", "ghp_tok"
+	r := NewFakeRunner()
+	step := stepNamed(t, planWorkerOut(t, r, opts, &bytes.Buffer{}), "registry-login:ghcr.io")
+	if err := step.Apply(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, c := range r.Calls {
+		if c.Name == link && len(c.Args) > 0 && c.Args[0] == "login" {
+			found = true
+		}
+		if strings.Contains(strings.Join(c.Args, " "), "ghp_tok") {
+			t.Fatalf("token in argv: %+v", c)
+		}
+	}
+	if !found {
+		t.Fatalf("registry login didn't run grove's own tart: %+v", r.Calls)
+	}
+	opts.LookPath = lookPathOnly("tailscale", "tart")
+	if got := tartCommand(opts); got != "tart" {
+		t.Fatalf("tart on PATH: %q", got)
 	}
 }
