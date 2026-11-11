@@ -188,7 +188,8 @@ variable. Same discipline as `internal/gitauth`:
   the plain poll never carries it): only to that worker's own broker-scoped, machine-bound
   credential (never a job, VM, device or operator identity), only when every VM image of the
   pools that select it (`fleet.Spec.VMImagesFor`, Orchard's labels for the worker) is on the armed
-  registry host (Tart presents `TART_REGISTRY_*` to any host) and at least one is in scope. The
+  registry host (Tart presents `TART_REGISTRY_*` to any host; an image with no registry host is a
+  local VM name Tart clones without a registry, so it is ignored) and at least one is in scope. The
   worker wrapper runs the hidden `grove broker pull-login`, which prints user and token on stdout
   into a pipe the wrapper `read`s, and exports `TART_REGISTRY_*` only into the Orchard process:
   never a file, argv, plist, wrapper text or log (the wrapper writes only the non-secret

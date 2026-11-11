@@ -250,8 +250,9 @@ func (s *Store) UpdateScope(req ScopeRequest) (Status, error) {
 // only to an authenticated worker, for its own pools' images (internal/server handleBrokerEntries).
 //
 // Tart presents TART_REGISTRY_* to whichever registry a pull goes to, so a login is withheld when
-// any of the images lives on another host (or has no parseable host): the token never reaches a
-// registry it wasn't armed for.
+// any of the images lives on another registry host: the token never reaches a registry it wasn't
+// armed for. An image with no registry host is a local Tart VM name ("grove-studio-linux-v2"),
+// which Tart clones locally without contacting any registry, so it is ignored.
 func (s *Store) LoginForVMImages(images []string) (Credential, bool) {
 	if s == nil {
 		return Credential{}, false
@@ -261,7 +262,7 @@ func (s *Store) LoginForVMImages(images []string) (Credential, bool) {
 	for _, image := range images {
 		host, _, ok := SplitImage(image)
 		if !ok {
-			return Credential{}, false
+			continue // a local VM name: no registry is involved
 		}
 		if c, ok := s.CredentialFor(image); ok {
 			found, covered = c, true

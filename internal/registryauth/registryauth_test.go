@@ -311,11 +311,18 @@ func TestLoginForVMImages(t *testing.T) {
 		"none":                  nil,
 		"repo outside scope":    {"ghcr.io/gm2211/other"},
 		"another host mixed in": {in, "registry.example.com/x/y"},
-		"no host":               {in, "ubuntu"},
 	} {
 		if c, ok := store.LoginForVMImages(images); ok || c.Token != "" {
 			t.Errorf("%s: handed out %v", name, c)
 		}
+	}
+	// Local VM names (no registry host) are ignored, whether alone or beside an in-scope image...
+	if c, ok := store.LoginForVMImages([]string{"grove-studio-linux-v2", in}); !ok || c.Token != testToken {
+		t.Errorf("local VM name beside an in-scope image: %v %v", c, ok)
+	}
+	// ...but cover nothing on their own.
+	if _, ok := store.LoginForVMImages([]string{"grove-studio-linux-v2"}); ok {
+		t.Error("a local VM name alone handed out a login")
 	}
 	var nilStore *Store
 	if _, ok := nilStore.LoginForVMImages([]string{in}); ok {

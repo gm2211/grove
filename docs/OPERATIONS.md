@@ -503,7 +503,7 @@ grove registry pull disable     # wipes it from the control plane and, next tick
   ```
 
   A worker is handed the login only when every VM image of the pools that select it is on the
-  armed registry host (Tart would present it to any host) and at least one is inside the scope. A
+  armed registry host (Tart would present it to any host; an image with no registry host is a local VM name, which Tart clones without a registry, so it is ignored) and at least one is inside the scope. A
   job or VM identity never gets it. **Rotation:** `enable` with a new token, or a scope change,
   reaches a worker at its next Orchard worker restart (`sudo launchctl kickstart -k
   system/com.grove.orchard-worker`, or a reboot), not before. `grove doctor` on the Mac reports the

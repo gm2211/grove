@@ -125,6 +125,20 @@ func TestBrokerEntries_WithholdsTheVMImageLoginWhenAnImageIsOnAnotherHost(t *tes
 	}
 }
 
+func TestBrokerEntries_LocalVMNamesDoNotBlockTheVMImageLogin(t *testing.T) {
+	f := newVMPullFixture(t, map[string][]string{
+		"mac-1": {"grove-studio-linux-v2", "ghcr.io/gm2211/grove-macos-worker@sha256:" + strings.Repeat("a", 64)},
+	})
+	rec := peerRequest(f.srv, http.MethodGet, "/api/v1/broker/entries?vmImagePull=1", "", "127.0.0.1:1", f.broker)
+	var resp BrokerEntriesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil || rec.Code != http.StatusOK {
+		t.Fatalf("%d %s %v", rec.Code, rec.Body, err)
+	}
+	if resp.VMImagePull == nil || resp.VMImagePull.Token != vmPullToken {
+		t.Fatalf("login = %+v, want it handed over beside a local VM name", resp.VMImagePull)
+	}
+}
+
 func TestBrokerEntries_NoVMImageLoginWhenDisarmedOrFleetUnknown(t *testing.T) {
 	f := newVMPullFixture(t, map[string][]string{"mac-1": {"ghcr.io/gm2211/grove-macos-worker@sha256:" + strings.Repeat("a", 64)}})
 	path := "/api/v1/broker/entries?vmImagePull=1"
