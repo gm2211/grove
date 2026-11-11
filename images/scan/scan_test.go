@@ -5,8 +5,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
+
+// scanIdentifiers is what the tests pass as GROVE_SCAN_IDENTIFIERS.
+const scanIdentifiers = "build-mac-m5, Build Mac,ab"
 
 func runScan(t *testing.T, root string) (string, int) {
 	t.Helper()
@@ -14,7 +19,9 @@ func runScan(t *testing.T, root string) (string, int) {
 	if err != nil {
 		t.Skip("no bash")
 	}
-	out, err := exec.Command(bash, "scan-root.sh", root).CombinedOutput()
+	cmd := exec.Command(bash, "scan-root.sh", root)
+	cmd.Env = append(os.Environ(), "GROVE_SCAN_IDENTIFIERS="+scanIdentifiers)
+	out, err := cmd.CombinedOutput()
 	code := 0
 	if ee, ok := err.(*exec.ExitError); ok {
 		code = ee.ExitCode()
@@ -49,10 +56,13 @@ func TestScanRoot_CleanGuestPasses(t *testing.T) {
 // The leak that reached a pushed image: the build Mac's tailnet search domain.
 func TestScanRoot_FindsWhatTheBuildMacLeaks(t *testing.T) {
 	for name, tc := range map[string]struct{ rel, content, want string }{
-		"tailnet search domain": {"private/var/run/resolv.conf", "search tail0000aa.ts.net\n", "tail0000aa.ts.net"},
-		"tailnet address":       {"private/etc/hosts", "100.101.102.103 studio\n", "100.101.102.103"},
-		"tailscale auth key":    {"Users/admin/.zsh_history", "tailscale up --authkey tskey-auth-abc123-def456\n", "tskey-…"},
-		"github token":          {"Users/admin/.netrc", "password ghp_" + strings.Repeat("a", 36) + "\n", "ghp_…"},
+		"tailnet search domain":  {"private/var/run/resolv.conf", "search tail0000aa.ts.net\n", "tailnet name"},
+		"tailnet name in a log":  {"private/var/db/diagnostics/Persist/0000000000000006.tracev3", "\x00\x01\xff tail0000aa.ts.net \x00\xfe", "tailnet name"},
+		"build host in a log":    {"private/var/db/diagnostics/Special/0000000000000005.tracev3", "\x00\xff Build-Mac-M5._companion-link._tcp \x00", "operator identifier"},
+		"computer name anywhere": {"Library/Logs/x.log", "from Build Mac\n", "operator identifier"},
+		"tailnet address":        {"private/etc/hosts", "100.101.102.103 studio\n", "tailnet address"},
+		"tailscale auth key":     {"Users/admin/.zsh_history", "tailscale up --authkey tskey-auth-abc123-def45678\n", "Tailscale auth key"},
+		"github token":           {"Users/admin/.netrc", "password ghp_" + strings.Repeat("a", 36) + "\n", "GitHub token"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
@@ -61,13 +71,56 @@ func TestScanRoot_FindsWhatTheBuildMacLeaks(t *testing.T) {
 			if code != 1 {
 				t.Fatalf("exit %d, want 1: %s", code, out)
 			}
-			if !strings.Contains(out, tc.want) || !strings.Contains(out, tc.rel) {
+			if !strings.Contains(out, tc.want+": ") || !strings.Contains(out, tc.rel) {
 				t.Fatalf("output doesn't name the hit: %s", out)
 			}
-			if strings.Contains(out, strings.Repeat("a", 36)) || strings.Contains(out, "abc123-def456") {
-				t.Fatalf("output echoes a secret: %s", out)
+			// Never the matched text: not a token, not the name.
+			for _, secret := range []string{strings.Repeat("a", 36), "abc123-def45678", "tail0000aa", "Build-Mac-M5", "100.101.102.103"} {
+				if strings.Contains(out, secret) {
+					t.Fatalf("output echoes the match %q: %s", secret, out)
+				}
 			}
 		})
+	}
+}
+
+// A too-short identifier ("ab") is dropped, and program binaries may hold token-shaped strings.
+func TestScanRoot_NoFalseAlarms(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "usr/local/bin/gh", "\x00gho_brewPATHNoneOfTheAbove\x00 fabulous cab\n")
+	write(t, root, "opt/homebrew/share/doc/x.txt", "example 100.100.100.100\n")
+	if out, code := runScan(t, root); code != 0 {
+		t.Fatalf("false alarm (%d): %s", code, out)
+	}
+}
+
+// The Data volume of a booted guest is a separate mount under /System/Volumes/Data.
+func TestScanRoot_ScansTheDataVolumeOfABootedGuest(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "System/Volumes/Data/private/var/run/resolv.conf", "search tail0000aa.ts.net\n")
+	if out, code := runScan(t, root); code != 1 {
+		t.Fatalf("exit %d, want 1: %s", code, out)
+	}
+}
+
+// A FIFO must not hang the scan.
+func TestScanRoot_SkipsFIFOs(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "private/var/run"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(root, "private/var/run/some.fifo"), 0o600); err != nil {
+		t.Skip("no mkfifo here")
+	}
+	done := make(chan int, 1)
+	go func() { _, code := runScan(t, root); done <- code }()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("exit %d", code)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the scan hung on a FIFO")
 	}
 }
 

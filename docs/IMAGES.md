@@ -129,14 +129,19 @@ new pool name. Prefer the existing Linux pool for jobs that do not require macOS
 
 ### Nothing from the build Mac may be in an image
 
-A guest built on a Mac gets that Mac's DNS settings over vmnet's DHCP. A tailnet's search domain
-(`<name>.ts.net`) reached `/private/var/run/resolv.conf` of a pushed image this way. The build's
-last provisioner now removes the resolver file, DHCP leases and shell histories and scans the
-guest (`images/scan/scan-root.sh`: tailnet names, tailnet addresses, Tailscale auth keys, GitHub
-tokens), and the `make images-macos*` targets scan the stopped VM's disk again from the host
-(`images/scan/scan-tart-vm.sh <vm>`). Either failing means: do not `tart push`. An image built
-before this check must be scanned, or rebuilt, before its package is ever made public, and making
-a package public exposes every version in it.
+A guest built on a Mac gets that Mac's DNS settings over vmnet's DHCP and sees its mDNS name. A
+tailnet's search domain (`<name>.ts.net`) reached `/private/var/run/resolv.conf` and the unified
+logs (`/private/var/db/diagnostics/*.tracev3`) of a pushed image this way, and the build Mac's
+host name reached the logs. The build's last provisioner now removes the resolver file, DHCP
+leases, shell histories and the unified logs, and scans the guest with `images/scan/scan-root.sh`.
+The scan reads every regular file, binaries included, for tailnet names and Tailscale auth keys,
+and the configuration and home directories for GitHub tokens and tailnet addresses. The
+`make images-macos*` targets then scan the stopped VM's disk from the host
+(`images/scan/scan-tart-vm.sh <vm>`), which adds the build Mac's own names and user
+(`GROVE_SCAN_IDENTIFIERS` takes more) and catches whatever the guest wrote between the scrub and
+shutdown. Either failing means: do not `tart push`. An image built before this check must be
+scanned, or rebuilt, before its package is ever made public, and making a package public exposes
+every version in it.
 
 ### Packages are private by default — workers need access too
 
