@@ -451,6 +451,14 @@ grove config set server.listen 100.x.y.z:6120   # this machine's tailnet IP
 A server with no operator token, device store or Tailscale auth configured answers every
 `/api/v1` request with 503 rather than running open.
 
+The listener (and the local socket) drops a connection that hasn't sent its request headers
+within 30 seconds and closes keep-alive connections idle for 2 minutes. There is deliberately no
+overall read or write deadline: following a job's logs is one response that stays open as long
+as the job runs. Request bodies are capped per route instead: 1 MiB for `POST /jobs` (far above
+the 16 KiB Nomad allows a dispatch payload, so a real job never meets it), 64 KiB for
+`PUT /jobs/{id}/credentials`, 16 KiB or less for everything else (4 KiB for a join request). A
+larger body gets a 400.
+
 ## The credential broker
 
 A job never holds a real credential. It gets a placeholder (`gph1_…`), and each worker Mac runs
@@ -550,6 +558,9 @@ worker: `grove access revoke` its old broker credential, delete `~/.config/grove
 and run `grove install --role worker` there again. Until a worker is re-joined, its unbound
 credential is a plain bearer token: revoke it (`grove access revoke DEVICE_ID`) if it may have
 leaked.
+
+A machine may hold at most 5 join requests waiting for approval (256 in total); more get a 429
+until one is approved or expires (10 minutes).
 
 ## Credentials for orchestrators and scripts
 

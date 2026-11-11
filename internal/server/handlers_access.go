@@ -35,7 +35,7 @@ func (s *Server) handleIssueDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in IssueDeviceRequest
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSmallBody)).Decode(&in); err != nil {
 		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
 		return
 	}

@@ -19,6 +19,14 @@ import (
 const joinTTL = 10 * time.Minute
 const maxPendingJoins = 256
 
+// maxPendingJoinsPerSource caps the requests one address may have waiting for approval, so one
+// tailnet peer can't fill the global table (or an operator's approval list) by itself.
+const maxPendingJoinsPerSource = 5
+
+// maxJoinRequestBody bounds POST /join/requests, the one route that reads a body from a caller
+// with no credential: a name and an address.
+const maxJoinRequestBody = 4 << 10
+
 type joinRequest struct {
 	ID, Secret, Code, Name, TailnetIP string
 	ExpiresAt                         time.Time
@@ -58,7 +66,7 @@ func (s *Server) handleCreateJoinRequest(w http.ResponseWriter, r *http.Request)
 		TailnetIP  string `json:"tailnetIp"`
 		BrokerOnly bool   `json:"brokerOnly"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || strings.TrimSpace(in.Name) == "" {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxJoinRequestBody)).Decode(&in); err != nil || strings.TrimSpace(in.Name) == "" {
 		http.Error(w, "worker name is required", http.StatusBadRequest)
 		return
 	}
@@ -97,14 +105,24 @@ func (s *Server) handleCreateJoinRequest(w http.ResponseWriter, r *http.Request)
 	code := strings.ToUpper(codeRaw[:8])
 	jr := &joinRequest{ID: id, Secret: secret, Code: code, Name: strings.TrimSpace(in.Name), TailnetIP: source, BrokerOnly: in.BrokerOnly, ExpiresAt: time.Now().Add(joinTTL)}
 	s.joins.mu.Lock()
+	fromSource := 0
 	for existingID, existing := range s.joins.byID {
 		if time.Now().After(existing.ExpiresAt) {
 			delete(s.joins.byID, existingID)
+			continue
+		}
+		if existing.TailnetIP == source && !existing.Approved {
+			fromSource++
 		}
 	}
 	if len(s.joins.byID) >= maxPendingJoins {
 		s.joins.mu.Unlock()
 		http.Error(w, "too many pending join requests", http.StatusTooManyRequests)
+		return
+	}
+	if fromSource >= maxPendingJoinsPerSource {
+		s.joins.mu.Unlock()
+		http.Error(w, "too many pending join requests from this address; approve one or wait for them to expire", http.StatusTooManyRequests)
 		return
 	}
 	s.joins.byID[id] = jr

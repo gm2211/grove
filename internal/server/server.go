@@ -205,3 +205,16 @@ func (s *Server) writeError(w http.ResponseWriter, status int, err error) {
 	s.log.Error("request failed", "status", status, "err", err)
 	http.Error(w, err.Error(), status)
 }
+
+// Request-body limits for the handlers that decode JSON. Every such handler reads through
+// http.MaxBytesReader, so no caller can make the control plane buffer an unbounded body.
+const (
+	// maxJobBody bounds POST /jobs. A job's script travels as a Nomad dispatch payload, which
+	// Nomad itself caps at 16 KiB, so 1 MiB leaves ample room for the script plus env, meta,
+	// credentials and toolchain around it without ever being the limit a real job hits.
+	maxJobBody = 1 << 20
+	// maxCredentialsBody bounds PUT /jobs/{id}/credentials: a handful of tokens.
+	maxCredentialsBody = 64 << 10
+	// maxSmallBody bounds the bodies that are a name and a few short fields.
+	maxSmallBody = 16 << 10
+)

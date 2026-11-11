@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/dispatch"
@@ -377,5 +379,48 @@ func TestFleetReconcileLoop_MissingFleetSpec_SkipsTickWithoutPanicking(t *testin
 
 	if oc.createCalls != 0 || oc.deleteCalls != 0 {
 		t.Fatalf("expected no orchard calls for an unreadable fleet spec, got creates=%d deletes=%d", oc.createCalls, oc.deleteCalls)
+	}
+}
+
+// `grove serve` bounds header reads and idle connections, and must never bound a whole response:
+// following a job's logs is one response that lasts as long as the job.
+func TestAPIServerTimeouts(t *testing.T) {
+	srv := newAPIServer("127.0.0.1:0", http.NotFoundHandler())
+	if srv.ReadHeaderTimeout <= 0 || srv.ReadHeaderTimeout > time.Minute {
+		t.Errorf("ReadHeaderTimeout = %v, want set and short", srv.ReadHeaderTimeout)
+	}
+	if srv.IdleTimeout <= 0 {
+		t.Errorf("IdleTimeout = %v, want set", srv.IdleTimeout)
+	}
+	if srv.WriteTimeout != 0 || srv.ReadTimeout != 0 {
+		t.Errorf("WriteTimeout = %v, ReadTimeout = %v: either would cut a followed log stream", srv.WriteTimeout, srv.ReadTimeout)
+	}
+
+	// A peer that connects and never finishes its headers is dropped at the header timeout.
+	srv.ReadHeaderTimeout = 100 * time.Millisecond
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(l)
+	defer srv.Close()
+	conn, err := net.Dial("tcp", l.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("GET / HTTP/1.1\r\nHost: x\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 512)
+	for {
+		if _, err := conn.Read(buf); err != nil {
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
+				t.Fatal("the server kept a connection that never finished its headers")
+			}
+			return // closed by the server
+		}
 	}
 }

@@ -249,7 +249,8 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 		if err != nil {
 			return fmt.Errorf("server.socket: %w", err)
 		}
-		local := &http.Server{Handler: srv, ConnContext: server.LocalConnContext, ReadHeaderTimeout: 30 * time.Second}
+		local := newAPIServer("", srv)
+		local.ConnContext = server.LocalConnContext
 		go func() {
 			if err := local.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				slog.Error("grove serve: local socket stopped", "socket", cfg.Server.Socket, "err", err)
@@ -259,7 +260,24 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 	}
 
 	slog.Info("grove serve: listening", "addr", addr, "version", Version)
-	return http.ListenAndServe(addr, srv)
+	return newAPIServer(addr, srv).ListenAndServe()
+}
+
+// newAPIServer is the http.Server `grove serve` listens on the tailnet with. It bounds how long
+// a peer may take to send its request headers and how long an idle keep-alive connection is
+// held, so connections that never say anything can't pile up. It sets no ReadTimeout or
+// WriteTimeout on purpose: both are deadlines for the whole exchange, and following a job's logs
+// (GET /jobs/{id}/logs?follow=true, chunked, SSE or NDJSON) is one response that stays open for
+// as long as the job runs. Request bodies are bounded in size by each handler instead
+// (http.MaxBytesReader).
+func newAPIServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    64 << 10,
+	}
 }
 
 // fleetReconcileLoop periodically reconciles Orchard to match fleet.yaml, the same work
