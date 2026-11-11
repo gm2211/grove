@@ -54,6 +54,9 @@ type Options struct {
 	// private registry. The fleet reconciler and the dispatch service read the same store, so
 	// arming it here takes effect on their next tick/submit — see internal/registryauth.
 	RegistryAuth *registryauth.Store
+	// WorkerVMImages names the VM images (Pool.Image) of every pool that selects worker, for
+	// GET /broker/entries?vmImagePull=1. Nil means no worker is handed a registry login.
+	WorkerVMImages func(ctx context.Context, worker string) ([]string, error)
 	// Pauses records why each worker is paused (snooze, operator, health). Nil disables
 	// snoozing (POST /workers/{name}/snooze answers 503) and leaves pause/resume as plain Orchard
 	// calls. `grove serve` hands the same store to the expiry loop and the health monitor.
@@ -205,6 +208,7 @@ func (s *Server) routes() http.Handler {
 	api.HandleFunc("DELETE /github/sourcing", s.handleDisableGitHubSourcing)
 	api.HandleFunc("GET /registry/pull", s.handleRegistryPull)
 	api.HandleFunc("PUT /registry/pull", s.handleEnableRegistryPull)
+	api.HandleFunc("PATCH /registry/pull", s.handleRegistryPullScope)
 	api.HandleFunc("DELETE /registry/pull", s.handleDisableRegistryPull)
 	api.HandleFunc("GET /broker/entries", s.handleBrokerEntries)
 	api.HandleFunc("POST /workers/{name}/unlock-keychain", s.handleQueueKeychainUnlock)

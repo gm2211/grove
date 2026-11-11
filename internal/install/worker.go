@@ -413,14 +413,46 @@ grove_tart_bin=%q
 [ -x "$grove_tart_bin/tart" ] || { print -u2 "grove: headless Tart missing at $grove_tart_bin; run grove install --role worker"; exit 78; }
 export PATH="$grove_tart_bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 registry_credential=%q
-if [ -f "$registry_credential" ]; then
-  { IFS= read -r TART_REGISTRY_USERNAME; IFS= read -r TART_REGISTRY_PASSWORD; } < "$registry_credential"
+registry_source=none
+TART_REGISTRY_USERNAME=""
+TART_REGISTRY_PASSWORD=""
+{ IFS= read -r TART_REGISTRY_USERNAME; IFS= read -r TART_REGISTRY_PASSWORD; } < <(%q broker pull-login%s 2>/dev/null) || true
+if [ -n "$TART_REGISTRY_USERNAME" ] && [ -n "$TART_REGISTRY_PASSWORD" ]; then
+  registry_source=control-plane
+elif [ -f "$registry_credential" ]; then
+  TART_REGISTRY_USERNAME=""
+  TART_REGISTRY_PASSWORD=""
+  { IFS= read -r TART_REGISTRY_USERNAME; IFS= read -r TART_REGISTRY_PASSWORD; } < "$registry_credential" || true
+  registry_source=legacy-file
+fi
+if [ "$registry_source" = none ]; then
+  unset TART_REGISTRY_USERNAME TART_REGISTRY_PASSWORD
+else
   export TART_REGISTRY_USERNAME TART_REGISTRY_PASSWORD
 fi
+print -r -- "$registry_source" > %q 2>/dev/null || true
 %sexec %q worker run --name %q --labels %q --guest-agent-transport --bootstrap-token-stdin %q < %q
 `, groveTartBinDir(opts), credentialPath(opts, registryCredentialName),
+		groveExecutable(opts), brokerServerArg(opts), registrySourcePath(opts),
 		workerWrapperUnlockScript(credentialPath(opts, legacyLoginKeychainCredentialName), credentialPath(opts, KeychainUnlockFIFOName)), orchardBin, opts.hostname(), opts.workerLabels(), opts.Controller,
 		credentialPath(opts, workerBootstrapCredentialName))
+}
+
+// brokerServerArg is " --server <url>" when the install knows the control plane's URL, as for the
+// broker's own LaunchDaemon (brokerJobSpec); otherwise the grove config's server.url is used.
+func brokerServerArg(opts Options) string {
+	if opts.ServerURL == "" {
+		return ""
+	}
+	return " --server " + strconv.Quote(opts.ServerURL)
+}
+
+// registrySourceName is the non-secret file the worker wrapper writes each start, naming where
+// Tart's registry login came from: "control-plane", "legacy-file" or "none". `grove doctor` reads it.
+const registrySourceName = "registry-source"
+
+func registrySourcePath(opts Options) string {
+	return filepath.Join(opts.ConfigDir(), registrySourceName)
 }
 
 func workerOrchardAppInstalled(ctx context.Context, r Runner, opts Options, cliPath string) (bool, error) {

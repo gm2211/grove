@@ -4,6 +4,23 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **A worker Mac pulls its private VM images with a login from the control plane; no per-Mac
+  `grove registry login`.** The pull credential the control plane already holds
+  (`grove registry pull enable`) now also covers the Tart VM images of the pools that select a
+  worker. The worker's Orchard wrapper asks for it when it starts, through the broker credential's
+  existing `GET /broker/entries` answer (`?vmImagePull=1`; no new route), and exports
+  `TART_REGISTRY_USERNAME`/`TART_REGISTRY_PASSWORD` only into the Orchard worker's own process
+  environment: nothing is written to the Mac, and the token is never in argv, a plist, the wrapper
+  text or a log. It is handed over only when no VM image of the worker's pools is on another registry host
+  (local VM names, with no "/", are ignored; any other name without a parsable registry host withholds it) and at least one is inside the armed scope. If the control plane is unreachable at
+  start the worker still starts (cached images keep working) and tries again on its next restart;
+  a rotated token or a changed scope takes effect at the worker's next restart. The old
+  `~/.config/grove/credentials/registry` file is still read as a fallback, and `grove doctor`
+  says which source is in use.
+  New: `grove registry pull scope --add <owner/name> / --remove <owner/name>`
+  (`PATCH /api/v1/registry/pull`, operator-only) widens or narrows the armed credential's
+  repositories without re-entering the token.
+
 - **Removed `grove worker remember-login`.** grove no longer stores a login password anywhere. The
   worker wrapper no longer reads `~/.config/grove/credentials/login-keychain` and deletes it at
   start if an older grove left one. To boot macOS VMs with nobody logged in, use the control

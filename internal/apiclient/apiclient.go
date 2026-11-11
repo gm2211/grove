@@ -114,6 +114,16 @@ func (c *Client) BrokerSync(ctx context.Context) (*server.BrokerEntriesResponse,
 	return &out, nil
 }
 
+// BrokerVMImagePull asks for the registry login covering the VM images of the pools that select
+// this worker (GET /broker/entries?vmImagePull=1): nil when nothing is armed or in scope.
+func (c *Client) BrokerVMImagePull(ctx context.Context) (*server.VMImagePullLogin, error) {
+	var out server.BrokerEntriesResponse
+	if err := c.doJSON(ctx, http.MethodGet, "/broker/entries?vmImagePull=1", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.VMImagePull, nil
+}
+
 // Fleet returns the normalised fleet view: {workers, vms, nodes}.
 func (c *Client) Fleet(ctx context.Context) (*server.FleetResponse, error) {
 	var out server.FleetResponse
@@ -265,6 +275,16 @@ func (c *Client) RegistryPull(ctx context.Context) (*registryauth.Status, error)
 func (c *Client) EnableRegistryPull(ctx context.Context, req registryauth.EnableRequest) (*registryauth.Status, error) {
 	var out registryauth.Status
 	if err := c.doJSON(ctx, http.MethodPut, "/registry/pull", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UpdateRegistryPullScope adds and removes repositories on the armed credential's scope without
+// re-sending the token.
+func (c *Client) UpdateRegistryPullScope(ctx context.Context, req registryauth.ScopeRequest) (*registryauth.Status, error) {
+	var out registryauth.Status
+	if err := c.doJSON(ctx, http.MethodPatch, "/registry/pull", req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

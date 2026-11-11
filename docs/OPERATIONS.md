@@ -490,6 +490,24 @@ grove registry pull disable     # wipes it from the control plane and, next tick
 - Environment images may be given as tags: the control plane resolves the tag to a digest with
   this same credential at submit (docs/JOBS.md "Job environments"). With nothing armed that works
   for public images only.
+- Worker Macs' VM images use the same credential. The Orchard worker pulls a pool's Tart image
+  (`ghcr.io/gm2211/grove-macos-worker@sha256:…`) on the host before any VM exists, so the broker
+  can't help; instead the worker's wrapper fetches the login from the control plane at start
+  (`GET /broker/entries?vmImagePull=1` with the worker's own broker credential) and exports it
+  into the Orchard worker's environment only. Add the image repositories to the scope, without
+  re-entering the token:
+
+  ```bash
+  grove registry pull scope --add gm2211/grove-macos-worker
+  grove registry pull scope --remove gm2211/grove-macos-worker
+  ```
+
+  A worker is handed the login only when every VM image of the pools that select it is on the
+  armed registry host (Tart would present it to any host; a name with no "/" is a local VM name, which Tart clones without a registry, so it is ignored; any other name without a parsable registry host, such as "internalreg/foo", withholds the login) and at least one is inside the scope. A
+  job or VM identity never gets it. **Rotation:** `enable` with a new token, or a scope change,
+  reaches a worker at its next Orchard worker restart (`sudo launchctl kickstart -k
+  system/com.grove.orchard-worker`, or a reboot), not before. `grove doctor` on the Mac reports the
+  source of its login (control plane, legacy file, none).
 - Not covered: sealed (`network: isolated`) pools pull inside their own VM (`internal/sandbox`) and
   take no registry login yet.
 - Troubleshooting: `pull access denied` or `unauthorized` in a job's failure reason means the VM
