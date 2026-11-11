@@ -81,6 +81,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # the release, its assets, and Formula/grove.rb pushed back to main
+      id-token: write # the OIDC token the provenance attestation is signed with
+      attestations: write # storing that attestation with this repository
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -124,3 +126,15 @@ jobs:
           # tap repo or personal access token needed.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Build provenance for everything the release hands out: the grove archives, the Orchard
+      # archives built by the job above, and checksums.txt that names them all. Each attestation is
+      # signed with this run's OIDC identity (this workflow, this tag, this commit) and stored with
+      # the repository, so `gh attestation verify <file> --repo gm2211/grove` (scripts/install.sh
+      # does it when gh is there) tells an archive this workflow built from one swapped in later.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/grove_*.tar.gz
+            dist/checksums.txt
+            orchard-assets/orchard_*.tar.gz

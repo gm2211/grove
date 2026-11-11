@@ -4,6 +4,12 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Releases carry build provenance.** The release workflow attests every grove and Orchard archive
+  and `checksums.txt` (`gh attestation verify <file> --repo gm2211/grove`). `scripts/install.sh` on
+  Linux checks it when a signed-in GitHub CLI is there and refuses an archive that fails; without
+  gh it installs on the checksum as before and says provenance was not verified. Workflow actions
+  are pinned to commits and GoReleaser to an exact release.
+
 - **The worker Mac's VM firewall opens Nomad RPC towards the control plane only.** The
   `com.apple/grove-vm` anchor passed TCP 4647 to any address, so root in a VM could reach that port
   on every private and tailnet address. The pass now names the control plane's address (this Mac's
