@@ -311,6 +311,9 @@ func TestLoginForVMImages(t *testing.T) {
 		"none":                  nil,
 		"repo outside scope":    {"ghcr.io/gm2211/other"},
 		"another host mixed in": {in, "registry.example.com/x/y"},
+		// SplitImage rejects a dotless, colonless host, but Tart still treats "internalreg/foo" as
+		// remote and would present the login to "internalreg".
+		"unparsable remote name mixed in": {in, "internalreg/foo"},
 	} {
 		if c, ok := store.LoginForVMImages(images); ok || c.Token != "" {
 			t.Errorf("%s: handed out %v", name, c)

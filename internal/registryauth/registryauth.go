@@ -3,13 +3,16 @@
 //
 // Like internal/gitauth it is off until an operator arms it through the control plane
 // (PUT /api/v1/registry/pull, `grove registry pull enable`): there is no config.yaml key and no
-// environment variable for it. The credential has two consumers and no others:
+// environment variable for it. The credential has three consumers and no others:
 //
 //   - the fleet reconciler's Enrol, which writes it, as a Docker config.json, into a Linux VM that
 //     runs an image the credential covers (over Orchard exec, on stdin), where Nomad's docker
 //     driver reads it to pull the pool's runner image and its job environment images;
 //   - the dispatch service, which uses it to resolve an environment image tag to its digest
-//     (Resolver).
+//     (Resolver);
+//   - a worker's own broker credential, through GET /broker/entries?vmImagePull=1, for the VM
+//     images of that worker's pools (LoginForVMImages); the worker's wrapper hands it to Tart in
+//     memory for host-side image pulls.
 //
 // It never goes into a job: not the payload, env_json, meta, the job record, an API response, a
 // log, a VM spec or a command line. Status carries a fingerprint, not the token.
@@ -262,7 +265,13 @@ func (s *Store) LoginForVMImages(images []string) (Credential, bool) {
 	for _, image := range images {
 		host, _, ok := SplitImage(image)
 		if !ok {
-			continue // a local VM name: no registry is involved
+			// Only a name with no "/" at all is a local Tart VM, which Tart clones without a
+			// registry. Anything else SplitImage rejects (e.g. "internalreg/foo", a host with no
+			// dot or colon) Tart still treats as remote and would hand TART_REGISTRY_* to: withhold.
+			if strings.Contains(image, "/") {
+				return Credential{}, false
+			}
+			continue
 		}
 		if c, ok := s.CredentialFor(image); ok {
 			found, covered = c, true

@@ -12,7 +12,7 @@ All notable changes to grove are documented here.
   `TART_REGISTRY_USERNAME`/`TART_REGISTRY_PASSWORD` only into the Orchard worker's own process
   environment: nothing is written to the Mac, and the token is never in argv, a plist, the wrapper
   text or a log. It is handed over only when no VM image of the worker's pools is on another registry host
-  (local VM names are ignored) and at least one is inside the armed scope. If the control plane is unreachable at
+  (local VM names, with no "/", are ignored; any other name without a parsable registry host withholds it) and at least one is inside the armed scope. If the control plane is unreachable at
   start the worker still starts (cached images keep working) and tries again on its next restart;
   a rotated token or a changed scope takes effect at the worker's next restart. The old
   `~/.config/grove/credentials/registry` file is still read as a fallback, and `grove doctor`
