@@ -33,7 +33,10 @@ const (
 	ScopeOperator = "operator"
 	// ScopeBroker lets a worker's credential broker pull its entries (GET /broker/entries), real
 	// tokens included, and nothing else. It is never implied by ScopeOperator and never granted by
-	// Tailscale identity: only a device credential named after the worker carries it.
+	// Tailscale identity: only a device credential named after the worker carries it, and only
+	// join approval issues one (IssueJoinedBound), bound to the machine that joined (Binding).
+	// Issue, and so POST /access/devices, refuses it: the operator token must not be able to mint
+	// the credential that reads a worker's jobs' tokens.
 	ScopeBroker = "broker"
 	// ScopeSnoozePrefix starts the parameterized scope "worker:snooze:<worker>": its holder may
 	// snooze and wake that one worker (POST/GET /workers/<worker>/snooze|wake) and nothing else.
@@ -103,6 +106,38 @@ type DeviceCredential struct {
 	RevokedAt  *time.Time `json:"revokedAt,omitempty"`
 	// ExpiresAt is when an expiring credential stops authenticating; nil never expires.
 	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+	// BoundIP and BoundNode pin a join-issued broker credential to the machine that joined: the
+	// address its join request came from and, when Tailscale could name it, that node's stable
+	// id. GET /broker/entries refuses the credential from anywhere else. Empty on credentials
+	// issued before the binding existed, which keep working from any address.
+	BoundIP   string `json:"boundIp,omitempty"`
+	BoundNode string `json:"boundNode,omitempty"`
+}
+
+// Binding is the machine a join-issued broker credential may be presented from.
+type Binding struct {
+	// IP is the peer address the join request came from.
+	IP string
+	// Node is that peer's Tailscale stable node id; empty when Tailscale identity is off or
+	// could not place the address.
+	Node string
+}
+
+// Bound reports whether b pins a credential to anything.
+func (b Binding) Bound() bool { return b.IP != "" || b.Node != "" }
+
+// Matches reports whether a peer at ip, which Tailscale names node ("" when it can't), is the
+// machine b names. The node id decides when both sides have one: it is the machine's identity,
+// while the same Mac may reach the control plane over its IPv4 or its IPv6 tailnet address.
+// Otherwise the address must be the one that joined.
+func (b Binding) Matches(ip, node string) bool {
+	if !b.Bound() {
+		return false
+	}
+	if b.Node != "" && node != "" {
+		return b.Node == node
+	}
+	return b.IP != "" && ip != "" && b.IP == ip
 }
 
 type accessRecord struct {
@@ -163,9 +198,25 @@ func NewAccessStore(path string) (*AccessStore, error) {
 // SourceJoin marks credentials issued through join approval (see DeviceCredential.Source).
 const SourceJoin = "join"
 
-// Issue creates a credential and returns its raw token exactly once.
+// ErrBrokerScopeNotIssuable is what Issue answers for the broker scope.
+var ErrBrokerScopeNotIssuable = errors.New("the broker scope is issued only by join approval, bound to the joining worker: run `grove setup` on that Mac (`grove install --role worker` on the control plane's own) and approve it with `grove join approve`")
+
+// Issue creates a credential and returns its raw token exactly once. It refuses the broker
+// scope (see ScopeBroker).
 func (s *AccessStore) Issue(name string, scopes []string) (string, Principal, error) {
-	return s.issue(name, scopes, "", 0)
+	if hasBrokerScope(scopes) {
+		return "", Principal{}, ErrBrokerScopeNotIssuable
+	}
+	return s.issue(name, scopes, "", 0, Binding{})
+}
+
+func hasBrokerScope(scopes []string) bool {
+	for _, scope := range scopes {
+		if strings.TrimSpace(scope) == ScopeBroker {
+			return true
+		}
+	}
+	return false
 }
 
 // IssueExpiring is Issue for a credential that stops working after ttl.
@@ -173,15 +224,63 @@ func (s *AccessStore) IssueExpiring(name string, scopes []string, ttl time.Durat
 	if ttl <= 0 {
 		return "", Principal{}, errors.New("expiry must be in the future")
 	}
-	return s.issue(name, scopes, "", ttl)
+	if hasBrokerScope(scopes) {
+		return "", Principal{}, ErrBrokerScopeNotIssuable
+	}
+	return s.issue(name, scopes, "", ttl, Binding{})
 }
 
-// IssueJoined is Issue for a device enrolling through join approval; see RevokeSuperseded.
+// IssueJoined is Issue for a device enrolling through join approval; see RevokeSuperseded. Like
+// Issue it refuses the broker scope, which needs a binding (IssueJoinedBound).
 func (s *AccessStore) IssueJoined(name string, scopes []string) (string, Principal, error) {
-	return s.issue(name, scopes, SourceJoin, 0)
+	if hasBrokerScope(scopes) {
+		return "", Principal{}, ErrBrokerScopeNotIssuable
+	}
+	return s.issue(name, scopes, SourceJoin, 0, Binding{})
 }
 
-func (s *AccessStore) issue(name string, scopes []string, source string, ttl time.Duration) (string, Principal, error) {
+// IssueJoinedBound is IssueJoined for a credential that may only be presented by the machine
+// that joined (see Binding). It is the only way a broker credential is issued, and join approval
+// its only caller.
+func (s *AccessStore) IssueJoinedBound(name string, scopes []string, bind Binding) (string, Principal, error) {
+	if bind.IP == "" {
+		return "", Principal{}, errors.New("a bound credential needs the joining machine's address")
+	}
+	return s.issue(name, scopes, SourceJoin, 0, bind)
+}
+
+// Binding returns the machine credential id is bound to. ok is false for an unknown id; a
+// credential from before bindings existed answers ok with an unbound Binding.
+func (s *AccessStore) Binding(id string) (Binding, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	record, ok := s.credentials[id]
+	if !ok {
+		return Binding{}, false
+	}
+	return Binding{IP: record.BoundIP, Node: record.BoundNode}, true
+}
+
+// BrokerBindings returns the binding of every live (not revoked, not expired) broker credential
+// named name; an unbound Binding stands for a credential from before bindings existed.
+func (s *AccessStore) BrokerBindings(name string) []Binding {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	now := time.Now()
+	var out []Binding
+	for _, record := range s.credentials {
+		if record.Name != name || record.RevokedAt != nil || !slices.Contains(record.Scopes, ScopeBroker) {
+			continue
+		}
+		if record.ExpiresAt != nil && !now.Before(*record.ExpiresAt) {
+			continue
+		}
+		out = append(out, Binding{IP: record.BoundIP, Node: record.BoundNode})
+	}
+	return out
+}
+
+func (s *AccessStore) issue(name string, scopes []string, source string, ttl time.Duration, bind Binding) (string, Principal, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", Principal{}, errors.New("device name is required")
@@ -207,6 +306,8 @@ func (s *AccessStore) issue(name string, scopes []string, source string, ttl tim
 			Scopes:    normalized,
 			Source:    source,
 			CreatedAt: time.Now().UTC(),
+			BoundIP:   bind.IP,
+			BoundNode: bind.Node,
 		},
 		TokenHash: hashToken(token),
 	}
@@ -302,7 +403,9 @@ func (s *AccessStore) Revoke(id string) error {
 // `grove setup` on a Mac replaces the tokens in its Keychain, so the earlier credentials are no
 // longer held by anything legitimate. Credentials made
 // before Source existed count as join credentials when their scopes are ones join hands out (read
-// and dispatch kinds, never shell or operator). Operator-issued credentials are never touched.
+// and dispatch kinds, never shell or operator), and so does a broker-only credential an operator
+// minted when POST /access/devices still allowed that: nothing issues those any more, and the
+// worker now holds a bound one. Other operator-issued credentials are never touched.
 // It returns the IDs it revoked.
 func (s *AccessStore) RevokeSuperseded(name string, keep ...string) ([]string, error) {
 	s.mu.Lock()
@@ -332,11 +435,45 @@ func (s *AccessStore) RevokeSuperseded(name string, keep ...string) ([]string, e
 	return revoked, nil
 }
 
+// RevokeSupersededBroker revokes every other live broker-only credential named name, once a
+// broker-only join has delivered keep. It leaves the worker's dispatch credential alone.
+func (s *AccessStore) RevokeSupersededBroker(name string, keep ...string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	var revoked []string
+	originals := map[string]accessRecord{}
+	for id, record := range s.credentials {
+		if slices.Contains(keep, id) || record.Name != name || record.RevokedAt != nil ||
+			len(record.Scopes) != 1 || record.Scopes[0] != ScopeBroker {
+			continue
+		}
+		originals[id] = record
+		record.RevokedAt = &now
+		s.credentials[id] = record
+		revoked = append(revoked, id)
+	}
+	if len(revoked) == 0 {
+		return nil, nil
+	}
+	if err := s.persistLocked(); err != nil {
+		for id, record := range originals {
+			s.credentials[id] = record
+		}
+		return nil, fmt.Errorf("persist credential revocation: %w", err)
+	}
+	sort.Strings(revoked)
+	return revoked, nil
+}
+
 func supersededByJoin(record accessRecord) bool {
 	switch record.Source {
 	case SourceJoin:
 		return true
 	case "":
+		if len(record.Scopes) == 1 && record.Scopes[0] == ScopeBroker {
+			return true
+		}
 		for _, scope := range record.Scopes {
 			switch scope {
 			case ScopeRead, ScopeDispatch, ScopeBuild, ScopeAgent:

@@ -5,8 +5,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gm2211/grove/internal/artifacts"
@@ -80,7 +83,13 @@ type Server struct {
 	// keychainUnlocks holds passwords typed into the panel until their worker's broker collects them
 	// (handlers_keychain.go). Memory only.
 	keychainUnlocks *keychainUnlocks
-	handler         http.Handler
+	// token is the operator token in force: Options.Token at start, then whatever
+	// SetOperatorToken last set (`grove token rotate`, picked up on SIGHUP).
+	token atomic.Pointer[string]
+	// unboundBrokerWarned remembers which unbound (pre-binding) broker credentials have had
+	// their one warning (brokerPeerAllowed).
+	unboundBrokerWarned sync.Map
+	handler             http.Handler
 
 	// recycleDone, if non-nil, receives the vm name every time a background recycle finishes
 	// deleting a VM. Only set by tests, to synchronize on the async recycle flow.
@@ -130,8 +139,30 @@ func New(oc orchard.Client, nc nomad.Client, ds dispatch.Service, ac artifacts.C
 		workerHosts:     &workerHosts{},
 		keychainUnlocks: &keychainUnlocks{},
 	}
+	s.token.Store(&opts.Token)
 	s.handler = s.routes()
 	return s
+}
+
+// operatorToken is the operator bearer token in force; "" when none is configured.
+func (s *Server) operatorToken() string {
+	if t := s.token.Load(); t != nil {
+		return *t
+	}
+	return ""
+}
+
+// SetOperatorToken replaces the operator bearer token on a running server: the previous one
+// stops authenticating with the next request. It is how `grove serve` takes up a rotated
+// server.token without a restart (which would drop every job's in-memory broker entries). An
+// empty token is refused: a reload must never be the thing that leaves /api/v1 with one
+// credential fewer than the operator meant.
+func (s *Server) SetOperatorToken(token string) error {
+	if token == "" {
+		return errors.New("refusing to replace the operator token with an empty one")
+	}
+	s.token.Store(&token)
+	return nil
 }
 
 // ServeHTTP implements http.Handler.
@@ -201,3 +232,16 @@ func (s *Server) writeError(w http.ResponseWriter, status int, err error) {
 	s.log.Error("request failed", "status", status, "err", err)
 	http.Error(w, err.Error(), status)
 }
+
+// Request-body limits for the handlers that decode JSON. Every such handler reads through
+// http.MaxBytesReader, so no caller can make the control plane buffer an unbounded body.
+const (
+	// maxJobBody bounds POST /jobs. A job's script travels as a Nomad dispatch payload, which
+	// Nomad itself caps at 16 KiB, so 1 MiB leaves ample room for the script plus env, meta,
+	// credentials and toolchain around it without ever being the limit a real job hits.
+	maxJobBody = 1 << 20
+	// maxCredentialsBody bounds PUT /jobs/{id}/credentials: a handful of tokens.
+	maxCredentialsBody = 64 << 10
+	// maxSmallBody bounds the bodies that are a name and a few short fields.
+	maxSmallBody = 16 << 10
+)

@@ -151,3 +151,27 @@ func TestCLIWhoIs(t *testing.T) {
 		t.Fatalf("ran %v", r.args)
 	}
 }
+
+// Identify names a tailnet peer's node even when nothing grants it a scope, and nothing else.
+func TestIdentify(t *testing.T) {
+	a := New(&fakeWhoIs{answers: map[string]string{"100.64.0.2": userWhoIs}}, nil)
+	if _, ok := a.Authenticate(context.Background(), "100.64.0.2:1"); ok {
+		t.Fatal("an ungranted peer authenticated")
+	}
+	id, ok := a.Identify(context.Background(), "100.64.0.2:1")
+	if !ok || id.StableID == "" || id.Node == "" {
+		t.Fatalf("Identify = %+v, %v", id, ok)
+	}
+	if again, ok := a.Identify(context.Background(), "100.64.0.2"); !ok || again.StableID != id.StableID {
+		t.Fatalf("Identify without a port = %+v, %v", again, ok)
+	}
+	for _, addr := range []string{"127.0.0.1:1", "192.168.1.5:1", "100.64.0.9:1", "@"} {
+		if _, ok := a.Identify(context.Background(), addr); ok {
+			t.Errorf("Identify(%q) named a node", addr)
+		}
+	}
+	var none *Authenticator
+	if _, ok := none.Identify(context.Background(), "100.64.0.2:1"); ok {
+		t.Error("a nil Authenticator named a node")
+	}
+}

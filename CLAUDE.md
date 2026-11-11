@@ -249,6 +249,14 @@ tokens on the way to a fixed set of upstreams and masks the tokens on the way ba
 - In `internal/dispatch`, a `JobRequest.Credentials` token goes only into the registry: never
   `env_json`, the payload, the stored `Job.Request` (kind and env only) or an API response.
   `internal/dispatch/credentials_test.go` asserts it.
+- Only join approval issues a `broker`-scoped credential (`AccessStore.IssueJoinedBound`; `Issue`,
+  so `POST /access/devices` and `grove access issue`, refuses the scope: the operator token must
+  not mint the credential that reads jobs' tokens), bound to the joining machine's verified
+  address and Tailscale node (`Binding`); `GET /broker/entries` refuses it from anywhere else
+  (`brokerPeerAllowed`), and a join under an existing worker's name from a machine its credential
+  isn't bound to needs `grove join approve --replace` (`joinReplaces`). The control plane's own
+  worker gets its credential through a `brokerOnly` join (`internal/cli/install_broker.go`), never
+  another route. `internal/server/broker_binding_test.go` asserts it.
 - The broker's own credential comes from join approval (`handlers_join.go`) and lives in a 0600
   file under `~/.config/grove/credentials` (`config.ResolveBrokerToken`; the login Keychain item
   of an older grove is only a migration source and read fallback), never in arguments or the

@@ -372,6 +372,68 @@ On a Mac whose Homebrew belongs to an admin, the worker user only trusts the tap
 from (trust is per user, in `~/.homebrew/trust.json`); tapping one that isn't there yet still needs
 the Homebrew owner.
 
+## Rotating the operator token
+
+`server.token` in the control plane's `config.yaml` is the operator credential: it never expires,
+and anything that holds it can approve joins, recycle VMs, arm private-repo sourcing and issue
+other credentials. Rotate it when it may have been seen (a shell history, a screen share, a
+decommissioned laptop) and on whatever schedule you rotate other long-lived secrets:
+
+```bash
+# on the control plane, as the user grove serve runs as
+grove token rotate                 # prints the new token to stdout, once; guidance to stderr
+# then make the running server take it up (the command prints these too):
+launchctl kill SIGHUP gui/$(id -u)/com.grove.server      # macOS
+systemctl --user kill -s HUP grove-server.service        # Linux
+grove access list                  # answers: this machine's CLI is on the new token
+```
+
+`grove token rotate` generates 256 random bits, writes them to `config.yaml` through a temporary
+file and a rename (mode 0600; the old config stays intact if anything fails), and refuses to run
+on a machine whose config has no `server.listen`, i.e. that isn't the control plane.
+
+Until `grove serve` re-reads the config it still accepts the **old** token and not the new one.
+On SIGHUP it reloads only the operator token: the old one stops working with the next request,
+nothing else is re-read, and jobs keep running with their credentials. A reload that finds no
+token or an unreadable config changes nothing and says so in the server log. Restarting the
+server (`launchctl kickstart -k gui/$(id -u)/com.grove.server`, `systemctl --user restart
+grove-server`) works too, and is the only way for a `grove serve` older than this command, but a
+restart forgets the broker's in-memory entries, so running jobs' submitters have to send their
+credentials again ("The credential broker").
+
+What holds a copy of the operator token:
+
+- **On the control plane, only `config.yaml`.** The launchd plists and systemd units grove
+  renders carry no token, and nothing else in `~/.config/grove` or the Keychain holds it. Every
+  grove command there (`grove join approve`, `grove access …`, `grove sandbox run`, `grove
+  doctor`) reads `config.yaml` when it starts, so it is on the new token at once. A long-running
+  `grove mcp` on the control plane read the old one at start: restart it.
+- **Anywhere you copied it.** A machine installed with `grove install --role client --token …` or
+  `grove config set server.token`, a CI variable, a script, the token field of the web UI in a
+  browser (it keeps it in that browser's local storage). Those get a 401 after the reload. Give
+  each the new token (`grove config set server.token -` and paste), or better, stop giving them
+  the operator token at all (below).
+
+Not affected: device credentials (`grove setup`, `grove access issue`), broker credentials,
+Tailscale-identity grants, and the Orchard, Nomad and enrolment tokens in the same file.
+
+**Day to day, don't use this token.** Grant `operator` to a tagged admin device in the tailnet
+policy instead ("Tailscale identity instead of tokens"):
+
+```jsonc
+"grants": [{
+  "src": ["tag:grove-admin"], "dst": ["tag:grove"], "ip": ["tcp:6120"],
+  "app": {"github.com/gm2211/grove": [{"scopes": ["operator"]}]}
+}]
+```
+
+That device then needs no secret at all: its access is its WireGuard identity, removing the tag
+or the node ends it within 30 seconds, and there is nothing to leak or rotate. Tag a machine
+that is not an Orchard worker (grove refuses Tailscale identity from worker Macs). Orchestrators
+and scripts get scoped, expiring device credentials ("Credentials for orchestrators and
+scripts"). The bearer token then only matters for commands run on the control plane itself and
+for recovery, and can be rotated freely because nothing else depends on it.
+
 ## Rotating the registry token
 
 If workers log in to `ghcr.io` (rather than the packages being made public — see docs/IMAGES.md
@@ -451,6 +513,14 @@ grove config set server.listen 100.x.y.z:6120   # this machine's tailnet IP
 A server with no operator token, device store or Tailscale auth configured answers every
 `/api/v1` request with 503 rather than running open.
 
+The listener (and the local socket) drops a connection that hasn't sent its request headers
+within 30 seconds and closes keep-alive connections idle for 2 minutes. There is deliberately no
+overall read or write deadline: following a job's logs is one response that stays open as long
+as the job runs. Request bodies are capped per route instead: 1 MiB for `POST /jobs` (far above
+the 16 KiB Nomad allows a dispatch payload, so a real job never meets it), 64 KiB for
+`PUT /jobs/{id}/credentials`, 16 KiB or less for everything else (4 KiB for a join request). A
+larger body gets a 400.
+
 ## The credential broker
 
 A job never holds a real credential. It gets a placeholder (`gph1_…`), and each worker Mac runs
@@ -474,7 +544,9 @@ Entries live in memory only, on the control plane and on each broker. A control-
 forgets every token, and running jobs get them back when their submitter sends them again
 (`PUT /api/v1/jobs/{id}/credentials`). The broker pulls its worker's list every 30 seconds from
 `GET /api/v1/broker/entries`, with a device credential whose only scope is `broker` and whose name
-is the worker's; no other credential, operator's included, can read that route. An entry leaves when its job ends (the control plane
+is the worker's; no other credential, operator's included, can read that route. That credential
+is issued only by join approval and is bound to the machine that joined (see "Who can hold a
+broker credential" below). An entry leaves when its job ends (the control plane
 stops listing it), when its 10-minute lease runs out without renewal, or when the broker restarts.
 At most 1,000 entries are held per worker.
 
@@ -523,7 +595,7 @@ hands out the broker credential along with the others; setup keeps it in a 0600 
 at boot, before anyone logs in), and stages the `com.grove.broker` LaunchDaemon, which the
 `worker-daemons` step of the privileged checklist installs into `/Library/LaunchDaemons` with
 `UserName` set to the worker account and loads. It runs `grove broker --server <control plane>`
-and logs to `~/Library/Logs/grove/broker.log` and `broker.err.log`. The control plane's own worker never joins, so `grove install --role worker` there issues its broker credential itself (scope `broker` only, named after the Orchard worker) when none is stored. A worker set up by an earlier
+and logs to `~/Library/Logs/grove/broker.log` and `broker.err.log`. The control plane's own worker never joins Orchard that way, so when no broker credential is stored `grove install --role worker` there joins for the broker credential alone (a `brokerOnly` join request it approves itself with the operator token it holds: no Orchard account, no dispatch credential), bound to the address that host reaches its own `grove serve` from. If it says the running `grove serve` predates broker-only joins, restart the server (it is still the old binary) and run the install again. A worker set up by an earlier
 grove has the credential in Keychain (service `com.gm2211.grove.broker`, account `broker`); the
 broker still falls back to that item, and re-running the install copies it into the file. Running
 setup again replaces the credential, revokes the old one and restarts the broker. A Mac set up against a control plane
@@ -537,6 +609,54 @@ is the user's, and, once a VM has created the bridge, whether the broker answers
 with the control plane worked, with its entry count.
 
 Not wired in yet: shared VMs don't trust the CA or use the proxy. That lands separately.
+
+### Who can hold a broker credential
+
+`GET /api/v1/broker/entries` returns real tokens (and, once, a queued keychain password), so the
+credential that reads it is kept narrower than the operator token:
+
+- **Only join approval issues it.** `POST /api/v1/access/devices` and `grove access issue` refuse
+  the `broker` scope (403), whatever credential asks. A worker gets its broker credential from
+  `grove setup` plus `grove join approve`; the control plane's own worker from `grove install
+  --role worker` there.
+- **It is bound to the machine that joined.** Approval records, on the credential in
+  `devices.json` (`boundIp`, `boundNode`), the tailnet address the join request came from (the
+  request is refused unless that address is the connection's own source) and, when the control
+  plane has the `tailscale` CLI, the stable id of the Tailscale node at that address.
+  `/broker/entries` then answers only that machine: the same node (over its IPv4 or IPv6 tailnet
+  address) when Tailscale can name the caller, otherwise only the recorded address. Anything
+  else gets a 403 and a `broker: refusing a broker credential presented from a machine it is not
+  bound to` line in the server log. A bound credential is also refused on the local socket,
+  which has no peer address. If `tailscale whois` fails for a moment the recorded address alone
+  decides. `grove access list` shows each broker credential's binding.
+- **A worker's name can't be taken over quietly.** A join request that uses the name of a worker
+  that already exists (Orchard lists it, online or not, or a live broker credential carries the
+  name), from a machine that worker's broker credential is not bound to, is not approved by a
+  plain `grove join approve CODE` or the Approve button: the answer is a 409 that names the
+  address (and Tailscale node name) asking, `GET /api/v1/join/pending` marks the request
+  `replacesWorker`, and the panel shows the command instead of the button. If it really is that
+  Mac (its tailnet address changed, or it is a replacement machine with the same host name),
+  check the address and run `grove join approve CODE --replace`. Running `grove setup` again on
+  the same Mac needs no override: its request comes from the address its credential is bound
+  to. When Orchard can't be listed the approval is refused the same way (502) unless
+  `--replace` is given.
+
+**After upgrading from a grove without bindings.** Existing broker credentials have no binding.
+They keep working from any address, and the server logs once per credential, per start:
+`broker: this worker's broker credential is not bound to its machine`. `grove access list` marks
+them `NOT bound to a machine`. To bind one, run `grove setup` (or `grove setup --user <user>
+--rejoin`) on that Mac again and approve it with `grove join approve CODE --replace`; the
+override is needed that one time because an unbound credential can't show the request comes from
+the same Mac, so read the address in the refusal before you give it. Once the worker is back
+online the old credential is revoked, including a broker-only credential that was minted with
+`grove access issue --scope broker` when that was still allowed. For the control plane's own
+worker: `grove access revoke` its old broker credential, delete `~/.config/grove/credentials/broker`
+and run `grove install --role worker` there again. Until a worker is re-joined, its unbound
+credential is a plain bearer token: revoke it (`grove access revoke DEVICE_ID`) if it may have
+leaked.
+
+A machine may hold at most 5 join requests waiting for approval (256 in total); more get a 429
+until one is approved or expires (10 minutes).
 
 ## Credentials for orchestrators and scripts
 
@@ -555,7 +675,8 @@ Scopes: `read` (fleet, and the jobs this credential submitted — status, logs, 
 jobs; never implied by `dispatch`), `worker:snooze:<worker>` (snooze and wake that one worker and
 nothing else; see "Snoozing your own Mac"), `operator` (everything). A non-operator credential only ever
 sees and cancels its own jobs, and job `env` values come back `[redacted]` to everyone. The same
-thing over HTTP is `POST /api/v1/access/devices` with `{"name": ..., "scopes": [...]}`.
+thing over HTTP is `POST /api/v1/access/devices` with `{"name": ..., "scopes": [...]}`. The
+`broker` scope is the one scope neither issues: see "Who can hold a broker credential".
 
 `--expires-in 180d` (or any Go duration, `"expiresIn": "4320h"` over HTTP) makes a credential stop
 working after that long. `grove access list` shows the date, and its holder sees it in

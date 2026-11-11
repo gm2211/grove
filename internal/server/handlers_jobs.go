@@ -113,7 +113,7 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSubmitJob(w http.ResponseWriter, r *http.Request) {
 	var req dispatch.JobRequest
-	dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxJobBody))
 	if err := dec.Decode(&req); err != nil {
 		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
 		return
@@ -223,7 +223,7 @@ func (s *Server) handleUpdateJobCredentials(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	var req UpdateJobCredentialsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxCredentialsBody)).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
