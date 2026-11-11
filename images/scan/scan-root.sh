@@ -47,16 +47,32 @@ all_files() {
 }
 
 # 1. Anywhere on the disk: a tailnet name, a Tailscale auth key, and the operator's identifiers.
-report "tailnet name" < <(all_files | xargs -0 grep -laE -e '[A-Za-z0-9-]+\.ts\.net' 2>/dev/null)
-report "Tailscale auth key" < <(all_files | xargs -0 grep -laE -e 'tskey-[A-Za-z0-9-]{12,}' 2>/dev/null)
-
+#    Matching, not reading, is the slow part: a regex with a leading character class, or -i, over
+#    tens of GB of binaries took BSD grep 23 minutes on a real macOS guest. So every file goes
+#    through fixed-string greps only (".ts.net", "tskey-", and the identifiers, the only ones that
+#    need -i), several at a time, and the few files that matched are read again with the real
+#    patterns to say what each holds.
+tailnet='[A-Za-z0-9-]+\.ts\.net'
+tskey='tskey-[A-Za-z0-9-]{12,}'
 ids=$(printf '%s\n' "${GROVE_SCAN_IDENTIFIERS:-}" | tr ',' '\n' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | awk 'length($0) >= 4')
-if [ -n "$ids" ]; then
-  idfile=$(mktemp)
-  printf '%s\n' "$ids" > "$idfile"
-report "operator identifier" < <(  all_files | xargs -0 grep -laiF -f "$idfile" 2>/dev/null | grep -vxF "$idfile")
-  rm -f "$idfile"
-fi
+idfile=$(mktemp)
+candidates=$(mktemp)
+trap 'rm -f "$idfile" "$candidates"' EXIT
+[ -z "$ids" ] || printf '%s\n' "$ids" > "$idfile"
+jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
+# shellcheck disable=SC2016
+all_files | GROVE_IDFILE=$idfile xargs -0 -P "$jobs" -n 200 sh -c '
+  grep -laF -e .ts.net -e tskey- "$@" 2>/dev/null
+  [ ! -s "$GROVE_IDFILE" ] || grep -laiF -f "$GROVE_IDFILE" "$@" 2>/dev/null
+  exit 0' sh | sort -u | grep -vxF -e "$idfile" > "$candidates"
+
+classify() { # classify <grep options and pattern...> : the candidates that match, one per line
+  [ -s "$candidates" ] || return 0
+  tr '\n' '\0' < "$candidates" | xargs -0 grep -la "$@" 2>/dev/null
+}
+report "tailnet name" < <(classify -E -e "$tailnet")
+report "Tailscale auth key" < <(classify -E -e "$tskey")
+[ -z "$ids" ] || report "operator identifier" < <(classify -iF -f "$idfile")
 
 # 2. Where host-derived state and credentials land (configuration, leases, home directories):
 #    a GitHub token, and a tailnet (CGNAT, 100.64.0.0/10) address. Not the whole disk: program
