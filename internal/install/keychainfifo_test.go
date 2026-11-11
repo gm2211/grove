@@ -86,7 +86,7 @@ func TestWorkerWrapperFIFOUnlock_RealKeychain(t *testing.T) {
 				t.Skip("no zsh")
 			}
 			fifo := filepath.Join(home, KeychainUnlockFIFOName)
-			script := strings.ReplaceAll(workerWrapperUnlockScript(filepath.Join(home, "no-stored-password"), fifo), loginKeychainPath, testKeychainPath)
+			script := strings.ReplaceAll(workerWrapperUnlockScript(filepath.Join(home, "legacy"), fifo), loginKeychainPath, testKeychainPath)
 			out, err := os.Create(filepath.Join(home, "wrapper.log"))
 			if err != nil {
 				t.Fatal(err)
