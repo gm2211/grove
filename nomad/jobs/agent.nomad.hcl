@@ -86,17 +86,127 @@ job "grove-{{.Kind}}-{{.Pool}}" {
 
         req="$NOMAD_TASK_DIR/request"
         state="$NOMAD_ALLOC_DIR/data/grove"
+{{if eq .Pool "macos"}}
+        # This job's state directory, and in it the job's own home (see run.sh), must be new and
+        # this task's: every job in this VM runs as the same user, so one found already there
+        # could be another job's doing.
+        mkdir -p "$NOMAD_ALLOC_DIR/data"
+        if ! mkdir "$state" || ! mkdir "$state/home"; then
+          echo "grove: this allocation's state directory already exists; refusing to run a job in it" >&2
+          exit 1
+        fi
+{{else}}
         mkdir -p "$state"
+{{end}}
         log="$state/source.log"
         : > "$log"
+{{if eq .Pool "macos"}}
+        # grove:jobs begin
+        # Which jobs are running in this VM, kept by root for root: one record per allocation in a
+        # directory only root can use, holding the time after which that job cannot still be
+        # running. Every macOS job's root tasks keep it (the one before "main" adds the record,
+        # "cleanup" removes it), so they can tell an idle VM, where every process of the job user
+        # is something an earlier job left behind, from one where another job is still running
+        # as that same user and must not be touched. See docs/JOBS.md "Jobs sharing a macOS VM".
+        grove_jobs=/private/var/run/grove-jobs
+        grove_job_id="$${NOMAD_ALLOC_ID:-}"
+        case "$grove_job_id" in
+          "" | *[!A-Za-z0-9-]*) grove_job_id="" ;;
+        esac
+        grove_job_secs="$${NOMAD_META_timeout_seconds:-3600}"
+        case "$grove_job_secs" in
+          "" | *[!0-9]*) grove_job_secs=3600 ;;
+          ??????????*) grove_job_secs=999999999 ;;
+        esac
+        # Takes the directory's lock (a mkdir, which is atomic). A lock held for 30 seconds is
+        # taken over: every holder is done in well under one, so its holder died.
+        grove_jobs_lock() {
+          local tries=0 total=0
+          [ -n "$grove_job_id" ] || return 1
+          mkdir -p "$grove_jobs" 2>/dev/null || return 1
+          if [ -L "$grove_jobs" ] || [ ! -O "$grove_jobs" ]; then
+            return 1
+          fi
+          chmod 0700 "$grove_jobs" 2>/dev/null || return 1
+          until mkdir "$grove_jobs/.lock" 2>/dev/null; do
+            tries=$((tries + 1))
+            total=$((total + 1))
+            [ "$total" -lt 450 ] || return 1
+            if [ "$tries" -ge 150 ]; then
+              rmdir "$grove_jobs/.lock" 2>/dev/null || true
+              tries=0
+            fi
+            sleep 0.2
+          done
+        }
+        grove_jobs_unlock() {
+          rmdir "$grove_jobs/.lock" 2>/dev/null || true
+        }
+        # Records that this job may still be running for the next $1 seconds.
+        grove_jobs_mark() {
+          printf '%s\n' "$(( $(date +%s) + $1 ))" > "$grove_jobs/.new.$grove_job_id" &&
+            mv -f "$grove_jobs/.new.$grove_job_id" "$grove_jobs/$grove_job_id"
+        }
+        # Prints how many other jobs may still be running here, dropping the records of those
+        # that cannot be (their time is up: the VM or its Nomad client died under them).
+        grove_jobs_others() {
+          local now f at n=0
+          now="$(date +%s)"
+          for f in "$grove_jobs"/*; do
+            [ -f "$f" ] || continue
+            [ "$f" != "$grove_jobs/$grove_job_id" ] || continue
+            at="$(cat "$f" 2>/dev/null || true)"
+            case "$at" in
+              "" | *[!0-9]*) at=0 ;;
+            esac
+            if [ "$at" -lt "$now" ]; then
+              rm -f "$f"
+              continue
+            fi
+            n=$((n + 1))
+          done
+          printf '%s\n' "$n"
+        }
+        # With no other job running here, kills every process of the job user: whatever an
+        # earlier job left behind. With one running it does nothing, since the two can't be told
+        # apart. Call it holding the lock, so no job starts in between.
+        grove_jobs_sweep() {
+          local round=0
+          [ "$(grove_jobs_others)" = 0 ] || return 0
+          while [ "$round" -lt 5 ] && pgrep -U _grovejob >/dev/null 2>&1; do
+            pkill -KILL -U _grovejob >/dev/null 2>&1 || true
+            round=$((round + 1))
+            sleep 0.2
+          done
+        }
+        # grove:jobs end
+
+        # Before anything of this job runs as the job user: clear out what earlier jobs left
+        # running, if the VM is otherwise idle, and record this job. The record's time allows for
+        # the clone and a toolchain install; finish() resets it just before "main" starts.
+        grove_job_marked=""
+        if grove_jobs_lock; then
+          grove_jobs_sweep
+          if grove_jobs_mark $((grove_job_secs + 7200)); then
+            grove_job_marked=1
+          fi
+          grove_jobs_unlock
+        fi
+        if [ -z "$grove_job_marked" ]; then
+          echo "grove: could not record this job in $grove_jobs; processes other jobs left behind were not cleaned up" >> "$log"
+        fi
+{{end}}
 
         tokdir=""
         finish() {
           rm -f "$req"
           [ -z "$tokdir" ] || rm -rf "$tokdir"
 {{if eq .Pool "macos"}}
-          # "main" runs as the unprivileged job user (see its `user`); hand it the inputs.
+          # "main" runs as the unprivileged job user (see its `user`); hand it the inputs and
+          # its home.
           chown -R _grovejob "$state" 2>/dev/null || true
+          # "main" starts next: it ends within its timeout, or ten minutes after a cancel.
+          [ -z "$grove_job_marked" ] || grove_jobs_mark $((grove_job_secs + 900)) || true
 {{end}}
           printf '%s\n' "$1" > "$state/source.exit"
           chmod 0644 "$state/source.exit" "$log" 2>/dev/null || true
@@ -132,6 +242,18 @@ job "grove-{{.Kind}}-{{.Pool}}" {
           -*) echo "grove: ref must not start with '-'" >> "$log"; finish 2 ;;
         esac
 
+        # The clone credential is offered only to the repository's own host: the helper below is
+        # set for https://<host>, so git never asks it about a submodule, redirect or alternate on
+        # another host. A URL whose host isn't a plain name (userinfo, brackets, anything else)
+        # gets no credential at all.
+        host="$${repo#https://}"
+        host="$${host%%/*}"
+        host_re='^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]+)?$'
+        if [ -n "$token" ] && ! [[ "$host" =~ $host_re ]]; then
+          echo "grove: the repo URL's host is not a plain host name, so the clone credential cannot be scoped to it" >> "$log"
+          finish 2
+        fi
+
         # The token reaches git only through this process's environment and an inline credential
         # helper: never argv (visible to every user in `ps`), never a config file, never the
         # checkout's .git/config.
@@ -158,7 +280,7 @@ job "grove-{{.Kind}}-{{.Pool}}" {
 {{end}}
         auth=(-c credential.helper=)
         if [ -n "$token" ]; then
-          auth+=(-c "credential.helper=$helper")
+          auth+=(-c "credential.https://$host.helper=$helper")
         fi
 
         work="$state/work"
@@ -206,8 +328,12 @@ job "grove-{{.Kind}}-{{.Pool}}" {
       driver = "raw_exec"
 
       # Never root: the caller's script runs as the unprivileged job user the fleet startup
-      # script creates, so it cannot read the "source" task's files, other jobs' state, or the
-      # VM's Nomad and Tailscale configuration.
+      # script creates, so it cannot read the "source" task's files or the VM's Nomad and
+      # Tailscale configuration. It is NOT kept apart from other jobs in this VM: they all run
+      # as this one user, so a job running at the same time can read and change this one's
+      # files and processes. What a job that has ended leaves behind is dealt with: each job
+      # gets its own home (run.sh), and the root tasks around "main" kill leftover processes
+      # (grove:jobs in "source", and "cleanup"). See docs/JOBS.md "Jobs sharing a macOS VM".
       user = "_grovejob"
 
       config {
@@ -253,9 +379,16 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         fi
         script_src="$state/script.sh"
 {{if eq .Pool "macos"}}
-        # This task runs as the unprivileged job user (see `user` above), whose home and temp
-        # directory the fleet startup script creates.
-        export HOME=/private/var/grove-job USER=_grovejob LOGNAME=_grovejob
+        # This task runs as the unprivileged job user (see `user` above). Its home is this job's
+        # alone: an empty directory in the allocation that the root task before this one made
+        # and handed over (mode 0700), never the account's own home, which every job in this VM
+        # would share, so no dotfile, PATH shim or tool configuration of an earlier job is
+        # there. "cleanup" deletes it. The temp directory is this task's own too.
+        export HOME="$state/home" USER=_grovejob LOGNAME=_grovejob
+        if [ -L "$HOME" ] || [ ! -d "$HOME" ] || [ ! -O "$HOME" ]; then
+          echo "grove: this job has no home directory of its own" >&2
+          exit 1
+        fi
         export TMPDIR="$(dirname "$NOMAD_TASK_DIR")/tmp"
 {{end}}
         if [ -n "$${NOMAD_META_env_json:-}" ]; then
@@ -390,5 +523,154 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         memory = {{if .Memory}}{{.Memory}}{{else}}4096{{end}}
       }
     }
+{{if eq .Pool "macos"}}
+    # cleanup: a root task that runs once "main" has ended, however it ended. Every job in this
+    # VM runs as the same user in a VM that is reused, so what a job leaves running could read
+    # the next job's environment (its secrets, its credential placeholders). Nomad kills the
+    # task's own process group; this deals with what left that group. See docs/JOBS.md "Jobs
+    # sharing a macOS VM" for what it can and cannot do.
+    task "cleanup" {
+      lifecycle {
+        hook = "poststop"
+      }
+
+      driver = "raw_exec"
+
+      config {
+        command = "/bin/bash"
+        args    = ["${NOMAD_TASK_DIR}/cleanup.sh"]
+      }
+
+      template {
+        data        = <<-EOF
+        #!/bin/bash
+        set -uo pipefail
+        umask 077
+
+        # grove:jobs begin
+        # Which jobs are running in this VM, kept by root for root: one record per allocation in a
+        # directory only root can use, holding the time after which that job cannot still be
+        # running. Every macOS job's root tasks keep it (the one before "main" adds the record,
+        # "cleanup" removes it), so they can tell an idle VM, where every process of the job user
+        # is something an earlier job left behind, from one where another job is still running
+        # as that same user and must not be touched. See docs/JOBS.md "Jobs sharing a macOS VM".
+        grove_jobs=/private/var/run/grove-jobs
+        grove_job_id="$${NOMAD_ALLOC_ID:-}"
+        case "$grove_job_id" in
+          "" | *[!A-Za-z0-9-]*) grove_job_id="" ;;
+        esac
+        grove_job_secs="$${NOMAD_META_timeout_seconds:-3600}"
+        case "$grove_job_secs" in
+          "" | *[!0-9]*) grove_job_secs=3600 ;;
+          ??????????*) grove_job_secs=999999999 ;;
+        esac
+        # Takes the directory's lock (a mkdir, which is atomic). A lock held for 30 seconds is
+        # taken over: every holder is done in well under one, so its holder died.
+        grove_jobs_lock() {
+          local tries=0 total=0
+          [ -n "$grove_job_id" ] || return 1
+          mkdir -p "$grove_jobs" 2>/dev/null || return 1
+          if [ -L "$grove_jobs" ] || [ ! -O "$grove_jobs" ]; then
+            return 1
+          fi
+          chmod 0700 "$grove_jobs" 2>/dev/null || return 1
+          until mkdir "$grove_jobs/.lock" 2>/dev/null; do
+            tries=$((tries + 1))
+            total=$((total + 1))
+            [ "$total" -lt 450 ] || return 1
+            if [ "$tries" -ge 150 ]; then
+              rmdir "$grove_jobs/.lock" 2>/dev/null || true
+              tries=0
+            fi
+            sleep 0.2
+          done
+        }
+        grove_jobs_unlock() {
+          rmdir "$grove_jobs/.lock" 2>/dev/null || true
+        }
+        # Records that this job may still be running for the next $1 seconds.
+        grove_jobs_mark() {
+          printf '%s\n' "$(( $(date +%s) + $1 ))" > "$grove_jobs/.new.$grove_job_id" &&
+            mv -f "$grove_jobs/.new.$grove_job_id" "$grove_jobs/$grove_job_id"
+        }
+        # Prints how many other jobs may still be running here, dropping the records of those
+        # that cannot be (their time is up: the VM or its Nomad client died under them).
+        grove_jobs_others() {
+          local now f at n=0
+          now="$(date +%s)"
+          for f in "$grove_jobs"/*; do
+            [ -f "$f" ] || continue
+            [ "$f" != "$grove_jobs/$grove_job_id" ] || continue
+            at="$(cat "$f" 2>/dev/null || true)"
+            case "$at" in
+              "" | *[!0-9]*) at=0 ;;
+            esac
+            if [ "$at" -lt "$now" ]; then
+              rm -f "$f"
+              continue
+            fi
+            n=$((n + 1))
+          done
+          printf '%s\n' "$n"
+        }
+        # With no other job running here, kills every process of the job user: whatever an
+        # earlier job left behind. With one running it does nothing, since the two can't be told
+        # apart. Call it holding the lock, so no job starts in between.
+        grove_jobs_sweep() {
+          local round=0
+          [ "$(grove_jobs_others)" = 0 ] || return 0
+          while [ "$round" -lt 5 ] && pgrep -U _grovejob >/dev/null 2>&1; do
+            pkill -KILL -U _grovejob >/dev/null 2>&1 || true
+            round=$((round + 1))
+            sleep 0.2
+          done
+        }
+        # grove:jobs end
+
+        # 1. This job's own leftovers, even while other jobs are running: the job user's processes
+        # that still carry this allocation's id in their environment, which every process the job
+        # started inherited. A process that dropped its environment is not found this way; step 2
+        # gets it once the VM is idle.
+        job_uid="$(id -u _grovejob 2>/dev/null || true)"
+        if [ -n "$grove_job_id" ] && [ -n "$job_uid" ]; then
+          round=0
+          while [ "$round" -lt 3 ]; do
+            pids="$(ps -x -ww -E -U _grovejob -o pid=,uid=,command= 2>/dev/null |
+              awk -v uid="$job_uid" -v want="NOMAD_ALLOC_ID=$grove_job_id" '$2 == uid { for (i = 3; i <= NF; i++) if ($i == want) { print $1; break } }')"
+            [ -n "$pids" ] || break
+            echo "grove: killing processes this job left behind:" $pids
+            kill -KILL $pids 2>/dev/null || true
+            round=$((round + 1))
+            sleep 0.2
+          done
+        fi
+
+        # 2. This job is over: drop its record and, if no other job is running in this VM, kill
+        # everything still running as the job user.
+        if grove_jobs_lock; then
+          rm -f "$grove_jobs/$grove_job_id"
+          grove_jobs_sweep
+          grove_jobs_unlock
+        else
+          echo "grove: could not use $grove_jobs; leftover processes of the job user were not swept" >&2
+        fi
+
+        # 3. The job's home, with whatever it wrote there (tool logins, caches). Deleted as the
+        # job user, from /, so nothing the job put in its place can point root anywhere.
+        if [ -n "$${NOMAD_ALLOC_DIR:-}" ]; then
+          (cd / && sudo -n -u _grovejob /bin/rm -rf -- "$NOMAD_ALLOC_DIR/data/grove/home") || true
+        fi
+        exit 0
+        EOF
+        destination = "local/cleanup.sh"
+        perms       = "0700"
+      }
+
+      resources {
+        cpu    = {{if .CPU}}{{.CPU}}{{else}}2000{{end}}
+        memory = {{if .Memory}}{{.Memory}}{{else}}4096{{end}}
+      }
+    }
+{{end}}
   }
 }

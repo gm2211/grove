@@ -70,7 +70,7 @@ func runMacSource(t *testing.T, env ...string) macSource {
 		}
 	}
 	write(filepath.Join(bin, "git"), fakeGit)
-	write(filepath.Join(bin, "chown"), "#!/bin/sh\nexit 0\n")
+	fakeMacHost(t, bin)
 	write(filepath.Join(bin, "sudo"), `#!/bin/bash
 printf '%s\n' "$*" >> "$FAKE_SUDO_LOG"
 while [ $# -gt 0 ]; do case "$1" in -n|-H) shift ;; -u) shift 2 ;; *) break ;; esac; done
@@ -90,10 +90,11 @@ fi
 exec env -i PATH="$PATH" FAKE_GIT_LOG="$FAKE_GIT_LOG" FAKE_UNDER_SUDO=1 "$@"
 `)
 	write(filepath.Join(sourceDir, "request"), "grove-payload/1\n"+token+"\ntrue\n")
-	write(filepath.Join(sourceDir, "source.sh"), sourceSH)
+	write(filepath.Join(sourceDir, "source.sh"), withJobsDir(t, sourceSH, filepath.Join(root, "grove-jobs")))
 	cmd := exec.Command("/bin/bash", filepath.Join(sourceDir, "source.sh"))
 	cmd.Env = append(os.Environ(),
 		"PATH="+bin+":"+os.Getenv("PATH"), "TMPDIR="+tmp, "NOMAD_ALLOC_DIR="+r.alloc, "NOMAD_TASK_DIR="+sourceDir,
+		"NOMAD_ALLOC_ID=alloc1", "FAKE_HOST="+root,
 		"NOMAD_META_ref=main", "FAKE_GIT_LOG="+filepath.Join(root, "git"),
 		"FAKE_SUDO_LOG="+r.sudoLog, "FAKE_TC_LOG="+r.tcLog,
 	)
@@ -176,7 +177,8 @@ func TestSourceTaskMacOSToolchainFailureIs70(t *testing.T) {
 }
 
 // runMacMain runs the macOS run.sh against a toolchain directory made by the test, whose two
-// fixed locations (the toolchain root, the job user's home) are pointed into the test's temp dir.
+// fixed location (the toolchain root) is pointed into the test's temp dir. The job's home is the
+// one in its allocation, as the source task leaves it.
 type macMainOpts struct {
 	mk       func(dir string)         // fills the toolchain directory; nil makes none
 	stateDir func(real string) string // what toolchain.dir holds; nil = the real one, "" = no file
@@ -190,10 +192,8 @@ func runMacMain(t *testing.T, o macMainOpts) (code int, out string, tc macToolch
 	runSH := renderedRunSH(t, "build.nomad.hcl", renderData{Kind: "build", Pool: "macos"})
 	base := t.TempDir()
 	tc.root = filepath.Join(base, "grove-toolchains")
-	home := filepath.Join(base, "home")
 	for old, repl := range map[string]string{
 		"tc_root=/private/var/grove-toolchains": "tc_root=" + tc.root,
-		"HOME=/private/var/grove-job":           "HOME=" + home,
 	} {
 		if !strings.Contains(runSH, old) {
 			t.Fatalf("run.sh has no %q", old)
@@ -204,6 +204,7 @@ func runMacMain(t *testing.T, o macMainOpts) (code int, out string, tc macToolch
 	tc.dir = filepath.Join(tc.root, "mise-test-"+toolchainHash)
 	alloc := filepath.Join(base, "alloc")
 	state := filepath.Join(alloc, "data", "grove")
+	home := filepath.Join(state, "home")
 	taskDir := filepath.Join(base, "main", "local")
 	for _, d := range []string{filepath.Join(tc.root, ".use"), home, state, taskDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {

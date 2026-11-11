@@ -62,11 +62,24 @@ Every rendered job:
 - `constraint { attribute = "${meta.pool}" value = "<Pool>" }` so the job only ever lands on a
   node whose Nomad client meta (`client.hcl`/`grove-meta.hcl` in `images/*-worker`) says
   `pool = "<Pool>"`.
-- One task group. shell jobs have one task, `main`. build/agent jobs also have a `source`
+- One task group. shell jobs have one task, `main` (plus the two macOS tasks below). build/agent jobs also have a `source`
   prestart task that alone receives the payload, clones the repo into the alloc dir with the
   clone token, deletes the payload and records its result, so the token never reaches `main`.
-  On the `macos` pool `main` runs as the unprivileged `_grovejob` user
-  (internal/fleet/scripts.go creates it); `source` stays root.
+  On the `macos` pool `main` runs as the unprivileged `_grovejob` user for every kind, shell
+  included (internal/fleet/scripts.go creates it; without `user`, raw_exec would run the script
+  as the VM's Nomad client, which is root); `source` stays root.
+- On the `macos` pool only, every job also has a root task on each side of `main`, because all
+  jobs in a VM share the `_grovejob` user and the VM is reused: the prestart task (`source`, or
+  for a shell job `prepare`, which gets no payload) makes the job's own home
+  `${NOMAD_ALLOC_DIR}/data/grove/home` (0700, the job user's; `run.sh` exports it as `HOME` and
+  fails without it, never the account's shared `/private/var/grove-job`), and a `cleanup`
+  poststop task kills the processes the job left behind and deletes that home. Both carry the
+  same `# grove:jobs` block: a root-only record of the jobs running in the VM
+  (`/private/var/run/grove-jobs/<alloc id>`, under a mkdir lock) that lets them kill every
+  `_grovejob` process when, and only when, no other job is running there. Jobs running at the
+  same time are NOT isolated from each other. See docs/JOBS.md "Jobs sharing a macOS VM", and
+  `macjobs_test.go`. `cleanup` always exits 0 and asks for the same resources as `main`
+  (lifecycle tasks don't add to the group's ask). Linux renders none of this.
 - `restart { attempts = 0 }` and `reschedule { attempts = 0 }` on every job — grove owns retries
   at the `JobRequest` level (a caller that wants a retry submits a new request); Nomad must not
   also retry underneath it or the two retry policies fight each other.
@@ -119,7 +132,7 @@ template acts on them (the Linux templates, and macOS `agent`, ignore them):
   mise-*` with a `.complete` marker, and puts each line of its `paths` file first on `PATH`, only
   if the line lies inside that directory (anything else exits 70). It also exports `RUSTUP_HOME`
   (inside the directory, read-only to the job), `RUSTUP_AUTO_INSTALL=0`, `CARGO_HOME=$HOME/.cargo-grove`
-  and `GROVE_TOOLCHAIN_DIR`, and unsets `RUSTUP_TOOLCHAIN`. `env_json` is applied afterwards, as for
+  (in the job's own home, so not shared between jobs) and `GROVE_TOOLCHAIN_DIR`, and unsets `RUSTUP_TOOLCHAIN`. `env_json` is applied afterwards, as for
   any job.
 
 See docs/OPERATIONS.md "Native toolchains on macOS".
