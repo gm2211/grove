@@ -65,8 +65,9 @@ Every rendered job:
 - One task group. shell jobs have one task, `main`. build/agent jobs also have a `source`
   prestart task that alone receives the payload, clones the repo into the alloc dir with the
   clone token, deletes the payload and records its result, so the token never reaches `main`.
-  On the `macos` pool `main` runs as the unprivileged `_grovejob` user
-  (internal/fleet/scripts.go creates it); `source` stays root.
+  On the `macos` pool `main` runs as the unprivileged `_grovejob` user for every kind, shell
+  included (internal/fleet/scripts.go creates it; without `user`, raw_exec would run the script
+  as the VM's Nomad client, which is root); `source` stays root.
 - `restart { attempts = 0 }` and `reschedule { attempts = 0 }` on every job — grove owns retries
   at the `JobRequest` level (a caller that wants a retry submits a new request); Nomad must not
   also retry underneath it or the two retry policies fight each other.

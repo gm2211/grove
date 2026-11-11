@@ -45,7 +45,16 @@ job "grove-{{.Kind}}-{{.Pool}}" {
       }
 
 {{if eq .Pool "macos"}}
+      # macOS guests have no container runtime; jobs run as native processes.
       driver = "raw_exec"
+
+      # Never root: like a build's or an agent's, the caller's script runs as the unprivileged
+      # job user the fleet startup script creates (the VM's Nomad client is root, and without
+      # `user` raw_exec runs the task as the client's user), so it cannot read or change the VM's
+      # Nomad and Tailscale configuration or another task's root-owned files, and the guest's
+      # firewall, which fences that user, applies to it. Nomad writes script.sh (the payload)
+      # and run.sh world-readable, so the job user can read both.
+      user = "_grovejob"
 
       config {
         command = "/bin/bash"
@@ -79,7 +88,12 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         DEFAULT_IMAGE="{{.RunnerImage}}"
         script_src="$NOMAD_TASK_DIR/script.sh"
         T="$${NOMAD_META_timeout_seconds:-3600}"
-
+{{if eq .Pool "macos"}}
+        # This task runs as the unprivileged job user (see `user` above), whose home and temp
+        # directory the fleet startup script creates.
+        export HOME=/private/var/grove-job USER=_grovejob LOGNAME=_grovejob
+        export TMPDIR="$(dirname "$NOMAD_TASK_DIR")/tmp"
+{{end}}
         if [ -n "$${NOMAD_META_env_json:-}" ]; then
           eval "$(printf '%s' "$NOMAD_META_env_json" | jq -r 'to_entries[] | "export " + .key + "=" + (.value|tostring|@sh)')"
         fi

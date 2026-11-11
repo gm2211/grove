@@ -490,7 +490,7 @@ done
 // executes StartupScript as the configured guest user, so writes under /etc and /usr/local use the
 // noninteractive privilege helper below rather than assuming the guest process is root.
 // MacOSJobUser is the unprivileged account macOS jobs run as (the `user` of the "main" task in
-// nomad/jobs/build.nomad.hcl and agent.nomad.hcl), and MacOSJobHome its home directory, which
+// nomad/jobs/build.nomad.hcl, agent.nomad.hcl and shell.nomad.hcl), and MacOSJobHome its home directory, which
 // run.sh exports as HOME.
 const (
 	MacOSJobUser = "_grovejob"

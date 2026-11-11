@@ -259,7 +259,24 @@ func TestRenderedHCLParsesWithJobspec2(t *testing.T) {
 					}
 
 					main := tasks["main"]
+					// macOS jobs never run the caller's script as root, whatever the kind: with
+					// no `user`, raw_exec runs the task as the VM's Nomad client, which is root.
+					// A Linux build's main task is root in its container whatever its image's
+					// USER says (job environments).
+					wantUser := ""
+					if pool == "macos" {
+						wantUser = "_grovejob"
+					} else if kind == "build" {
+						wantUser = "root"
+					}
+					if main.User != wantUser {
+						t.Errorf("main task user = %q, want %q", main.User, wantUser)
+					}
 					if kind == "shell" {
+						// No source task: main takes the script itself.
+						if main.DispatchPayload == nil || main.DispatchPayload.File != "script.sh" {
+							t.Errorf("shell main dispatch_payload = %+v, want file \"script.sh\"", main.DispatchPayload)
+						}
 						return
 					}
 					// Only the source task may receive the payload (it carries the clone token),
@@ -273,17 +290,6 @@ func TestRenderedHCLParsesWithJobspec2(t *testing.T) {
 					}
 					if source.Lifecycle == nil || source.Lifecycle.Hook != "prestart" || source.Lifecycle.Sidecar {
 						t.Errorf("source task lifecycle = %+v, want a non-sidecar prestart", source.Lifecycle)
-					}
-					// macOS jobs never run the caller's script as root; a Linux build's main task is
-					// root in its container whatever its image's USER says (job environments).
-					wantUser := ""
-					if pool == "macos" {
-						wantUser = "_grovejob"
-					} else if kind == "build" {
-						wantUser = "root"
-					}
-					if main.User != wantUser {
-						t.Errorf("main task user = %q, want %q", main.User, wantUser)
 					}
 					if source.User != "" {
 						t.Errorf("source task user = %q, want the agent's own (root) user", source.User)
@@ -301,7 +307,15 @@ func TestRenderedHCLParsesWithJobspec2(t *testing.T) {
 // long the run took.
 func runRunSH(t *testing.T, runSH, scriptBody, timeoutSeconds string) (code int, output string, elapsed time.Duration) {
 	t.Helper()
-	dir := t.TempDir()
+	// Nomad's layout: <task>/local is NOMAD_TASK_DIR and <task>/tmp the task's temp directory,
+	// which the macOS run.sh exports as TMPDIR.
+	root := t.TempDir()
+	dir := filepath.Join(root, "main", "local")
+	for _, d := range []string{dir, filepath.Join(root, "main", "tmp")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := os.WriteFile(filepath.Join(dir, "script.sh"), []byte(scriptBody), 0o755); err != nil {
 		t.Fatalf("write script.sh: %v", err)
 	}
