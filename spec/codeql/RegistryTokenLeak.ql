@@ -35,7 +35,8 @@ module Cfg implements DataFlow::ConfigSig {
     or
     exists(Write w, Field f |
       w.writesField(_, f, n) and
-      f.getDeclaringType().hasQualifiedName("github.com/gm2211/grove/internal/server", "VMImagePullLogin")
+      f.hasQualifiedName("github.com/gm2211/grove/internal/server", "VMImagePullLogin",
+        ["Registry", "User", "Token"])
     )
   }
 

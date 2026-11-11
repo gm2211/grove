@@ -21,6 +21,7 @@ images: images-macos
 
 images-macos: images-nomad
 	cd images/macos-worker && packer init . && packer validate . && packer build .
+	images/scan/scan-tart-vm.sh grove-macos-worker
 
 # Build the pinned native Nomad dependency outside the VM. Reuses a verified artifact.
 .PHONY: images-nomad
@@ -30,10 +31,12 @@ images-nomad:
 # Full Xcode is opt-in and produces a distinct local VM.
 images-macos-xcode: images-nomad
 	cd images/macos-worker && packer init . && packer validate -var-file=xcode.pkrvars.hcl . && packer build -var-file=xcode.pkrvars.hcl .
+	images/scan/scan-tart-vm.sh grove-macos-xcode-worker
 
 # Lean Tahoe guest for sharing a compatible host Xcode application at runtime.
 images-macos-host-xcode: images-nomad
 	cd images/macos-worker && packer init . && packer validate -var-file=host-xcode.pkrvars.hcl . && packer build -var-file=host-xcode.pkrvars.hcl .
+	images/scan/scan-tart-vm.sh grove-macos-host-xcode-worker
 
 # Validate all macOS profiles without downloading or starting a VM.
 images-validate: images-nomad
