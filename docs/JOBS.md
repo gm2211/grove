@@ -120,7 +120,8 @@ shared `macos` pool instead of waiting:
 - **How:** grove reads the dispatched job's meta and payload back from Nomad, dispatches them to
   `grove-<kind>-macos`, then stops and purges the Linux copy, so exactly one copy is ever queued.
   The job keeps its id; `job.fallback` says `{from, to, at, reason}`. On macOS it runs as a plain
-  process of the `_grovejob` user, not in the runner container.
+  process of the `_grovejob` user, not in the runner container (and so shares that user with
+  the VM's other jobs: see "Jobs sharing a macOS VM").
 - **Opting out:** `"pinPool": true` on the JobRequest keeps a job in its pool (use it for scripts
   that need Linux: docker, apt-get, ELF binaries). A job with an `environment` (see "Job
   environments") falls back only when it carries a `toolchain` and the fallback pool is a macOS
@@ -274,6 +275,59 @@ With no TTL it stays armed until `grove github disable`.
      `T="${timeout_seconds:-3600}"`,
    - exits with `script.sh`'s exit code, which becomes the Nomad task's (and therefore the
      allocation's, and therefore `Job.ExitCode`'s) exit status.
+4. On the `macos` pool only, a root `cleanup` poststop task runs once `main` has ended (see the
+   next section). It always exits 0; the job's exit code is still `main`'s.
+
+### Jobs sharing a macOS VM
+
+A shared macOS pool has no containers: every job of every kind (shell included) runs as a plain
+process of the one unprivileged user `_grovejob`, never root, in a VM that is reused until its
+TTL and that can run several jobs at once. The templates do this about it:
+
+- **Each job has its own home.** The root task that runs before `main` (`source` for a build or
+  an agent, `prepare` for a shell job) creates `${NOMAD_ALLOC_DIR}/data/grove/home` (it refuses,
+  failing the job, if that allocation's state directory already exists), hands it to `_grovejob`
+  with mode 0700, and `run.sh` exports it as `HOME`, failing if it is missing, a symlink or not
+  the job user's. Nothing uses the account's own home (`/private/var/grove-job`) any more, so a
+  `~/.gitconfig`, `~/.npmrc`, shell profile or PATH shim written by one job is not there for the
+  next. `TMPDIR` is the task's own Nomad temp directory, as before. A toolchain job's
+  `CARGO_HOME` (`$HOME/.cargo-grove`) is now per job too, so crates are downloaded again by each
+  job rather than shared.
+- **Leftover processes are killed.** Nomad kills the `main` task's own process group; a process
+  that left the group (a daemon, `nohup … &` under `setsid`) used to survive in the VM, as the
+  same user the next job runs as, where it could read that job's files and its processes'
+  environment (named secrets, credential placeholders). Now:
+  - `cleanup` kills every `_grovejob` process that still carries this allocation's
+    `NOMAD_ALLOC_ID` in its environment, which every process the job started inherited. This
+    works while other jobs are running, but a process that cleared or changed its environment is
+    not found this way.
+  - The root tasks keep a record of the jobs running in the VM (`/private/var/run/grove-jobs`,
+    root's alone, one file per allocation holding the time after which the job cannot still be
+    running: its timeout plus a margin). Whenever **no other job is running in the VM**, at the
+    start of a job (`source`/`prepare`) and at its end (`cleanup`), every process of `_grovejob`
+    is killed (`pkill -KILL -U _grovejob`). So a job that starts on an idle VM starts with no
+    process of an earlier job alive, whatever that process did to hide.
+  - `cleanup` then deletes the job's home, as the job user.
+
+**What this does not give you.** Jobs that run *at the same time* in one macOS VM are not
+isolated from each other: they are the same user, so one can read and write the other's
+checkout, home and temp files, signal its processes and read their environment, and nothing in
+these templates can prevent that. A process that hid from the first kill also survives for as
+long as the VM never goes idle (some other job always overlapping), and can read the jobs that
+run meanwhile. The record is kept by the jobs' own root tasks, so if `cleanup` does not run for
+an allocation (the VM's Nomad client died), its record holds the sweep off until its time is
+up. The rest of a finished job's allocation directory (its checkout) stays readable by later
+jobs until Nomad garbage-collects it. If jobs that don't trust each other must not share a
+machine, give the pool one job per VM (`jobCPU`/`jobMemory` sized so only one fits), use a
+sealed pool (`network: isolated`: a sealed macOS VM runs one job and is deleted), or use a Linux
+pool, where every job is its own container.
+
+None of this has been exercised on a real macOS VM yet: the scripts are tested against
+stand-ins for `ps`, `pgrep`, `pkill` and `sudo` (`nomad/jobs/macjobs_test.go`). In particular,
+`ps -E` showing root another user's environment and Nomad running the poststop task after a
+cancelled job are assumed, not verified. When upgrading with jobs still running on a shared
+macOS pool, drain them first: a job dispatched from the older templates has no record, so the
+first new job's sweep would kill its processes.
 
 ### Sealed pools: the job runs from the control plane
 

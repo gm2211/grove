@@ -240,9 +240,19 @@ func TestRenderedHCLParsesWithJobspec2(t *testing.T) {
 						tasks[task.Name] = task
 						names = append(names, task.Name)
 					}
-					wantNames := []string{"main"}
-					if kind != "shell" {
-						wantNames = []string{"source", "main"}
+					// A macOS job has a root task on each side of main: the one before it
+					// (source, or a shell job's prepare) and cleanup after it. See macjobs_test.go.
+					first := "source"
+					if kind == "shell" {
+						first = "prepare"
+					}
+					var wantNames []string
+					if kind != "shell" || pool == "macos" {
+						wantNames = append(wantNames, first)
+					}
+					wantNames = append(wantNames, "main")
+					if pool == "macos" {
+						wantNames = append(wantNames, "cleanup")
 					}
 					if strings.Join(names, ",") != strings.Join(wantNames, ",") {
 						t.Fatalf("tasks = %v, want %v", names, wantNames)
@@ -324,9 +334,16 @@ func runRunSH(t *testing.T, runSH, scriptBody, timeoutSeconds string) (code int,
 		t.Fatalf("write run.sh: %v", err)
 	}
 
+	// The job's own home, which the macOS job's root prestart task makes.
+	alloc := filepath.Join(root, "alloc")
+	if err := os.MkdirAll(filepath.Join(alloc, "data", "grove", "home"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
 	cmd := exec.Command("/bin/bash", runPath)
 	cmd.Env = append(os.Environ(),
 		"NOMAD_TASK_DIR="+dir,
+		"NOMAD_ALLOC_DIR="+alloc,
 		"NOMAD_META_timeout_seconds="+timeoutSeconds,
 	)
 	var out bytes.Buffer
@@ -673,9 +690,9 @@ while [ $# -gt 0 ]; do case "$1" in -n|-H) shift ;; -u) shift 2 ;; *) break ;; e
 # Like sudo's env_reset: the target command gets a fresh environment.
 exec env -i PATH="$PATH" FAKE_GIT_LOG="$FAKE_GIT_LOG" FAKE_UNDER_SUDO=1 "$@"
 `)
-	write(filepath.Join(bin, "chown"), "#!/bin/sh\nexit 0\n")
+	fakeMacHost(t, bin)
 	write(filepath.Join(sourceDir, "request"), "grove-payload/1\n"+token+"\ntrue\n")
-	write(filepath.Join(sourceDir, "source.sh"), sourceSH)
+	write(filepath.Join(sourceDir, "source.sh"), withJobsDir(t, sourceSH, filepath.Join(root, "grove-jobs")))
 
 	cmd := exec.Command("/bin/bash", filepath.Join(sourceDir, "source.sh"))
 	cmd.Env = append(os.Environ(),
@@ -685,8 +702,10 @@ exec env -i PATH="$PATH" FAKE_GIT_LOG="$FAKE_GIT_LOG" FAKE_UNDER_SUDO=1 "$@"
 		"NOMAD_TASK_DIR="+sourceDir,
 		"NOMAD_META_repo=https://github.com/gm2211/private",
 		"NOMAD_META_ref=main",
+		"NOMAD_ALLOC_ID=alloc1",
 		"FAKE_GIT_LOG="+gitLog,
 		"FAKE_SUDO_LOG="+sudoLog,
+		"FAKE_HOST="+root,
 	)
 	if b, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("source.sh: %v\n%s", err, b)

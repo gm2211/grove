@@ -490,8 +490,11 @@ done
 // executes StartupScript as the configured guest user, so writes under /etc and /usr/local use the
 // noninteractive privilege helper below rather than assuming the guest process is root.
 // MacOSJobUser is the unprivileged account macOS jobs run as (the `user` of the "main" task in
-// nomad/jobs/build.nomad.hcl, agent.nomad.hcl and shell.nomad.hcl), and MacOSJobHome its home directory, which
-// run.sh exports as HOME.
+// nomad/jobs/build.nomad.hcl, agent.nomad.hcl and shell.nomad.hcl), and MacOSJobHome the
+// account's home directory. A shared pool's jobs don't use that home: all of a VM's jobs run as
+// this one user, so each gets a HOME of its own inside its allocation (the templates' run.sh; see
+// docs/JOBS.md "Jobs sharing a macOS VM"). A sealed macOS VM, which runs one job and is deleted,
+// keeps its run directories under it (internal/sandbox).
 const (
 	MacOSJobUser = "_grovejob"
 	MacOSJobHome = "/private/var/grove-job"
@@ -499,8 +502,9 @@ const (
 
 // macosJobUserScript creates MacOSJobUser on a macOS VM before its Nomad client can take work:
 // a hidden account with no password and its own group, so a job's script cannot read root's
-// files, other jobs' prestart inputs, or the VM's Nomad and Tailscale state. Idempotent, since it
-// runs on every boot.
+// files, a prestart task's root-owned inputs, or the VM's Nomad and Tailscale state. It does not
+// keep one job from another: every job in the VM runs as this user. Idempotent, since it runs on
+// every boot.
 const macosJobUserScript = `# Jobs run as ` + MacOSJobUser + `, never root (see nomad/jobs/*.nomad.hcl).
 if ! dscl . -read /Groups/` + MacOSJobUser + ` >/dev/null 2>&1; then
   grove_priv dscl . -create /Groups/` + MacOSJobUser + `
