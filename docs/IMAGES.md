@@ -321,13 +321,44 @@ wasn't started with `--rosetta rosetta`, the script logs and exits 0 rather than
 
 ## Which container a Linux job runs in
 
-A Linux job runs in its pool's `runnerImage` (default `images/runner`), except a `build` job that
+A Linux job runs in its pool's `runnerImage` (default: `images/runner` at a pinned digest, see "The
+default runner image" below), except a `build` job that
 names an `environment`: the control plane puts that digest-pinned, allowlisted image in dispatch
 meta `task_image` and the build's `main` task runs it (docs/JOBS.md "Job environments"). Job
 environment images are pulled on the VM at job start, so the Linux worker's static `client.hcl`
 sets `gc { image_delay = "24h" }` on the docker plugin: Nomad removes a pulled image a day after
 its last use, and a long-lived VM's disk doesn't fill with toolchain images. Nothing in an image
 gives a job the VM's docker socket.
+
+### The default runner image
+
+A pool with no `runnerImage` runs `dispatch.DefaultRunnerImage`
+(`internal/dispatch/nomadjobs.go`): `ghcr.io/gm2211/grove-runner@sha256:…`, a **digest**, not
+`:latest`. The runner image is where a build's `source` task holds the private-repo clone token,
+so it gets the rule a job's environment image already has: the reference names the content, and a
+push to the repository cannot change what runs.
+
+- `.github/workflows/images.yml` builds `images/runner` on every change to it on `main` and pushes
+  `:latest`, `:sha-<short commit>` and `:sha-<full commit>`. Its run summary prints the pushed
+  `ghcr.io/gm2211/grove-runner@sha256:…`.
+- **A new build is not the default until `DefaultRunnerImage` is changed to that reference** in a
+  commit (`TestDefaultRunnerImageIsPinnedByDigest` keeps it a digest). Until then every grove
+  release keeps running the image it was released with. Don't delete a package version a released
+  grove still names.
+- To use a build before it is the default, or your own image, set the pool's `runnerImage` in
+  fleet.yaml, by digest:
+
+  ```yaml
+  pools:
+    - name: linux
+      runnerImage: ghcr.io/gm2211/grove-runner@sha256:<64 hex digits>
+  ```
+
+  `docker buildx imagetools inspect <image>:<tag>` prints a tag's digest (use the index digest, so
+  arm64 and amd64 both resolve), as does the registry call under "Rebuilding after a base image
+  update". A `runnerImage` that is a tag still works, and `grove serve` logs a warning for it once
+  (`fleet spec: pool "linux": runnerImage … is a tag …`), because whoever can push to that
+  repository then decides what runs next to the clone token.
 
 ## Rebuilding after a base image update
 

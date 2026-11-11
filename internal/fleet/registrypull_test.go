@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/registryauth"
 )
 
@@ -290,8 +291,49 @@ func TestSpecWarnsOnARunnerImageWithNoRegistryHost(t *testing.T) {
 		"":                                   false,
 	} {
 		spec := &Spec{Pools: []Pool{{Name: "linux", RunnerImage: image}}}
-		if got := len(spec.Warnings()) > 0; got != warns {
+		got := strings.Contains(strings.Join(spec.Warnings(), "\n"), "has no registry host")
+		if got != warns {
 			t.Errorf("runnerImage %q: warns = %v, want %v (%v)", image, got, warns, spec.Warnings())
 		}
+	}
+}
+
+// A Linux pool's runner image is where its jobs run and where a build's clone token is used, so a
+// runnerImage that is a tag is warned about (never refused: fleets use tags). A digest, the
+// default (itself a digest) and the macos pool, which runs no container, are quiet.
+func TestSpecWarnsOnARunnerImageThatIsATag(t *testing.T) {
+	const digest = "sha256:206f7ef0cada2c22a1cd916dc065fde1154b3ac12e89e7f2cf19c0cfc86d5be6"
+	for _, tc := range []struct {
+		pool, image string
+		warns       bool
+	}{
+		{"linux", "", false},
+		{"linux", "ghcr.io/acme/runner@" + digest, false},
+		{"linux", "ghcr.io/acme/runner:v1@" + digest, false},
+		{"linux", "ghcr.io/acme/runner:latest", true},
+		{"linux", "ghcr.io/acme/runner:v1", true},
+		{"linux", "ghcr.io/acme/runner", true},
+		{"linux", "registry.example:5000/runner", true},
+		{"linux", "ghcr.io/acme/runner@sha256:abc", true},
+		{"linux", "ghcr.io/acme/runner@md5:" + digest[7:], true},
+		{"sealed", "ghcr.io/acme/runner:v1", true},
+		{MacOSPool, "ghcr.io/acme/runner:v1", false},
+	} {
+		spec := &Spec{Pools: []Pool{{Name: tc.pool, Image: "ghcr.io/acme/vm:1", RunnerImage: tc.image}}}
+		warnings := strings.Join(spec.Warnings(), "\n")
+		if got := strings.Contains(warnings, "is a tag"); got != tc.warns {
+			t.Errorf("pool %s runnerImage %q: warns = %v, want %v (%s)", tc.pool, tc.image, got, tc.warns, warnings)
+		}
+		if tc.warns && !strings.Contains(warnings, "@sha256:<digest>") {
+			t.Errorf("warning does not say how to pin: %s", warnings)
+		}
+		if tc.image != "" {
+			if err := spec.Validate(); err != nil && strings.Contains(err.Error(), "runnerImage") {
+				t.Errorf("pool %s runnerImage %q refused: %v", tc.pool, tc.image, err)
+			}
+		}
+	}
+	if !imagePinnedByDigest(dispatch.DefaultRunnerImage) {
+		t.Errorf("the default runner image %q is not pinned by digest", dispatch.DefaultRunnerImage)
 	}
 }

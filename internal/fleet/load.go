@@ -42,19 +42,44 @@ func Load(path string) (*Spec, error) {
 }
 
 // Warnings lists things in the spec that are valid but probably not what its author meant.
-// Today: a pool's runnerImage that names no registry host. Docker reads
-// "grove-runner:studio-v1" as docker.io/library/grove-runner:studio-v1, which is almost never the
-// image someone built locally or pushed to their own registry.
+//
+// A pool's runnerImage that names no registry host: docker reads "grove-runner:studio-v1" as
+// docker.io/library/grove-runner:studio-v1, which is almost never the image someone built locally
+// or pushed to their own registry.
+//
+// A Linux pool's runnerImage that is a tag and not a digest: every job of the pool runs in it, and
+// a build's `source` task holds the private-repo clone token there, so whoever can push to that
+// repository decides what runs next to the token. A job's environment image has to be a digest
+// already; grove's own default is one (dispatch.DefaultRunnerImage). A tag stays valid, since
+// fleets use them, and is only warned about. The macos pool runs jobs natively, in no container.
 func (s *Spec) Warnings() []string {
 	var out []string
 	for _, p := range s.Pools {
-		if p.RunnerImage != "" && !imageHasRegistryHost(p.RunnerImage) {
+		if p.RunnerImage == "" {
+			continue
+		}
+		if !imageHasRegistryHost(p.RunnerImage) {
 			out = append(out, fmt.Sprintf(
 				"pool %q: runnerImage %q has no registry host, so docker pulls it from docker.io/library/ (write the full reference, e.g. ghcr.io/<owner>/%s)",
 				p.Name, p.RunnerImage, p.RunnerImage))
 		}
+		if !p.MacOS() && !imagePinnedByDigest(p.RunnerImage) {
+			out = append(out, fmt.Sprintf(
+				"pool %q: runnerImage %q is a tag, which a push to that repository can point at another image; the pool's jobs, and a build's clone token, run in it. Pin it by digest: <repository>@sha256:<digest> (`docker buildx imagetools inspect %s` prints the digest)",
+				p.Name, p.RunnerImage, p.RunnerImage))
+		}
 	}
 	return out
+}
+
+// imageDigestRE is the digest that pins an image reference.
+var imageDigestRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+// imagePinnedByDigest reports whether image names its content: "<repository>[:tag]@sha256:<hex>".
+// Docker pulls by the digest and ignores a tag written before it.
+func imagePinnedByDigest(image string) bool {
+	_, digest, found := strings.Cut(image, "@")
+	return found && imageDigestRE.MatchString(digest)
 }
 
 // imageHasRegistryHost is docker's own rule: the first path component is a registry host when it

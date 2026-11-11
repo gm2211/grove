@@ -4,6 +4,15 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **The default runner image is a digest, and the images grove builds are pinned.** A pool with no
+  `runnerImage` ran `ghcr.io/gm2211/grove-runner:latest`, a tag anyone with push access could move,
+  in the task that holds the private-repo clone token. The default is now that image's digest (the
+  build `:latest` pointed at, so nothing changes for a running fleet); a newer `images/runner`
+  becomes the default only when `DefaultRunnerImage` is bumped (docs/IMAGES.md "The default runner
+  image"). A pool's `runnerImage` may be a digest, and one that is a tag logs a warning. The runner's
+  Dockerfile pins its base by digest and verifies the Node.js and Go tarballs (no more
+  `curl | bash`); the Linux worker template pins its base by digest and no longer installs Tailscale.
+
 - **Releases carry build provenance.** The release workflow attests every grove and Orchard archive
   and `checksums.txt` (`gh attestation verify <file> --repo gm2211/grove`). `scripts/install.sh` on
   Linux checks it when a signed-in GitHub CLI is there and refuses an archive that fails; without
