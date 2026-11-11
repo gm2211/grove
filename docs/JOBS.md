@@ -238,7 +238,10 @@ Where the token does and doesn't go:
 - Inside the allocation only the `source` prestart task gets the payload. It closes its own task
   directory (0700), hands the token to git through its environment and an inline credential
   helper (never argv, never a config file, never the checkout's `.git/config`), and deletes the
-  payload before `main` starts. `main` runs the caller's script with no path to it; on macOS it
+  payload before `main` starts. The helper is set only for the repo URL's own host
+  (`credential.https://<host>.helper`), so git never offers the token to another host (a
+  submodule, a redirect); a URL whose host isn't a plain `name[:port]` (userinfo such as
+  `https://user@host/…`, brackets) is refused with exit 2 when there is a token to protect. `main` runs the caller's script with no path to it; on macOS it
   also runs as the unprivileged `_grovejob` account, so root-owned files stay out of reach.
 - It is never written to the job history, never part of `GET /jobs/{id}` (the job carries only
   `repoCredentialUsed: true`), and never returned by the sourcing API, which reports a SHA-256

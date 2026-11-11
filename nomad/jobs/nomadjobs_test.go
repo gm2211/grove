@@ -421,7 +421,7 @@ helper=""
 i=0
 while [ $i -lt ${#args[@]} ]; do
   case "${args[$i]}" in
-    -c) case "${args[$((i+1))]}" in credential.helper=?*) helper="${args[$((i+1))]#credential.helper=}" ;; esac; i=$((i+2)) ;;
+    -c) case "${args[$((i+1))]}" in credential.https://github.com.helper=?*) helper="${args[$((i+1))]#credential.https://github.com.helper=}" ;; esac; i=$((i+2)) ;;
     -C) i=$((i+2)) ;;
     *) break ;;
   esac
@@ -549,6 +549,48 @@ func TestSourceTaskKeepsCloneTokenFromScript(t *testing.T) {
 		}
 		if b, _ := os.ReadFile(gitLog + ".helper"); !strings.Contains(string(b), "password="+token) {
 			t.Fatalf("credential helper answered %q", b)
+		}
+	})
+
+	t.Run("helper answers only for the repo's host", func(t *testing.T) {
+		_, gitLog, code, out := run(t, "grove-payload/1\n"+token+"\ntrue\n")
+		if code != 0 {
+			t.Fatalf("run.sh exit = %d\n%s", code, out)
+		}
+		argv, _ := os.ReadFile(gitLog + ".argv")
+		if !strings.HasPrefix(string(argv), "-c\ncredential.helper=\n-c\ncredential.https://github.com.helper=!f()") {
+			t.Fatalf("clone argv = %s, want helpers reset, then grove's helper for github.com only", argv)
+		}
+		if strings.Count(string(argv), "helper=!f()") != 1 {
+			t.Fatalf("clone argv = %s, want grove's helper set once, never for every host", argv)
+		}
+	})
+
+	t.Run("a token is never used with a host that isn't a plain name", func(t *testing.T) {
+		for _, repo := range []string{
+			"https://user@github.com/gm2211/private",
+			"https://github.com.helper=x/gm2211/private",
+			"https://[::1]/gm2211/private",
+			"https:///gm2211/private",
+			"https://github.com:x/gm2211/private",
+		} {
+			_, gitLog, code, out := run(t, "grove-payload/1\n"+token+"\necho should-not-run\n", "NOMAD_META_repo="+repo)
+			if code != 2 || !strings.Contains(out, "plain host name") || strings.Contains(out, "should-not-run") {
+				t.Errorf("%s: run.sh exit = %d, output %q", repo, code, out)
+			}
+			if _, err := os.Stat(gitLog + ".argv"); err == nil {
+				t.Errorf("%s: git clone ran", repo)
+			}
+		}
+	})
+
+	t.Run("a port stays part of the host the helper is set for", func(t *testing.T) {
+		_, gitLog, code, out := run(t, "grove-payload/1\n"+token+"\ntrue\n", "NOMAD_META_repo=https://ghe.example.com:8443/o/r")
+		if code != 0 {
+			t.Fatalf("run.sh exit = %d\n%s", code, out)
+		}
+		if argv, _ := os.ReadFile(gitLog + ".argv"); !strings.Contains(string(argv), "-c\ncredential.https://ghe.example.com:8443.helper=!f()") {
+			t.Fatalf("clone argv = %s", argv)
 		}
 	})
 

@@ -132,6 +132,18 @@ job "grove-{{.Kind}}-{{.Pool}}" {
           -*) echo "grove: ref must not start with '-'" >> "$log"; finish 2 ;;
         esac
 
+        # The clone credential is offered only to the repository's own host: the helper below is
+        # set for https://<host>, so git never asks it about a submodule, redirect or alternate on
+        # another host. A URL whose host isn't a plain name (userinfo, brackets, anything else)
+        # gets no credential at all.
+        host="$${repo#https://}"
+        host="$${host%%/*}"
+        host_re='^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]+)?$'
+        if [ -n "$token" ] && ! [[ "$host" =~ $host_re ]]; then
+          echo "grove: the repo URL's host is not a plain host name, so the clone credential cannot be scoped to it" >> "$log"
+          finish 2
+        fi
+
         # The token reaches git only through this process's environment and an inline credential
         # helper: never argv (visible to every user in `ps`), never a config file, never the
         # checkout's .git/config.
@@ -158,7 +170,7 @@ job "grove-{{.Kind}}-{{.Pool}}" {
 {{end}}
         auth=(-c credential.helper=)
         if [ -n "$token" ]; then
-          auth+=(-c "credential.helper=$helper")
+          auth+=(-c "credential.https://$host.helper=$helper")
         fi
 
         work="$state/work"
