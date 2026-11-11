@@ -39,9 +39,11 @@ job "grove-{{.Kind}}-{{.Pool}}" {
     # source: a prestart task that fetches the job's inputs before "main" starts, so the
     # private-repo credential never enters the environment, files or process tree of the
     # caller's script. Only this task declares dispatch_payload, so only it receives the
-    # payload (see internal/dispatch's encodePayload: a "grove-payload/1" header line, the clone
-    # token or an empty line, then the caller's script). It writes the script and the checkout
-    # into the shared alloc dir (alloc/data/grove), deletes the payload, and always exits 0:
+    # payload (see internal/dispatch's payload.go: a "grove-payload/1" header line, the clone
+    # token or an empty line, then the caller's script; "grove-payload/2" adds a line holding the
+    # job's named secrets, which it hands to "main" in a file only main's user can read). It
+    # writes the script and the checkout into the shared alloc dir (alloc/data/grove), deletes
+    # the payload, and always exits 0:
     # its log and exit code are replayed by run.sh, so a failed clone still shows up in the
     # job's own logs and exit status rather than in a task grove never reads.
     task "source" {
@@ -198,9 +200,24 @@ job "grove-{{.Kind}}-{{.Pool}}" {
 {{end}}
 
         tokdir=""
+        secrets=""
         finish() {
           rm -f "$req"
           [ -z "$tokdir" ] || rm -rf "$tokdir"
+          # The job's named secrets reach "main" through a file only its user can read, written
+          # here, last (after the clone and any toolchain install), and only for a job that will
+          # run: never through dispatch meta, which every task sees. run.sh exports them and
+          # deletes the file before the caller's script starts. Created exclusively, so nothing
+          # left at that name is written through.
+          if [ "$1" = 0 ] && [ -n "$secrets" ]; then
+            rm -f "$state/secrets"
+            if ! (set -C; printf '%s\n' "$secrets" > "$state/secrets") || ! chmod 0400 "$state/secrets"; then
+              echo "grove: could not hand the job its secrets" >> "$log"
+              rm -f "$state/secrets"
+              set -- 1
+            fi
+          fi
+          secrets=""
 {{if eq .Pool "macos"}}
           # "main" runs as the unprivileged job user (see its `user`); hand it the inputs and
           # its home.
@@ -213,14 +230,28 @@ job "grove-{{.Kind}}-{{.Pool}}" {
           exit 0
         }
 
+        # The payload (internal/dispatch payload.go) is "grove-payload/1", the clone token or an
+        # empty line, then the script; or, for a job with named secrets, "grove-payload/2", the
+        # token line, one line holding the secrets (base64 of a JSON object of name to value),
+        # then the script. Token and secrets stay in this shell's own variables, never exported,
+        # so nothing this task runs inherits them.
         token=""
-        if [ "$(head -n 1 "$req")" = "grove-payload/1" ]; then
-          token="$(sed -n 2p "$req")"
-          tail -n +3 "$req" > "$state/script.sh"
-        else
-          cp "$req" "$state/script.sh"
-        fi
+        case "$(head -n 1 "$req")" in
+          grove-payload/2)
+            token="$(sed -n 2p "$req")"
+            secrets="$(sed -n 3p "$req")"
+            tail -n +4 "$req" > "$state/script.sh"
+            ;;
+          grove-payload/1)
+            token="$(sed -n 2p "$req")"
+            tail -n +3 "$req" > "$state/script.sh"
+            ;;
+          *)
+            cp "$req" "$state/script.sh"
+            ;;
+        esac
         rm -f "$req"
+        grove_b64d() { printf '%s' "$1" | base64 --decode 2>/dev/null || printf '%s' "$1" | base64 -d; }
 
         repo="$${NOMAD_META_repo:-}"
         ref="$${NOMAD_META_ref:-HEAD}"
@@ -232,6 +263,11 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         # control-plane token (from the payload) takes precedence.
         if [ -z "$token" ] && [ -n "$${NOMAD_META_env_json:-}" ]; then
           token="$(printf '%s' "$NOMAD_META_env_json" | jq -r '.GH_TOKEN // .GIT_TOKEN // empty')"
+        fi
+        # So does a named secret called GH_TOKEN or GIT_TOKEN, as it did when secrets were part
+        # of env_json.
+        if [ -z "$token" ] && [ -n "$secrets" ]; then
+          token="$(grove_b64d "$secrets" 2>/dev/null | jq -r '.GH_TOKEN // .GIT_TOKEN // empty' 2>/dev/null | head -n 1 || true)"
         fi
 
         case "$repo" in
@@ -393,6 +429,22 @@ job "grove-{{.Kind}}-{{.Pool}}" {
 {{end}}
         if [ -n "$${NOMAD_META_env_json:-}" ]; then
           eval "$(printf '%s' "$NOMAD_META_env_json" | jq -r 'to_entries[] | select(.key | test("^[A-Za-z_][A-Za-z0-9_]*$")) | "export " + .key + "=" + (.value|tostring|@sh)')"
+        fi
+
+        # The job's named secrets (internal/secrets). They travel in the dispatch payload, which
+        # only the "source" task receives, never in dispatch meta; "source" left them in a file
+        # only this task's user can read. Export them and delete the file before the caller's
+        # script runs. A file that can't be read or deleted fails the job.
+        if [ -e "$state/secrets" ] || [ -L "$state/secrets" ]; then
+          grove_b64d() { printf '%s' "$1" | base64 --decode 2>/dev/null || printf '%s' "$1" | base64 -d; }
+          if ! grove_line="$(cat "$state/secrets")" || [ -z "$grove_line" ] ||
+            ! grove_secrets="$(grove_b64d "$grove_line" | jq -r 'to_entries[] | select(.key | test("^[A-Za-z_][A-Za-z0-9_]*$")) | "export " + .key + "=" + (.value|tostring|@sh)')" ||
+            ! rm -f "$state/secrets"; then
+            echo "grove: could not read this job's secrets" >&2
+            exit 1
+          fi
+          eval "$grove_secrets"
+          unset grove_line grove_secrets
         fi
 
         # grove:broker begin

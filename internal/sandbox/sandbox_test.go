@@ -3,6 +3,7 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"os"
 	"os/exec"
@@ -13,17 +14,33 @@ import (
 )
 
 func TestParsePayload(t *testing.T) {
-	token, script := ParsePayload(KindBuild, []byte("grove-payload/1\ntok\necho a\necho b\n"))
-	if token != "tok" || script != "echo a\necho b\n" {
-		t.Fatalf("build payload = %q, %q", token, script)
+	token, secrets, script, err := ParsePayload(KindBuild, []byte("grove-payload/1\ntok\necho a\necho b\n"))
+	if err != nil || token != "tok" || len(secrets) != 0 || script != "echo a\necho b\n" {
+		t.Fatalf("build payload = %q, %v, %q, %v", token, secrets, script, err)
 	}
-	token, script = ParsePayload(KindAgent, []byte("grove-payload/1\n\nrun\n"))
-	if token != "" || script != "run\n" {
-		t.Fatalf("agent payload without token = %q, %q", token, script)
+	token, _, script, err = ParsePayload(KindAgent, []byte("grove-payload/1\n\nrun\n"))
+	if err != nil || token != "" || script != "run\n" {
+		t.Fatalf("agent payload without token = %q, %q, %v", token, script, err)
 	}
-	token, script = ParsePayload(KindShell, []byte("grove-payload/1\ntok\nx"))
-	if token != "" || script != "grove-payload/1\ntok\nx" {
-		t.Fatalf("a shell payload is all script: %q, %q", token, script)
+	token, _, script, err = ParsePayload(KindShell, []byte("grove-payload/1\ntok\nx"))
+	if err != nil || token != "" || script != "grove-payload/1\ntok\nx" {
+		t.Fatalf("a shell payload is all script: %q, %q, %v", token, script, err)
+	}
+
+	line := base64.StdEncoding.EncodeToString([]byte(`{"A":"one\ntwo","B":"it's"}`))
+	token, secrets, script, err = ParsePayload(KindBuild, []byte("grove-payload/2\ntok\n"+line+"\necho a\n"))
+	if err != nil || token != "tok" || script != "echo a\n" || secrets["A"] != "one\ntwo" || secrets["B"] != "it's" {
+		t.Fatalf("version 2 build payload = %q, %v, %q, %v", token, secrets, script, err)
+	}
+	token, secrets, script, err = ParsePayload(KindShell, []byte("grove-payload/2\n\n"+line+"\necho a\n"))
+	if err != nil || token != "" || script != "echo a\n" || len(secrets) != 2 {
+		t.Fatalf("version 2 shell payload = %q, %v, %q, %v", token, secrets, script, err)
+	}
+	// A secrets line that can't be read fails the job, and the error doesn't quote it.
+	for _, bad := range []string{"!!not-base64!!", base64.StdEncoding.EncodeToString([]byte("not json"))} {
+		if _, _, _, err := ParsePayload(KindShell, []byte("grove-payload/2\n\n"+bad+"\necho a\n")); err == nil || strings.Contains(err.Error(), bad) {
+			t.Fatalf("ParsePayload(%q) error = %v, want one that doesn't quote the line", bad, err)
+		}
 	}
 }
 

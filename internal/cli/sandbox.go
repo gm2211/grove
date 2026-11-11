@@ -55,8 +55,8 @@ func init() {
 }
 
 func runSandbox(ctx context.Context, f sandboxRunFlags) error {
-	// The payload can hold the private-repo clone token: read it, then remove it before anything
-	// else can go wrong.
+	// The payload can hold the private-repo clone token and the job's named secrets: read it,
+	// then remove it before anything else can go wrong.
 	payload, err := os.ReadFile(f.payload)
 	if err != nil {
 		return fmt.Errorf("read payload: %w", err)
@@ -64,7 +64,6 @@ func runSandbox(ctx context.Context, f sandboxRunFlags) error {
 	if err := os.Remove(f.payload); err != nil {
 		slog.Warn("sandbox: could not delete the payload file", "err", err)
 	}
-	token, script := sandbox.ParsePayload(f.kind, payload)
 
 	req := sandbox.Request{
 		Kind:           f.kind,
@@ -76,8 +75,6 @@ func runSandbox(ctx context.Context, f sandboxRunFlags) error {
 		Memory:         f.memory,
 		Repo:           os.Getenv("NOMAD_META_repo"),
 		Ref:            os.Getenv("NOMAD_META_ref"),
-		CloneToken:     token,
-		Script:         script,
 		ArtifactPrefix: os.Getenv("NOMAD_META_artifact_prefix"),
 		RetryLost:      os.Getenv("NOMAD_META_retry_lost") == "true",
 	}
@@ -88,6 +85,12 @@ func runSandbox(ctx context.Context, f sandboxRunFlags) error {
 		if err := json.Unmarshal([]byte(raw), &req.Env); err != nil {
 			return fmt.Errorf("parse env_json: %w", err)
 		}
+	}
+	// The script, the clone token and the job's named secrets come from the payload. The secrets
+	// join the job's environment here, in memory: they were never in dispatch meta, and leave
+	// only inside the bundle streamed into the sealed VM.
+	if err := req.ApplyPayload(payload); err != nil {
+		return fmt.Errorf("read payload: %w", err)
 	}
 	if raw := os.Getenv("NOMAD_META_timeout_seconds"); raw != "" {
 		secs, err := strconv.ParseFloat(raw, 64)
