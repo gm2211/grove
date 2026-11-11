@@ -65,20 +65,80 @@ meta["artifact_prefix"] = jobID
 // grove_meta_json) and always set, so the template fails closed if it is ever missing.
 meta["task_image"] = taskImage
 // build/agent: "grove-payload/1\n" + cloneToken + "\n" + req.Script (only the source task reads
-// it); shell: req.Script. See encodePayload.
-payload := encodePayload(req.Kind, cloneToken, req.Script)
+// it); shell: req.Script. A job that names secrets: "grove-payload/2\n" + cloneToken + "\n" +
+// base64(JSON of the secrets) + "\n" + req.Script. See "The dispatch payload" below.
+payload, err := encodePayload(req.Kind, Payload{CloneToken: cloneToken, Secrets: secrets, Script: req.Script})
 client.Dispatch(ctx, "grove-"+string(req.Kind)+"-"+req.Pool, meta, payload)
 ```
 
 `req.Secrets` names operator-set secrets (`internal/secrets`, `grove secret set`). The API checks
 each name against the secret's grants before `Submit` (an operator may name any secret; anyone
 else only one whose `allow` list holds its principal id or one of its Tailscale tags, and a missing
-secret and an ungranted one get the same 403). `Submit` then resolves the values and folds them
-into `env_json`, each exported under its own name, so a rotated secret reaches the next job with
-no re-registration. A name that is also an `env` key, a name given twice, or a name that isn't a
-shell variable name is a 400. The values exist only in that dispatch: the stored job and every
-`Job` the API returns keep the names, never the values. Like every `env` value, they are visible
-to anyone who can read the dispatched job's meta in Nomad, so keep Nomad's ACLs on.
+secret and an ungranted one get the same 403). `Submit` then resolves the values and puts them
+into the dispatch **payload**, never `env_json` or any other dispatch meta (see "The dispatch
+payload" below); the job gets each exported under its own name, so a rotated secret reaches the
+next job with no re-registration. A name that is also an `env` key, a name given twice, or a name
+that isn't a shell variable name is a 400. The values exist only in that dispatch: the stored job
+and every `Job` the API returns keep the names, never the values.
+
+### The dispatch payload
+
+Dispatch meta is in the environment of **every** task of a job (on macOS that includes the root
+`source`, `prepare` and `cleanup` tasks), so nothing secret travels there. The payload reaches
+only a task that declares `dispatch_payload`, and has three forms (`internal/dispatch/payload.go`):
+
+| payload | sent for |
+|---|---|
+| `<script>` | a shell job that names no secret |
+| `grove-payload/1\n<token>\n<script>` | a build or agent job that names no secret |
+| `grove-payload/2\n<token>\n<secrets>\n<script>` | any job that names a secret |
+
+`<token>` is the armed clone token or an empty line (always empty for a shell job). `<secrets>` is
+one line: standard base64 of a JSON object of name to value, so a value may hold any text,
+newlines and quotes included. Version 2 is sent only when a job names a secret; everything else is
+dispatched exactly as before version 2 existed. A shell script may not start with
+`grove-payload/` (400).
+
+Where a named secret goes after that:
+
+- **build, agent (shared pools).** Only the `source` prestart task receives the payload. It keeps
+  the secrets line in a shell variable (never exported, so git and the toolchain installer don't
+  inherit it) and, as its last step and only if the job will run, writes it to
+  `${NOMAD_ALLOC_DIR}/data/grove/secrets`: mode 0400, created exclusively, and on macOS handed to
+  `_grovejob` with the rest of the job's state directory. `main`'s `run.sh` decodes it, exports
+  each name (`jq` `@sh`, the same quoting as `env_json`), deletes the file, and only then runs the
+  caller's script. A file it can't read or delete ends the job with exit 1.
+- **shell (shared pools).** `main` is the only task with the payload. `run.sh` exports the secrets
+  from the frame and runs the script from a copy without it (a temp file; `$0` is that copy), then
+  removes the payload file. A frame it can't read ends the job with exit 1. The macOS `prepare`
+  and `cleanup` tasks never see the payload.
+- **sealed pools.** `grove sandbox run` on the control plane reads the payload and deletes the
+  file. The secrets join the job's environment in its memory and enter the sealed VM only inside
+  the bundle streamed over Orchard exec (`env.sh`), never argv, a log or a file on the control
+  plane.
+- A named secret called `GH_TOKEN` or `GIT_TOKEN` still serves the clone when no token is armed,
+  as an `env` entry of that name does.
+
+Limits and caveats:
+
+- Nomad refuses a dispatch payload over 16 KiB. `Submit` checks the script and the encoded secrets
+  together and rejects the job with a 400 naming the limit (base64 makes a secret a third larger).
+  A secret may be up to 64 KiB in the store, but one that large can't be dispatched: keep the
+  values a job names well under the limit.
+- The dispatched job spec holds the payload, so anything that can read Nomad's job API can read
+  it while the job exists, as for the clone token below. Keep Nomad's ACLs on. What changed is
+  that the values are no longer in every task's environment or in the job's meta.
+- On a shared macOS pool, jobs running at the same time share one user (see "Jobs sharing a macOS
+  VM"); the secrets file is no better protected from them than the job's environment is.
+
+**Upgrading.** `grove serve` registers the templates it dispatches to, so the two change together:
+upgrade the control plane and restart `grove serve`; workers need nothing. A job dispatched before
+the upgrade runs from the job spec it was dispatched with and still reads its secrets from
+`env_json`. If such a job is redispatched afterwards (an eviction, a fallback), its named secrets
+are moved out of `env_json` into a version 2 payload first, so nothing the new control plane
+dispatches carries a secret in meta. Going back to an older grove: let jobs that name secrets
+finish first. An older template takes a version 2 payload for the script itself, which fails on
+its first line (exit 127) without running anything.
 
 `env` values go to Nomad with the dispatch and nowhere else: the stored job, and every `Job` the
 API returns, keeps each key with the value `[redacted]`.
@@ -274,7 +334,8 @@ With no TTL it stays armed until `grove github disable`.
 
 1. Nomad places the allocation on a node whose `meta.pool` (set in the image's `grove-meta.hcl`,
    see docs/IMAGES.md) matches the job's constraint.
-2. shell: the dispatch payload (`req.Script`) is written to `${NOMAD_TASK_DIR}/script.sh`.
+2. shell: the dispatch payload (`req.Script`, framed when the job names secrets) is written to
+   `${NOMAD_TASK_DIR}/script.sh`.
    build/agent: a `source` prestart task receives the payload instead, writes the script to
    `${NOMAD_ALLOC_DIR}/data/grove/script.sh`, runs `git clone --depth 50 -- $repo` into
    `${NOMAD_ALLOC_DIR}/data/grove/work` and `git checkout $ref` there (with the clone token, if
@@ -283,6 +344,7 @@ With no TTL it stays armed until `grove github disable`.
 3. A `template`-delivered `run.sh` at `${NOMAD_TASK_DIR}/run.sh` is what the `main` task execs:
    - (build/agent) replays the source task's log and exits with its code if it failed,
    - expands `env_json` into `export`s (`jq`; keys that aren't shell variable names are skipped),
+   - exports the job's named secrets, which came in the payload (see "The dispatch payload"),
    - (build/agent) `cd`s into the checkout,
    - runs `script.sh` under `run_with_timeout $T` (see "Portable timeout" below), where
      `T="${timeout_seconds:-3600}"`,
@@ -353,7 +415,8 @@ unchanged; what differs is where each step happens:
 - the payload (with any clone token) is read and deleted by `grove sandbox run`, which fetches the
   repository on the control plane with the same rules and exit codes as the `source` task, but
   with `--no-checkout`: no file of the repository is written there;
-- that `.git`, `script.sh`, an `env.sh` built from `env_json` (minus `GH_TOKEN`/`GIT_TOKEN`) and a
+- that `.git`, `script.sh`, an `env.sh` built from `env_json` and the payload's named secrets
+  (minus `GH_TOKEN`/`GIT_TOKEN`) and a
   `run.sh` wrapper are copied into a fresh container (`docker create --init`, the pool's runner
   image, `--cpus`/`--memory` from the pool's job sizing) in one of the pool's sealed VMs, through
   Orchard exec; the container checks out `ref` in `/workspace` (exit 1 if it can't), then runs

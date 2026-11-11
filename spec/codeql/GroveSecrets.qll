@@ -59,7 +59,10 @@ module GroveSecrets {
     )
   }
 
-  /** Nomad dispatch meta (every task of the job sees it) and payload (the source task only). */
+  /**
+   * Nomad dispatch meta (argument 2: every task of the job sees it) and payload (argument 3: only
+   * the task that declares dispatch_payload). Secrets go into the payload, never meta.
+   */
   predicate dispatchArg(DataFlow::Node n, int i) {
     exists(DataFlow::MethodCallNode c |
       c.getTarget().getName() = "Dispatch" and

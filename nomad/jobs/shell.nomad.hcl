@@ -2,7 +2,7 @@
 ## struct carrying at least {Kind: "shell", Pool: "linux"|"macos", CPU, Memory}.
 ## See README.md for the full dispatch contract and docs/JOBS.md.
 ##
-## shell: runs the dispatched script as-is, no git clone (what `grove exec` and the MCP
+## shell: runs the dispatched script, no git clone (what `grove exec` and the MCP
 ## `grove_run` tool use). meta_optional still accepts repo/ref for contract symmetry with
 ## build/agent, but run.sh below ignores them.
 
@@ -253,6 +253,26 @@ job "grove-{{.Kind}}-{{.Pool}}" {
 {{end}}
         if [ -n "$${NOMAD_META_env_json:-}" ]; then
           eval "$(printf '%s' "$NOMAD_META_env_json" | jq -r 'to_entries[] | "export " + .key + "=" + (.value|tostring|@sh)')"
+        fi
+
+        # A job with named secrets (internal/secrets) has a framed payload, since secrets never
+        # travel in dispatch meta (internal/dispatch payload.go): "grove-payload/2", an empty
+        # line, one line holding the secrets (base64 of a JSON object of name to value), then the
+        # script. Export them, and run the script from a copy without the frame. A frame that
+        # can't be read fails the job.
+        if [ "$(head -n 1 "$script_src")" = "grove-payload/2" ]; then
+          grove_b64d() { printf '%s' "$1" | base64 --decode 2>/dev/null || printf '%s' "$1" | base64 -d; }
+          grove_script="$(mktemp "$${TMPDIR:-/tmp}/grove-script.XXXXXX")"
+          if ! grove_line="$(sed -n 3p "$script_src")" ||
+            ! grove_secrets="$([ -z "$grove_line" ] || grove_b64d "$grove_line" | jq -r 'to_entries[] | select(.key | test("^[A-Za-z_][A-Za-z0-9_]*$")) | "export " + .key + "=" + (.value|tostring|@sh)')" ||
+            ! tail -n +4 "$script_src" > "$grove_script"; then
+            echo "grove: could not read this job's secrets" >&2
+            exit 1
+          fi
+          rm -f "$script_src" 2>/dev/null || true
+          script_src="$grove_script"
+          eval "$grove_secrets"
+          unset grove_line grove_secrets
         fi
 
         # grove:broker begin

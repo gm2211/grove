@@ -50,7 +50,7 @@ predicate registryLogin(DataFlow::Node n) {
 
 /** The allowed destination of each kind of secret. */
 predicate allowed(string kind, DataFlow::Node n) {
-  kind = "job secret -> dispatch meta (env_json)" and GroveSecrets::dispatchArg(n, 2)
+  kind = "job secret -> dispatch payload" and GroveSecrets::dispatchArg(n, 3)
   or
   kind = "repo token -> dispatch payload" and GroveSecrets::dispatchArg(n, 3)
   or
@@ -71,7 +71,7 @@ module Cfg implements DataFlow::StateConfigSig {
   class FlowState = string;
 
   predicate isSource(DataFlow::Node n, FlowState s) {
-    jobSecret(n) and s = "job secret -> dispatch meta (env_json)"
+    jobSecret(n) and s = "job secret -> dispatch payload"
     or
     repoToken(n) and s = "repo token -> dispatch payload"
     or

@@ -151,6 +151,12 @@ func (s *service) redispatch(ctx context.Context, rec *record, pool string) erro
 	if err != nil {
 		return err
 	}
+	// A job dispatched by a grove that still put named secrets into env_json gets them moved into
+	// its payload here: nothing this control plane dispatches carries a secret in meta.
+	meta, payload, err = secretsOutOfMeta(rec.Request.Kind, rec.Request.Secrets, meta, payload)
+	if err != nil {
+		return err
+	}
 	// The image travels with the meta, unchanged. A build dispatched before task_image existed
 	// has none; give it the pool's runner image, but never guess for a job that asked for an
 	// environment.

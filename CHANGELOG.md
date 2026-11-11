@@ -4,6 +4,26 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Security: named job secrets no longer travel in dispatch meta.** `grove secret set` values a
+  job named were merged into the dispatch's `env_json` meta. Nomad puts dispatch meta into the
+  environment of every task of the job (on macOS that includes the root `source`, `prepare` and
+  `cleanup` tasks) and shows it to anything that can read the job. They now travel in the dispatch
+  payload, as the private-repo token does: a job that names secrets is dispatched with a
+  `grove-payload/2` payload (clone-token line, one line of base64 JSON, the script). For a build or
+  an agent only the `source` task receives it and hands the secrets to `main` in a 0400 file that
+  `run.sh` exports and deletes before the caller's script starts; a shell job's `main` reads them
+  from the payload's frame; a sealed pool's runner passes them into the VM inside the bundle it
+  streams. `env_json` now holds only the caller's own `env` and credential placeholders. Jobs that
+  name no secret are dispatched exactly as before.
+  New limits: a job's script and its named secrets must fit Nomad's 16 KiB dispatch payload
+  together (the job is refused with a 400 saying so, where Nomad's own error used to surface), and
+  a shell script may not start with `grove-payload/`.
+  **Upgrading:** upgrade the control plane and restart `grove serve` (it registers the new
+  templates itself); workers need nothing. Jobs dispatched before the upgrade finish as they were;
+  one that is redispatched afterwards has its secrets moved out of `env_json` first. Before going
+  back to an older grove, let jobs that name secrets finish: an older template can't read a
+  version 2 payload and fails the job. The payload is still part of the dispatched job in Nomad,
+  so keep Nomad's ACLs on. See docs/JOBS.md "The dispatch payload".
 - **Security: the armed private-repo token no longer goes to every dispatcher, and always
   expires.** Joining gives each worker Mac a device credential that can dispatch builds, and
   `grove github enable` handed the armed GitHub token to any build/agent job for a repository in

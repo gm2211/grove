@@ -58,13 +58,19 @@ Every rendered job:
   the sealed-pool template; the two `toolchain_*` keys only by the macOS `build` template, below) — a
   `JobRequest` (see `internal/dispatch/dispatch.go`) maps onto these dispatch meta keys 1:1, plus
   the request's `Script` becomes the dispatch payload (for build/agent behind a
-  `grove-payload/1` header line and a clone-token line, read only by the `source` task).
+  `grove-payload/1` header line and a clone-token line, read only by the `source` task). A job's
+  named secrets (`JobRequest.Secrets`) are NOT meta: they ride in the payload too, which then is
+  `grove-payload/2`, the clone-token line, one line holding base64 of a JSON object of the
+  secrets, then the script, for every kind (`internal/dispatch/payload.go`; docs/JOBS.md "The
+  dispatch payload"). Never add a meta key for a secret: every task sees meta.
 - `constraint { attribute = "${meta.pool}" value = "<Pool>" }` so the job only ever lands on a
   node whose Nomad client meta (`client.hcl`/`grove-meta.hcl` in `images/*-worker`) says
   `pool = "<Pool>"`.
 - One task group. shell jobs have one task, `main` (plus the two macOS tasks below). build/agent jobs also have a `source`
   prestart task that alone receives the payload, clones the repo into the alloc dir with the
   clone token, deletes the payload and records its result, so the token never reaches `main`.
+  It hands the job's named secrets to `main` in `${NOMAD_ALLOC_DIR}/data/grove/secrets` (0400,
+  written last and only when the job will run; on macOS owned by `_grovejob`).
   On the `macos` pool `main` runs as the unprivileged `_grovejob` user for every kind, shell
   included (internal/fleet/scripts.go creates it; without `user`, raw_exec would run the script
   as the VM's Nomad client, which is root); `source` stays root.
@@ -89,7 +95,10 @@ Every rendered job:
   at runtime). It is plain bash — no consul-template `{{ }}` directives — because Nomad already
   injects `NOMAD_META_*` and `NOMAD_TASK_DIR` as real environment variables for every task
   regardless of driver, so there's nothing left for consul-template to fill in. run.sh:
-  1. Expands `NOMAD_META_env_json` (a JSON object) into `export`s via `jq`.
+  1. Expands `NOMAD_META_env_json` (a JSON object) into `export`s via `jq`. Then exports the
+     job's named secrets the same way (`jq` `@sh`): build/agent from the file `source` left, which
+     it deletes before the script runs; shell from the payload's own frame, running the script
+     from a copy without it. Secrets it can't read end the job with exit 1 (`secrets_test.go`).
   2. (build/agent only) replays the `source` task's clone log, exits with its code if the clone
      failed, and otherwise `cd`s into the checkout it left in the alloc dir (see docs/JOBS.md
      "Private repositories").

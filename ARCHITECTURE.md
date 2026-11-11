@@ -228,7 +228,7 @@ constrained to `meta.pool`. Kinds:
 - `agent` — long-running Claude Code / Codex session against a checkout; reconnectable logs.
 - `shell` — run an arbitrary command (what `grove exec` and the MCP `grove_run` tool use).
 
-Secrets never go into images: they arrive as Nomad `template`/env at dispatch time.
+Secrets never go into images: named job secrets arrive in the job's Nomad dispatch payload at dispatch time (docs/JOBS.md "The dispatch payload").
 
 A `build` job may also carry `environment: {image}`, the image its script runs in. The control
 plane picks the image; the caller only requests it: the reference must be pinned by digest

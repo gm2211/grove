@@ -121,8 +121,9 @@ type Options struct {
 	// tags are refused, as before.
 	ImageResolver ImageResolver
 	// Secrets resolves JobRequest.Secrets names to values at Submit time (internal/secrets.Store).
-	// Each value is exported to the job under its name, through env_json like Env, and never
-	// stored on the Job record. Who may name which secret is decided before Submit, by the API
+	// Each value is exported to the job under its name. It travels in the dispatch payload
+	// (payload.go), never in env_json or any other dispatch meta, and is never stored on the Job
+	// record. Who may name which secret is decided before Submit, by the API
 	// (internal/server); nil means a request naming any secret is rejected.
 	Secrets SecretResolver
 	// AttemptsDir is where sealed pools' job drivers write each job's attempt record (see
@@ -288,6 +289,10 @@ func validate(req JobRequest) error {
 		if _, clash := req.Env[name]; clash {
 			return fmt.Errorf("dispatch: %q is both an env key and a named secret", name)
 		}
+	}
+	// A shell job's payload is its script, unless it starts with a payload header (payload.go).
+	if req.Kind == KindShell && strings.HasPrefix(req.Script, payloadPrefix) {
+		return fmt.Errorf("dispatch: a shell script must not start with %q", payloadPrefix)
 	}
 	for key := range req.Env {
 		if !envKeyPattern.MatchString(key) {
@@ -470,10 +475,20 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	// The armed private-repo credential (if any) goes into the payload only the job's source task
 	// reads, never env_json and never the record persisted below. See Options.RepoAuth.
 	cloneToken, repoCredentialUsed := s.repoCredential(req)
-	env, err := s.jobEnv(req)
+	// Named secrets go the same way, and nowhere else: env_json below holds only the caller's
+	// own Env and credential placeholders.
+	secrets, err := s.secretValues(req)
 	if err != nil {
 		return nil, false, err
 	}
+	payload, err := encodePayload(req.Kind, Payload{CloneToken: cloneToken, Secrets: secrets, Script: req.Script})
+	if err != nil {
+		return nil, false, err
+	}
+	if len(payload) > MaxPayloadBytes {
+		return nil, false, fmt.Errorf("dispatch: the job's script and named secrets are %d bytes together; a dispatch carries at most %d (Nomad's payload limit)", len(payload), MaxPayloadBytes)
+	}
+	env := req.Env
 	// Credentials: the job gets placeholders in its env; the tokens stay in the in-memory
 	// registry, which its worker's broker reads. A sealed pool's VMs can't reach a broker.
 	if len(req.Credentials) > 0 && s.pools[req.Pool].Isolated {
@@ -522,7 +537,7 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	}
 
 	name := jobName(req.Kind, req.Pool)
-	res, err := s.nomad.Dispatch(ctx, name, meta, encodePayload(req.Kind, cloneToken, req.Script))
+	res, err := s.nomad.Dispatch(ctx, name, meta, payload)
 	if err != nil {
 		s.creds.RemoveJob(id)
 		return nil, false, fmt.Errorf("dispatch %s: %w", name, err)
@@ -601,12 +616,13 @@ func (s *service) repoCredential(req JobRequest) (string, bool) {
 	return token, true
 }
 
-// jobEnv is the environment the job runs with: req.Env plus each named secret, resolved now so a
-// rotated secret reaches the next job with no re-registration. The merged map exists only for
-// this dispatch: the stored record keeps req (names only, env values redacted).
-func (s *service) jobEnv(req JobRequest) (map[string]string, error) {
+// secretValues resolves the job's named secrets now, so a rotated secret reaches the next job with
+// no re-registration. The values exist only for this dispatch, and only in its payload (see
+// payload.go): never dispatch meta, which every task of the job sees, and never the stored record,
+// which keeps req (names only).
+func (s *service) secretValues(req JobRequest) (map[string]string, error) {
 	if len(req.Secrets) == 0 {
-		return req.Env, nil
+		return nil, nil
 	}
 	if s.opts.Secrets == nil {
 		return nil, fmt.Errorf("dispatch: named secrets are not configured on this control plane")
@@ -615,29 +631,11 @@ func (s *service) jobEnv(req JobRequest) (map[string]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dispatch: %w", err)
 	}
-	env := make(map[string]string, len(req.Env)+len(values))
-	for k, v := range req.Env {
-		env[k] = v
-	}
+	secrets := make(map[string]string, len(req.Secrets))
 	for _, name := range req.Secrets {
-		env[name] = values[name]
+		secrets[name] = values[name]
 	}
-	return env, nil
-}
-
-// payloadHeader starts every build/agent dispatch payload. Those jobs' "source" prestart task is
-// the only task that receives the payload: it reads the clone token from the second line, writes
-// everything after it out as the caller's script, and deletes the payload before "main" starts.
-const payloadHeader = "grove-payload/1\n"
-
-// encodePayload builds the Nomad dispatch payload for kind. A shell job has no source task, so its
-// payload is the script itself; a build or agent job's is payloadHeader, the clone token (or an
-// empty line), then the script.
-func encodePayload(kind Kind, cloneToken, script string) []byte {
-	if kind != KindBuild && kind != KindAgent {
-		return []byte(script)
-	}
-	return []byte(payloadHeader + cloneToken + "\n" + script)
+	return secrets, nil
 }
 
 func isTerminal(status Status) bool {

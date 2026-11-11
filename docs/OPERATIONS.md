@@ -764,6 +764,16 @@ it: `"secrets": ["CLAUDE_CODE_OAUTH_TOKEN"]`. The value lives on the control pla
 (`secrets.json` next to `config.yaml`, mode 0600) and is exported into the job under that name at
 dispatch; the submitter never sends or sees it, and job history keeps only the name.
 
+The value travels in the job's Nomad dispatch payload, which only the task that needs it receives,
+never in dispatch meta (`env_json`), which every task of the job has in its environment. Inside
+the allocation it reaches the caller's script through a file only the job's user can read, deleted
+before the script starts (docs/JOBS.md "The dispatch payload"). Two things follow: a job's script
+and the secrets it names must fit Nomad's 16 KiB payload together (the job is refused with a clear
+error otherwise), and anything that can read Nomad's job API can still read a payload while the
+job exists, so keep Nomad's ACLs on. Upgrading from a grove that sent secrets in `env_json` needs
+only the control plane upgraded and `grove serve` restarted; before going back to an older grove,
+let jobs that name secrets finish.
+
 The job itself does hold the real value, so prefer a per-job credential for anything the broker can
 swap (see "The credential broker" above): there the job holds only a placeholder. Argos sends its
 own Claude sign-in that way, so a fleet it dispatches to needs no `CLAUDE_CODE_OAUTH_TOKEN` secret
