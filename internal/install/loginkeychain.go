@@ -16,20 +16,22 @@ import (
 // logged in at the console loses its macOS pool at every restart.
 //
 // The worker LaunchDaemon runs in its own security session (SessionCreate), and a keychain
-// unlocked inside that session is unlocked for the Tart it starts. So when the worker user has
-// stored its login password (`grove worker remember-login`, a 0600 file only that user and root
-// can read), the wrapper unlocks the login keychain itself before Orchard starts, and again every
-// few minutes in case something locked it. Verified on a real worker Mac: with nobody logged in
-// as the worker user, a macOS guest that failed with the host-key error booted once the daemon's
+// unlocked inside that session is unlocked for the Tart it starts. An operator types the login
+// password into the control panel (POST /workers/{name}/unlock-keychain); it reaches the wrapper
+// through a FIFO and lives only in memory. Verified on a real worker Mac: with nobody logged in as
+// the worker user, a macOS guest that failed with the host-key error booted once the daemon's
 // session had unlocked the keychain.
+//
+// grove NEVER stores a login password: no file, no Keychain item, no config key, no flag. An
+// older grove had `grove worker remember-login`, which kept it in credentials/login-keychain; the
+// wrapper now deletes that file at start, and nothing may bring the option back.
 //
 // The password goes to `security -i` on stdin, as one interactive command line, never as an
 // argument: `security unlock-keychain` takes it only with -p, which would put it in argv.
 
-const loginKeychainCredentialName = "login-keychain"
-
-// loginKeychainRelock is how often the wrapper unlocks the login keychain again.
-const loginKeychainRelock = "300"
+// legacyLoginKeychainCredentialName is the stored-password file of an older grove's
+// `grove worker remember-login`. Only ever deleted, never written or read.
+const legacyLoginKeychainCredentialName = "login-keychain"
 
 // loginKeychainPath is the worker user's login keychain, relative to its home.
 const loginKeychainPath = "Library/Keychains/login.keychain-db"
@@ -80,53 +82,22 @@ func UnlockLoginKeychain(ctx context.Context, r Runner, password, keychain strin
 	return nil
 }
 
-// RememberLogin checks password against this user's login keychain, stores it for the worker
-// daemon (credentials/login-keychain, 0600), and restarts a running worker so it unlocks the
-// keychain now. Run it as the worker user.
-func RememberLogin(ctx context.Context, r Runner, opts Options, password string) error {
-	if err := UnlockLoginKeychain(ctx, r, password, ""); err != nil {
-		return fmt.Errorf("%w (is this the password of the user the worker runs as? run this command as that user)", err)
-	}
-	if err := writeSecretFile(credentialPath(opts, loginKeychainCredentialName), password+"\n"); err != nil {
-		return err
-	}
-	restartDaemon(ctx, r, orchardWorkerLabel)
-	return nil
-}
-
-// ForgetLogin removes the stored login password. The keychain stays as it is until the next
-// reboot; after that macOS VMs again need the worker user logged in.
-func ForgetLogin(opts Options) error {
-	err := os.Remove(credentialPath(opts, loginKeychainCredentialName))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return err
-}
-
-// LoginRemembered says whether the worker user has stored its login password for the daemon.
-func LoginRemembered(opts Options) bool {
-	info, err := os.Lstat(credentialPath(opts, loginKeychainCredentialName))
-	return err == nil && info.Mode().IsRegular() && info.Size() > 0
-}
-
 // workerWrapperUnlockScript defines the wrapper's (zsh) login-keychain unlocking and starts it.
 //
 //   - grove_unlock_keychain_with unlocks with the password in $grove_pw: escaped for one
 //     `security -i` argument and piped in. print is a builtin, so the password is never in any
 //     process's argv.
-//   - With a stored password (`grove worker remember-login`, credPath), it unlocks before Orchard
-//     starts and again every loginKeychainRelock seconds.
-//   - Without one, it can still be unlocked from the control panel: a loop reads lines from the
-//     FIFO fifoPath, which only the worker's credential broker writes (DeliverKeychainUnlock),
-//     and unlocks with each. The password lives only in this shell's memory and is kept nowhere.
+//   - It deletes legacyPath, an older grove's stored login password, unread.
+//   - A loop reads lines from the FIFO fifoPath, which only the worker's credential broker writes
+//     (DeliverKeychainUnlock), and unlocks with each: the control panel's Unlock keychain. The
+//     password lives only in this shell's memory and is kept nowhere.
 //
-// A failure only warns: Linux VMs need no keychain. Both loops live as long as Orchard, their
-// parent after the exec, and no longer: each checks that pid, so a wrapper that exits never leaves
-// one holding its output open. The FIFO loop opens the FIFO read-write so the open never blocks
+// A failure only warns: Linux VMs need no keychain. The loop lives as long as Orchard, its
+// parent after the exec, and no longer: it checks that pid, so a wrapper that exits never leaves
+// it holding its output open. It opens the FIFO read-write so the open never blocks
 // and reads with a timeout, which is what lets it notice.
-func workerWrapperUnlockScript(credPath, fifoPath string) string {
-	return fmt.Sprintf(`grove_login_keychain=%q
+func workerWrapperUnlockScript(legacyPath, fifoPath string) string {
+	return fmt.Sprintf(`/bin/rm -f %q
 grove_unlock_fifo=%q
 grove_unlock_keychain_with() {
   local out
@@ -141,16 +112,6 @@ grove_unlock_keychain_with() {
   /usr/bin/security set-keychain-settings "$HOME/%s" >/dev/null 2>&1 || true
   return 0
 }
-grove_unlock_login_keychain() {
-  local grove_pw
-  [ -f "$grove_login_keychain" ] || return 0
-  IFS= read -r grove_pw < "$grove_login_keychain" || [ -n "$grove_pw" ] || return 0
-  grove_unlock_keychain_with
-}
-if [ -f "$grove_login_keychain" ]; then
-  grove_unlock_login_keychain || true
-  ( while sleep %s && kill -0 $$ 2>/dev/null; do grove_unlock_login_keychain >/dev/null 2>&1 || true; done ) &!
-fi
 if [ ! -p "$grove_unlock_fifo" ]; then
   rm -f "$grove_unlock_fifo" 2>/dev/null
   /usr/bin/mkfifo -m 600 "$grove_unlock_fifo" 2>/dev/null || true
@@ -166,7 +127,7 @@ if [ -p "$grove_unlock_fifo" ]; then
       grove_pw=""
     done ) &!
 fi
-`, credPath, fifoPath, loginKeychainPath, loginKeychainPath, loginKeychainRelock)
+`, legacyPath, fifoPath, loginKeychainPath, loginKeychainPath)
 }
 
 // KeychainUnlockFIFOName is the FIFO, in the credentials directory, through which the worker's

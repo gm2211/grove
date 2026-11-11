@@ -404,9 +404,8 @@ const workerWrapperTartPathPrefix = `export PATH="$grove_tart_bin:`
 // workerWrapper is what the LaunchDaemon runs. It holds no secret: it points Orchard's stdin at the
 // bootstrap credential file, and, when there is a registry login, reads the registry file's two
 // lines (user, token) into the variables Tart takes registry credentials from, so neither is ever
-// in argv or in this text. When the worker user stored its login password (`grove worker
-// remember-login`), it unlocks that user's login keychain first, so macOS guests boot with nobody
-// logged in (see loginkeychain.go). HOME is set by launchd for a daemon with a UserName.
+// in argv or in this text. It also unlocks the worker user's login keychain with a password typed
+// into the control panel, held in memory only (see loginkeychain.go). HOME is set by launchd for a daemon with a UserName.
 func workerWrapper(opts Options, orchardBin string) string {
 	return fmt.Sprintf(`#!/bin/zsh
 set -eu
@@ -420,7 +419,7 @@ if [ -f "$registry_credential" ]; then
 fi
 %sexec %q worker run --name %q --labels %q --guest-agent-transport --bootstrap-token-stdin %q < %q
 `, groveTartBinDir(opts), credentialPath(opts, registryCredentialName),
-		workerWrapperUnlockScript(credentialPath(opts, loginKeychainCredentialName), credentialPath(opts, KeychainUnlockFIFOName)), orchardBin, opts.hostname(), opts.workerLabels(), opts.Controller,
+		workerWrapperUnlockScript(credentialPath(opts, legacyLoginKeychainCredentialName), credentialPath(opts, KeychainUnlockFIFOName)), orchardBin, opts.hostname(), opts.workerLabels(), opts.Controller,
 		credentialPath(opts, workerBootstrapCredentialName))
 }
 

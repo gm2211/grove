@@ -14,8 +14,7 @@ import (
 // Unlocking a worker's login keychain from the control panel, with the password kept nowhere.
 //
 // A macOS guest boots only while its worker user's login keychain is unlocked (fleet's
-// NeedsLoginSession). An operator who would rather not store that user's password on the Mac
-// (`grove worker remember-login`) types it into the panel instead:
+// NeedsLoginSession). grove never stores that password; an operator types it into the panel:
 //
 //	POST /workers/{name}/unlock-keychain {"password": "..."}   operator scope
 //

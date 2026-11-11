@@ -160,18 +160,12 @@ Mac's owner. **macOS VMs are the exception:** a macOS guest boots only while the
 login session, because Virtualization.framework signs with a Secure Enclave host key that only that
 user's unlocked login keychain can use. Without one, every macOS VM fails with `VZErrorDomain -9 "The
 virtual machine encountered a security error … Failed to get current host key"`. A login session
-ends at every reboot or crash, so instead let the worker unlock that keychain itself: run, once, as
-the worker user,
-
-	sudo -u argos -H grove worker remember-login
-
-It checks the password against the user's login keychain and keeps it in
-`~/.config/grove/credentials/login-keychain` (0600, that user and root only). The worker's wrapper
-unlocks the keychain inside the worker daemon's own session (`SessionCreate`) before Orchard starts,
-and again every 5 minutes, so macOS guests boot with nobody logged in, after reboots too. Re-run it
-after changing that user's password; `--forget` removes it. Without it, log the worker user in with
-fast user switching and leave the session running (or give it auto-login on a dedicated Mac).
-`grove doctor` warns under `login-session` when neither is in place.
+ends at every reboot or crash. grove never stores that password. Instead, unlock the keychain from
+the control panel: the Map shows the worker's macOS VMs as needs-unlock, and **Unlock keychain**
+sends the password, held only in memory, to the worker daemon's own session (`SessionCreate`). It
+lasts until the next reboot, when you unlock again. Or log the worker user in with fast user
+switching and leave the session running.
+`grove doctor` warns under `login-session` when the user isn't logged in.
 grove recognises this failure and retries such a VM once an hour instead of every 10 minutes, and
 `grove status` and doctor's `vm-boot-loops` list it as "needs login".
 

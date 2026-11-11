@@ -35,11 +35,8 @@ func TestUnlockLoginKeychain_PasswordOnlyOnStdin(t *testing.T) {
 func TestWorkerWrapper_UnlocksTheLoginKeychainWithoutTheSecret(t *testing.T) {
 	opts := Options{Role: RoleWorker, Home: t.TempDir(), Controller: "http://c:6120"}
 	w := workerWrapper(opts, "/bin/orchard")
-	if !strings.Contains(w, credentialPath(opts, loginKeychainCredentialName)) || !strings.Contains(w, "/usr/bin/security -i") {
+	if !strings.Contains(w, "/usr/bin/security -i") {
 		t.Fatalf("wrapper doesn't unlock the login keychain:\n%s", w)
-	}
-	if strings.Index(w, "grove_unlock_login_keychain ||") > strings.Index(w, "exec ") {
-		t.Fatal("the keychain must be unlocked before Orchard starts")
 	}
 	if strings.Contains(w, "security unlock-keychain") {
 		t.Fatal("unlock-keychain on argv would put the password there")
@@ -52,7 +49,7 @@ func TestWorkerWrapper_UnlocksTheLoginKeychainWithoutTheSecret(t *testing.T) {
 const testKeychainPath = "Library/Keychains/grove-test.keychain-db"
 
 // macOS only: real keychains, with passwords that need each escape, unlocked the way
-// RememberLogin and the wrapper do it.
+// UnlockLoginKeychain and the wrapper do it.
 var keychainPasswords = map[string]string{
 	"plain":      "plainpassword1",
 	"space":      "two words",
@@ -117,16 +114,13 @@ func TestWorkerWrapperUnlockScript_RealKeychain(t *testing.T) {
 			if err != nil {
 				t.Skip("no zsh")
 			}
-			cred := filepath.Join(home, "cred")
 			run := func(pw string) (string, error) {
-				if err := os.WriteFile(cred, []byte(pw+"\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				// Only the function: the background re-unlock loop isn't wanted in a test.
-				script := strings.ReplaceAll(workerWrapperUnlockScript(cred, filepath.Join(home, "fifo")), loginKeychainPath, testKeychainPath)
-				script = script[:strings.Index(script, "if [ -f \"$grove_login_keychain\" ]; then\n  grove_unlock")]
-				cmd := exec.Command(zsh, "-c", "set -eu\n"+script+"grove_unlock_login_keychain")
-				cmd.Env = append(os.Environ(), "HOME="+home)
+				// Only the function: the FIFO loop isn't wanted here. The password comes in the
+				// environment, as the FIFO's read would set it.
+				script := strings.ReplaceAll(workerWrapperUnlockScript(filepath.Join(home, "legacy"), filepath.Join(home, "fifo")), loginKeychainPath, testKeychainPath)
+				script = script[:strings.Index(script, "if [ ! -p \"$grove_unlock_fifo\" ]")]
+				cmd := exec.Command(zsh, "-c", "set -eu\n"+script+"grove_pw=$GROVE_TEST_PW; grove_unlock_keychain_with")
+				cmd.Env = append(os.Environ(), "HOME="+home, "GROVE_TEST_PW="+pw)
 				out, err := cmd.CombinedOutput()
 				return string(out), err
 			}
@@ -142,28 +136,24 @@ func TestWorkerWrapperUnlockScript_RealKeychain(t *testing.T) {
 	}
 }
 
-func TestRememberLogin_StoresOnlyAVerifiedPassword(t *testing.T) {
-	t.Setenv("GROVE_CONFIG", "")
-	opts := Options{Role: RoleWorker, Home: t.TempDir()}
-	bad := &FakeRunner{}
-	bad.Script("/usr/bin/security -i", FakeResult{Stderr: "security: SecKeychainUnlock /k: The user name or passphrase you entered is not correct."})
-	if err := RememberLogin(context.Background(), bad, opts, "nope"); err == nil {
-		t.Fatal("stored a password the keychain refused")
+// grove never stores a login password: the wrapper only ever deletes an older grove's stored one,
+// and never reads it.
+func TestWorkerWrapper_NeverReadsAStoredLoginPassword(t *testing.T) {
+	opts := Options{Role: RoleWorker, Home: t.TempDir(), Controller: "http://c:6120"}
+	w := workerWrapper(opts, "/bin/orchard")
+	legacy := credentialPath(opts, legacyLoginKeychainCredentialName)
+	if !strings.Contains(w, "/bin/rm -f "+`"`+legacy+`"`) {
+		t.Fatalf("wrapper must delete the legacy stored password:\n%s", w)
 	}
-	if LoginRemembered(opts) {
-		t.Fatal("remembered after a failed check")
+	if strings.Count(w, legacy) != 1 {
+		t.Fatalf("wrapper names the legacy stored password other than to delete it:\n%s", w)
 	}
-	if err := RememberLogin(context.Background(), &FakeRunner{}, opts, "right"); err != nil {
-		t.Fatal(err)
+	if strings.Index(w, legacy) > strings.Index(w, "exec ") {
+		t.Fatal("the legacy file must be deleted before Orchard starts")
 	}
-	if !LoginRemembered(opts) {
-		t.Fatal("not remembered")
-	}
-	info, _ := os.Stat(credentialPath(opts, loginKeychainCredentialName))
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("mode %v", info.Mode().Perm())
-	}
-	if err := ForgetLogin(opts); err != nil || LoginRemembered(opts) {
-		t.Fatalf("forget: %v", err)
+	for _, bad := range []string{"remember-login", "while sleep"} {
+		if strings.Contains(w, bad) {
+			t.Fatalf("wrapper contains %q:\n%s", bad, w)
+		}
 	}
 }

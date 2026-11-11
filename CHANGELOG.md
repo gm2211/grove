@@ -4,6 +4,11 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Removed `grove worker remember-login`.** grove no longer stores a login password anywhere. The
+  worker wrapper no longer reads `~/.config/grove/credentials/login-keychain` and deletes it at
+  start if an older grove left one. To boot macOS VMs with nobody logged in, use the control
+  panel's in-memory **Unlock keychain** after each reboot.
+
 - **Security: named job secrets no longer travel in dispatch meta.** `grove secret set` values a
   job named were merged into the dispatch's `env_json` meta. Nomad puts dispatch meta into the
   environment of every task of the job (on macOS that includes the root `source`, `prepare` and

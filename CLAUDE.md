@@ -8,8 +8,9 @@ organized and how to work in it.
 
 Never store, set up, or suggest storing anyone's login password: not the operator's, not a worker
 user's (e.g. `argos`), not anywhere on disk, in a config file, a Keychain item you create, or an
-environment variable. That includes `grove worker remember-login` and auto-login setups. Do not
-run them, recommend them, or write new code or docs that steer people to them. When something
+environment variable. That includes auto-login setups and anything like the removed
+`grove worker remember-login` (the wrapper deletes its old file). Do not run them, recommend them,
+or write new code or docs that steer people to them. When something
 needs a login (e.g. a macOS VM needing the worker user's unlocked login keychain), offer only
 routes that keep the password out of storage, and state their cost: the Map's in-memory "Unlock
 keychain" (redo after every reboot), logging the user in, or not using that feature. The
@@ -111,11 +112,11 @@ calls, returns scripted results) is for tests. This is what makes `--dry-run` ac
   older grove are only a migration source. A secret never appears in argv, a plist, the wrapper's
   text, a step description or a log: the wrapper reads the files (`< file`, or `read` into
   `TART_REGISTRY_USERNAME`/`TART_REGISTRY_PASSWORD`). `daemon_test.go` asserts it.
-- The worker user's login password unlocks its keychain (macOS VMs need it) two ways, both into the
-  worker daemon's own session: stored by `grove worker remember-login` (`loginkeychain.go`, 0600
-  credential), or typed into the panel and never stored (`POST /workers/{name}/unlock-keychain`:
+- The worker user's login password unlocks its keychain (macOS VMs need it) one way only, into the
+  worker daemon's own session, never stored: typed into the panel (`POST /workers/{name}/unlock-keychain`:
   control-plane memory, then the broker's `GET /broker/entries` answer, then the FIFO
   `credentials/keychain-unlock.fifo` that only the wrapper reads, then `security -i` on stdin).
+  The wrapper deletes `credentials/login-keychain`, an older grove's stored password, unread.
   Keep it that way: never a new route for a broker credential (spec S5), never a file or log on
   the way, and `DeliverKeychainUnlock` writes only into a FIFO this user owns.
 
