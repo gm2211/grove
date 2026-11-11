@@ -138,3 +138,46 @@ func TestScanRoot_Usage(t *testing.T) {
 		t.Fatalf("exit %d, want 2", code)
 	}
 }
+
+// scrub-tart-vm.sh writes the VM's disk, so it must refuse a VM Tart doesn't report as stopped.
+func TestScrubTartVM_RefusesUnlessStopped(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash")
+	}
+	for name, state := range map[string]string{"running": "running", "suspended": "suspended", "unknown to tart": ""} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			write(t, home, "vms/vm1/disk.img", "not a disk")
+			listed := `[]`
+			if state != "" {
+				listed = `[{"Name":"vm1","State":"` + state + `"}]`
+			}
+			fake := filepath.Join(t.TempDir(), "tart")
+			if err := os.WriteFile(fake, []byte("#!/bin/sh\necho '"+listed+"'\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(bash, "scrub-tart-vm.sh", "vm1")
+			cmd.Env = append(os.Environ(), "TART_HOME="+home, "TART="+fake)
+			out, err := cmd.CombinedOutput()
+			ee, ok := err.(*exec.ExitError)
+			if !ok || ee.ExitCode() != 2 || !strings.Contains(string(out), "refusing") {
+				t.Fatalf("want a refusal with exit 2, got %v: %s", err, out)
+			}
+		})
+	}
+}
+
+func TestScrubTartVM_Usage(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash")
+	}
+	for _, args := range [][]string{{}, {"no-such-vm"}} {
+		cmd := exec.Command(bash, append([]string{"scrub-tart-vm.sh"}, args...)...)
+		cmd.Env = append(os.Environ(), "TART_HOME="+t.TempDir())
+		if err := cmd.Run(); err == nil || err.(*exec.ExitError).ExitCode() != 2 {
+			t.Fatalf("args %v: want exit 2, got %v", args, err)
+		}
+	}
+}
