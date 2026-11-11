@@ -129,14 +129,19 @@ if [ -n "${CODEQL:-}" ]; then
 		"$CODEQL" query run --database="$db" --output="$db/$1.bqrs" "$spec/codeql/$1.ql" >/dev/null
 		"$CODEQL" bqrs decode --format=csv --no-titles "$db/$1.bqrs" | grep -c . || true
 	}
+	# What a query found, on stderr, when its count is not the expected one: a bare number
+	# doesn't say which flow to fix.
+	show() {
+		"$CODEQL" bqrs decode --format=csv "$db/$1.bqrs" | head -40 >&2 || true
+	}
 	for q in JobSecretLeak RepoTokenLeak BrokerCredentialLeak NodeSecretLeak RegistryTokenLeak; do
 		n=$(rows $q)
 		row S10 codeql "$q" 0 "$n"
-		[ "$n" = 0 ] || fail=1
+		[ "$n" = 0 ] || { fail=1; show $q; }
 	done
 	n=$(rows Coverage)
 	row S10 codeql Coverage 5 "$n"
-	[ "$n" = 5 ] || fail=1
+	[ "$n" = 5 ] || { fail=1; show Coverage; }
 fi
 
 exit $fail
