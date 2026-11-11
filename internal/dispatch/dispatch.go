@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gm2211/grove/internal/broker"
+	"github.com/gm2211/grove/internal/grant"
 )
 
 // Kind selects which parameterized Nomad job a request maps to.
@@ -51,6 +52,12 @@ type JobRequest struct {
 	// SubmittedBy is set by Grove from the authenticated device identity. Client input is ignored.
 	// It lets a dispatcher cancel its own jobs without granting fleet-wide operator power.
 	SubmittedBy string `json:"submittedBy,omitempty"`
+	// Caller is the authenticated principal behind this submission, set by the API
+	// (internal/server) and never read from or written to JSON. Submit hands it to RepoAuth, which
+	// decides whether this submitter's job may clone with the armed private-repo credential. The
+	// zero value is nobody: a Submit that doesn't say who is asking gets no token. It is not kept
+	// on the job record; a redispatch reuses the payload the first dispatch was given.
+	Caller grant.Caller `json:"-"`
 	// IdempotencyKey, if set, makes a repeat Submit with the same key return the existing Job
 	// instead of dispatching again. Scoped to SubmittedBy: only the same caller's earlier job is
 	// replayed. Orchestrator convention: "<orchestrator>:<taskId>:<runId>".
@@ -226,9 +233,11 @@ type LogLine struct {
 // (the default) means grove never supplies clone credentials and only public repositories can be
 // sourced.
 type RepoAuth interface {
-	// TokenFor returns the token to export as GH_TOKEN for repoURL, and ok=false when private-repo
-	// sourcing is off or repoURL is out of the armed credential's scope.
-	TokenFor(repoURL string) (token string, ok bool)
+	// TokenFor returns the clone token for repoURL in a job submitted by caller, and ok=false when
+	// private-repo sourcing is off, repoURL is out of the armed credential's scope, or caller may
+	// not trigger a private clone. The implementation decides who may; dispatch only passes on
+	// who is asking, and there is no way to ask without saying.
+	TokenFor(repoURL string, caller grant.Caller) (token string, ok bool)
 }
 
 // ImageResolver pins an image tag to a digest at submit time. internal/registryauth's Resolver

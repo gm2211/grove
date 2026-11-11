@@ -425,7 +425,8 @@ export function enableGitHubSourcing(req: EnableGitHubSourcingRequest): GitHubSo
   githubSourcing.tokenFingerprint = "mockf1n6erpr";
   githubSourcing.enabledAt = now.toISOString();
   githubSourcing.enabledBy = "mock-operator";
-  githubSourcing.expiresAt = req.ttl ? new Date(now.getTime() + 4 * 3600_000).toISOString() : undefined;
+  githubSourcing.expiresAt = new Date(now.getTime() + (req.ttl ? 4 : 24) * 3600_000).toISOString();
+  githubSourcing.allow = req.allow?.length ? [...req.allow].sort() : undefined;
   return structuredClone(githubSourcing);
 }
 
@@ -438,6 +439,7 @@ export function disableGitHubSourcing(): GitHubSourcingStatus {
   githubSourcing.enabledBy = undefined;
   githubSourcing.expiresAt = undefined;
   githubSourcing.lastUsedAt = undefined;
+  githubSourcing.allow = undefined;
   return structuredClone(githubSourcing);
 }
 

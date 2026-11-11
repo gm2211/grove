@@ -677,19 +677,40 @@ at `git clone` with `Repository not found`. Arm one only for as long as you need
 ```bash
 # on any machine with the operator credential
 export GH_TOKEN=github_pat_…                       # or: grove github enable --token-stdin < token.txt
-grove github enable --repo gm2211/grove --ttl 4h   # --repo is required; --ttl is recommended
+grove github enable --repo gm2211/grove --allow tag:argos --ttl 4h   # --repo is required
 grove github status
 grove github disable                               # wipes the token from the control plane
 ```
 
 Notes worth knowing before you arm it:
 
-- It applies **fleet-wide and immediately** — every build/agent job submitted while it's on, by
-  any device that can dispatch, gets the credential for a repo in scope. Name each repo with
-  `--repo owner/name` (required, repeatable, `owner/*` allowed), and use a fine-grained,
-  read-only token limited to those repos.
-- `--ttl` auto-disarms it and wipes the stored token; without one it stays armed until you run
-  `grove github disable`. Prefer a TTL — that is what makes this on-demand rather than permanent.
+- **Who gets it.** Only a job submitted by an operator, or by a principal you named with
+  `--allow` (repeatable): a device credential's id (`grove access list`), a Tailscale identity's
+  `tailscale:<stable id>`, or a Tailscale tag (`tag:argos`). It is the same syntax as `grove secret
+  set --allow`. With no `--allow`, only operators' jobs clone privately. Being able to dispatch is
+  not enough: every enrolled worker Mac holds a credential that can dispatch builds, and a worker
+  Mac hosts the VM whose source task receives the token, so it can read it. For the same reason
+  **never `--allow` a worker Mac's own credential**; name the orchestrator's.
+- A job from anyone else is not refused. It is dispatched with no token and fails at `git clone`
+  exactly as it would with nothing armed, so a submitter can't tell whether a credential is armed
+  or what it covers.
+- **Which repos.** Name each with `--repo owner/name` (required, repeatable, `owner/*` allowed).
+- **Which token.** Use a **fine-grained personal access token, read-only (`Contents: read`),
+  limited to exactly those repositories**, with a short expiry of its own. Not a classic PAT: it
+  reaches every repository you can. A GitHub App installation token (minted per job, an hour's
+  life, one repository) would be stronger still; grove doesn't mint those yet.
+- **It always expires.** `--ttl` defaults to 24h; a longer one must be asked for explicitly and
+  the longest is 720h (30 days). When it lapses the stored token is wiped. There is no "armed
+  until disabled" any more: re-arm it (a cron job with the token on stdin is fine) or keep the
+  window short.
+- **Upgrading with a credential already armed** (by grove v0.1.42 or older, which had no allow
+  list and allowed no expiry): the first `grove serve` of the new version keeps it working as it
+  was, for **any** submitter, for at most 24 hours from that start (sooner if it had its own
+  expiry), then wipes it. `grove github status` and the Settings panel show `allowed: ANY
+  submitter` and a warning for as long as that lasts, `grove serve` logs a warning at start and
+  each time that rule is what gave a job the token, and a restart doesn't extend the deadline.
+  Run `grove github enable --repo … --allow … --ttl …` once after upgrading; that ends the
+  transitional rule at once. To end it without re-arming, `grove github disable`.
 - Use the **`https://`** clone URL. build/agent jobs with any other repo URL are refused.
 - The same controls are in the web UI under **Settings -> Private repository sourcing** (operator
   credential only), and `grove github status` shows the fingerprint, scope, expiry and last use.

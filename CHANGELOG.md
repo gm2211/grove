@@ -4,6 +4,27 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Security: the armed private-repo token no longer goes to every dispatcher, and always
+  expires.** Joining gives each worker Mac a device credential that can dispatch builds, and
+  `grove github enable` handed the armed GitHub token to any build/agent job for a repository in
+  scope, whoever submitted it. A worker Mac hosts the VM whose source task receives that token, so
+  anything running as the worker user on any enrolled Mac could submit a build of an in-scope
+  repository and read the token out of its own VM. Now only a job submitted by an operator, or by
+  a principal named when arming, gets it: `grove github enable --allow <principal>` (repeatable; a
+  device credential's id, `tailscale:<stable id>` or `tag:<name>`, as for `grove secret set
+  --allow`; `allow` in `PUT /api/v1/github/sourcing`; shown by `grove github status` and the
+  Settings panel). With no `--allow`, operators only. A job from anyone else is dispatched with no
+  token and fails at `git clone` as it would with nothing armed, which tells it nothing about what
+  is armed. `--ttl` now defaults to 24h, with a maximum of 720h: a credential can no longer be
+  armed until disabled.
+  **Action needed when upgrading with a credential armed:** it keeps working as before, for any
+  submitter, for at most 24 hours after the new `grove serve` first starts (sooner if it had its
+  own expiry), with a warning in `grove github status`, the Settings panel and the log; then it is
+  wiped and private clones fail. Re-arm it once after upgrading, naming who may use it: `grove
+  github enable --repo … --allow … --ttl …`. An orchestrator that is not an operator must be named
+  with `--allow` from then on; don't name a worker Mac's credential. A `github.json` written by
+  this version must not be served by an older grove, which ignores the allow list. Prefer a
+  fine-grained, read-only token limited to the repositories named.
 - **Linux pools can pull private images (GHCR), and environment images can be tags.** Nomad's docker
   driver on a Linux VM pulled the pool's `runnerImage` and a job's environment image anonymously, so
   `ghcr.io/gm2211/argos-ci` failed with `unauthorized`. `grove registry pull enable --user <u> --repo

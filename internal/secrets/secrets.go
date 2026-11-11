@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gm2211/grove/internal/grant"
 	"github.com/gm2211/grove/internal/secfile"
 )
 
@@ -81,12 +82,9 @@ type SetRequest struct {
 	Allow []string `json:"allow,omitempty"`
 }
 
-// Caller is who is asking to use secrets in a job.
-type Caller struct {
-	ID       string
-	Tags     []string
-	Operator bool
-}
+// Caller is who is asking to use secrets in a job. The grant syntax is shared with the
+// private-repo credential's allow list (internal/grant).
+type Caller = grant.Caller
 
 type record struct {
 	Secret
@@ -274,44 +272,13 @@ func (s *Store) Resolve(names []string) (map[string]string, error) {
 	return out, nil
 }
 
-func granted(allow []string, c Caller) bool {
-	for _, entry := range allow {
-		if strings.HasPrefix(entry, "tag:") {
-			for _, tag := range c.Tags {
-				if tag == entry {
-					return true
-				}
-			}
-			continue
-		}
-		if entry == c.ID && c.ID != "" {
-			return true
-		}
-	}
-	return false
-}
+func granted(allow []string, c Caller) bool { return grant.Granted(allow, c) }
 
 func normalizeAllow(allow []string) ([]string, error) {
-	seen := map[string]struct{}{}
-	out := make([]string, 0, len(allow))
-	for _, entry := range allow {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		if strings.ContainsAny(entry, " \t\r\n,") {
-			return nil, fmt.Errorf("secrets: allow entry %q must be one principal id or tag:<name>", entry)
-		}
-		if entry == "tag:" {
-			return nil, errors.New("secrets: allow entry \"tag:\" names no tag")
-		}
-		if _, dup := seen[entry]; dup {
-			continue
-		}
-		seen[entry] = struct{}{}
-		out = append(out, entry)
+	out, err := grant.Normalize(allow)
+	if err != nil {
+		return nil, fmt.Errorf("secrets: %w", err)
 	}
-	sort.Strings(out)
 	return out, nil
 }
 

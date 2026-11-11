@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gm2211/grove/internal/gitauth"
+	"github.com/gm2211/grove/internal/grant"
 )
 
 // fakeRepoAuth is an armed private-repo credential for exactly one repo URL.
@@ -15,11 +18,13 @@ type fakeRepoAuth struct {
 	repo  string
 	token string
 
-	calls []string
+	calls   []string
+	callers []grant.Caller
 }
 
-func (f *fakeRepoAuth) TokenFor(repoURL string) (string, bool) {
+func (f *fakeRepoAuth) TokenFor(repoURL string, caller grant.Caller) (string, bool) {
 	f.calls = append(f.calls, repoURL)
+	f.callers = append(f.callers, caller)
 	if repoURL != f.repo {
 		return "", false
 	}
@@ -215,6 +220,148 @@ func TestSubmit_ExplicitJobTokenWins(t *testing.T) {
 				t.Fatal("RepoCredentialUsed set though the caller supplied its own token")
 			}
 		})
+	}
+}
+
+// M3: who may trigger a private clone is decided by the armed credential's allow list, against
+// the principal the API authenticated (JobRequest.Caller). A dispatch credential alone, which
+// every enrolled worker Mac holds, gets a job with no token: the same job an out-of-scope repo
+// gets, so nothing tells the submitter a credential is armed.
+func TestSubmit_RepoCredentialOnlyForAnAllowedSubmitter(t *testing.T) {
+	const repo = "https://github.com/gm2211/grove"
+	store, err := gitauth.NewStore(filepath.Join(t.TempDir(), "github.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if _, err := store.Enable(gitauth.EnableOptions{
+		Token: "ghp_secret", Repos: []string{"gm2211/grove"}, Allow: []string{"dev_laptop", "tag:argos"},
+	}); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+
+	for name, tc := range map[string]struct {
+		caller grant.Caller
+		want   bool
+	}{
+		"operator":               {grant.Caller{ID: "operator", Operator: true}, true},
+		"allowed device":         {grant.Caller{ID: "dev_laptop"}, true},
+		"allowed tailscale tag":  {grant.Caller{ID: "tailscale:nARGOS", Tags: []string{"tag:argos"}}, true},
+		"worker Mac credential":  {grant.Caller{ID: "dev_worker"}, false},
+		"no caller on the req":   {grant.Caller{}, false},
+		"tag nobody was granted": {grant.Caller{ID: "tailscale:nX", Tags: []string{"tag:ci"}}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			nc := &fakeNomad{}
+			storePath := filepath.Join(t.TempDir(), "jobs.json")
+			svc, err := New(nc, Options{StorePath: storePath, StatusTTL: time.Millisecond, RepoAuth: store})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			job, _, err := svc.Submit(context.Background(), JobRequest{
+				Kind: KindBuild, Pool: "linux", Repo: repo, Script: "true",
+				SubmittedBy: tc.caller.ID, Caller: tc.caller,
+			})
+			if err != nil {
+				t.Fatalf("Submit: %v (a submitter that isn't allowed must not be refused)", err)
+			}
+			got := dispatchedToken(t, nc)
+			if tc.want && got != "ghp_secret" {
+				t.Fatalf("payload clone token = %q, want the armed token", got)
+			}
+			if !tc.want && (got != "" || strings.Contains(string(nc.dispatchCalls[0].payload), "ghp_secret")) {
+				t.Fatalf("a submitter the allow list doesn't name got the token: %q", nc.dispatchCalls[0].payload)
+			}
+			if job.RepoCredentialUsed != tc.want {
+				t.Fatalf("RepoCredentialUsed = %v, want %v", job.RepoCredentialUsed, tc.want)
+			}
+			// The grants decided this dispatch and are kept nowhere.
+			if job.Request.Caller.ID != "" || job.Request.Caller.Operator || len(job.Request.Caller.Tags) != 0 {
+				t.Fatalf("the job record kept the caller: %+v", job.Request.Caller)
+			}
+			data, err := readStoreFile(storePath)
+			if err != nil {
+				t.Fatalf("read job store: %v", err)
+			}
+			if strings.Contains(data, "tag:argos") || strings.Contains(strings.ToLower(data), "\"caller\"") {
+				t.Fatalf("the caller's grants were persisted: %s", data)
+			}
+		})
+	}
+}
+
+// What a refused submitter sees is what anyone sees for a repository nothing is armed for.
+func TestSubmit_RefusedSubmitterCannotProbeTheArmedScope(t *testing.T) {
+	store, err := gitauth.NewStore(filepath.Join(t.TempDir(), "github.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if _, err := store.Enable(gitauth.EnableOptions{Token: "ghp_secret", Repos: []string{"gm2211/grove"}}); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	submit := func(auth RepoAuth, repo string) (*Job, dispatchCall) {
+		t.Helper()
+		nc := &fakeNomad{}
+		opts := Options{StorePath: filepath.Join(t.TempDir(), "jobs.json"), StatusTTL: time.Millisecond}
+		if auth != nil {
+			opts.RepoAuth = auth
+		}
+		svc, err := New(nc, opts)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		job, _, err := svc.Submit(context.Background(), JobRequest{
+			Kind: KindBuild, Pool: "linux", Repo: repo, Script: "true",
+			SubmittedBy: "dev_worker", Caller: grant.Caller{ID: "dev_worker"},
+		})
+		if err != nil {
+			t.Fatalf("Submit: %v", err)
+		}
+		return job, nc.dispatchCalls[0]
+	}
+	inScope, inScopeCall := submit(store, "https://github.com/gm2211/grove")
+	outOfScope, outOfScopeCall := submit(store, "https://github.com/someone/else")
+	unarmed, unarmedCall := submit(nil, "https://github.com/gm2211/grove")
+	for name, got := range map[string]struct {
+		job  *Job
+		call dispatchCall
+	}{"in scope": {inScope, inScopeCall}, "out of scope": {outOfScope, outOfScopeCall}} {
+		if got.job.RepoCredentialUsed != unarmed.RepoCredentialUsed || got.job.Status != unarmed.Status {
+			t.Fatalf("%s: job differs from one on an unarmed control plane: %+v", name, got.job)
+		}
+		if string(got.call.payload) != string(unarmedCall.payload) {
+			t.Fatalf("%s: payload %q differs from an unarmed control plane's %q", name, got.call.payload, unarmedCall.payload)
+		}
+	}
+}
+
+// Submit passes on exactly who the API said is asking, and never reads it from JSON.
+func TestSubmit_PassesTheCallerToRepoAuth(t *testing.T) {
+	nc := &fakeNomad{}
+	auth := &fakeRepoAuth{repo: "https://github.com/gm2211/grove", token: "ghp_secret"}
+	svc := newServiceWithRepoAuth(t, nc, auth)
+	caller := grant.Caller{ID: "tailscale:nARGOS", Tags: []string{"tag:argos"}}
+	if _, _, err := svc.Submit(context.Background(), JobRequest{
+		Kind: KindBuild, Pool: "linux", Repo: "https://github.com/gm2211/grove", Script: "true", Caller: caller,
+	}); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if len(auth.callers) != 1 || auth.callers[0].ID != caller.ID || strings.Join(auth.callers[0].Tags, ",") != "tag:argos" || auth.callers[0].Operator {
+		t.Fatalf("RepoAuth was asked as %+v, want %+v", auth.callers, caller)
+	}
+
+	var req JobRequest
+	if err := json.Unmarshal([]byte(`{"kind":"build","caller":{"ID":"x","Operator":true},"Caller":{"ID":"x","Operator":true}}`), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if req.Caller.ID != "" || req.Caller.Operator {
+		t.Fatalf("a request body set the caller: %+v", req.Caller)
+	}
+	out, err := json.Marshal(JobRequest{Kind: KindBuild, Caller: grant.Caller{ID: "x", Operator: true, Tags: []string{"tag:argos"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "tag:argos") || strings.Contains(string(out), "Operator") {
+		t.Fatalf("the caller was serialized: %s", out)
 	}
 }
 

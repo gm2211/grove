@@ -202,7 +202,7 @@ token on the machine.
 
 ```
 # arm it (the token comes from $GH_TOKEN, or pipe it in with --token-stdin — never argv)
-grove github enable --repo gm2211/grove --ttl 4h
+grove github enable --repo gm2211/grove --allow tag:argos --ttl 4h
 grove github status
 grove github disable          # wipes the stored token
 ```
@@ -210,18 +210,30 @@ grove github disable          # wipes the stored token
 Same thing from the UI (Settings → "Private repository sourcing") or the API:
 
 ```
-GET    /api/v1/github/sourcing   → {enabled, hosts, repos, tokenFingerprint, expiresAt, …}
-PUT    /api/v1/github/sourcing   ← {token, repos?, hosts?, ttl?}
+GET    /api/v1/github/sourcing   → {enabled, hosts, repos, allow, tokenFingerprint, expiresAt, …}
+PUT    /api/v1/github/sourcing   ← {token, repos, hosts?, allow?, ttl?}
 DELETE /api/v1/github/sourcing
 ```
+
+`ttl` defaults to 24h and may be at most 720h: an armed credential always expires. `allow` is who,
+besides an operator, may submit a job that clones with it.
 
 All three need the **operator** credential, reads included — the status names the repositories the
 control plane is currently willing to clone privately.
 
 While it is armed, `internal/dispatch`'s `Submit` asks the store about each build/agent job's
-`repo` and, when it is in scope, puts the token in that dispatch's payload, which only the job's
-`source` prestart task receives. What is in scope:
+`repo` and submitter and, when both are in scope, puts the token in that dispatch's payload, which
+only the job's `source` prestart task receives. What is in scope:
 
+- **submitters** — an operator, or a principal on the `allow` list: a device credential's id, a
+  Tailscale identity's `tailscale:<stable id>`, or a Tailscale tag (`tag:argos`), the syntax named
+  secrets use. An empty list is operators only. The submitter is the principal the API
+  authenticated, never anything in the request body. A job from anyone else is dispatched with no
+  token and fails at `git clone` like any private repository with nothing armed; the response is
+  the same, so it says nothing about what is armed. A dispatch credential is deliberately not
+  enough: every worker Mac has one, and a worker Mac can read the token out of a VM it hosts.
+  (A job moved to a fallback pool or dispatched again after an eviction reuses the payload its
+  first dispatch was given; the question is asked once, at submit.)
 - **hosts** — `github.com` unless you passed `--host` (for GitHub Enterprise).
 - **repos** — exactly the ones you passed with `--repo` (required); `owner/*` covers one owner.
   A credential armed by an older grove with no repos named covers nothing until re-armed.
@@ -246,8 +258,9 @@ Where the token does and doesn't go:
 - **Caveat:** the dispatched job spec still holds the payload, so anything that can read Nomad's
   job API can read the token while the job exists. Keep Nomad ACLs on (the installer's default; workers' client APIs
   bind 127.0.0.1 and enforce ACLs, so an anonymous request from inside a job is refused). Scope the token
-  narrowly (a fine-grained, read-only token limited to the repos you named), give it a `--ttl`,
-  and disable it when the run is done.
+  narrowly (a fine-grained, read-only token limited to the repos you named), keep `--ttl` short,
+  `--allow` only the orchestrator that needs it, and disable it when the run is done. A GitHub App
+  installation token minted per job would shrink this further; grove doesn't do that yet.
 
 `--ttl` is the reason this is "on demand" rather than a switch you forget: the credential
 auto-disarms and is wiped from disk the first time anything touches the store after it lapses.
