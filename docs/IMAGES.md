@@ -160,8 +160,8 @@ doctor` runs on.
 | `macos-worker` (default) | `ghcr.io/cirruslabs/macos-tahoe-vanilla` (pinned digest in the template) | Minimal macOS, with only CLT, Homebrew, Tart guest transport and Grove job prerequisites added. No inherited CI runners, Ruby installations, GCC or AWS CLI. Inherited auto-login and passwordless sudo are verified during provisioning. |
 | `macos-xcode-worker` (explicit profile) | `ghcr.io/cirruslabs/macos-sequoia-xcode:latest` | Full Xcode for Apple app builds. The profile verifies Xcode and runs license/first-launch setup. |
 | `macos-host-xcode-worker` (explicit profile) | `ghcr.io/cirruslabs/macos-tahoe-vanilla` (same pinned digest) | Same lean guest; compatible host Xcode is mounted read-only at startup through `hostXcode`. |
-| `linux-worker` | `ghcr.io/cirruslabs/ubuntu:latest` (arm64) | Cirrus Labs' maintained arm64 Ubuntu Tart image; matches the arm64 host architecture (Apple Silicon), so no CPU emulation for the guest OS itself — only for the *containers it runs* (see Rosetta below). |
-| `runner` | `ubuntu:24.04` | Plain container, not a Tart VM — this is what actually executes `build`/`agent`/`shell` job scripts on the linux pool (see docs/JOBS.md). Built for both `linux/amd64` and `linux/arm64` by CI. |
+| `linux-worker` | `ghcr.io/cirruslabs/ubuntu` (arm64; 24.04, pinned digest in the template) | Cirrus Labs' maintained arm64 Ubuntu Tart image; matches the arm64 host architecture (Apple Silicon), so no CPU emulation for the guest OS itself — only for the *containers it runs* (see Rosetta below). |
+| `runner` | `ubuntu:24.04` (pinned digest in the Dockerfile) | Plain container, not a Tart VM — this is what actually executes `build`/`agent`/`shell` job scripts on the linux pool (see docs/JOBS.md). Built for both `linux/amd64` and `linux/arm64` by CI. |
 
 ## Native Nomad dependency and release acceptance
 
@@ -288,7 +288,8 @@ correctly configured, which is exactly what these two files guarantee.
 
 ## Tailscale
 
-Both images install the **standalone** (non–App-Store) Tailscale build:
+The macOS image installs the **standalone** (non–App-Store) Tailscale build; the Linux image
+installs none:
 
 - macOS: `brew install tailscale` — the plain formula, which ships `tailscaled` as a LaunchDaemon
   that behaves like the Linux daemon and starts headless before any user logs in. The Homebrew
@@ -296,13 +297,15 @@ Both images install the **standalone** (non–App-Store) Tailscale build:
   once someone is logged into a GUI session — unusable for a worker VM that reboots unattended.
   See ARCHITECTURE.md: "Tailscale standalone variant (not App Store — that one doesn't start
   before login)".
-- Linux: the official `tailscale.com/install.sh` script (adds HashiCorp-adjacent apt repo,
-  installs the same standalone daemon).
+- Linux: nothing. The template used to pipe `tailscale.com/install.sh` into a root shell; since
+  no VM joins the tailnet, the daemon was only ever turned off again at boot, so the step is gone.
 
 No VM joins the tailnet: the fleet startup script turns the image's Tailscale daemon off in every
 guest, shared or sealed. A shared VM's Nomad client reaches the control plane through its host
 Mac's NAT (the host is on the tailnet), at the address the control plane resolved its Nomad host
-to. The images still carry Tailscale only because removing it is a separate image change.
+to. The startup script's "off" step tolerates a guest with no Tailscale at all, so Linux images
+built before and after the removal both work. The macOS image still carries Tailscale only because
+removing it is a separate image change.
 
 ## Rosetta (linux-worker only)
 
@@ -332,3 +335,19 @@ Cirrus Labs updates `macos-sequoia-base`, `macos-sequoia-xcode`, and `ubuntu` pe
 Update the base reference in the relevant template or Xcode variable file, rebuild, retag, and
 push — the fleet reconciler picks up the new image the next time it recreates a VM (on its next
 TTL expiry, or immediately for VMs you recycle with `POST /vms/{name}/recycle`).
+
+The macOS and Linux templates and the runner's Dockerfile name their base **by digest**, so a
+rebuild uses the image that was looked at, not whatever the tag points at that day. To read a
+tag's current digest without pulling it (ghcr.io shown; Docker Hub is the same with
+`auth.docker.io/token?service=registry.docker.io&scope=…` and `registry-1.docker.io`):
+
+```
+repo=cirruslabs/ubuntu tag=24.04
+token=$(curl -fsS "https://ghcr.io/token?service=ghcr.io&scope=repository:$repo:pull" | jq -r .token)
+curl -fsSI -H "Authorization: Bearer $token" \
+  -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+  "https://ghcr.io/v2/$repo/manifests/$tag" | grep -i docker-content-digest
+```
+
+The runner's Node.js and Go tarballs are checked against the SHA-256 their projects publish
+(`images/runner/Dockerfile` says where each comes from); bump version and checksums together.
