@@ -261,3 +261,74 @@ func TestSplitImage(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateScopeChangesOnlyTheRepos(t *testing.T) {
+	store := armed(t, "gm2211/argos-ci")
+	before := store.Status()
+	st, err := store.UpdateScope(ScopeRequest{Add: []string{"GM2211/grove-macos-worker", "gm2211/argos-ci"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Repos) != 2 || st.TokenFingerprint != before.TokenFingerprint || st.User != before.User || st.EnabledAt == nil || !st.EnabledAt.Equal(*before.EnabledAt) {
+		t.Fatalf("after add: %+v", st)
+	}
+	if _, ok := store.CredentialFor("ghcr.io/gm2211/grove-macos-worker"); !ok {
+		t.Fatal("added repo not covered")
+	}
+	if st, err = store.UpdateScope(ScopeRequest{Remove: []string{"gm2211/argos-ci"}}); err != nil || len(st.Repos) != 1 {
+		t.Fatalf("remove: %+v %v", st, err)
+	}
+	if _, err := store.UpdateScope(ScopeRequest{Remove: []string{"gm2211/grove-macos-worker"}}); err == nil {
+		t.Fatal("emptying the scope must be refused")
+	}
+	if _, err := store.UpdateScope(ScopeRequest{}); err == nil {
+		t.Fatal("an empty edit must be refused")
+	}
+	if _, err := store.UpdateScope(ScopeRequest{Add: []string{"bad"}}); err == nil {
+		t.Fatal("a malformed repo must be refused")
+	}
+	// It survives a reload, token intact.
+	reloaded, err := NewStore(store.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reloaded.CredentialFor("ghcr.io/gm2211/grove-macos-worker"); !ok {
+		t.Fatal("scope edit not persisted")
+	}
+	disarmed, _ := newTestStore(t)
+	if _, err := disarmed.UpdateScope(ScopeRequest{Add: []string{"a/b"}}); err == nil {
+		t.Fatal("a disarmed store has no scope to edit")
+	}
+}
+
+func TestLoginForVMImages(t *testing.T) {
+	store := armed(t, "gm2211/grove-macos-worker")
+	in := "ghcr.io/gm2211/grove-macos-worker@sha256:" + strings.Repeat("a", 64)
+	if c, ok := store.LoginForVMImages([]string{in}); !ok || c.Token != testToken {
+		t.Fatalf("in scope: %v %v", c, ok)
+	}
+	for name, images := range map[string][]string{
+		"none":                  nil,
+		"repo outside scope":    {"ghcr.io/gm2211/other"},
+		"another host mixed in": {in, "registry.example.com/x/y"},
+		// SplitImage rejects a dotless, colonless host, but Tart still treats "internalreg/foo" as
+		// remote and would present the login to "internalreg".
+		"unparsable remote name mixed in": {in, "internalreg/foo"},
+	} {
+		if c, ok := store.LoginForVMImages(images); ok || c.Token != "" {
+			t.Errorf("%s: handed out %v", name, c)
+		}
+	}
+	// Local VM names (no registry host) are ignored, whether alone or beside an in-scope image...
+	if c, ok := store.LoginForVMImages([]string{"grove-studio-linux-v2", in}); !ok || c.Token != testToken {
+		t.Errorf("local VM name beside an in-scope image: %v %v", c, ok)
+	}
+	// ...but cover nothing on their own.
+	if _, ok := store.LoginForVMImages([]string{"grove-studio-linux-v2"}); ok {
+		t.Error("a local VM name alone handed out a login")
+	}
+	var nilStore *Store
+	if _, ok := nilStore.LoginForVMImages([]string{in}); ok {
+		t.Error("a nil store handed out a login")
+	}
+}

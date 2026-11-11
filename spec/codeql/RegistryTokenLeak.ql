@@ -1,5 +1,5 @@
 /**
- * @name S10e: the registry pull login reaches anything but a VM's Orchard exec stdin
+ * @name S10e: the registry pull login reaches anything but a VM's Orchard exec stdin or its worker's answer
  * @description The login from registryauth (the Docker config.json Enrol writes into a Linux VM, and
  *              the credential Resolver presents to a registry) must never reach argv, a log, an API
  *              response, a VM spec, the job record or Nomad dispatch meta or payload
@@ -15,7 +15,7 @@ import GroveSecrets
 module Cfg implements DataFlow::ConfigSig {
   predicate isSource(DataFlow::Node n) {
     exists(DataFlow::MethodCallNode c |
-      c.getTarget().getName() = ["PullConfig", "CredentialFor"] and
+      c.getTarget().getName() = ["PullConfig", "CredentialFor", "LoginForVMImages"] and
       c.getTarget().getPackage().getPath() =
         ["github.com/gm2211/grove/internal/registryauth", "github.com/gm2211/grove/internal/fleet"] and
       n = c.getResult(0)
@@ -27,7 +27,17 @@ module Cfg implements DataFlow::ConfigSig {
     GroveSecrets::vmSpec(n) or GroveSecrets::jobRecord(n) or GroveSecrets::dispatchArg(n, [2, 3])
   }
 
-  predicate isBarrier(DataFlow::Node n) { GroveSecrets::fingerprinted(n) }
+  // The one other place the login may go: server.VMImagePullLogin, the field of the
+  // `GET /broker/entries?vmImagePull=1` answer that only the worker whose pools' VM images it covers
+  // can read (handleBrokerEntries; internal/server/handlers_broker_vmpull_test.go).
+  predicate isBarrier(DataFlow::Node n) {
+    GroveSecrets::fingerprinted(n)
+    or
+    exists(Write w, Field f |
+      w.writesField(_, f, n) and
+      f.getDeclaringType().hasQualifiedName("github.com/gm2211/grove/internal/server", "VMImagePullLogin")
+    )
+  }
 
   // A secret inside a slice, map or struct at a sink counts: argv is a []string.
   predicate allowImplicitRead(DataFlow::Node n, DataFlow::ContentSet c) { isSink(n) and exists(c) }

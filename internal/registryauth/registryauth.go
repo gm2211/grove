@@ -3,13 +3,16 @@
 //
 // Like internal/gitauth it is off until an operator arms it through the control plane
 // (PUT /api/v1/registry/pull, `grove registry pull enable`): there is no config.yaml key and no
-// environment variable for it. The credential has two consumers and no others:
+// environment variable for it. The credential has three consumers and no others:
 //
 //   - the fleet reconciler's Enrol, which writes it, as a Docker config.json, into a Linux VM that
 //     runs an image the credential covers (over Orchard exec, on stdin), where Nomad's docker
 //     driver reads it to pull the pool's runner image and its job environment images;
 //   - the dispatch service, which uses it to resolve an environment image tag to its digest
-//     (Resolver).
+//     (Resolver);
+//   - a worker's own broker credential, through GET /broker/entries?vmImagePull=1, for the VM
+//     images of that worker's pools (LoginForVMImages); the worker's wrapper hands it to Tart in
+//     memory for host-side image pulls.
 //
 // It never goes into a job: not the payload, env_json, meta, the job record, an API response, a
 // log, a VM spec or a command line. Status carries a fingerprint, not the token.
@@ -187,6 +190,96 @@ func (s *Store) Enable(opts EnableOptions) (Status, error) {
 		return Status{}, fmt.Errorf("registryauth: persist credential: %w", err)
 	}
 	return s.statusLocked(), nil
+}
+
+// ScopeRequest is the wire body of PATCH /api/v1/registry/pull: repositories to add to or remove
+// from the armed scope. It carries no token; the credential itself is never re-entered.
+type ScopeRequest struct {
+	Add    []string `json:"add,omitempty"`
+	Remove []string `json:"remove,omitempty"`
+}
+
+// UpdateScope edits the repositories the armed credential covers and nothing else. It refuses a
+// disarmed store, an empty change, and a result that covers nothing (disable instead).
+func (s *Store) UpdateScope(req ScopeRequest) (Status, error) {
+	if s == nil {
+		return Status{}, errors.New("registryauth: registry pull credentials are not configured on this control plane")
+	}
+	add, err := normalizeRepos(req.Add)
+	if err != nil {
+		return Status{}, err
+	}
+	remove, err := normalizeRepos(req.Remove)
+	if err != nil {
+		return Status{}, err
+	}
+	if len(add) == 0 && len(remove) == 0 {
+		return Status{}, errors.New("registryauth: name at least one repository to add or remove")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.state.Enabled {
+		return Status{}, errors.New("registryauth: no registry pull credential is armed; arm one with `grove registry pull enable` first")
+	}
+	drop := map[string]bool{}
+	for _, r := range remove {
+		drop[r] = true
+	}
+	var next []string
+	for _, r := range append(append([]string(nil), s.state.Repos...), add...) {
+		if !drop[r] {
+			next = append(next, r)
+		}
+	}
+	next, err = normalizeRepos(next)
+	if err != nil {
+		return Status{}, err
+	}
+	if len(next) == 0 {
+		return Status{}, errors.New("registryauth: that would leave the credential covering no repository; use `grove registry pull disable` instead")
+	}
+	previous := s.state
+	s.state.Repos = next
+	if err := s.persistLocked(); err != nil {
+		s.state = previous
+		return Status{}, fmt.Errorf("registryauth: persist scope: %w", err)
+	}
+	return s.statusLocked(), nil
+}
+
+// LoginForVMImages returns the credential for a worker Mac's host-side pull of its pools' VM
+// images (Tart pulls them before any VM exists), and ok=false unless the store is armed and at
+// least one image is on the armed registry host and inside the armed scope. The caller hands it
+// only to an authenticated worker, for its own pools' images (internal/server handleBrokerEntries).
+//
+// Tart presents TART_REGISTRY_* to whichever registry a pull goes to, so a login is withheld when
+// any of the images lives on another registry host: the token never reaches a registry it wasn't
+// armed for. An image with no registry host is a local Tart VM name ("grove-studio-linux-v2"),
+// which Tart clones locally without contacting any registry, so it is ignored.
+func (s *Store) LoginForVMImages(images []string) (Credential, bool) {
+	if s == nil {
+		return Credential{}, false
+	}
+	var found Credential
+	covered := false
+	for _, image := range images {
+		host, _, ok := SplitImage(image)
+		if !ok {
+			// Only a name with no "/" at all is a local Tart VM, which Tart clones without a
+			// registry. Anything else SplitImage rejects (e.g. "internalreg/foo", a host with no
+			// dot or colon) Tart still treats as remote and would hand TART_REGISTRY_* to: withhold.
+			if strings.Contains(image, "/") {
+				return Credential{}, false
+			}
+			continue
+		}
+		if c, ok := s.CredentialFor(image); ok {
+			found, covered = c, true
+		} else if st := s.Status(); !st.Enabled || host != st.Registry {
+			return Credential{}, false
+		}
+	}
+	return found, covered
 }
 
 // Disable disarms the store and wipes the token from disk. Disabling a disarmed store is a no-op.

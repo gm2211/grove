@@ -80,6 +80,34 @@ func init() {
 	_ = enable.MarkFlagRequired("repo")
 	pull.AddCommand(enable)
 
+	var addRepos, removeRepos []string
+	scope := &cobra.Command{
+		Use:   "scope [--add <owner/name>] [--remove <owner/name>]",
+		Short: "Widen or narrow the repositories the armed credential covers, without re-entering the token.",
+		Long: "Edits only the repository scope of the armed credential. The token stays where it is and is\n" +
+			"never sent or shown. A worker Mac whose pools' VM images are inside the scope pulls them with\n" +
+			"this credential (fetched from the control plane when its Orchard worker starts), so no\n" +
+			"`grove registry login` is needed on it:\n\n" +
+			"  grove registry pull scope --add gm2211/grove-macos-worker",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			client, err := newOperatorAPIClient()
+			if err != nil {
+				return err
+			}
+			status, err := client.UpdateRegistryPullScope(cmd.Context(), registryauth.ScopeRequest{Add: addRepos, Remove: removeRepos})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "Registry pull scope updated. Workers pick up a change when their Orchard worker next restarts.")
+			printRegistryPullStatus(cmd.OutOrStdout(), status)
+			return nil
+		},
+	}
+	scope.Flags().StringArrayVar(&addRepos, "add", nil, "owner/name to add to the scope (repeatable; \"owner/*\" for every repo of an owner)")
+	scope.Flags().StringArrayVar(&removeRepos, "remove", nil, "owner/name to remove from the scope (repeatable)")
+	pull.AddCommand(scope)
+
 	pull.AddCommand(&cobra.Command{
 		Use: "disable", Short: "Disarm the registry pull credential and wipe it from the control plane and VMs.",
 		Args: cobra.NoArgs,

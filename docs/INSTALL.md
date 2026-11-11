@@ -303,7 +303,23 @@ web UI. A worker that can't authenticate to a private registry fails to pull the
    the organization/user that owns the package, **Packages -> `grove-macos-worker`** (and
    `grove-linux-worker`) **-> Package settings -> Change visibility -> Public**. Do this once per
    package; every worker can then pull without logging in.
-2. **Log each worker in to the registry.** Make a classic personal access token with only the
+2. **Let the control plane hold the login (no per-Mac setup).** Arm one scoped pull credential on
+   the control plane and name the VM image repositories in its scope:
+
+   ```bash
+   pbpaste | grove registry pull enable --user <github-username> --repo gm2211/grove-macos-worker
+   # later, to cover another image without re-entering the token:
+   grove registry pull scope --add gm2211/grove-linux-worker
+   ```
+
+   Each worker's Orchard wrapper fetches it from the control plane every time it starts (over its
+   broker credential, into the worker process's environment only) when the VM images of the pools
+   that select it are on that registry and inside the scope. Nothing is stored on the Mac, so a
+   worker needs no `grove registry login`. A worker not yet listed by Orchard gets a login for
+   pools without a `workerSelector` only; restart its worker once it has joined. If the control
+   plane is unreachable at that moment the worker starts anyway (images already pulled keep
+   working) and tries again at its next restart.
+3. **Log each worker in to the registry.** Make a classic personal access token with only the
    `read:packages` scope, copy it, and on each worker, as the macOS user the worker runs as:
 
    ```bash
@@ -435,7 +451,10 @@ zero exit if anything's red.
 
 If `fleet.yaml` has any pool pulling a `ghcr.io` image and this machine has no recorded `tart login
 ghcr.io` (see "Registry access for private worker images" above), doctor also warns with a
-`registry-login` check: make the packages public, or run `grove registry login` on each worker.
+`registry-login` check: arm the control plane's pull credential for those images
+(`grove registry pull scope --add <owner/name>`), make the packages public, or run
+`grove registry login` on each worker. When the check passes it names where the login came from:
+the control plane (fetched at worker start) or the legacy credentials file.
 
 ## Failure modes
 

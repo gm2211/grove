@@ -540,6 +540,11 @@ func TestWorkerWrapper_RunsOrchardWithTheCredentials(t *testing.T) {
 	}
 	home := t.TempDir()
 	opts := testWorkerOptions(home)
+	// Never the test binary itself (the default grove): the wrapper runs `grove broker pull-login`.
+	opts.GroveBin = filepath.Join(home, "grove")
+	if err := os.WriteFile(opts.GroveBin, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	orchard := filepath.Join(home, "orchard")
 	if err := os.WriteFile(orchard, []byte("#!/bin/sh\necho \"args: $*\"\necho \"tart: $TART_REGISTRY_USERNAME / $TART_REGISTRY_PASSWORD\"\necho \"stdin: $(cat)\"\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -590,6 +595,11 @@ func TestWorkerWrapper_FailsClosedWithoutHeadlessTart(t *testing.T) {
 	}
 	home := t.TempDir()
 	opts := testWorkerOptions(home)
+	// Never the test binary itself (the default grove): the wrapper runs `grove broker pull-login`.
+	opts.GroveBin = filepath.Join(home, "grove")
+	if err := os.WriteFile(opts.GroveBin, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	orchard := filepath.Join(home, "orchard")
 	if err := os.WriteFile(orchard, []byte("#!/bin/sh\necho orchard-ran\n"), 0o755); err != nil {
 		t.Fatal(err)
