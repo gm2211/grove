@@ -240,6 +240,12 @@ tokens on the way to a fixed set of upstreams and masks the tokens on the way ba
 - Tunnels and plain HTTP go through `Dialer`, which dials only public addresses it resolved itself.
 - Entries are in memory only, on both sides (`Registry`, `Store`), with a lease. Only a
   credential whose single scope is `broker` reads `GET /broker/entries`, and only its own worker's.
+- A placeholder works only from its job's VM (spec S8). The control plane sends the VM's name;
+  the worker's broker resolves its bridge address on every sync (`Syncer.bind`, `TartSources` in
+  `source.go`: `tart list`/`tart ip` through `Runner`, on the Grove Tart shim by absolute path) and
+  installs the entry with that `Source`. Never install an entry it couldn't bind (no VM name, no
+  address yet, an ambiguous one), never trust a `Source` from the control plane, and never let
+  `Store.Lookup` treat a missing `Source` as "any address".
 - In `internal/dispatch`, a `JobRequest.Credentials` token goes only into the registry: never
   `env_json`, the payload, the stored `Job.Request` (kind and env only) or an API response.
   `internal/dispatch/credentials_test.go` asserts it.

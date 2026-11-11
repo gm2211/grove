@@ -460,8 +460,8 @@ A job never holds a real credential. It gets a placeholder (`gph1_…`), and eac
 
 - terminates TLS with its own CA (`<grove config dir>/broker/broker-ca.pem`), which is
   name-constrained to those five hosts, so it can't be used to impersonate any other site;
-- refuses the request unless the placeholder is live, issued for that service, and (when the entry
-  names one) sent from the job's own VM;
+- refuses the request unless the placeholder is live, issued for that service, and sent from the
+  job's own VM (see "Binding a placeholder to its VM" below);
 - swaps the placeholder for the real token in `Authorization` (Bearer, token or Basic, which is
   how git sends it) or `x-api-key`, never anywhere else;
 - masks that token in the response headers and body (as is, URL- or JSON-escaped, base64), and
@@ -477,6 +477,40 @@ forgets every token, and running jobs get them back when their submitter sends t
 is the worker's; no other credential, operator's included, can read that route. An entry leaves when its job ends (the control plane
 stops listing it), when its 10-minute lease runs out without renewal, or when the broker restarts.
 At most 1,000 entries are held per worker.
+
+### Binding a placeholder to its VM
+
+The control plane names the VM a job runs in (from the job's placement) but can't know that VM's
+address, which exists only on the worker's vmnet bridge. So the broker finds it itself, on every
+sync, before it installs anything:
+
+- it runs `tart list --format json` and, for a VM it hasn't resolved yet, `tart ip <vm>`, through
+  the worker's own Tart: the Grove Tart shim, `~/.config/grove/tart-bin/tart`, by absolute path,
+  the one the worker daemon puts first on its PATH. Never Homebrew's `tart`. The broker runs as
+  the same account as the worker, so it sees the worker's VMs;
+- the VM it looks for is the running local Tart VM that Orchard named after the job's VM
+  (`orchard-<name>-<uid>-<restart count>`);
+- an address is kept for 30 seconds, and asked for again at once when the VM restarts (Orchard
+  gives it another restart count or uid), so a sync normally costs one `tart list`;
+- each entry is installed bound to that address, and a request carrying its placeholder from any
+  other address gets a 403 (`placeholder not valid from this address`).
+
+An entry the broker can't bind is **left out**, never installed for any address: no VM named (the
+control plane hasn't placed the job, or the job runs outside a VM), no running Tart VM by that name
+on this Mac, no address yet (a VM that is still booting), two running VMs under one name, two VMs
+resolving to one address, or no Grove Tart on this Mac. Its placeholder then gets a 403
+(`unknown or expired placeholder`), and the broker tries again on its next sync and whenever a job
+sends a placeholder it doesn't know (at most every two seconds). `broker.err.log` says once per VM
+why, with the VM and job ids and never a token or placeholder:
+
+```
+broker: left out the entries of a VM with no address to bind them to; its jobs' placeholders are refused until it resolves vm=… jobs=[…] reason="…"
+```
+
+So a job whose first request races its VM's DHCP lease can see one 403, and a worker whose Grove
+Tart is missing or broken (`grove doctor`, `grove install --role worker`) serves no credentials at
+all. `/healthz` counts only bound entries. Nothing about this is stored: addresses, like entries,
+live in the broker's memory.
 
 Entries come from job submissions: a job's `credentials` (docs/JOBS.md) become placeholders in
 its env and entries in the control plane's memory, and a broker is served only the entries of live

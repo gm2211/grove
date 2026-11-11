@@ -70,7 +70,7 @@ check L8  enrol.qnt    certsTolerant            invariant neverExpires          
 check L8  enrol.qnt    certsTooManyFailures     invariant neverExpires                 fails
 check L9  enrol.qnt    join                     temporal  joins                        holds
 
-# S5-S7, S9 and the proved half of S8: Lean checks every proof (a `sorry` would be an error here).
+# S5-S9 (S8: the lookup and header swap; its VM address binding is Go tests only): Lean checks every proof (a `sorry` would be an error here).
 if grep -rn 'sorry' "$spec/lean/Grove" >/dev/null; then
 	echo "spec/lean contains sorry" >&2
 	fail=1
