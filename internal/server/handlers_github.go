@@ -11,9 +11,13 @@ import (
 // operator credential PUTs a token here, grove hands no clone credentials to any job (see
 // internal/gitauth and dispatch.Options.RepoAuth).
 //
-//	GET    /api/v1/github/sourcing  → current state, never the token
-//	PUT    /api/v1/github/sourcing  → arm a credential (optionally scoped to repos, with a TTL)
+//	GET    /api/v1/github/sourcing  → current state and allow list, never the token
+//	PUT    /api/v1/github/sourcing  → arm a credential: repos, who may use it (allow), and a TTL
 //	DELETE /api/v1/github/sourcing  → disarm and wipe the stored token
+//
+// Arming it does not hand the token to every dispatcher: handleSubmitJob tells dispatch who is
+// asking (JobRequest.Caller), and the store gives the token only to an operator's job or to one
+// from a principal on the armed allow list.
 
 func (s *Server) handleGitHubSourcing(w http.ResponseWriter, r *http.Request) {
 	if s.opts.GitAuth == nil {
@@ -45,7 +49,7 @@ func (s *Server) handleEnableGitHubSourcing(w http.ResponseWriter, r *http.Reque
 	}
 	s.log.Info("private-repo sourcing enabled",
 		"by", status.EnabledBy, "hosts", status.Hosts, "repos", status.Repos,
-		"fingerprint", status.TokenFingerprint, "expiresAt", status.ExpiresAt)
+		"allow", status.Allow, "fingerprint", status.TokenFingerprint, "expiresAt", status.ExpiresAt)
 	s.writeJSON(w, http.StatusOK, status)
 }
 

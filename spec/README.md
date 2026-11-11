@@ -44,9 +44,9 @@ malicious or compromised job (**J**), a compromised worker Mac (**W**), a leaked
 | S5 | A `broker` credential reaches only `GET /broker/entries`. | C | Lean `Auth.lean` | Proved, for every path. |
 | S6 | `worker:snooze:<w>` reaches only `/workers/<w>/snooze` and `/workers/<w>/wake`. | C | Lean `Auth.lean` | Proved, for every path and worker name. |
 | S7 | Scope boundaries: `read` can't submit, cancel or re-key a job; plain `dispatch` can't run a shell job; access, secrets, GitHub, registry pull credentials, VMs, workers and join approval are operator-only. | C, J | Lean `Auth.lean`, a differential test (every route above with hostile parameters, plus 3,000 random paths, each under five methods), and a test of hostile path spellings | Proved for every route, with any parameters. |
-| S8 | The broker writes a real token only into `Authorization` or `X-Api-Key`, only for its kind's hosts, only from a live entry, and only to the job's own VM. Other headers leave exactly as the job sent them. | J | Lean `Broker.lean` | Proved, except the last clause: **the VM binding fails**. `dispatch.BrokerEntries` never sets `Entry.Source`, so any VM on the same worker that learns a placeholder can use it until the entry's lease ends. Still open. |
+| S8 | The broker writes a real token only into `Authorization` or `X-Api-Key`, only for its kind's hosts, only from a live entry, and only to the job's own VM. Other headers leave exactly as the job sent them. | J | Lean `Broker.lean` | Lookup and header swap in Lean: a token leaves only from an entry bound to the address the request came from, and an unbound entry is refused from every address (`unbound_refused`; it used to be honoured from any, the old finding). That the bound address is the job VM's is **not modelled**: the worker's broker resolves `Entry.VM` through the worker's own Tart on each sync and leaves out an entry it can't bind (`Syncer.bind`, `TartSources`), which Go tests cover (`internal/broker/sync_test.go`, `source_test.go`, `proxy_test.go`), and it rests on A6. The Lean changes for this (`lookup`'s unbound case, `lookup_bound`, the stronger `S8_inject_sound`) were written without a Lean toolchain at hand: until `spec/check.sh` has run on them, read them as unchecked. |
 | S9 | An artifact path can't leave the job's artifact directory. | C, J | Lean `ArtifactPath.lean` + differential test | Proved. |
-| S10 | Job secrets, the private-repo token, the registry pull login, broker credentials and node keys reach only their one allowed destination: never argv, a log, an API response, the job record or a VM spec. | J, C | CodeQL, 5 queries | No flow found. A coverage query finds each secret at its allowed destination, which shows the queries aren't vacuous. |
+| S10 | Job secrets, the private-repo token, the registry pull login, broker credentials and node keys reach only their one allowed destination: never argv, a log, an API response, the job record or a VM spec. Job secrets and the private-repo token go into the dispatch payload only, never dispatch meta. | J, C | CodeQL, 5 queries | No flow found. A coverage query finds each secret at its allowed destination, which shows the queries aren't vacuous. The job-secret queries were changed (allowed destination: the payload, no longer `env_json`; dispatch meta is now a leak sink) without CodeQL at hand: until `spec/check.sh` has run with `CODEQL` set, read that row as unchecked. Go tests cover the same thing (`internal/dispatch/secrets_test.go`), and what the templates do with the payload is tested in `nomad/jobs/secrets_test.go`, not modelled. |
 | S11 | A shared-pool job's image is its pool's runner image or a digest-pinned image its pool allows (the control plane pins a tag to its digest at submit, or refuses the job), chosen by the control plane; a job with an environment leaves its pool only for a macOS pool that accepts its control-plane-validated native toolchain; the clone token runs only in the runner image or the root source task. | J (a caller choosing its own image, via `environment` or `meta`) | Go tests: `internal/dispatch/environment_test.go`, `internal/dispatch/environment_tag_test.go`, `nomad/jobs/nomadjobs_test.go` | Holds. A caller's `meta.image` used to be copied into dispatch meta; it no longer is. |
 | S22 | A toolchain cache entry is written only by `_grovetool`, from versions the control plane validated; the job user can't write it. | J (a caller choosing what the macOS worker installs, or poisoning the cache a later job runs from) | Go tests: `internal/dispatch/toolchain_test.go` (Submit alone sets `toolchain_json`, from the validated, re-marshalled spec), `internal/fleet/isolation_test.go` (the installer runs as `_grovetool` from root-owned code, the cache is not writable by `_grovejob`) | Holds. |
 
@@ -108,11 +108,16 @@ snooze, lapsed or not, as grove's own pause.
 - **A5.** Model sizes: snooze uses one worker and six concurrent writers; dispatch uses one job
   and one worker; attempts uses 3 machines, 2 evictions and 1 drain; enrolment uses 2 workers and
   2 pools. TLC explores every interleaving within those bounds.
+- **A6.** A VM's address: vmnet's shared network doesn't let one VM send from another VM's
+  address, Tart reports the address a running VM actually holds (`tart ip`, from the DHCP lease
+  of its MAC), and Orchard runs VM `<name>` as the local Tart VM `orchard-<name>-<uid>-<restarts>`.
+  S8's VM binding is only as strong as these, and none is checked against a real Mac by a test here.
 
 ### Not covered here (still open from the security review)
 
-- **C2**: secrets still travel in `env_json`. S10 treats that as their allowed destination, so S10
-  proves nothing about it.
+- **C2**, in part: named secrets left `env_json` for the dispatch payload (S10 now counts dispatch
+  meta as a leak). What remains is that Nomad keeps a dispatched job's payload, so a Nomad token
+  that can read jobs can read it; nothing here models Nomad's ACLs.
 - **H4**: sender-bound secrets.
 - **H9**: per-worker Orchard scope (see A3).
 - **M5, M7, M10, M13, M14, L12**: none of these is modelled.

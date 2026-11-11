@@ -273,6 +273,82 @@ func TestProxyResyncFindsNewEntry(t *testing.T) {
 	}
 }
 
+// The whole path the worker runs: entries as the control plane sends them (a VM name, no source),
+// the Syncer binding each to its VM's address, the proxy checking the address a request comes from.
+// The harness's client is the VM at 127.0.0.1.
+func TestProxyBindsPlaceholdersToTheirVM(t *testing.T) {
+	entry := func(job, vm, token string) Entry {
+		e := newEntry(t, job, KindGitHub, token)
+		e.VM = vm
+		e.Source = netip.Addr{}
+		return e
+	}
+	mine := entry("job-mine", "vm-mine", "ghs_MINEREAL")
+	theirs := entry("job-theirs", "vm-theirs", "ghs_THEIRSREAL")
+	booting := entry("job-booting", "vm-booting", "ghs_BOOTINGREAL")
+	noVM := entry("job-novm", "", "ghs_NOVMREAL")
+
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	sources := &fakeSources{addrs: map[string]netip.Addr{
+		"vm-mine":   netip.MustParseAddr("127.0.0.1"),
+		"vm-theirs": netip.MustParseAddr("192.168.64.9"),
+	}}
+	var syncer *Syncer
+	h := newHarness(t, func(h *harness) {
+		syncer = &Syncer{
+			Store:   h.store,
+			Sources: sources,
+			Fetch:   func(context.Context) ([]Entry, error) { return []Entry{mine, theirs, booting, noVM}, nil },
+			now:     clock,
+		}
+		h.proxy.Resync = syncer.Sync
+	})
+	syncer.Sync(context.Background())
+	if h.store.Len() != 2 {
+		t.Fatalf("Len = %d, want the two entries whose VM has an address", h.store.Len())
+	}
+
+	resp, body := h.get("https://api.github.com/echo", "Bearer "+mine.Placeholder)
+	if resp.StatusCode != 200 {
+		t.Fatalf("own placeholder from its VM: %d %q", resp.StatusCode, body)
+	}
+	if got := h.upstreamSaw(); got != "Bearer ghs_MINEREAL" {
+		t.Fatalf("upstream saw %q, want the real token", got)
+	}
+
+	for name, e := range map[string]Entry{
+		"another VM's placeholder":              theirs,
+		"placeholder of a VM with no address":   booting,
+		"placeholder of a job that names no VM": noVM,
+	} {
+		mu.Lock()
+		now = now.Add(time.Minute) // past the resync limit: each refusal below follows a fresh sync
+		mu.Unlock()
+		resp, body := h.get("https://api.github.com/echo", "Bearer "+e.Placeholder)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s: %d %q, want 403", name, resp.StatusCode, body)
+		}
+		if got := h.upstreamSaw(); got != "<upstream not called>" {
+			t.Fatalf("%s: upstream was called with %q", name, got)
+		}
+		if strings.Contains(body, "REAL") {
+			t.Fatalf("%s: refusal leaks a token: %q", name, body)
+		}
+	}
+
+	// The VM gets its address (here, this client's): the job's next request resyncs and goes through.
+	sources.addrs["vm-booting"] = netip.MustParseAddr("127.0.0.1")
+	mu.Lock()
+	now = now.Add(time.Minute)
+	mu.Unlock()
+	resp, body = h.get("https://api.github.com/echo", "Bearer "+booting.Placeholder)
+	if resp.StatusCode != 200 || h.upstreamSaw() != "Bearer ghs_BOOTINGREAL" {
+		t.Fatalf("placeholder once its VM resolved: %d %q", resp.StatusCode, body)
+	}
+}
+
 // rawConnect opens a CONNECT tunnel by hand, for the cases an http.Client won't produce.
 func rawConnect(t *testing.T, proxyAddr, target string) (net.Conn, int) {
 	t.Helper()

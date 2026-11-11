@@ -49,6 +49,9 @@ type joinResult struct {
 
 var joinHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
+// joinApproveReplace is `grove join approve --replace`.
+var joinApproveReplace bool
+
 func init() {
 	setupCmd := &cobra.Command{
 		Use: "setup", Short: "Discover and securely join this Mac to Grove.",
@@ -72,8 +75,16 @@ func init() {
 	Root.AddCommand(setupCmd)
 
 	joinCmd := &cobra.Command{Use: "join", Short: "Approve Grove enrollment requests."}
-	approve := &cobra.Command{Use: "approve CODE", Args: cobra.ExactArgs(1), Short: "Approve one pending computer", RunE: runJoinApprove}
+	approve := &cobra.Command{Use: "approve CODE", Args: cobra.ExactArgs(1), Short: "Approve one pending computer", RunE: runJoinApprove,
+		Long: "Approve one pending computer. Its broker credential is bound to the tailnet address (and\n" +
+			"Tailscale node) the request came from.\n\n" +
+			"A request that uses the name of a worker that already exists, from a machine that worker's\n" +
+			"broker credential is not bound to, is refused: approving it would hand that machine the\n" +
+			"worker's name and its jobs' credentials. The refusal names the address asking. If that is\n" +
+			"the same Mac (it enrolled before credentials were bound, or its tailnet address changed) or\n" +
+			"its replacement, approve with --replace."}
 	approve.Flags().StringVar(&setupServer, "server", "", "Grove server URL; defaults to configured server")
+	approve.Flags().BoolVar(&joinApproveReplace, "replace", false, "approve even though a worker by this name already exists and its broker credential is bound to another machine (or to none)")
 	joinCmd.AddCommand(approve)
 	Root.AddCommand(joinCmd)
 }
@@ -379,7 +390,11 @@ func runJoinApprove(cmd *cobra.Command, args []string) error {
 	if base == "" {
 		base = strings.TrimRight(cfg.Server.URL, "/")
 	}
-	req, _ := http.NewRequestWithContext(cmd.Context(), http.MethodPost, base+"/api/v1/join/approve/"+url.PathEscape(strings.ToUpper(args[0])), nil)
+	target := base + "/api/v1/join/approve/" + url.PathEscape(strings.ToUpper(args[0]))
+	if joinApproveReplace {
+		target += "?replace=true"
+	}
+	req, _ := http.NewRequestWithContext(cmd.Context(), http.MethodPost, target, nil)
 	token, err := config.ResolveOperatorToken(cfg)
 	if err != nil {
 		return err

@@ -74,7 +74,15 @@ type templateData struct {
 	NodePool string
 }
 
-const DefaultRunnerImage = "ghcr.io/gm2211/grove-runner:latest"
+// DefaultRunnerImage is the container a Linux job runs in when its pool names no runnerImage, and
+// so the image a build's `source` task holds the private-repo clone token in. It is pinned by
+// digest: a tag (it used to be :latest) is whatever the last push to the repository made it, while
+// a job's environment image must already be a digest. This is the multi-arch index images.yml
+// pushed as sha-1e43cb9, which :latest pointed at when it was pinned.
+//
+// A newer images/runner does not become the default by being pushed. Bump this to the reference
+// the images workflow prints in its run summary (docs/IMAGES.md "The default runner image").
+const DefaultRunnerImage = "ghcr.io/gm2211/grove-runner@sha256:206f7ef0cada2c22a1cd916dc065fde1154b3ac12e89e7f2cf19c0cfc86d5be6"
 
 // RunnerImageOrDefault validates the reference before it enters HCL and embedded shell text.
 func RunnerImageOrDefault(value string) (string, error) {

@@ -39,8 +39,10 @@ func lookPathOnly(names ...string) func(string) (string, error) {
 }
 
 // scriptTailscaleUp scripts a healthy `tailscale status --json` response on r for the binary
-// lookPathOnly("tailscale", ...) resolves to.
+// lookPathOnly("tailscale", ...) resolves to. With the tailnet up the control plane's name
+// resolves too (the VM firewall pins Nomad RPC to that address).
 func scriptTailscaleUp(r *FakeRunner) {
+	scriptControlPlaneDNS(r)
 	r.Script("/usr/bin/tailscale status --json", FakeResult{
 		Stdout: `{"Self":{"DNSName":"test-host.tailnet.ts.net.","TailscaleIPs":["100.64.0.1"],"Online":true},"BackendState":"Running"}`,
 	})

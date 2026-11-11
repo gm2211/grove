@@ -217,8 +217,9 @@ Where the guarantees stop:
   the lease ends. The real token still never leaves the broker.
 - **Pool identity assumes per-Mac Orchard scope.** Upstream Orchard gives every worker's
   credential reach over every VM, so a compromised Mac can still get at other Macs' VMs directly.
-- **Named secrets travel in the dispatch's `env_json`.** The secret-flow check counts that as
-  their allowed destination, so it says nothing about it.
+- **A dispatch payload is readable in Nomad.** Named secrets and the private-repo token travel in
+  the job's dispatch payload, which only the task that needs it receives; anything that can read
+  Nomad's job API can still read it while the job exists.
 - **The models are bounded**, for example one worker and six concurrent writers for snooze. TLC
   explores every interleaving within the bounds, not beyond them.
 

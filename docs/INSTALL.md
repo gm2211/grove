@@ -37,6 +37,19 @@ downloads that release's tarball **and** its `checksums.txt`, and refuses to ins
 tarball's SHA-256 matches. When it has to install Homebrew first, it fetches Homebrew's installer
 at a pinned commit and checks it against a pinned SHA-256 before running it.
 
+The checksum only says the tarball matches the `checksums.txt` beside it. Releases after v0.1.42
+also carry a **build provenance attestation** for every archive and for `checksums.txt`, signed by
+the release workflow's run and kept outside the release. When the GitHub CLI is installed, has
+`gh attestation` and is signed in to github.com, the script checks it and refuses a tarball that
+does not verify; otherwise it installs on the checksum and prints one line saying provenance was
+not verified (gh is never required; `GROVE_SKIP_PROVENANCE=1` skips the check). By hand, for any
+release asset:
+
+```
+gh attestation verify grove_linux_arm64.tar.gz --repo gm2211/grove \
+  --signer-workflow gm2211/grove/.github/workflows/release.yml
+```
+
 ### Verified downloads
 
 Nothing `grove install` downloads with `curl` is installed unverified. Each artifact is fetched at
@@ -76,7 +89,10 @@ grove setup
 - Approve it. The map in `grove ui` lists every Mac that is waiting, with its name,
   tailnet address and code, and an **Approve** button beside each one — so you can do this from
   whatever device already has the UI open. On a terminal instead, run `grove join approve <CODE>`
-  on the control-plane machine. Either way, Grove then creates two unique,
+  on the control-plane machine. (A request that uses the name of a worker that already exists,
+  from a machine that worker's credential isn't bound to, shows the asking address and needs
+  `grove join approve <CODE> --replace`: docs/OPERATIONS.md "Who can hold a broker credential".)
+  Either way, Grove then creates two unique,
   revocable credentials: an Orchard credential limited to worker registration/connect rights,
   plus a Grove `read + build + agent` credential for this device. Raw shell jobs (operator or an
   explicit `dispatch:shell` credential) and named secrets remain privileged.

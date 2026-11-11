@@ -228,7 +228,7 @@ constrained to `meta.pool`. Kinds:
 - `agent` — long-running Claude Code / Codex session against a checkout; reconnectable logs.
 - `shell` — run an arbitrary command (what `grove exec` and the MCP `grove_run` tool use).
 
-Secrets never go into images: they arrive as Nomad `template`/env at dispatch time.
+Secrets never go into images: named job secrets arrive in the job's Nomad dispatch payload at dispatch time (docs/JOBS.md "The dispatch payload").
 
 A `build` job may also carry `environment: {image}`, the image its script runs in. The control
 plane picks the image; the caller only requests it: the reference must be pinned by digest
@@ -242,8 +242,10 @@ the pool's runner image. A job with an environment never falls back to macOS. `d
 
 Cloning a **private** repository needs a credential, and grove has none until an operator arms one
 through the control plane (`grove github enable`, `PUT /api/v1/github/sourcing`). While it is
-armed, the server injects it into the dispatch of each build/agent job whose repo URL is in scope;
-disarming it, or letting its TTL lapse, wipes it. See `docs/JOBS.md` → "Private repositories".
+armed, the server injects it into the dispatch of a build/agent job whose repo URL is in scope and
+whose submitter is an operator or on the credential's allow list (a dispatch credential alone is
+not enough: every worker Mac has one); disarming it, or its TTL lapsing (it always has one), wipes
+it. See `docs/JOBS.md` → "Private repositories".
 
 ## grove HTTP API (v1)
 
@@ -271,7 +273,7 @@ wins: a bad one is a 401 even from a granted peer. See `internal/tsauth` and doc
 | GET · POST · DELETE | `/access/devices` · `/access/devices/{id}` | operator-only: list device credentials / mint one (`{name, scopes}` → `{token, device}`; the raw token is returned only here, once) / revoke one |
 | GET | `/healthz` | `{ok, version, orchard, nomad, serverTime, features}`; orchard/nomad are "up" or "down"; `features` lists optional capabilities (`environment`: `JobRequest.environment` is enforced) |
 | GET · PUT · DELETE | `/secrets` · `/secrets/{name}` | operator-only: list named job secrets (name, allow list, fingerprint, never the value) / set one (`{value, allow[]}`) / delete one. Jobs request them by name in JobRequest.secrets — see `docs/JOBS.md` |
-| GET · PUT · DELETE | `/github/sourcing` | operator-only: read / arm / disarm the credential jobs use to clone PRIVATE repositories. Off by default, never echoes the token — see `docs/JOBS.md` |
+| GET · PUT · DELETE | `/github/sourcing` | operator-only: read / arm / disarm the credential jobs use to clone PRIVATE repositories, with who may use it (`allow`) and a mandatory expiry. Off by default, never echoes the token — see `docs/JOBS.md` |
 
 The same operations are exposed as MCP tools (`grove mcp`) so Claude Code / Codex can use the fleet
 directly, and consumed by an agent orchestrator's `grove` executor.

@@ -41,7 +41,9 @@ and masks that token in the response, so a job never holds a real credential. Ev
 is tunnelled, to public internet addresses only.
 
 The broker pulls this worker's entries from the control plane with a device credential that
-has only the broker scope and is named after the worker. ` + "`grove setup`" + ` gets one when the
+has only the broker scope and is named after the worker. Each entry names the job's VM; the
+broker asks this worker's Tart for that VM's address on the bridge and honours the placeholder
+only from there, and not at all until the VM has an address. ` + "`grove setup`" + ` gets one when the
 control plane approves this Mac, keeps it in a 0600 file under ~/.config/grove/credentials, and
 installs the broker as a boot-time LaunchDaemon that runs as the installing user
 (com.grove.broker), so there is normally nothing to run by hand.
@@ -96,7 +98,12 @@ func runBroker(cmd *cobra.Command, _ []string) error {
 
 	store := broker.NewStore(0)
 	unlocks := newKeychainHandoff()
-	syncer := &broker.Syncer{Fetch: brokerFetch(serverURL, config.ResolveBrokerToken, unlocks.offer), Store: store, Interval: brokerSyncInterval}
+	syncer := &broker.Syncer{
+		Fetch:    brokerFetch(serverURL, config.ResolveBrokerToken, unlocks.offer),
+		Sources:  brokerSources(install.ExecRunner{}),
+		Store:    store,
+		Interval: brokerSyncInterval,
+	}
 	go unlocks.run(ctx)
 	proxy := &broker.Proxy{Store: store, CA: ca, Resync: syncer.Sync, Synced: syncer.Synced}
 	go syncer.Run(ctx)
@@ -132,6 +139,19 @@ func runBroker(cmd *cobra.Command, _ []string) error {
 		}
 	}
 	return nil
+}
+
+// brokerSources resolves a job VM's bridge address through the worker's own Tart: the Grove Tart
+// shim, by absolute path, the one the worker daemon's wrapper puts first on PATH. Never a bare
+// `tart`, which launchd's PATH or Homebrew could answer. With no shim there (not a worker, or not
+// installed yet), or no home directory to look for it under, every resolution fails and the broker
+// installs no entry.
+func brokerSources(r broker.Runner) *broker.TartSources {
+	s := &broker.TartSources{Runner: r}
+	if _, err := os.UserHomeDir(); err == nil || os.Getenv("GROVE_CONFIG") != "" {
+		s.Bin = install.GroveTartPath(install.Options{})
+	}
+	return s
 }
 
 // brokerFetch pulls this worker's entries from serverURL with the broker credential token

@@ -19,6 +19,7 @@ internal/tsauth/              Tailscale identity (tailscale whois on the peer ad
 internal/secrets/             operator-set named job secrets (JobRequest.Secrets)
 internal/pki/                 grove's Nomad CA: server, grove-client and per-VM node certificates (mTLS)
 internal/gitauth/             operator-armed private-repo credential (see below)
+internal/grant/               allow-list syntax (principal id, tag:<name>) shared by gitauth and secrets
 internal/registryauth/        operator-armed registry pull login for Linux pools' images (see below)
 internal/broker/              per-worker credential broker: placeholders in, real tokens out (see below)
 internal/health/              rebuilds VMs / pauses Macs that keep losing sealed-pool jobs
@@ -132,6 +133,18 @@ for it, deliberately.
   `internal/server/handlers_github_test.go` assert it.
 - Arming always names repositories (`--repo owner/name` or `owner/*`); an empty scope covers
   nothing.
+- A dispatch scope is not enough to get the token: every worker Mac holds one, and a worker can
+  read its own VM. `Store.TokenFor(repo, caller)` gives it only to an operator or a principal on
+  the armed `Allow` list (`--allow`, the `internal/grant` syntax named secrets use; empty means
+  operators only). The caller is `JobRequest.Caller`, set only by `handleSubmitJob` from the
+  authenticated principal (`json:"-"`, not kept on the record); the zero caller gets nothing, and
+  there is no caller-less way to ask. A refused submitter's job is dispatched with no token, never
+  rejected, so it can't probe what is armed. Redispatch reuses the first dispatch's payload and
+  never asks again.
+- Nothing is armed forever: `Enable` always sets an expiry (`DefaultTTL` 24h, `MaxTTL` 30 days).
+  The one exception to both rules is a version 1 `github.json` (`adoptLegacyLocked`): any
+  submitter, for at most `LegacyGrace` (24h) after first load, warned in `Status` and the log.
+  Never widen it, and never write a state without `Version: stateVersion`.
 - Only `https://` repo URLs match: a token does nothing for an SSH remote, so handing one over
   there would be a leak with no upside.
 
@@ -208,10 +221,29 @@ docs/OPERATIONS.md "The macOS guest's admin password".
 
 Same discipline as the private-repo token: a value is set only by an operator (`grove secret set`,
 value from stdin or an env var, never argv), lives only in `secrets.json` (0600, atomic rename),
-and reaches a job only through that dispatch's `env_json`. Never on `Job.Request` (which keeps
-the names), never in the job history, never in an API response (`Secret` carries a fingerprint).
+and reaches a job only through that dispatch's PAYLOAD (`grove-payload/2`: token line, one line
+holding base64 of the secrets' JSON, script; `internal/dispatch/payload.go`). Never `env_json` or
+any other dispatch meta (every task sees those; `env_json` holds only the caller's `Env` and
+credential placeholders), never on `Job.Request` (which keeps the names), never in the job
+history, never in an API response (`Secret` carries a fingerprint). Keep it that way:
+
+- build/agent: only `source` receives the payload. It writes the secrets line to
+  `$state/secrets` (0400, created exclusively, in `finish`, only when the job will run; on macOS
+  handed to `_grovejob` with the rest of the state directory), and `main`'s run.sh exports them
+  and deletes the file before the caller's script starts. A file it can't read or delete fails
+  the job; never run the script without its secrets.
+- shell: `main` is the payload's only reader and parses the frame itself (a shell script may not
+  start with `grove-payload/`). Sealed pools: `grove sandbox run` reads the payload
+  (`sandbox.Request.ApplyPayload`) and the secrets enter the VM only in the bundle's `env.sh`.
+- The export goes through `jq` `@sh` and `eval`, like `env_json`; never interpolate a value into
+  shell text any other way. Version 2 is sent only for a job that names a secret, and every
+  reader still takes version 1 and a bare script.
+- A redispatch reuses the payload it reads back; `secretsOutOfMeta` moves the secrets of a job an
+  older grove dispatched out of `env_json` first. `Submit` refuses a payload over Nomad's 16 KiB.
+
 Authorization (who may name which secret) is checked in `internal/server` where the principal is
 known; `internal/dispatch` only resolves. `internal/dispatch/secrets_test.go`,
+`nomad/jobs/secrets_test.go`, `internal/sandbox/secrets_test.go`,
 `internal/secrets/secrets_test.go` and `internal/server/tailscale_auth_test.go` assert it.
 
 ## `internal/broker` — jobs never hold a real credential
@@ -227,9 +259,23 @@ tokens on the way to a fixed set of upstreams and masks the tokens on the way ba
 - Tunnels and plain HTTP go through `Dialer`, which dials only public addresses it resolved itself.
 - Entries are in memory only, on both sides (`Registry`, `Store`), with a lease. Only a
   credential whose single scope is `broker` reads `GET /broker/entries`, and only its own worker's.
+- A placeholder works only from its job's VM (spec S8). The control plane sends the VM's name;
+  the worker's broker resolves its bridge address on every sync (`Syncer.bind`, `TartSources` in
+  `source.go`: `tart list`/`tart ip` through `Runner`, on the Grove Tart shim by absolute path) and
+  installs the entry with that `Source`. Never install an entry it couldn't bind (no VM name, no
+  address yet, an ambiguous one), never trust a `Source` from the control plane, and never let
+  `Store.Lookup` treat a missing `Source` as "any address".
 - In `internal/dispatch`, a `JobRequest.Credentials` token goes only into the registry: never
   `env_json`, the payload, the stored `Job.Request` (kind and env only) or an API response.
   `internal/dispatch/credentials_test.go` asserts it.
+- Only join approval issues a `broker`-scoped credential (`AccessStore.IssueJoinedBound`; `Issue`,
+  so `POST /access/devices` and `grove access issue`, refuses the scope: the operator token must
+  not mint the credential that reads jobs' tokens), bound to the joining machine's verified
+  address and Tailscale node (`Binding`); `GET /broker/entries` refuses it from anywhere else
+  (`brokerPeerAllowed`), and a join under an existing worker's name from a machine its credential
+  isn't bound to needs `grove join approve --replace` (`joinReplaces`). The control plane's own
+  worker gets its credential through a `brokerOnly` join (`internal/cli/install_broker.go`), never
+  another route. `internal/server/broker_binding_test.go` asserts it.
 - The broker's own credential comes from join approval (`handlers_join.go`) and lives in a 0600
   file under `~/.config/grove/credentials` (`config.ResolveBrokerToken`; the login Keychain item
   of an older grove is only a migration source and read fallback), never in arguments or the
@@ -242,8 +288,13 @@ tokens on the way to a fixed set of upstreams and masks the tokens on the way ba
 
 `internal/install/hostfirewall.go` renders the `com.grove.pf-vm` LaunchDaemon. It loads the pf
 anchor `com.apple/grove-vm`, which lets VMs on vmnet's bridges reach only DHCP, DNS, the broker
-(3128) on the gateway, and Nomad RPC (4647) of the Mac and its networks. Installing it is a
+(3128) on the gateway, and Nomad RPC (4647) on the control plane's address. Installing it is a
 privileged step, printed for an admin. Keep it that way:
+
+- The Nomad RPC pass names addresses, never `any`: the control plane's, resolved at plan time
+  through `Runner` (`resolveNomadTargets`: `nomad.url` in this user's config.yaml, else the grove
+  server, else the Orchard controller; `self` when that is this Mac). A name that does not resolve
+  fails the step and the doctor check; never fall back to any address.
 
 - The plist carries its whole loader inline and runs only `/bin/sh` and `/sbin/pfctl`: a root job
   must never run anything this user or Homebrew could rewrite.

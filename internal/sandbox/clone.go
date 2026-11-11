@@ -43,7 +43,10 @@ func cloneToken(req Request) string {
 // The token reaches git only through its environment and an inline credential helper, never its
 // argv or a config file, so the .git pushed into the VM carries no credential. The clone runs on
 // the control plane as grove's own user, so it also switches off what that user's git config could
-// add: other credential helpers (the login keychain) and hooks.
+// add: other credential helpers (the login keychain) and hooks. The helper is set only for the
+// repository's own host (credential.https://<host>.helper), so git never offers the token to
+// another host (a submodule, a redirect); a URL whose host isn't a plain name is refused when
+// there is a token to protect.
 func Clone(ctx context.Context, git, repo, ref, token, dir string, log io.Writer) int {
 	if !strings.HasPrefix(repo, "https://") {
 		fmt.Fprintln(log, "grove: repo must be an https:// URL")
@@ -57,8 +60,13 @@ func Clone(ctx context.Context, git, repo, ref, token, dir string, log io.Writer
 	env := append(os.Environ(), "GROVE_CLONE_TOKEN="+token, "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=", "SSH_ASKPASS=")
 	args := []string{"-c", "credential.helper=", "-c", "core.hooksPath=/dev/null"}
 	if token != "" {
+		host, ok := credentialHost(repo)
+		if !ok {
+			fmt.Fprintln(log, "grove: the repo URL's host is not a plain host name, so the clone credential cannot be scoped to it")
+			return cloneRefused
+		}
 		const helper = `!f() { test "$1" = get || exit 0; echo username=x-access-token; printf "password=%s\n" "$GROVE_CLONE_TOKEN"; }; f`
-		args = append(args, "-c", "credential.helper="+helper)
+		args = append(args, "-c", "credential.https://"+host+".helper="+helper)
 	}
 
 	cmd := exec.CommandContext(ctx, git, append(args, "clone", "--no-checkout", "--depth", "50", "--", repo, dir)...)
@@ -70,6 +78,22 @@ func Clone(ctx context.Context, git, repo, ref, token, dir string, log io.Writer
 	}
 	fetchRef(ctx, git, args, env, dir, ref, log)
 	return 0
+}
+
+// plainHost is a host name or IPv4 address with an optional port: nothing that could change what
+// a git config key or URL means (userinfo, brackets, whitespace, '=').
+var plainHost = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]+)?$`)
+
+// credentialHost returns the host[:port] of an https repo URL, for scoping the clone credential
+// to it, and false when the URL has none or it isn't a plain host. The same rule as the regular
+// templates' source task.
+func credentialHost(repo string) (string, bool) {
+	rest, ok := strings.CutPrefix(repo, "https://")
+	if !ok {
+		return "", false
+	}
+	host, _, _ := strings.Cut(rest, "/")
+	return host, plainHost.MatchString(host)
 }
 
 // fullSHA is a whole commit id, which a server can be asked for directly.

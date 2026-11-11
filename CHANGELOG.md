@@ -4,6 +4,70 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Security: named job secrets no longer travel in dispatch meta.** `grove secret set` values a
+  job named were merged into the dispatch's `env_json` meta. Nomad puts dispatch meta into the
+  environment of every task of the job (on macOS that includes the root `source`, `prepare` and
+  `cleanup` tasks) and shows it to anything that can read the job. They now travel in the dispatch
+  payload, as the private-repo token does: a job that names secrets is dispatched with a
+  `grove-payload/2` payload (clone-token line, one line of base64 JSON, the script). For a build or
+  an agent only the `source` task receives it and hands the secrets to `main` in a 0400 file that
+  `run.sh` exports and deletes before the caller's script starts; a shell job's `main` reads them
+  from the payload's frame; a sealed pool's runner passes them into the VM inside the bundle it
+  streams. `env_json` now holds only the caller's own `env` and credential placeholders. Jobs that
+  name no secret are dispatched exactly as before.
+  New limits: a job's script and its named secrets must fit Nomad's 16 KiB dispatch payload
+  together (the job is refused with a 400 saying so, where Nomad's own error used to surface), and
+  a shell script may not start with `grove-payload/`.
+  **Upgrading:** upgrade the control plane and restart `grove serve` (it registers the new
+  templates itself); workers need nothing. Jobs dispatched before the upgrade finish as they were;
+  one that is redispatched afterwards has its secrets moved out of `env_json` first. Before going
+  back to an older grove, let jobs that name secrets finish: an older template can't read a
+  version 2 payload and fails the job. The payload is still part of the dispatched job in Nomad,
+  so keep Nomad's ACLs on. See docs/JOBS.md "The dispatch payload".
+- **Security: the armed private-repo token no longer goes to every dispatcher, and always
+  expires.** Joining gives each worker Mac a device credential that can dispatch builds, and
+  `grove github enable` handed the armed GitHub token to any build/agent job for a repository in
+  scope, whoever submitted it. A worker Mac hosts the VM whose source task receives that token, so
+  anything running as the worker user on any enrolled Mac could submit a build of an in-scope
+  repository and read the token out of its own VM. Now only a job submitted by an operator, or by
+  a principal named when arming, gets it: `grove github enable --allow <principal>` (repeatable; a
+  device credential's id, `tailscale:<stable id>` or `tag:<name>`, as for `grove secret set
+  --allow`; `allow` in `PUT /api/v1/github/sourcing`; shown by `grove github status` and the
+  Settings panel). With no `--allow`, operators only. A job from anyone else is dispatched with no
+  token and fails at `git clone` as it would with nothing armed, which tells it nothing about what
+  is armed. `--ttl` now defaults to 24h, with a maximum of 720h: a credential can no longer be
+  armed until disabled.
+  **Action needed when upgrading with a credential armed:** it keeps working as before, for any
+  submitter, for at most 24 hours after the new `grove serve` first starts (sooner if it had its
+  own expiry), with a warning in `grove github status`, the Settings panel and the log; then it is
+  wiped and private clones fail. Re-arm it once after upgrading, naming who may use it: `grove
+  github enable --repo … --allow … --ttl …`. An orchestrator that is not an operator must be named
+  with `--allow` from then on; don't name a worker Mac's credential. A `github.json` written by
+  this version must not be served by an older grove, which ignores the allow list. Prefer a
+  fine-grained, read-only token limited to the repositories named.
+- **The default runner image is a digest, and the images grove builds are pinned.** A pool with no
+  `runnerImage` ran `ghcr.io/gm2211/grove-runner:latest`, a tag anyone with push access could move,
+  in the task that holds the private-repo clone token. The default is now that image's digest (the
+  build `:latest` pointed at, so nothing changes for a running fleet); a newer `images/runner`
+  becomes the default only when `DefaultRunnerImage` is bumped (docs/IMAGES.md "The default runner
+  image"). A pool's `runnerImage` may be a digest, and one that is a tag logs a warning. The runner's
+  Dockerfile pins its base by digest and verifies the Node.js and Go tarballs (no more
+  `curl | bash`); the Linux worker template pins its base by digest and no longer installs Tailscale.
+
+- **Releases carry build provenance.** The release workflow attests every grove and Orchard archive
+  and `checksums.txt` (`gh attestation verify <file> --repo gm2211/grove`). `scripts/install.sh` on
+  Linux checks it when a signed-in GitHub CLI is there and refuses an archive that fails; without
+  gh it installs on the checksum as before and says provenance was not verified. Workflow actions
+  are pinned to commits and GoReleaser to an exact release.
+
+- **The worker Mac's VM firewall opens Nomad RPC towards the control plane only.** The
+  `com.apple/grove-vm` anchor passed TCP 4647 to any address, so root in a VM could reach that port
+  on every private and tailnet address. The pass now names the control plane's address (this Mac's
+  own when the control plane runs here), resolved when the install plan is built; a name that does
+  not resolve fails the step instead of opening the port everywhere. After upgrading, `grove doctor`
+  reports `host-firewall` as changed until an admin runs the root step again (`grove setup`). See
+  docs/OPERATIONS.md "The worker Mac's own firewall" if Nomad is not on the control plane's host.
+
 - **Linux pools can pull private images (GHCR), and environment images can be tags.** Nomad's docker
   driver on a Linux VM pulled the pool's `runnerImage` and a job's environment image anonymously, so
   `ghcr.io/gm2211/argos-ci` failed with `unauthorized`. `grove registry pull enable --user <u> --repo

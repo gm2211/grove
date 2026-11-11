@@ -1,7 +1,8 @@
 /**
- * @name S10a: a named job secret reaches argv, a log, an API response or the job record
+ * @name S10a: a named job secret reaches anything but the dispatch payload
  * @description A value from secrets.Store.Resolve may reach a job only through its dispatch's
- *              env_json (CLAUDE.md, internal/secrets).
+ *              PAYLOAD: never dispatch meta (env_json included), argv, a log, an API response or
+ *              the job record (CLAUDE.md, internal/secrets).
  * @kind problem
  * @problem.severity error
  * @id grove/job-secret-leak
@@ -22,7 +23,7 @@ module Cfg implements DataFlow::ConfigSig {
 
   predicate isSink(DataFlow::Node n) {
     GroveSecrets::argv(n) or GroveSecrets::logged(n) or GroveSecrets::responded(n) or
-    GroveSecrets::jobRecord(n)
+    GroveSecrets::jobRecord(n) or GroveSecrets::dispatchArg(n, 2)
   }
 
   predicate isBarrier(DataFlow::Node n) { GroveSecrets::fingerprinted(n) }

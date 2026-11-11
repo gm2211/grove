@@ -34,11 +34,11 @@ func TestBrokerEntries_OnlyTheWorkersOwnAndOnlyBrokerScope(t *testing.T) {
 	}
 	srv := newTestServer(nil, nil, ds, Options{Token: "operator", AccessStore: access, Tailscale: peers})
 
-	brokerTok, _, err := access.Issue("mac-1", []string{ScopeBroker})
+	brokerTok, _, err := access.IssueJoinedBound("mac-1", []string{ScopeBroker}, Binding{IP: "127.0.0.1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	mixedTok, _, err := access.Issue("mac-1", []string{ScopeBroker, ScopeRead})
+	mixedTok, _, err := access.IssueJoinedBound("mac-1", []string{ScopeBroker, ScopeRead}, Binding{IP: "127.0.0.1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestBrokerEntries_OnlyTheWorkersOwnAndOnlyBrokerScope(t *testing.T) {
 	}
 
 	// A worker with nothing placed on it gets an empty list, not null.
-	other, _, err := access.Issue("mac-3", []string{ScopeBroker})
+	other, _, err := access.IssueJoinedBound("mac-3", []string{ScopeBroker}, Binding{IP: "127.0.0.1"})
 	if err != nil {
 		t.Fatal(err)
 	}

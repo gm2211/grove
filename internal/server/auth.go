@@ -164,7 +164,8 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if s.opts.Token == "" && s.opts.AccessStore == nil && s.opts.Tailscale == nil {
+		operatorToken := s.operatorToken()
+		if operatorToken == "" && s.opts.AccessStore == nil && s.opts.Tailscale == nil {
 			if !s.opts.InsecureNoAuth {
 				http.Error(w, "grove has no authentication configured; refusing", http.StatusServiceUnavailable)
 				return
@@ -181,7 +182,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			// A presented token is always the identity, even from a tailnet peer: a bad one is a 401,
 			// never a silent fall-through to whatever the peer's Tailscale identity would grant.
 			token := strings.TrimPrefix(auth, prefix)
-			if s.opts.Token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.opts.Token)) == 1 {
+			if operatorToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(operatorToken)) == 1 {
 				principal = Principal{ID: "operator", Name: "control-plane operator", Scopes: []string{ScopeOperator}}
 			} else if s.opts.AccessStore != nil {
 				principal, _ = s.opts.AccessStore.Authenticate(token)

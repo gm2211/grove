@@ -113,7 +113,7 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSubmitJob(w http.ResponseWriter, r *http.Request) {
 	var req dispatch.JobRequest
-	dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxJobBody))
 	if err := dec.Decode(&req); err != nil {
 		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
 		return
@@ -125,14 +125,18 @@ func (s *Server) handleSubmitJob(w http.ResponseWriter, r *http.Request) {
 	}
 	// Authorization for named secrets lives here, where the caller's identity is known; dispatch
 	// only resolves names this check already let through.
+	caller := secrets.Caller{ID: principal.ID, Tags: principal.Tags, Operator: principalHasScope(principal, ScopeOperator)}
 	if len(req.Secrets) > 0 {
-		caller := secrets.Caller{ID: principal.ID, Tags: principal.Tags, Operator: principalHasScope(principal, ScopeOperator)}
 		if err := s.opts.Secrets.Authorize(req.Secrets, caller); err != nil {
 			http.Error(w, err.Error(), http.StatusForbidden)
 			return
 		}
 	}
 	req.SubmittedBy = principal.ID
+	// The same identity decides whether this job's clone may use the armed private-repo
+	// credential (internal/gitauth's allow list). It is never taken from the request body, and a
+	// submitter that isn't allowed is not refused: its job just gets no token.
+	req.Caller = caller
 	job, created, err := s.dispatch.Submit(r.Context(), req)
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, err)
@@ -219,7 +223,7 @@ func (s *Server) handleUpdateJobCredentials(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	var req UpdateJobCredentialsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxCredentialsBody)).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
 		return
 	}

@@ -10,10 +10,14 @@ behaviors:
       hosts, only from a live entry, and only for the job's own VM. Every other header leaves
       exactly as the job sent it.
     details: >-
-      S8. Attacker J. Open: the last clause fails. dispatch.BrokerEntries never sets Entry.Source,
-      so another VM on the same worker that learns a placeholder can spend it until the entry's
-      lease ends (source_unbound shows it). The rest is proved.
-    tags: [security, s8, open]
+      S8. Attacker J. The last clause was open: dispatch.BrokerEntries never set Entry.Source, so
+      another VM on the same worker that learned a placeholder could spend it until the entry's
+      lease ended. Now the worker's broker binds each entry to its VM's bridge address when it
+      installs it (Syncer.bind, TartSources) and leaves out any it can't bind, and Store.Lookup
+      refuses an entry with no source (unbound_refused). The Lean model covers the lookup; that
+      the bound address is the VM's is covered by Go tests only (internal/broker/sync_test.go,
+      source_test.go, proxy_test.go).
+    tags: [security, s8]
     formal:
       - tool: lean
         file: ../lean/Grove/Broker.lean

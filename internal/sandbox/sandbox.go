@@ -25,6 +25,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/gm2211/grove/internal/dispatch"
 )
 
 // Kinds, matching dispatch.Kind.
@@ -77,9 +79,12 @@ type Request struct {
 	Ref  string
 	// CloneToken is the control plane's armed private-repo credential, from the dispatch payload.
 	CloneToken string
-	Env        map[string]string
-	Script     string
-	Timeout    time.Duration
+	// Env is the job's environment: the caller's env (dispatch meta env_json) and the job's named
+	// secrets (from the payload, see ParsePayload). It reaches the VM only inside the bundle the
+	// runner streams in (env.sh), never argv, a log or a file on the control plane.
+	Env     map[string]string
+	Script  string
+	Timeout time.Duration
 	// ArtifactPrefix is where a build job's ./artifacts/** land in the artifact store.
 	ArtifactPrefix string
 	// JobID is the grove job this is; it names the job's attempt record. Empty records nothing.
@@ -140,18 +145,35 @@ func (r Request) containerName() string { return "grove-" + r.AllocID }
 // the VM.
 var cloneCredentialEnv = []string{"GH_TOKEN", "GIT_TOKEN"}
 
-// ParsePayload splits a Nomad dispatch payload into the clone token and the caller's script. A
-// build or agent payload is "grove-payload/1", the token (or an empty line), then the script; a
-// shell job's payload is the script itself (see internal/dispatch encodePayload).
-func ParsePayload(kind string, payload []byte) (token, script string) {
-	const header = "grove-payload/1\n"
-	s := string(payload)
-	if kind == KindShell || !strings.HasPrefix(s, header) {
-		return "", s
+// ParsePayload splits a Nomad dispatch payload into the clone token, the job's named secrets and
+// the caller's script (the forms are in internal/dispatch payload.go). A sealed pool has no
+// "source" task: `grove sandbox run` is the payload's only reader, on the control plane, and the
+// secrets go on into the job's environment in the VM with the rest of Request.Env (push), never
+// through dispatch meta. A payload whose secrets can't be read is an error.
+func ParsePayload(kind string, payload []byte) (token string, secrets map[string]string, script string, err error) {
+	p, err := dispatch.DecodePayload(kind, payload)
+	if err != nil {
+		return "", nil, "", err
 	}
-	rest := strings.TrimPrefix(s, header)
-	token, script, _ = strings.Cut(rest, "\n")
-	return strings.TrimSuffix(token, "\r"), script
+	return p.CloneToken, p.Secrets, p.Script, nil
+}
+
+// ApplyPayload fills r from the job's dispatch payload: the clone token, the script, and the
+// job's named secrets, which join r.Env in memory (a secret's name is never also a caller's env
+// key or a credential's, see dispatch's validation). Call it after setting r.Kind and r.Env.
+func (r *Request) ApplyPayload(payload []byte) error {
+	token, secrets, script, err := ParsePayload(r.Kind, payload)
+	if err != nil {
+		return err
+	}
+	r.CloneToken, r.Script = token, script
+	if len(secrets) > 0 && r.Env == nil {
+		r.Env = make(map[string]string, len(secrets))
+	}
+	for name, value := range secrets {
+		r.Env[name] = value
+	}
+	return nil
 }
 
 // shQuote wraps s in single quotes for a POSIX shell.

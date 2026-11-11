@@ -8,13 +8,17 @@ import (
 	"time"
 )
 
+// testSource is where the tests' requests come from: the harness's clients dial over loopback.
+var testSource = netip.MustParseAddr("127.0.0.1")
+
+// newEntry returns a live entry bound to testSource, as the Syncer installs them.
 func newEntry(t *testing.T, job string, kind Kind, token string) Entry {
 	t.Helper()
 	ph, err := NewPlaceholder()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Entry{Placeholder: ph, Job: job, Kind: kind, Token: token, Expires: time.Now().Add(time.Hour)}
+	return Entry{Placeholder: ph, Job: job, Kind: kind, Token: token, Source: testSource, Expires: time.Now().Add(time.Hour)}
 }
 
 func TestNewPlaceholder(t *testing.T) {
@@ -71,14 +75,14 @@ func TestStoreReplaceDropsMissing(t *testing.T) {
 	if err := s.Replace([]Entry{b}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Lookup(a.Placeholder, "github.com", netip.Addr{}); !errors.Is(err, ErrUnknownPlaceholder) {
+	if _, err := s.Lookup(a.Placeholder, "github.com", testSource); !errors.Is(err, ErrUnknownPlaceholder) {
 		t.Fatalf("finished job's entry still served: %v", err)
 	}
 	// A failed Replace leaves the old set alone.
 	if err := s.Replace([]Entry{{Placeholder: "bad"}}); err == nil {
 		t.Fatal("bad Replace accepted")
 	}
-	if _, err := s.Lookup(b.Placeholder, "github.com", netip.Addr{}); err != nil {
+	if _, err := s.Lookup(b.Placeholder, "github.com", testSource); err != nil {
 		t.Fatalf("failed Replace dropped entries: %v", err)
 	}
 }
@@ -88,6 +92,12 @@ func TestStoreLookup(t *testing.T) {
 	vm := netip.MustParseAddr("192.168.64.5")
 	gh := newEntry(t, "j", KindGitHub, "ghs_real")
 	gh.Expires = now.Add(time.Minute)
+	gh.Source = vm
+	// What the control plane sends: no source. The Syncer never installs one like it, and Lookup
+	// refuses it from every address all the same.
+	unbound := newEntry(t, "j", KindGitHub, "ghs_unbound")
+	unbound.Expires = now.Add(time.Minute)
+	unbound.Source = netip.Addr{}
 	bound := newEntry(t, "j", KindAnthropic, "sk-ant-real")
 	bound.Expires = now.Add(time.Minute)
 	bound.Source = vm
@@ -96,7 +106,7 @@ func TestStoreLookup(t *testing.T) {
 
 	s := NewStore(0)
 	s.now = func() time.Time { return now }
-	if err := s.Replace([]Entry{gh, bound, old}); err != nil {
+	if err := s.Replace([]Entry{gh, bound, old, unbound}); err != nil {
 		t.Fatal(err)
 	}
 	cases := []struct {
@@ -107,7 +117,11 @@ func TestStoreLookup(t *testing.T) {
 		want error
 	}{
 		{"github on api.github.com", gh.Placeholder, "api.github.com", vm, nil},
-		{"github on github.com", gh.Placeholder, "github.com", netip.Addr{}, nil},
+		{"github on github.com", gh.Placeholder, "github.com", vm, nil},
+		{"bound, from no address", gh.Placeholder, "github.com", netip.Addr{}, ErrWrongSource},
+		{"unbound from a VM", unbound.Placeholder, "github.com", vm, ErrWrongSource},
+		{"unbound from another VM", unbound.Placeholder, "github.com", netip.MustParseAddr("192.168.64.6"), ErrWrongSource},
+		{"unbound from no address", unbound.Placeholder, "github.com", netip.Addr{}, ErrWrongSource},
 		{"github token to anthropic", gh.Placeholder, "api.anthropic.com", vm, ErrWrongHost},
 		{"github token to a look-alike", gh.Placeholder, "github.com.evil.test", vm, ErrWrongHost},
 		{"bound from its VM", bound.Placeholder, "api.anthropic.com", vm, nil},
@@ -129,8 +143,8 @@ func TestStoreLookup(t *testing.T) {
 		}
 	}
 
-	if n := s.Sweep(); n != 1 || s.Len() != 2 {
-		t.Fatalf("Sweep = %d, Len = %d; want 1 dropped, 2 left", n, s.Len())
+	if n := s.Sweep(); n != 1 || s.Len() != 3 {
+		t.Fatalf("Sweep = %d, Len = %d; want 1 dropped, 3 left", n, s.Len())
 	}
 }
 

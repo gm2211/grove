@@ -240,9 +240,19 @@ func TestRenderedHCLParsesWithJobspec2(t *testing.T) {
 						tasks[task.Name] = task
 						names = append(names, task.Name)
 					}
-					wantNames := []string{"main"}
-					if kind != "shell" {
-						wantNames = []string{"source", "main"}
+					// A macOS job has a root task on each side of main: the one before it
+					// (source, or a shell job's prepare) and cleanup after it. See macjobs_test.go.
+					first := "source"
+					if kind == "shell" {
+						first = "prepare"
+					}
+					var wantNames []string
+					if kind != "shell" || pool == "macos" {
+						wantNames = append(wantNames, first)
+					}
+					wantNames = append(wantNames, "main")
+					if pool == "macos" {
+						wantNames = append(wantNames, "cleanup")
 					}
 					if strings.Join(names, ",") != strings.Join(wantNames, ",") {
 						t.Fatalf("tasks = %v, want %v", names, wantNames)
@@ -259,7 +269,24 @@ func TestRenderedHCLParsesWithJobspec2(t *testing.T) {
 					}
 
 					main := tasks["main"]
+					// macOS jobs never run the caller's script as root, whatever the kind: with
+					// no `user`, raw_exec runs the task as the VM's Nomad client, which is root.
+					// A Linux build's main task is root in its container whatever its image's
+					// USER says (job environments).
+					wantUser := ""
+					if pool == "macos" {
+						wantUser = "_grovejob"
+					} else if kind == "build" {
+						wantUser = "root"
+					}
+					if main.User != wantUser {
+						t.Errorf("main task user = %q, want %q", main.User, wantUser)
+					}
 					if kind == "shell" {
+						// No source task: main takes the script itself.
+						if main.DispatchPayload == nil || main.DispatchPayload.File != "script.sh" {
+							t.Errorf("shell main dispatch_payload = %+v, want file \"script.sh\"", main.DispatchPayload)
+						}
 						return
 					}
 					// Only the source task may receive the payload (it carries the clone token),
@@ -273,17 +300,6 @@ func TestRenderedHCLParsesWithJobspec2(t *testing.T) {
 					}
 					if source.Lifecycle == nil || source.Lifecycle.Hook != "prestart" || source.Lifecycle.Sidecar {
 						t.Errorf("source task lifecycle = %+v, want a non-sidecar prestart", source.Lifecycle)
-					}
-					// macOS jobs never run the caller's script as root; a Linux build's main task is
-					// root in its container whatever its image's USER says (job environments).
-					wantUser := ""
-					if pool == "macos" {
-						wantUser = "_grovejob"
-					} else if kind == "build" {
-						wantUser = "root"
-					}
-					if main.User != wantUser {
-						t.Errorf("main task user = %q, want %q", main.User, wantUser)
 					}
 					if source.User != "" {
 						t.Errorf("source task user = %q, want the agent's own (root) user", source.User)
@@ -301,7 +317,15 @@ func TestRenderedHCLParsesWithJobspec2(t *testing.T) {
 // long the run took.
 func runRunSH(t *testing.T, runSH, scriptBody, timeoutSeconds string) (code int, output string, elapsed time.Duration) {
 	t.Helper()
-	dir := t.TempDir()
+	// Nomad's layout: <task>/local is NOMAD_TASK_DIR and <task>/tmp the task's temp directory,
+	// which the macOS run.sh exports as TMPDIR.
+	root := t.TempDir()
+	dir := filepath.Join(root, "main", "local")
+	for _, d := range []string{dir, filepath.Join(root, "main", "tmp")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := os.WriteFile(filepath.Join(dir, "script.sh"), []byte(scriptBody), 0o755); err != nil {
 		t.Fatalf("write script.sh: %v", err)
 	}
@@ -310,9 +334,16 @@ func runRunSH(t *testing.T, runSH, scriptBody, timeoutSeconds string) (code int,
 		t.Fatalf("write run.sh: %v", err)
 	}
 
+	// The job's own home, which the macOS job's root prestart task makes.
+	alloc := filepath.Join(root, "alloc")
+	if err := os.MkdirAll(filepath.Join(alloc, "data", "grove", "home"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
 	cmd := exec.Command("/bin/bash", runPath)
 	cmd.Env = append(os.Environ(),
 		"NOMAD_TASK_DIR="+dir,
+		"NOMAD_ALLOC_DIR="+alloc,
 		"NOMAD_META_timeout_seconds="+timeoutSeconds,
 	)
 	var out bytes.Buffer
@@ -421,7 +452,7 @@ helper=""
 i=0
 while [ $i -lt ${#args[@]} ]; do
   case "${args[$i]}" in
-    -c) case "${args[$((i+1))]}" in credential.helper=?*) helper="${args[$((i+1))]#credential.helper=}" ;; esac; i=$((i+2)) ;;
+    -c) case "${args[$((i+1))]}" in credential.https://github.com.helper=?*) helper="${args[$((i+1))]#credential.https://github.com.helper=}" ;; esac; i=$((i+2)) ;;
     -C) i=$((i+2)) ;;
     *) break ;;
   esac
@@ -552,6 +583,48 @@ func TestSourceTaskKeepsCloneTokenFromScript(t *testing.T) {
 		}
 	})
 
+	t.Run("helper answers only for the repo's host", func(t *testing.T) {
+		_, gitLog, code, out := run(t, "grove-payload/1\n"+token+"\ntrue\n")
+		if code != 0 {
+			t.Fatalf("run.sh exit = %d\n%s", code, out)
+		}
+		argv, _ := os.ReadFile(gitLog + ".argv")
+		if !strings.HasPrefix(string(argv), "-c\ncredential.helper=\n-c\ncredential.https://github.com.helper=!f()") {
+			t.Fatalf("clone argv = %s, want helpers reset, then grove's helper for github.com only", argv)
+		}
+		if strings.Count(string(argv), "helper=!f()") != 1 {
+			t.Fatalf("clone argv = %s, want grove's helper set once, never for every host", argv)
+		}
+	})
+
+	t.Run("a token is never used with a host that isn't a plain name", func(t *testing.T) {
+		for _, repo := range []string{
+			"https://user@github.com/gm2211/private",
+			"https://github.com.helper=x/gm2211/private",
+			"https://[::1]/gm2211/private",
+			"https:///gm2211/private",
+			"https://github.com:x/gm2211/private",
+		} {
+			_, gitLog, code, out := run(t, "grove-payload/1\n"+token+"\necho should-not-run\n", "NOMAD_META_repo="+repo)
+			if code != 2 || !strings.Contains(out, "plain host name") || strings.Contains(out, "should-not-run") {
+				t.Errorf("%s: run.sh exit = %d, output %q", repo, code, out)
+			}
+			if _, err := os.Stat(gitLog + ".argv"); err == nil {
+				t.Errorf("%s: git clone ran", repo)
+			}
+		}
+	})
+
+	t.Run("a port stays part of the host the helper is set for", func(t *testing.T) {
+		_, gitLog, code, out := run(t, "grove-payload/1\n"+token+"\ntrue\n", "NOMAD_META_repo=https://ghe.example.com:8443/o/r")
+		if code != 0 {
+			t.Fatalf("run.sh exit = %d\n%s", code, out)
+		}
+		if argv, _ := os.ReadFile(gitLog + ".argv"); !strings.Contains(string(argv), "-c\ncredential.https://ghe.example.com:8443.helper=!f()") {
+			t.Fatalf("clone argv = %s", argv)
+		}
+	})
+
 	t.Run("caller env token still clones", func(t *testing.T) {
 		_, gitLog, code, out := run(t, "grove-payload/1\n\ntrue\n", "NOMAD_META_env_json={\"GH_TOKEN\":\"ghp_caller\"}")
 		if code != 0 {
@@ -617,9 +690,9 @@ while [ $# -gt 0 ]; do case "$1" in -n|-H) shift ;; -u) shift 2 ;; *) break ;; e
 # Like sudo's env_reset: the target command gets a fresh environment.
 exec env -i PATH="$PATH" FAKE_GIT_LOG="$FAKE_GIT_LOG" FAKE_UNDER_SUDO=1 "$@"
 `)
-	write(filepath.Join(bin, "chown"), "#!/bin/sh\nexit 0\n")
+	fakeMacHost(t, bin)
 	write(filepath.Join(sourceDir, "request"), "grove-payload/1\n"+token+"\ntrue\n")
-	write(filepath.Join(sourceDir, "source.sh"), sourceSH)
+	write(filepath.Join(sourceDir, "source.sh"), withJobsDir(t, sourceSH, filepath.Join(root, "grove-jobs")))
 
 	cmd := exec.Command("/bin/bash", filepath.Join(sourceDir, "source.sh"))
 	cmd.Env = append(os.Environ(),
@@ -629,8 +702,10 @@ exec env -i PATH="$PATH" FAKE_GIT_LOG="$FAKE_GIT_LOG" FAKE_UNDER_SUDO=1 "$@"
 		"NOMAD_TASK_DIR="+sourceDir,
 		"NOMAD_META_repo=https://github.com/gm2211/private",
 		"NOMAD_META_ref=main",
+		"NOMAD_ALLOC_ID=alloc1",
 		"FAKE_GIT_LOG="+gitLog,
 		"FAKE_SUDO_LOG="+sudoLog,
+		"FAKE_HOST="+root,
 	)
 	if b, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("source.sh: %v\n%s", err, b)

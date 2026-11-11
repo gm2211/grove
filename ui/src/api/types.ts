@@ -146,14 +146,21 @@ export interface GitHubSourcingStatus {
   enabledBy?: string;
   expiresAt?: string;
   lastUsedAt?: string;
+  /** Who, besides an operator, may submit a job that clones with it. Empty: operators only. */
+  allow?: string[];
+  /** Armed by an older grove: any submitter's job gets it until it expires. */
+  legacy?: boolean;
+  warning?: string;
 }
 
 export interface EnableGitHubSourcingRequest {
   token: string;
   hosts?: string[];
   repos?: string[];
-  /** Duration string ("4h", "30m"). Omitted means "armed until explicitly disabled". */
+  /** Duration string ("4h", "30m"). Omitted means 24h; the longest is 720h. */
   ttl?: string;
+  /** Principal ids or "tag:<name>" whose jobs may clone with it. Omitted: operators only. */
+  allow?: string[];
 }
 
 /**
@@ -164,6 +171,16 @@ export interface EnableGitHubSourcingRequest {
 export interface PendingJoin {
   code: string;
   name: string;
+  /** The address the request came from, verified against the connection. */
   tailnetIp: string;
+  /** The MagicDNS name Tailscale gives the machine at that address, when it can name it. */
+  node?: string;
   expiresAt: string;
+  /** A request for a broker credential alone (the control plane's own worker). */
+  brokerOnly?: boolean;
+  /**
+   * A worker by this name already exists and its broker credential is not bound to the machine
+   * asking. The control plane refuses a plain approval: `grove join approve CODE --replace`.
+   */
+  replacesWorker?: boolean;
 }
