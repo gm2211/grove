@@ -164,6 +164,16 @@ export interface EnableGitHubSourcingRequest {
 export interface PendingJoin {
   code: string;
   name: string;
+  /** The address the request came from, verified against the connection. */
   tailnetIp: string;
+  /** The MagicDNS name Tailscale gives the machine at that address, when it can name it. */
+  node?: string;
   expiresAt: string;
+  /** A request for a broker credential alone (the control plane's own worker). */
+  brokerOnly?: boolean;
+  /**
+   * A worker by this name already exists and its broker credential is not bound to the machine
+   * asking. The control plane refuses a plain approval: `grove join approve CODE --replace`.
+   */
+  replacesWorker?: boolean;
 }

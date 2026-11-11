@@ -18,8 +18,8 @@ func TestKeychainUnlock_OperatorQueuesOnlyThatWorkersBrokerCollectsOnce(t *testi
 		t.Fatal(err)
 	}
 	srv := newTestServer(nil, nil, &fakeDispatch{jobs: map[string]*dispatch.Job{}}, Options{Token: "operator", AccessStore: access})
-	mac1, _, _ := access.Issue("mac-1", []string{ScopeBroker})
-	mac2, _, _ := access.Issue("mac-2", []string{ScopeBroker})
+	mac1, _, _ := access.IssueJoinedBound("mac-1", []string{ScopeBroker}, Binding{IP: "127.0.0.1"})
+	mac2, _, _ := access.IssueJoinedBound("mac-2", []string{ScopeBroker}, Binding{IP: "127.0.0.1"})
 	reader, _, _ := access.Issue("viewer", []string{ScopeRead})
 	const pw = `s3cr"et pw`
 	body := `{"password":"s3cr\"et pw"}`
@@ -82,7 +82,7 @@ func TestKeychainUnlock_CollectionRebuildsOnlyThatWorkersLockedVMs(t *testing.T)
 	srv := newTestServer(oc, nil, &fakeDispatch{jobs: map[string]*dispatch.Job{}}, Options{Token: "operator", AccessStore: access})
 	zero := time.Duration(0)
 	srv.keychainUnlocks.rebuildDelay = &zero
-	mac1, _, _ := access.Issue("mac-1", []string{ScopeBroker})
+	mac1, _, _ := access.IssueJoinedBound("mac-1", []string{ScopeBroker}, Binding{IP: "127.0.0.1"})
 	peerRequest(srv, http.MethodPost, "/api/v1/workers/mac-1/unlock-keychain", `{"password":"pw"}`, "127.0.0.1:1", "operator")
 	peerRequest(srv, http.MethodGet, "/api/v1/broker/entries", "", "127.0.0.1:1", mac1)
 

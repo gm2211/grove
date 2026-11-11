@@ -57,18 +57,29 @@ export function PendingJoins() {
               style={{ borderColor: "#2a2416" }}
             >
               <span className="mono text-[12.5px] text-[#eaf4f4]">{join.name}</span>
-              <span className="mono text-[11.5px] text-[#8c9a9e]">{join.tailnetIp}</span>
+              <span className="mono text-[11.5px] text-[#8c9a9e]">
+                {join.node ? `${join.tailnetIp} (${join.node})` : join.tailnetIp}
+              </span>
               <span className="mono text-[12px] tracking-[0.18em] text-[#e6c580]">{join.code}</span>
               <span className="mono text-[11px] text-[#68767b]">expires in {formatDurationMs(expiresInMs)}</span>
-              <Button
-                variant="primary"
-                size="sm"
-                className="ml-auto"
-                disabled={approve.isPending}
-                onClick={() => approve.mutate(join.code)}
-              >
-                {approve.isPending && approve.variables === join.code ? "Approving…" : "Approve"}
-              </Button>
+              {join.replacesWorker ? (
+                // Approving this hands another machine an existing worker's name and its jobs'
+                // credentials, so it is not one click: the CLI asks for --replace.
+                <span className="ml-auto text-[11.5px]" style={{ color: "var(--amber)" }}>
+                  uses the name of an existing worker from another machine: check the address, then{" "}
+                  <span className="mono">grove join approve {join.code} --replace</span>
+                </span>
+              ) : (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  className="ml-auto"
+                  disabled={approve.isPending}
+                  onClick={() => approve.mutate(join.code)}
+                >
+                  {approve.isPending && approve.variables === join.code ? "Approving…" : "Approve"}
+                </Button>
+              )}
             </li>
           );
         })}

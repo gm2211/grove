@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gm2211/grove/internal/artifacts"
@@ -80,7 +81,10 @@ type Server struct {
 	// keychainUnlocks holds passwords typed into the panel until their worker's broker collects them
 	// (handlers_keychain.go). Memory only.
 	keychainUnlocks *keychainUnlocks
-	handler         http.Handler
+	// unboundBrokerWarned remembers which unbound (pre-binding) broker credentials have had
+	// their one warning (brokerPeerAllowed).
+	unboundBrokerWarned sync.Map
+	handler             http.Handler
 
 	// recycleDone, if non-nil, receives the vm name every time a background recycle finishes
 	// deleting a VM. Only set by tests, to synchronize on the async recycle flow.

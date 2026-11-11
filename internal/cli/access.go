@@ -10,6 +10,7 @@ import (
 
 	"github.com/gm2211/grove/internal/apiclient"
 	"github.com/gm2211/grove/internal/config"
+	"github.com/gm2211/grove/internal/server"
 )
 
 func newOperatorAPIClient() (*apiclient.Client, error) {
@@ -46,6 +47,17 @@ func init() {
 					state = "expired " + device.ExpiresAt.Format(time.DateOnly)
 				case device.ExpiresAt != nil:
 					state = "active, expires " + device.ExpiresAt.Format(time.DateOnly)
+				}
+				// A broker credential is only as safe as its binding to the worker's machine.
+				if device.RevokedAt == nil && len(device.Scopes) == 1 && device.Scopes[0] == server.ScopeBroker {
+					switch {
+					case device.BoundNode != "":
+						state += ", bound to " + device.BoundIP + " (node " + device.BoundNode + ")"
+					case device.BoundIP != "":
+						state += ", bound to " + device.BoundIP
+					default:
+						state += ", NOT bound to a machine (run `grove setup` on that Mac again)"
+					}
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", device.ID, device.Name, strings.Join(device.Scopes, ","), state)
 			}
@@ -86,6 +98,8 @@ func newAccessIssueCmd() *cobra.Command {
 			"Scopes: read, dispatch (build + agent jobs), dispatch:build, dispatch:agent,\n" +
 			"dispatch:shell (raw shell jobs), operator. Example, for an orchestrator:\n\n" +
 			"  grove access issue --name ci-bot --scope read --scope dispatch\n\n" +
+			"The broker scope can't be issued here: a worker's broker credential comes only from join\n" +
+			"approval (`grove setup` on that Mac, `grove join approve`), bound to that machine.\n\n" +
 			"--expires-in makes it stop working after that long (\"180d\", \"720h\"); its holder sees\n" +
 			"when in GET /api/v1/whoami.",
 		Args: cobra.NoArgs,
@@ -95,6 +109,11 @@ func newAccessIssueCmd() *cobra.Command {
 			}
 			if len(scopes) == 0 {
 				return fmt.Errorf("at least one --scope is required")
+			}
+			for _, scope := range scopes {
+				if strings.TrimSpace(scope) == server.ScopeBroker {
+					return server.ErrBrokerScopeNotIssuable
+				}
 			}
 			var ttl time.Duration
 			if expiresIn != "" {

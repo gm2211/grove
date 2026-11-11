@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 )
@@ -25,7 +26,9 @@ type IssueDeviceResponse struct {
 // handleIssueDevice mints a named credential with explicit scopes, operator-only (everything
 // under /access/ is — see requiredScope). It is the non-interactive path for a machine that can't
 // go through `grove setup`'s join flow, e.g. an orchestrator that should dispatch with
-// `read`+`dispatch` instead of holding the operator token.
+// `read`+`dispatch` instead of holding the operator token. It never mints the broker scope: that
+// credential reads a worker's jobs' real tokens, so only join approval issues one, bound to the
+// machine that joined (AccessStore.Issue refuses it; see handleBrokerEntries).
 func (s *Server) handleIssueDevice(w http.ResponseWriter, r *http.Request) {
 	if s.opts.AccessStore == nil {
 		http.Error(w, "device credentials are not configured", http.StatusServiceUnavailable)
@@ -48,6 +51,10 @@ func (s *Server) handleIssueDevice(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		token, principal, err = s.opts.AccessStore.IssueExpiring(in.Name, in.Scopes, ttl)
+	}
+	if errors.Is(err, ErrBrokerScopeNotIssuable) {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
 	}
 	if err != nil {
 		// Issue's errors are input validation (name/scopes) or a persistence failure; neither

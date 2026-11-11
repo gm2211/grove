@@ -216,6 +216,25 @@ func (a *Authenticator) Authenticate(ctx context.Context, remoteAddr string) (Re
 	return Result{ID: "tailscale:" + key, Name: name, Node: id.Node, Tags: append([]string(nil), id.Tags...), Scopes: scopes}, true
 }
 
+// Identify resolves remoteAddr to the tailnet node behind it, whether or not anything grants that
+// node a scope. ok is false when the peer is not on the tailnet or tailscaled can't place it. It
+// authenticates nobody: callers use it to pin something to a node (a worker's broker credential)
+// or to show an operator which machine is asking.
+func (a *Authenticator) Identify(ctx context.Context, remoteAddr string) (Identity, bool) {
+	if a == nil {
+		return Identity{}, false
+	}
+	addr, ok := TailnetAddr(remoteAddr)
+	if !ok {
+		return Identity{}, false
+	}
+	id, err := a.lookup(ctx, addr)
+	if err != nil {
+		return Identity{}, false
+	}
+	return id, true
+}
+
 func (a *Authenticator) lookup(ctx context.Context, addr netip.Addr) (Identity, error) {
 	now := a.now()
 	a.mu.Lock()
