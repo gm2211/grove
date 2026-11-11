@@ -372,6 +372,68 @@ On a Mac whose Homebrew belongs to an admin, the worker user only trusts the tap
 from (trust is per user, in `~/.homebrew/trust.json`); tapping one that isn't there yet still needs
 the Homebrew owner.
 
+## Rotating the operator token
+
+`server.token` in the control plane's `config.yaml` is the operator credential: it never expires,
+and anything that holds it can approve joins, recycle VMs, arm private-repo sourcing and issue
+other credentials. Rotate it when it may have been seen (a shell history, a screen share, a
+decommissioned laptop) and on whatever schedule you rotate other long-lived secrets:
+
+```bash
+# on the control plane, as the user grove serve runs as
+grove token rotate                 # prints the new token to stdout, once; guidance to stderr
+# then make the running server take it up (the command prints these too):
+launchctl kill SIGHUP gui/$(id -u)/com.grove.server      # macOS
+systemctl --user kill -s HUP grove-server.service        # Linux
+grove access list                  # answers: this machine's CLI is on the new token
+```
+
+`grove token rotate` generates 256 random bits, writes them to `config.yaml` through a temporary
+file and a rename (mode 0600; the old config stays intact if anything fails), and refuses to run
+on a machine whose config has no `server.listen`, i.e. that isn't the control plane.
+
+Until `grove serve` re-reads the config it still accepts the **old** token and not the new one.
+On SIGHUP it reloads only the operator token: the old one stops working with the next request,
+nothing else is re-read, and jobs keep running with their credentials. A reload that finds no
+token or an unreadable config changes nothing and says so in the server log. Restarting the
+server (`launchctl kickstart -k gui/$(id -u)/com.grove.server`, `systemctl --user restart
+grove-server`) works too, and is the only way for a `grove serve` older than this command, but a
+restart forgets the broker's in-memory entries, so running jobs' submitters have to send their
+credentials again ("The credential broker").
+
+What holds a copy of the operator token:
+
+- **On the control plane, only `config.yaml`.** The launchd plists and systemd units grove
+  renders carry no token, and nothing else in `~/.config/grove` or the Keychain holds it. Every
+  grove command there (`grove join approve`, `grove access …`, `grove sandbox run`, `grove
+  doctor`) reads `config.yaml` when it starts, so it is on the new token at once. A long-running
+  `grove mcp` on the control plane read the old one at start: restart it.
+- **Anywhere you copied it.** A machine installed with `grove install --role client --token …` or
+  `grove config set server.token`, a CI variable, a script, the token field of the web UI in a
+  browser (it keeps it in that browser's local storage). Those get a 401 after the reload. Give
+  each the new token (`grove config set server.token -` and paste), or better, stop giving them
+  the operator token at all (below).
+
+Not affected: device credentials (`grove setup`, `grove access issue`), broker credentials,
+Tailscale-identity grants, and the Orchard, Nomad and enrolment tokens in the same file.
+
+**Day to day, don't use this token.** Grant `operator` to a tagged admin device in the tailnet
+policy instead ("Tailscale identity instead of tokens"):
+
+```jsonc
+"grants": [{
+  "src": ["tag:grove-admin"], "dst": ["tag:grove"], "ip": ["tcp:6120"],
+  "app": {"github.com/gm2211/grove": [{"scopes": ["operator"]}]}
+}]
+```
+
+That device then needs no secret at all: its access is its WireGuard identity, removing the tag
+or the node ends it within 30 seconds, and there is nothing to leak or rotate. Tag a machine
+that is not an Orchard worker (grove refuses Tailscale identity from worker Macs). Orchestrators
+and scripts get scoped, expiring device credentials ("Credentials for orchestrators and
+scripts"). The bearer token then only matters for commands run on the control plane itself and
+for recovery, and can be rotated freely because nothing else depends on it.
+
 ## Rotating the registry token
 
 If workers log in to `ghcr.io` (rather than the packages being made public — see docs/IMAGES.md

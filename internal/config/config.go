@@ -326,3 +326,40 @@ func Save(path string, cfg *Config) error {
 	}
 	return os.WriteFile(path, data, 0o600)
 }
+
+// SaveAtomic is Save through a temporary file in the same directory and a rename, so a reader
+// (or a crash) never sees a half-written config and the previous one stays until the new one is
+// complete and synced. `grove token rotate` uses it: a torn config.yaml there would leave the
+// control plane with no operator token at all.
+func SaveAtomic(path string, cfg *Config) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}

@@ -7,9 +7,11 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -213,6 +215,7 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 		}
 	}
 	srv := server.New(oc, nc, ds, ac, serverOpts)
+	go reloadOperatorTokenOnHangup(ctx, srv, cfg.Server.Token)
 
 	// Recreate TTL-recycled VMs: ARCHITECTURE.md's "Recycling / hygiene" step 3 says grove's fleet
 	// reconciler notices a deleted VM and recreates it, but until now `grove serve` never actually
@@ -261,6 +264,57 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 
 	slog.Info("grove serve: listening", "addr", addr, "version", Version)
 	return newAPIServer(addr, srv).ListenAndServe()
+}
+
+// operatorTokenSetter is the part of *server.Server a token reload needs.
+type operatorTokenSetter interface {
+	SetOperatorToken(token string) error
+}
+
+// reloadOperatorTokenOnHangup makes a running `grove serve` take up a rotated server.token on
+// SIGHUP (`grove token rotate` says how to send one), so rotating needs no restart, which would
+// forget every running job's broker entries. Only the operator token is re-read: every other
+// setting still needs a restart.
+func reloadOperatorTokenOnHangup(ctx context.Context, srv operatorTokenSetter, current string) {
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-hup:
+			next, changed, err := reloadOperatorToken(srv, current, func() (*config.Config, error) {
+				cfg, _, err := config.Load()
+				return cfg, err
+			})
+			switch {
+			case err != nil:
+				slog.Error("serve: SIGHUP: operator token not reloaded; the previous one stays in force", "err", err)
+			case changed:
+				current = next
+				slog.Info("serve: SIGHUP: operator token reloaded from config.yaml; the previous one no longer works")
+			default:
+				slog.Info("serve: SIGHUP: operator token unchanged")
+			}
+		}
+	}
+}
+
+// reloadOperatorToken loads the config and, when server.token differs from current, puts it in
+// force on srv. A config that can't be read, or that has no token, changes nothing.
+func reloadOperatorToken(srv operatorTokenSetter, current string, load func() (*config.Config, error)) (token string, changed bool, err error) {
+	cfg, err := load()
+	if err != nil {
+		return current, false, fmt.Errorf("load config: %w", err)
+	}
+	if cfg.Server.Token == current {
+		return current, false, nil
+	}
+	if err := srv.SetOperatorToken(cfg.Server.Token); err != nil {
+		return current, false, err
+	}
+	return cfg.Server.Token, true, nil
 }
 
 // newAPIServer is the http.Server `grove serve` listens on the tailnet with. It bounds how long

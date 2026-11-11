@@ -5,9 +5,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gm2211/grove/internal/artifacts"
@@ -81,6 +83,9 @@ type Server struct {
 	// keychainUnlocks holds passwords typed into the panel until their worker's broker collects them
 	// (handlers_keychain.go). Memory only.
 	keychainUnlocks *keychainUnlocks
+	// token is the operator token in force: Options.Token at start, then whatever
+	// SetOperatorToken last set (`grove token rotate`, picked up on SIGHUP).
+	token atomic.Pointer[string]
 	// unboundBrokerWarned remembers which unbound (pre-binding) broker credentials have had
 	// their one warning (brokerPeerAllowed).
 	unboundBrokerWarned sync.Map
@@ -134,8 +139,30 @@ func New(oc orchard.Client, nc nomad.Client, ds dispatch.Service, ac artifacts.C
 		workerHosts:     &workerHosts{},
 		keychainUnlocks: &keychainUnlocks{},
 	}
+	s.token.Store(&opts.Token)
 	s.handler = s.routes()
 	return s
+}
+
+// operatorToken is the operator bearer token in force; "" when none is configured.
+func (s *Server) operatorToken() string {
+	if t := s.token.Load(); t != nil {
+		return *t
+	}
+	return ""
+}
+
+// SetOperatorToken replaces the operator bearer token on a running server: the previous one
+// stops authenticating with the next request. It is how `grove serve` takes up a rotated
+// server.token without a restart (which would drop every job's in-memory broker entries). An
+// empty token is refused: a reload must never be the thing that leaves /api/v1 with one
+// credential fewer than the operator meant.
+func (s *Server) SetOperatorToken(token string) error {
+	if token == "" {
+		return errors.New("refusing to replace the operator token with an empty one")
+	}
+	s.token.Store(&token)
+	return nil
 }
 
 // ServeHTTP implements http.Handler.
