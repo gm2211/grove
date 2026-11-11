@@ -4,6 +4,14 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **macOS images: a host-side scrub before the scan, and no tailnet search domain during the
+  build.** The guest logs until it powers off, after the in-guest scrub, and a leaked image's last
+  log file held the tailnet name. `make images-macos*` now runs `images/scan/scrub-tart-vm.sh` on
+  the stopped VM (empties the unified logs and removes the resolver file, DHCP leases and shell
+  histories on its Data volume; refuses a VM that isn't stopped) before `scan-tart-vm.sh`. The
+  build replaces DHCP search domains with `invalid` and DNS servers with public resolvers while it
+  runs, and restores both to DHCP at the end, so no resolver is baked into the image.
+
 - **A worker Mac pulls its private VM images with a login from the control plane; no per-Mac
   `grove registry login`.** The pull credential the control plane already holds
   (`grove registry pull enable`) now also covers the Tart VM images of the pools that select a

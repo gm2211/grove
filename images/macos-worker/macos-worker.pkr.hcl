@@ -101,6 +101,26 @@ build {
     ]
   }
 
+  # --- keep the build Mac's DNS search domains out of the guest ---------------------------------
+  # vmnet's DHCP hands the guest the build Mac's search domains, a tailnet name (<name>.ts.net)
+  # among them, and configd and mDNSResponder then log them for the whole build. Manual settings
+  # replace DHCP's, so for the build the guest gets a search domain that names nothing (`invalid`,
+  # RFC 6761, never resolves) and public resolvers: vmnet's DNS proxy forwards to the build Mac's
+  # resolver, which may be a tailnet one it can't reach (seen on a build Mac running Tailscale).
+  # The scrub at the end restores both to DHCP, so no resolver is baked in: a VM made from the
+  # image takes its own worker's vmnet gateway, the only resolver the worker's pf fence allows.
+  provisioner "shell" {
+    inline = [
+      "set -eu",
+      "echo '==> replacing DHCP search domains and DNS servers for the build'",
+      "networksetup -listallnetworkservices | tail -n +2 | sed 's/^\\*//' | while IFS= read -r svc; do sudo networksetup -setsearchdomains \"$svc\" invalid; sudo networksetup -setdnsservers \"$svc\" 1.1.1.1 8.8.8.8; done",
+      "sudo killall -HUP mDNSResponder || true",
+      "sleep 2",
+      "if scutil --dns | grep -qE '[A-Za-z0-9-]+\\.ts\\.net'; then echo 'FATAL: the guest still has a tailnet search domain'; exit 1; fi",
+      "curl -fsS -o /dev/null --max-time 30 https://github.com || { echo 'FATAL: github.com unreachable with the build's DNS settings'; exit 1; }",
+    ]
+  }
+
   # Vanilla has no CI toolchain. Install CLT/Homebrew and only the guest transport first.
   # The script also works with a pre-provisioned full-Xcode base.
   provisioner "shell" {
@@ -303,9 +323,10 @@ build {
   # (<name>.ts.net) landed in /private/var/run/resolv.conf of a pushed image. An image may be
   # public. The unified logs record the same search domain and the build Mac's mDNS name. Remove
   # the resolver files, DHCP leases, shell histories and the logs, then scan the guest and fail
-  # the build on anything host-derived. Last provisioner, so nothing runs after it; `make
-  # images-macos` scans the stopped VM's disk again from the host (images/scan/scan-tart-vm.sh),
-  # which also catches a resolv.conf that configd rewrote before shutdown.
+  # the build on anything host-derived. Last provisioner, so nothing runs after it. The guest keeps
+  # logging until it powers off, and restoring DHCP search domains here lets configd relearn the
+  # build Mac's, so `make images-macos` scrubs the stopped VM's disk again from the host
+  # (images/scan/scrub-tart-vm.sh) and then scans it (images/scan/scan-tart-vm.sh), the gate.
   provisioner "file" {
     source      = "../scan/scan-root.sh"
     destination = "/tmp/grove-scan-root.sh"
@@ -313,6 +334,8 @@ build {
   provisioner "shell" {
     inline = [
       "set -eu",
+      "echo '==> restoring DHCP search domains and DNS servers for VMs made from this image'",
+      "networksetup -listallnetworkservices | tail -n +2 | sed 's/^\\*//' | while IFS= read -r svc; do sudo networksetup -setsearchdomains \"$svc\" Empty; sudo networksetup -setdnsservers \"$svc\" Empty; done",
       "echo '==> scrubbing host-derived network state and histories'",
       "sudo rm -f /private/var/run/resolv.conf /private/etc/resolv.conf.grove-bak",
       "sudo rm -rf /private/var/db/dhcpclient/leases",

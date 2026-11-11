@@ -132,14 +132,20 @@ new pool name. Prefer the existing Linux pool for jobs that do not require macOS
 A guest built on a Mac gets that Mac's DNS settings over vmnet's DHCP and sees its mDNS name. A
 tailnet's search domain (`<name>.ts.net`) reached `/private/var/run/resolv.conf` and the unified
 logs (`/private/var/db/diagnostics/*.tracev3`) of a pushed image this way, and the build Mac's
-host name reached the logs. The build's last provisioner now removes the resolver file, DHCP
+host name reached the logs. For the build, the guest's DHCP search domains are replaced with
+`invalid` and its DNS servers with public resolvers (vmnet's DNS proxy forwards to the build Mac's
+resolver, which may be an unreachable tailnet one), so the guest doesn't learn the tailnet name;
+both are restored to DHCP at the end, so a VM made from the image takes its own worker's vmnet
+gateway, the only resolver the worker's pf fence allows. The build's last provisioner removes the resolver file, DHCP
 leases, shell histories and the unified logs, and scans the guest with `images/scan/scan-root.sh`.
 The scan reads every regular file, binaries included, for tailnet names and Tailscale auth keys,
-and the configuration and home directories for GitHub tokens and tailnet addresses. The
-`make images-macos*` targets then scan the stopped VM's disk from the host
-(`images/scan/scan-tart-vm.sh <vm>`), which adds the build Mac's own names and user
-(`GROVE_SCAN_IDENTIFIERS` takes more) and catches whatever the guest wrote between the scrub and
-shutdown. Either failing means: do not `tart push`. An image built before this check must be
+and the configuration and home directories for GitHub tokens and tailnet addresses. The guest
+keeps logging until it powers off (a leaked image's last log file was written 1.5 minutes after
+the provisioning shell ended, with the tailnet name in it), so the `make images-macos*` targets
+then scrub the stopped VM's Data volume from the host (`images/scan/scrub-tart-vm.sh <vm>`: the
+same logs, resolver file, leases and histories; it refuses a VM Tart doesn't report as stopped),
+and scan it (`images/scan/scan-tart-vm.sh <vm>`), which adds the build Mac's own names and user
+(`GROVE_SCAN_IDENTIFIERS` takes more). Either scan failing means: do not `tart push`. An image built before this check must be
 scanned, or rebuilt, before its package is ever made public, and making a package public exposes
 every version in it.
 
