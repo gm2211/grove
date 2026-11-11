@@ -19,6 +19,7 @@ internal/tsauth/              Tailscale identity (tailscale whois on the peer ad
 internal/secrets/             operator-set named job secrets (JobRequest.Secrets)
 internal/pki/                 grove's Nomad CA: server, grove-client and per-VM node certificates (mTLS)
 internal/gitauth/             operator-armed private-repo credential (see below)
+internal/grant/               allow-list syntax (principal id, tag:<name>) shared by gitauth and secrets
 internal/registryauth/        operator-armed registry pull login for Linux pools' images (see below)
 internal/broker/              per-worker credential broker: placeholders in, real tokens out (see below)
 internal/health/              rebuilds VMs / pauses Macs that keep losing sealed-pool jobs
@@ -132,6 +133,18 @@ for it, deliberately.
   `internal/server/handlers_github_test.go` assert it.
 - Arming always names repositories (`--repo owner/name` or `owner/*`); an empty scope covers
   nothing.
+- A dispatch scope is not enough to get the token: every worker Mac holds one, and a worker can
+  read its own VM. `Store.TokenFor(repo, caller)` gives it only to an operator or a principal on
+  the armed `Allow` list (`--allow`, the `internal/grant` syntax named secrets use; empty means
+  operators only). The caller is `JobRequest.Caller`, set only by `handleSubmitJob` from the
+  authenticated principal (`json:"-"`, not kept on the record); the zero caller gets nothing, and
+  there is no caller-less way to ask. A refused submitter's job is dispatched with no token, never
+  rejected, so it can't probe what is armed. Redispatch reuses the first dispatch's payload and
+  never asks again.
+- Nothing is armed forever: `Enable` always sets an expiry (`DefaultTTL` 24h, `MaxTTL` 30 days).
+  The one exception to both rules is a version 1 `github.json` (`adoptLegacyLocked`): any
+  submitter, for at most `LegacyGrace` (24h) after first load, warned in `Status` and the log.
+  Never widen it, and never write a state without `Version: stateVersion`.
 - Only `https://` repo URLs match: a token does nothing for an SSH remote, so handing one over
   there would be a leak with no upside.
 

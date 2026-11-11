@@ -8,7 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/gitauth"
+	"github.com/gm2211/grove/internal/grant"
 )
 
 func newGitAuthServer(t *testing.T, opts Options) (*Server, *gitauth.Store) {
@@ -67,7 +69,7 @@ func TestGitHubSourcing_EnableThenDisable(t *testing.T) {
 	if !status.Enabled || status.ExpiresAt == nil || len(status.Repos) != 1 {
 		t.Fatalf("unexpected status %+v", status)
 	}
-	if token, ok := store.TokenFor("https://github.com/gm2211/grove"); !ok || token != "ghp_secret" {
+	if token, ok := store.TokenFor("https://github.com/gm2211/grove", grant.Caller{ID: "operator", Operator: true}); !ok || token != "ghp_secret" {
 		t.Fatalf("the store was not armed: %q %v", token, ok)
 	}
 
@@ -83,7 +85,7 @@ func TestGitHubSourcing_EnableThenDisable(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("disable status = %d, body=%s", rec.Code, rec.Body.String())
 	}
-	if _, ok := store.TokenFor("https://github.com/gm2211/grove"); ok {
+	if _, ok := store.TokenFor("https://github.com/gm2211/grove", grant.Caller{ID: "operator", Operator: true}); ok {
 		t.Fatal("the store stayed armed after DELETE")
 	}
 }
@@ -96,6 +98,9 @@ func TestGitHubSourcing_RejectsBadBody(t *testing.T) {
 		"bad ttl":      `{"token":"ghp_secret","ttl":"soon"}`,
 		"bad repo":     `{"token":"ghp_secret","repos":["grove"]}`,
 		"host w/ port": `{"token":"ghp_secret","hosts":["github.com:443"]}`,
+		"no repos":     `{"token":"ghp_secret"}`,
+		"ttl too long": `{"token":"ghp_secret","repos":["gm2211/grove"],"ttl":"100000h"}`,
+		"bad allow":    `{"token":"ghp_secret","repos":["gm2211/grove"],"allow":["a b"]}`,
 	} {
 		rec := do(t, srv, http.MethodPut, "/api/v1/github/sourcing", body, "")
 		if rec.Code != http.StatusBadRequest {
@@ -148,6 +153,101 @@ func TestGitHubSourcing_UnavailableWithoutAStore(t *testing.T) {
 		rec := do(t, srv, method, "/api/v1/github/sourcing", `{"token":"ghp_secret"}`, "")
 		if rec.Code != http.StatusServiceUnavailable {
 			t.Fatalf("%s: status = %d, want 503", method, rec.Code)
+		}
+	}
+}
+
+// Arming with no ttl still expires, and the status carries the allow list, never the token.
+func TestGitHubSourcing_DefaultTTLAndAllowInStatus(t *testing.T) {
+	srv, _ := newGitAuthServer(t, Options{})
+	rec := do(t, srv, http.MethodPut, "/api/v1/github/sourcing",
+		`{"token":"ghp_secret","repos":["gm2211/grove"],"allow":["tag:argos","dev_laptop"]}`, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enable status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	for _, rec := range []*httptest.ResponseRecorder{rec, do(t, srv, http.MethodGet, "/api/v1/github/sourcing", "", "")} {
+		if strings.Contains(rec.Body.String(), "ghp_secret") {
+			t.Fatalf("the response carried the token: %s", rec.Body.String())
+		}
+		status := decodeStatus(t, rec)
+		if status.ExpiresAt == nil {
+			t.Fatalf("armed with no expiry: %+v", status)
+		}
+		if strings.Join(status.Allow, ",") != "dev_laptop,tag:argos" {
+			t.Fatalf("status.Allow = %v", status.Allow)
+		}
+	}
+}
+
+// M3 end to end at the API: the caller dispatch is told about is the authenticated principal,
+// never anything in the body, and only an operator or a principal on the allow list turns into a
+// token. A worker Mac's device credential (read + dispatch) is accepted as a submitter and gets
+// none; its response is the same 201 either way.
+func TestSubmitJob_PrivateCloneNeedsAnAllowedPrincipal(t *testing.T) {
+	const repo = "https://github.com/gm2211/grove"
+	access, err := NewAccessStore(filepath.Join(t.TempDir(), "devices.json"))
+	if err != nil {
+		t.Fatalf("NewAccessStore: %v", err)
+	}
+	workerToken, worker, err := access.Issue("mac-mini-3", []string{ScopeRead, ScopeBuild, ScopeAgent})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	laptopToken, laptop, err := access.Issue("laptop", []string{ScopeRead, ScopeBuild})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	git, err := gitauth.NewStore(filepath.Join(t.TempDir(), "github.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	peers := fakePeers{
+		argosPeer:      {ID: "tailscale:nARGOS", Name: "argos", Tags: []string{"tag:argos"}, Scopes: []string{ScopeRead, ScopeDispatch}},
+		"100.64.0.5:1": {ID: "tailscale:nCI", Name: "ci", Tags: []string{"tag:ci"}, Scopes: []string{ScopeRead, ScopeDispatch}},
+	}
+	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{}}
+	srv := newTestServer(nil, nil, ds, Options{Token: "operator", AccessStore: access, Tailscale: peers, GitAuth: git})
+
+	rec := peerRequest(srv, http.MethodPut, "/api/v1/github/sourcing",
+		`{"token":"ghp_secret","repos":["gm2211/grove"],"allow":["`+laptop.ID+`","tag:argos"]}`, "100.64.0.99:1", "operator")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enable = %d %s", rec.Code, rec.Body)
+	}
+
+	// The body claims to be an operator; none of it may count.
+	body := `{"kind":"build","pool":"linux","repo":"` + repo + `","script":"true",` +
+		`"submittedBy":"operator","caller":{"ID":"operator","Operator":true,"Tags":["tag:argos"]},"Caller":{"Operator":true}}`
+	for _, tc := range []struct {
+		name, remote, token string
+		want                bool
+	}{
+		{"operator", "100.64.0.99:1", "operator", true},
+		{"allowed device credential", "100.64.0.99:1", laptopToken, true},
+		{"allowed tailscale tag", argosPeer, "", true},
+		{"worker Mac's device credential", "100.64.0.99:1", workerToken, false},
+		{"tailscale peer with another tag", "100.64.0.5:1", "", false},
+	} {
+		before := len(ds.submitCalls)
+		rec := peerRequest(srv, http.MethodPost, "/api/v1/jobs", body, tc.remote, tc.token)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("%s: submit = %d %s (a submitter that isn't allowed is not refused)", tc.name, rec.Code, rec.Body)
+		}
+		if strings.Contains(rec.Body.String(), "ghp_secret") || strings.Contains(rec.Body.String(), "gm2211") {
+			t.Fatalf("%s: the response says something about the credential: %s", tc.name, rec.Body)
+		}
+		if len(ds.submitCalls) != before+1 {
+			t.Fatalf("%s: dispatch saw %d submits", tc.name, len(ds.submitCalls)-before)
+		}
+		req := ds.submitCalls[before]
+		if req.Caller.ID != req.SubmittedBy || req.Caller.ID == "" {
+			t.Fatalf("%s: caller %+v does not match submittedBy %q", tc.name, req.Caller, req.SubmittedBy)
+		}
+		if tc.token == workerToken && (req.Caller.ID != worker.ID || req.Caller.Operator || len(req.Caller.Tags) != 0) {
+			t.Fatalf("%s: the body's claims reached the caller: %+v", tc.name, req.Caller)
+		}
+		token, ok := git.TokenFor(req.Repo, req.Caller)
+		if ok != tc.want || (ok && token != "ghp_secret") {
+			t.Fatalf("%s: TokenFor as %+v = %q, %v; want ok=%v", tc.name, req.Caller, token, ok, tc.want)
 		}
 	}
 }

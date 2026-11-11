@@ -8,8 +8,9 @@ import { StatusPill } from "./StatusPill";
 /**
  * Operator control for cloning PRIVATE repositories.
  *
- * Off until someone arms it here (or with `grove github enable`), fleet-wide the moment it is on,
- * and gone the moment it is disabled or its TTL lapses. The token only ever travels upward: the
+ * Off until someone arms it here (or with `grove github enable`), for the jobs of operators and
+ * of the principals named under "allow" only, and gone the moment it is disabled or its TTL
+ * lapses (it always has one). The token only ever travels upward: the
  * API never returns it, so the field below is always blank on load and the panel shows a
  * fingerprint instead.
  */
@@ -25,6 +26,7 @@ export function PrivateRepoSourcing({ operator }: { operator: boolean }) {
 
   const [token, setToken] = useState("");
   const [repos, setRepos] = useState("");
+  const [allow, setAllow] = useState("");
   const [ttl, setTtl] = useState("4h");
 
   const enable = useMutation({
@@ -34,6 +36,10 @@ export function PrivateRepoSourcing({ operator }: { operator: boolean }) {
         repos: repos
           .split(",")
           .map((r) => r.trim())
+          .filter(Boolean),
+        allow: allow
+          .split(",")
+          .map((a) => a.trim())
           .filter(Boolean),
         ttl: ttl.trim() || undefined,
       }),
@@ -74,14 +80,23 @@ export function PrivateRepoSourcing({ operator }: { operator: boolean }) {
         <div className="facts">
           <Row k="hosts" v={(status.data.hosts ?? []).join(", ")} />
           <Row k="repos" v={status.data.repos?.length ? status.data.repos.join(", ") : "none, enable again with repos"} />
-          <Row k="token" v={`sha256:${status.data.tokenFingerprint}`} />
           <Row
-            k="expires"
-            v={status.data.expiresAt ? new Date(status.data.expiresAt).toLocaleString() : "never, turn it off when you're done"}
+            k="allowed"
+            v={
+              status.data.legacy
+                ? "any submitter (armed by an older grove)"
+                : status.data.allow?.length
+                  ? `operators, ${status.data.allow.join(", ")}`
+                  : "operators only"
+            }
           />
+          <Row k="token" v={`sha256:${status.data.tokenFingerprint}`} />
+          <Row k="expires" v={status.data.expiresAt ? new Date(status.data.expiresAt).toLocaleString() : "unknown"} />
           {status.data.lastUsedAt && <Row k="last used" v={new Date(status.data.lastUsedAt).toLocaleString()} />}
         </div>
       )}
+
+      {on && status.data?.warning && <div className="mono text-[11.5px] text-[#eda3a3]">{status.data.warning}</div>}
 
       <label className="field">
         <span className="label">GitHub token · write-only</span>
@@ -106,6 +121,16 @@ export function PrivateRepoSourcing({ operator }: { operator: boolean }) {
         </label>
       </div>
 
+      <label className="field">
+        <span className="label">allow · besides operators</span>
+        <input
+          className="input"
+          value={allow}
+          onChange={(e) => setAllow(e.target.value)}
+          placeholder="device credential id, tag:argos (empty: operators only)"
+        />
+      </label>
+
       <div className="flex items-center gap-2">
         <Button
           variant="primary"
@@ -125,9 +150,10 @@ export function PrivateRepoSourcing({ operator }: { operator: boolean }) {
 
       {error && <div className="mono text-[11.5px] text-[#eda3a3]">{String(error)}</div>}
       <p className="m-0 text-[12px] leading-[1.55] text-[#5c696e]">
-        While this is on, every build/agent job whose repo URL matches gets the credential for its{" "}
-        <code className="mono">git clone</code>, and nothing else does. Use an <code className="mono">https://</code> repo
-        URL: an SSH remote is never given the token.
+        While this is on, a build/agent job whose repo URL matches gets the credential for its{" "}
+        <code className="mono">git clone</code> only when an operator, or a principal named under allow, submitted it.
+        Don't name a worker Mac's own credential. It always expires (24h when auto-off is empty, 720h at most). Use an{" "}
+        <code className="mono">https://</code> repo URL: an SSH remote is never given the token.
       </p>
     </Section>
   );

@@ -23,6 +23,7 @@ import (
 	"github.com/gm2211/grove/internal/artifacts"
 	"github.com/gm2211/grove/internal/broker"
 	"github.com/gm2211/grove/internal/config"
+	"github.com/gm2211/grove/internal/grant"
 	"github.com/gm2211/grove/internal/nomad"
 )
 
@@ -531,7 +532,7 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	rec := &record{
 		Job: Job{
 			ID:                 id,
-			Request:            withRedactedCredentials(withRedactedEnv(req)),
+			Request:            withoutCaller(withRedactedCredentials(withRedactedEnv(req))),
 			Status:             StatusPending,
 			SubmittedAt:        now,
 			Meta:               req.Meta,
@@ -567,8 +568,18 @@ func withRedactedEnv(req JobRequest) JobRequest {
 	return req
 }
 
+// withoutCaller drops the submitter's grants from the request a record keeps: they decided this
+// dispatch's clone token and nothing later reads them.
+func withoutCaller(req JobRequest) JobRequest {
+	req.Caller = grant.Caller{}
+	return req
+}
+
 // repoCredential returns the control plane's armed private-repo credential for this job's
-// repository, and whether there is one. Only build and agent jobs clone, so only they get one.
+// repository, and whether there is one. Only build and agent jobs clone, so only they get one,
+// and only when RepoAuth allows req.Caller, the principal the API authenticated: a dispatch
+// credential alone is not enough. A submitter that isn't allowed gets a job with no token, the
+// same as for a repository out of scope.
 //
 // A caller that set GH_TOKEN or GIT_TOKEN in its own env gets none: an explicit per-job credential
 // is more specific than the fleet-wide armed one, and the source task clones with the caller's
@@ -583,7 +594,7 @@ func (s *service) repoCredential(req JobRequest) (string, bool) {
 	if req.Env["GH_TOKEN"] != "" || req.Env["GIT_TOKEN"] != "" {
 		return "", false
 	}
-	token, ok := s.opts.RepoAuth.TokenFor(req.Repo)
+	token, ok := s.opts.RepoAuth.TokenFor(req.Repo, req.Caller)
 	if !ok || token == "" || strings.ContainsAny(token, "\n\r") {
 		return "", false
 	}

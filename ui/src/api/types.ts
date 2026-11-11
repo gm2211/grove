@@ -146,14 +146,21 @@ export interface GitHubSourcingStatus {
   enabledBy?: string;
   expiresAt?: string;
   lastUsedAt?: string;
+  /** Who, besides an operator, may submit a job that clones with it. Empty: operators only. */
+  allow?: string[];
+  /** Armed by an older grove: any submitter's job gets it until it expires. */
+  legacy?: boolean;
+  warning?: string;
 }
 
 export interface EnableGitHubSourcingRequest {
   token: string;
   hosts?: string[];
   repos?: string[];
-  /** Duration string ("4h", "30m"). Omitted means "armed until explicitly disabled". */
+  /** Duration string ("4h", "30m"). Omitted means 24h; the longest is 720h. */
   ttl?: string;
+  /** Principal ids or "tag:<name>" whose jobs may clone with it. Omitted: operators only. */
+  allow?: string[];
 }
 
 /**

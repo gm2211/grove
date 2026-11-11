@@ -20,10 +20,11 @@ func init() {
 	github := &cobra.Command{
 		Use:   "github",
 		Short: "Control whether grove may clone PRIVATE GitHub repositories for jobs.",
-		Long: "Private-repo sourcing is off until you turn it on, and applies fleet-wide from the\n" +
-			"moment you do. While it is on, grove hands the armed credential to the `git clone` of\n" +
-			"every build/agent job whose repo URL is in scope; `grove github disable` (or the TTL\n" +
-			"lapsing) wipes the token from the control plane.",
+		Long: "Private-repo sourcing is off until you turn it on. While it is on, grove hands the\n" +
+			"armed credential to the `git clone` of a build/agent job whose repo URL is in scope and\n" +
+			"whose submitter is an operator or named with --allow; any other submitter's job gets\n" +
+			"no token. It always expires (--ttl, 24h by default); `grove github disable` or the TTL\n" +
+			"lapsing wipes the token from the control plane.",
 	}
 
 	github.AddCommand(&cobra.Command{
@@ -46,10 +47,18 @@ func init() {
 	var tokenStdin bool
 	var repos []string
 	var hosts []string
+	var allow []string
 	var ttl time.Duration
 	enable := &cobra.Command{
 		Use:   "enable",
 		Short: "Arm a GitHub credential so jobs can clone private repositories.",
+		Long: "Arms a GitHub token for the repositories named with --repo, for --ttl (24h by default,\n" +
+			"30 days at most). Use a fine-grained, read-only token limited to those repositories.\n\n" +
+			"--allow names who, besides an operator, may submit a job that clones with it: a\n" +
+			"principal id (a device credential's id from `grove access list`, or a Tailscale\n" +
+			"identity's tailscale:<stable id>) or a Tailscale tag (tag:argos), the same syntax as\n" +
+			"`grove secret set --allow`. With no --allow only operators' jobs get the token. Don't\n" +
+			"name a worker Mac's own credential: a worker can read the token out of a VM it hosts.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			token, err := readEnableToken(cmd.InOrStdin(), tokenEnv, tokenStdin)
 			if err != nil {
@@ -59,10 +68,10 @@ func init() {
 			if err != nil {
 				return err
 			}
-			req := gitauth.EnableRequest{Token: token, Hosts: hosts, Repos: repos}
-			if ttl > 0 {
-				req.TTL = ttl.String()
+			if ttl <= 0 {
+				return errors.New("--ttl must be positive: a credential is never armed forever")
 			}
+			req := gitauth.EnableRequest{Token: token, Hosts: hosts, Repos: repos, Allow: allow, TTL: ttl.String()}
 			status, err := client.EnableGitHubSourcing(cmd.Context(), req)
 			if err != nil {
 				return err
@@ -76,7 +85,8 @@ func init() {
 	enable.Flags().BoolVar(&tokenStdin, "token-stdin", false, "read the GitHub token from stdin instead of an environment variable")
 	enable.Flags().StringArrayVar(&repos, "repo", nil, "owner/name the credential may clone (required, repeatable; \"owner/*\" allows every repo of an owner)")
 	enable.Flags().StringArrayVar(&hosts, "host", nil, "git host the credential may be used against (repeatable, default github.com — set for GitHub Enterprise)")
-	enable.Flags().DurationVar(&ttl, "ttl", 0, "auto-disable after this long, e.g. 4h (default: stays on until `grove github disable`)")
+	enable.Flags().StringArrayVar(&allow, "allow", nil, "principal id or tag:<name> whose jobs may clone with the credential (repeatable; none = operators only)")
+	enable.Flags().DurationVar(&ttl, "ttl", gitauth.DefaultTTL, "auto-disable and wipe the token after this long, e.g. 4h (at most 720h)")
 	github.AddCommand(enable)
 
 	github.AddCommand(&cobra.Command{
@@ -133,16 +143,25 @@ func printGitHubSourcingStatus(out io.Writer, status *gitauth.Status) {
 	fmt.Fprintf(out, "private-repo sourcing: ON\n")
 	fmt.Fprintf(out, "  hosts:       %s\n", strings.Join(status.Hosts, ", "))
 	fmt.Fprintf(out, "  repos:       %s\n", scope)
+	allowed := "operators only (re-arm with --allow to let another principal's jobs clone privately)"
+	switch {
+	case status.Legacy:
+		allowed = "ANY submitter (armed by an older grove)"
+	case len(status.Allow) > 0:
+		allowed = "operators, " + strings.Join(status.Allow, ", ")
+	}
+	fmt.Fprintf(out, "  allowed:     %s\n", allowed)
 	fmt.Fprintf(out, "  token:       sha256:%s\n", status.TokenFingerprint)
 	if status.ExpiresAt != nil {
 		fmt.Fprintf(out, "  expires:     %s (in %s)\n", status.ExpiresAt.Format(time.RFC3339), time.Until(*status.ExpiresAt).Round(time.Minute))
-	} else {
-		fmt.Fprintf(out, "  expires:     never — run `grove github disable` when you're done\n")
 	}
 	if status.EnabledBy != "" && status.EnabledAt != nil {
 		fmt.Fprintf(out, "  enabled by:  %s at %s\n", status.EnabledBy, status.EnabledAt.Format(time.RFC3339))
 	}
 	if status.LastUsedAt != nil {
 		fmt.Fprintf(out, "  last used:   %s\n", status.LastUsedAt.Format(time.RFC3339))
+	}
+	if status.Warning != "" {
+		fmt.Fprintf(out, "  WARNING:     %s\n", status.Warning)
 	}
 }
