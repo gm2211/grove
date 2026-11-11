@@ -221,10 +221,29 @@ docs/OPERATIONS.md "The macOS guest's admin password".
 
 Same discipline as the private-repo token: a value is set only by an operator (`grove secret set`,
 value from stdin or an env var, never argv), lives only in `secrets.json` (0600, atomic rename),
-and reaches a job only through that dispatch's `env_json`. Never on `Job.Request` (which keeps
-the names), never in the job history, never in an API response (`Secret` carries a fingerprint).
+and reaches a job only through that dispatch's PAYLOAD (`grove-payload/2`: token line, one line
+holding base64 of the secrets' JSON, script; `internal/dispatch/payload.go`). Never `env_json` or
+any other dispatch meta (every task sees those; `env_json` holds only the caller's `Env` and
+credential placeholders), never on `Job.Request` (which keeps the names), never in the job
+history, never in an API response (`Secret` carries a fingerprint). Keep it that way:
+
+- build/agent: only `source` receives the payload. It writes the secrets line to
+  `$state/secrets` (0400, created exclusively, in `finish`, only when the job will run; on macOS
+  handed to `_grovejob` with the rest of the state directory), and `main`'s run.sh exports them
+  and deletes the file before the caller's script starts. A file it can't read or delete fails
+  the job; never run the script without its secrets.
+- shell: `main` is the payload's only reader and parses the frame itself (a shell script may not
+  start with `grove-payload/`). Sealed pools: `grove sandbox run` reads the payload
+  (`sandbox.Request.ApplyPayload`) and the secrets enter the VM only in the bundle's `env.sh`.
+- The export goes through `jq` `@sh` and `eval`, like `env_json`; never interpolate a value into
+  shell text any other way. Version 2 is sent only for a job that names a secret, and every
+  reader still takes version 1 and a bare script.
+- A redispatch reuses the payload it reads back; `secretsOutOfMeta` moves the secrets of a job an
+  older grove dispatched out of `env_json` first. `Submit` refuses a payload over Nomad's 16 KiB.
+
 Authorization (who may name which secret) is checked in `internal/server` where the principal is
 known; `internal/dispatch` only resolves. `internal/dispatch/secrets_test.go`,
+`nomad/jobs/secrets_test.go`, `internal/sandbox/secrets_test.go`,
 `internal/secrets/secrets_test.go` and `internal/server/tailscale_auth_test.go` assert it.
 
 ## `internal/broker` — jobs never hold a real credential
