@@ -116,6 +116,7 @@ func TestRootScripts_CopyIsPrivateUntilChecked(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := NewFakeRunner()
+	scriptControlPlaneDNS(r)
 	r.Script("/usr/bin/defaults read /Library/Preferences/SystemConfiguration/com.apple.vmnet Shared_Net_Address", FakeResult{Stdout: "192.168.70.1\n"})
 	for _, s := range hostFirewallSteps(r, opts) {
 		if s.Name == "host-firewall" {

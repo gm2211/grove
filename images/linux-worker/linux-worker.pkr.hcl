@@ -12,9 +12,13 @@ packer {
 }
 
 variable "base_image" {
-  type        = string
-  default     = "ghcr.io/cirruslabs/ubuntu:latest"
-  description = "arm64 Tart base image to clone from."
+  type = string
+  # ghcr.io/cirruslabs/ubuntu:24.04 (also :latest) when this was pinned. A tag there moves with
+  # every Cirrus Labs rebuild; a digest is the image that was looked at. To take a newer one, read
+  # the Docker-Content-Digest of ghcr.io/v2/cirruslabs/ubuntu/manifests/24.04 (docs/IMAGES.md
+  # "Rebuilding after a base image update") and change it here.
+  default     = "ghcr.io/cirruslabs/ubuntu@sha256:97166c84ea5f102be33d2959f70e83861a36bd749f1715ab669d93e6c9f31476"
+  description = "OCI reference of the arm64 Tart base image to clone from, pinned by digest."
 }
 
 variable "vm_name" {
@@ -104,15 +108,9 @@ build {
     ]
   }
 
-  # --- Tailscale (standalone daemon; joining the tailnet happens at boot via the fleet startup
-  # script with an ephemeral auth key, not here — see images/macos-worker for the parallel rule) --
-  provisioner "shell" {
-    inline = [
-      "set -eu",
-      "curl -fsSL https://tailscale.com/install.sh | sudo sh",
-      "sudo systemctl enable tailscaled",
-    ]
-  }
+  # No Tailscale: a VM never joins the tailnet. Its Nomad client reaches the control plane through
+  # the host Mac's NAT, and the fleet startup script turns tailscaled off wherever an older image
+  # still has it (internal/fleet/scripts.go, which tolerates its absence).
 
   # --- Nomad client config: static half only ------------------------------------------------------
   provisioner "shell" {

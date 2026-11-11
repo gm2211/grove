@@ -269,8 +269,13 @@ tokens on the way to a fixed set of upstreams and masks the tokens on the way ba
 
 `internal/install/hostfirewall.go` renders the `com.grove.pf-vm` LaunchDaemon. It loads the pf
 anchor `com.apple/grove-vm`, which lets VMs on vmnet's bridges reach only DHCP, DNS, the broker
-(3128) on the gateway, and Nomad RPC (4647) of the Mac and its networks. Installing it is a
+(3128) on the gateway, and Nomad RPC (4647) on the control plane's address. Installing it is a
 privileged step, printed for an admin. Keep it that way:
+
+- The Nomad RPC pass names addresses, never `any`: the control plane's, resolved at plan time
+  through `Runner` (`resolveNomadTargets`: `nomad.url` in this user's config.yaml, else the grove
+  server, else the Orchard controller; `self` when that is this Mac). A name that does not resolve
+  fails the step and the doctor check; never fall back to any address.
 
 - The plist carries its whole loader inline and runs only `/bin/sh` and `/sbin/pfctl`: a root job
   must never run anything this user or Homebrew could rewrite.

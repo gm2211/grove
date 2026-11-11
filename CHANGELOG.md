@@ -25,6 +25,29 @@ All notable changes to grove are documented here.
   with `--allow` from then on; don't name a worker Mac's credential. A `github.json` written by
   this version must not be served by an older grove, which ignores the allow list. Prefer a
   fine-grained, read-only token limited to the repositories named.
+- **The default runner image is a digest, and the images grove builds are pinned.** A pool with no
+  `runnerImage` ran `ghcr.io/gm2211/grove-runner:latest`, a tag anyone with push access could move,
+  in the task that holds the private-repo clone token. The default is now that image's digest (the
+  build `:latest` pointed at, so nothing changes for a running fleet); a newer `images/runner`
+  becomes the default only when `DefaultRunnerImage` is bumped (docs/IMAGES.md "The default runner
+  image"). A pool's `runnerImage` may be a digest, and one that is a tag logs a warning. The runner's
+  Dockerfile pins its base by digest and verifies the Node.js and Go tarballs (no more
+  `curl | bash`); the Linux worker template pins its base by digest and no longer installs Tailscale.
+
+- **Releases carry build provenance.** The release workflow attests every grove and Orchard archive
+  and `checksums.txt` (`gh attestation verify <file> --repo gm2211/grove`). `scripts/install.sh` on
+  Linux checks it when a signed-in GitHub CLI is there and refuses an archive that fails; without
+  gh it installs on the checksum as before and says provenance was not verified. Workflow actions
+  are pinned to commits and GoReleaser to an exact release.
+
+- **The worker Mac's VM firewall opens Nomad RPC towards the control plane only.** The
+  `com.apple/grove-vm` anchor passed TCP 4647 to any address, so root in a VM could reach that port
+  on every private and tailnet address. The pass now names the control plane's address (this Mac's
+  own when the control plane runs here), resolved when the install plan is built; a name that does
+  not resolve fails the step instead of opening the port everywhere. After upgrading, `grove doctor`
+  reports `host-firewall` as changed until an admin runs the root step again (`grove setup`). See
+  docs/OPERATIONS.md "The worker Mac's own firewall" if Nomad is not on the control plane's host.
+
 - **Linux pools can pull private images (GHCR), and environment images can be tags.** Nomad's docker
   driver on a Linux VM pulled the pool's `runnerImage` and a job's environment image anonymously, so
   `ghcr.io/gm2211/argos-ci` failed with `unauthorized`. `grove registry pull enable --user <u> --repo

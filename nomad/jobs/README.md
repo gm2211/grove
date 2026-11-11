@@ -98,7 +98,7 @@ Every rendered job:
      therefore the `Job.ExitCode` grove reports) exit status.
 - Driver: `raw_exec` for the `macos` pool (no container runtime on macOS guests), `docker` for
   every other pool. `fleet.yaml`'s optional `pools[].runnerImage` selects that pool's fixed outer
-  image; it defaults to `ghcr.io/gm2211/grove-runner:latest`.
+  image; it defaults to `ghcr.io/gm2211/grove-runner` pinned by digest (`dispatch.DefaultRunnerImage`).
 
 ### Which image a build's `main` task runs
 

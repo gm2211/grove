@@ -52,6 +52,8 @@ type Pool struct {
 	Network string `yaml:"network,omitempty" json:"network,omitempty"`
 	// RunnerImage selects the fixed outer container used by every Linux Nomad job in this pool.
 	// It is independent of the VM image above and opt-in per-dispatch nested Docker overrides.
+	// Unset, it is dispatch.DefaultRunnerImage, a digest. Set, it should be a digest too
+	// ("ghcr.io/acme/runner@sha256:<64 hex>"): a tag is accepted, with a warning (Spec.Warnings).
 	RunnerImage string `yaml:"runnerImage,omitempty" json:"runnerImage,omitempty"`
 	// Environments lets this pool's build jobs name the image they run in (JobRequest.Environment).
 	// Unset, a job gets only RunnerImage. Not for macOS or sealed pools.

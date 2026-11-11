@@ -60,6 +60,63 @@ verify_sha256() {
 	fi
 }
 
+# The last grove release published before the release workflow attested its archives. Anything
+# newer was built by .github/workflows/release.yml with a build provenance attestation; this one
+# and older have none to check.
+LAST_UNATTESTED_RELEASE=v0.1.42
+
+# version_after A B: release tag A (vX.Y.Z) is newer than B.
+version_after() {
+	awk -v a="${1#v}" -v b="${2#v}" 'BEGIN {
+		split(a, x, /[^0-9]+/); split(b, y, /[^0-9]+/)
+		for (i = 1; i <= 3; i++) {
+			if (x[i] + 0 > y[i] + 0) exit 0
+			if (x[i] + 0 < y[i] + 0) exit 1
+		}
+		exit 1
+	}'
+}
+
+# verify_provenance FILE VERSION checks, when it can, that FILE was built by grove's release
+# workflow for the tag VERSION: its build provenance attestation, with the GitHub CLI. The
+# checksum only says the archive matches checksums.txt, which sits in the same release; the
+# attestation is signed by the workflow run and kept outside the release.
+#
+# It needs a gh that has `attestation verify` and is signed in to github.com. Without one the
+# install goes ahead on the checksum and says so in one line: gh is never required. With one, a
+# failed verification stops the install (GROVE_SKIP_PROVENANCE=1 goes ahead on the checksum).
+verify_provenance() {
+	if [ "${GROVE_SKIP_PROVENANCE:-}" = 1 ]; then
+		log "provenance not verified (GROVE_SKIP_PROVENANCE=1); checksum verified"
+		return 0
+	fi
+	if ! version_after "$2" "$LAST_UNATTESTED_RELEASE"; then
+		log "provenance not verified ($2 predates grove's build attestations); checksum verified"
+		return 0
+	fi
+	if ! have gh || ! gh attestation verify --help >/dev/null 2>&1; then
+		log "provenance not verified (no GitHub CLI with 'gh attestation'); checksum verified"
+		return 0
+	fi
+	if ! gh auth token --hostname github.com >/dev/null 2>&1; then
+		log "provenance not verified (gh is not signed in to github.com); checksum verified"
+		return 0
+	fi
+	# Newer gh can also hold the attestation to the tag it was built from, which stops an older,
+	# genuinely attested archive being served as this release.
+	if gh attestation verify --help 2>/dev/null | grep -q -- '--source-ref'; then
+		gh attestation verify "$1" --repo gm2211/grove \
+			--signer-workflow gm2211/grove/.github/workflows/release.yml \
+			--source-ref "refs/tags/$2" >/dev/null ||
+			die "build provenance of $(basename "$1") could not be verified for $2; refusing to install it (GROVE_SKIP_PROVENANCE=1 installs on the checksum alone)"
+	else
+		gh attestation verify "$1" --repo gm2211/grove \
+			--signer-workflow gm2211/grove/.github/workflows/release.yml >/dev/null ||
+			die "build provenance of $(basename "$1") could not be verified; refusing to install it (GROVE_SKIP_PROVENANCE=1 installs on the checksum alone)"
+	fi
+	log "build provenance verified (release workflow of gm2211/grove, $2)"
+}
+
 install_macos() {
 	if ! have brew; then
 		log "Homebrew not found; installing it (this will prompt for your password)"
@@ -118,6 +175,7 @@ install_linux() {
 	expected="$(awk -v f="$asset" '$2 == f {print $1}' "$tmp/checksums.txt")"
 	[ -n "$expected" ] || die "$asset is not listed in $version's checksums.txt"
 	verify_sha256 "$tmp/$asset" "$expected"
+	verify_provenance "$tmp/$asset" "$version"
 	mv "$tmp/$asset" "$tmp/grove.tar.gz"
 	tar -xzf "$tmp/grove.tar.gz" -C "$tmp" grove
 	mv "$tmp/grove" "$dest_dir/grove"

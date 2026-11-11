@@ -997,16 +997,48 @@ the internet, and of the Mac and its networks only:
 
 - DHCP (UDP 67) and DNS (UDP/TCP 53) on the vmnet gateway,
 - the credential broker on the gateway, TCP 3128,
-- Nomad RPC, TCP 4647 on any address: the control plane, on this Mac or across the tailnet.
+- Nomad RPC, TCP 4647 on the control plane's address only (this Mac itself when the control plane
+  runs here), never port 4647 on any other private or tailnet address.
 
 Everything else bound for a private, tailnet, link-local or multicast address, or for any of
 the Mac's own addresses, is refused, and so is all IPv6 apart from neighbour discovery. The Mac's
 own connections to its VMs (Orchard's SSH, port forwards) still work, because their replies match
 the state they opened.
 
+**Which address is the control plane's.** The control plane hands every VM port 4647 on the host of
+its own `nomad.url`, resolved to an IP. A worker is not told that address, so the install takes the
+host of, in this order: `nomad.url` in this user's `config.yaml` (the control plane's own Mac, or
+an override you add on a worker whose Nomad does not run on the control plane's host), the grove
+server URL (`--server`, the join result, or what the installed broker runs with), then the Orchard
+controller URL. grove's control-plane install runs all three on one host, so they agree.
+
+- An IP address is used as it is. `localhost`, or a name or address that is this Mac's loopback,
+  becomes pf's `self`: Nomad RPC on this Mac's own addresses.
+- A name (usually the control plane's MagicDNS name) is resolved when the plan is built, with the
+  Mac's own resolver (`dscacheutil -q host -a name <host>`), and every IPv4 address it has goes into
+  the rule. The root LaunchDaemon holds addresses and never looks a name up.
+- A name that does not resolve **fails** the `host-firewall-stage` step and the `host-firewall`
+  doctor check, with the name in the message. grove does not fall back to "any address": that would
+  quietly reopen the port on every private network. Bring Tailscale (or DNS) up and run the install
+  again; the firewall already installed keeps loading the rules it has.
+- If the control plane's address changes, the plist grove renders changes with it: `grove doctor`
+  reports `host-firewall` as "not the one this grove renders" and the next `grove setup` (or
+  `grove install --role worker`) offers the root step again. Until then VMs on this Mac cannot
+  reach Nomad at the new address, so their nodes go down; nothing else is opened.
+- The same goes for the first install after upgrading from a grove whose rule allowed port 4647 on
+  any address: doctor reports the drift, and the root step replaces the plist.
+- If VMs on a worker never register after this change, compare the pass in
+  `sudo pfctl -a com.apple/grove-vm -s rules` with the server address in a VM's
+  `/etc/nomad.d/grove-rpc.hcl` (macOS guests: `/usr/local/etc/nomad.d/grove-rpc.hcl`). They differ
+  only when Nomad is not on the host the worker knows the control plane by; put that Nomad's HTTP
+  URL as `nomad.url` in the worker user's `config.yaml` and run `grove install --role worker` as
+  that user (an admin's `grove setup --user` cannot read that file, so it would render a different
+  plist and refuse the staged one).
+
 `grove install --role worker` stages the LaunchDaemon `com.grove.pf-vm` in
 `~/.config/grove/pf/` and prints the privileged step that installs it, which an admin runs once
-per Mac, and again whenever an upgrade changes the rules (`grove doctor` says so):
+per Mac, and again whenever an upgrade or a moved control plane changes the rules (`grove doctor`
+says so):
 
 ```
 sudo install -o root -g wheel -m 0644 ~/.config/grove/pf/com.grove.pf-vm.plist /Library/LaunchDaemons/com.grove.pf-vm.plist \
