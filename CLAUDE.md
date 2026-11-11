@@ -4,6 +4,17 @@ grove turns Macs (and a Linux box) you already own into a private CI/agent cloud
 [ARCHITECTURE.md](ARCHITECTURE.md) for the design; this file is about how the repo itself is
 organized and how to work in it.
 
+## NEVER store a login password
+
+Never store, set up, or suggest storing anyone's login password: not the operator's, not a worker
+user's (e.g. `argos`), not anywhere on disk, in a config file, a Keychain item you create, or an
+environment variable. That includes `grove worker remember-login` and auto-login setups. Do not
+run them, recommend them, or write new code or docs that steer people to them. When something
+needs a login (e.g. a macOS VM needing the worker user's unlocked login keychain), offer only
+routes that keep the password out of storage, and state their cost: the Map's in-memory "Unlock
+keychain" (redo after every reboot), logging the user in, or not using that feature. The
+operator's standing rule, set 2026-11-11.
+
 ## Layout
 
 ```
