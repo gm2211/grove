@@ -49,6 +49,10 @@ func groveTartBinDir(opts Options) string { return filepath.Join(opts.ConfigDir(
 
 func groveTartShimPath(opts Options) string { return filepath.Join(groveTartBinDir(opts), "tart") }
 
+// GroveTartPath is the tart the worker runs, the Grove Tart shim its wrapper puts first on PATH,
+// for the broker to ask about the worker's VMs through the same one.
+func GroveTartPath(opts Options) string { return groveTartShimPath(opts) }
+
 func groveTartEntitlementsPath(opts Options) string {
 	return filepath.Join(opts.ConfigDir(), "tart-entitlements.plist")
 }

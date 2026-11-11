@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
-	"net/netip"
 	"strings"
 	"testing"
 )
@@ -16,7 +15,7 @@ func TestInject(t *testing.T) {
 	if err := s.Replace([]Entry{gh, ant}); err != nil {
 		t.Fatal(err)
 	}
-	src := netip.MustParseAddr("192.168.64.5")
+	src := testSource
 	basic := func(user, pass string) string {
 		return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
 	}

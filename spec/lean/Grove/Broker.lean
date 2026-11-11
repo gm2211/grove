@@ -4,14 +4,20 @@ import Grove.Str
 # The credential broker swaps placeholders only where it should (S8 in spec/README.md)
 
 A transcription of `kindHosts`, `hostAllowed`, `Store.Lookup` (internal/broker/store.go) and
-`inject` (internal/broker/inject.go). A header value is a list of pieces: plain text, or a
+`inject` (internal/broker/inject.go). An entry's `source` is its VM's address on the worker's
+bridge, which the worker's broker sets when it installs the entry (`Syncer.bind`,
+internal/broker/sync.go); `none` is an entry nobody bound. A header value is a list of pieces: plain text, or a
 `gph1_` placeholder (`placeholderRE`); HTTP Basic decoding only changes how the pieces are
 spelled, so it is left out. Header names are compared as Go's `http.Header` canonicalizes them.
 
 Proved: a real token is only ever written into `Authorization` or `X-Api-Key`, only for a host
-its kind allows, only from a live entry, and only from the entry's own source address WHEN THE
-ENTRY NAMES ONE. `source_unbound` shows the last clause is all there is: an entry with no
-source (every entry `dispatch.BrokerEntries` builds today) is honoured from any address.
+its kind allows, only from a live entry, and only from the entry's own source address. An entry
+with no source is refused from every address (`unbound_refused`); it used to be honoured from any,
+which was the open half of S8.
+
+Not modelled: that the address the broker binds is the VM's. That is `Syncer.bind` and
+`TartSources` (internal/broker/source.go) asking the worker's own Tart, covered by Go tests
+only, and it rests on vmnet not letting one VM send from another's address.
 -/
 
 namespace Grove.Broker
@@ -51,7 +57,7 @@ def lookup (entries : List Entry) (now : Nat) (ph host : Str) (src : Addr) : Exc
     else if ¬ hostAllowed e.kind host then .error .wrongHost
     else match e.source with
       | some a => if a = src then .ok e else .error .wrongSource
-      | none => .ok e
+      | none => .error .wrongSource
 
 inductive Piece | text (s : Str) | ph (p : Str) | secret (t : Str)
   deriving DecidableEq, Repr
@@ -115,8 +121,23 @@ theorem lookup_ok {entries now ph host src e} (h : lookup entries now ph host sr
           split at h
           · cases h; exact ⟨hmem, by omega, by simpa using hhost, fun b hb => by simp_all⟩
           · cases h
-        · rename_i hs
-          cases h; exact ⟨hmem, by omega, by simpa using hhost, fun b hb => by simp_all⟩
+        · cases h
+
+/-- A lookup that succeeds found an entry bound to the address the request came from. -/
+theorem lookup_bound {entries now ph host src e} (h : lookup entries now ph host src = .ok e) :
+    e.source = some src := by
+  unfold lookup at h
+  split at h
+  · cases h
+  · split at h
+    · cases h
+    · split at h
+      · cases h
+      · split at h
+        · split at h
+          · cases h; simp_all
+          · cases h
+        · cases h
 
 theorem swapValue_secrets {entries now host src v v'}
     (h : swapValue entries now host src v = .ok v') :
@@ -168,13 +189,13 @@ theorem swapValue_secrets {entries now host src v v'}
 
 /-- S8: whatever a job sends, the request that leaves the broker carries a real token only (a) in
 `Authorization` or `X-Api-Key`, (b) from an entry whose kind may go to this host, that is live,
-and was issued to this source address when it names one, or (c) where the job already had it. -/
+and is bound to this source address, or (c) where the job already had it. -/
 theorem S8_inject_sound {entries now host src hs hs'}
     (h : inject entries now host src hs = .ok hs') :
     ∀ h' ∈ hs', ∀ t, .secret t ∈ h'.value →
       (∃ h0 ∈ hs, h0.name = h'.name ∧ .secret t ∈ h0.value) ∨
       (injected h'.name = true ∧ ∃ e ∈ entries, e.token = t ∧ now < e.expires ∧
-        hostAllowed e.kind host = true ∧ ∀ a, e.source = some a → a = src) := by
+        hostAllowed e.kind host = true ∧ e.source = some src) := by
   induction hs generalizing hs' with
   | nil => simp [inject] at h; subst h; simp
   | cons x rest ih =>
@@ -196,8 +217,8 @@ theorem S8_inject_sound {entries now host src hs hs'}
           · unfold headerValue at hv; rw [if_pos hinj] at hv
             rcases swapValue_secrets hv t ht with h0 | ⟨p, e, he, rfl⟩
             · exact Or.inl ⟨x, by simp, rfl, h0⟩
-            · obtain ⟨hm, hx, hh, hsrc⟩ := lookup_ok he
-              exact Or.inr ⟨hinj, e, hm, rfl, hx, hh, hsrc⟩
+            · obtain ⟨hm, hx, hh, _⟩ := lookup_ok he
+              exact Or.inr ⟨hinj, e, hm, rfl, hx, hh, lookup_bound he⟩
           · unfold headerValue at hv; rw [if_neg hinj] at hv
             cases hv
             exact Or.inl ⟨x, by simp, rfl, ht⟩
@@ -237,10 +258,11 @@ theorem S8_other_headers_untouched {entries now host src hs hs'}
           simp at hi hi' hinj ⊢
           exact hsame j hi hi' hinj
 
-/-- S8 counterexample, the finding: an entry with no source is honoured from any address. -/
-theorem source_unbound :
+/-- The old finding, closed: an entry with no source was honoured from any address, and is now
+refused from every one. -/
+theorem unbound_refused :
     let e : Entry := ⟨"gph1_x".toList, .github, "ghp_real".toList, 100, none⟩
-    lookup [e] 0 "gph1_x".toList "api.github.com".toList 7 = .ok e ∧ lookup [e] 0 "gph1_x".toList "api.github.com".toList 8 = .ok e := by
+    lookup [e] 0 "gph1_x".toList "api.github.com".toList 7 = .error .wrongSource ∧ lookup [e] 0 "gph1_x".toList "api.github.com".toList 8 = .error .wrongSource := by
   intro e; exact ⟨rfl, rfl⟩
 
 /-- With a source, the same placeholder from another address is refused. -/

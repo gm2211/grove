@@ -79,8 +79,10 @@ func hostAllowed(k Kind, host string) bool {
 type Entry struct {
 	Placeholder string `json:"placeholder"`
 	Job         string `json:"job"`
-	// VM is the Orchard VM the job runs in. Source, when valid, is that VM's address on the
-	// bridge; a request carrying this placeholder from any other address is refused.
+	// VM is the Orchard VM the job runs in, set by the control plane from the job's placement.
+	// Source is that VM's address on the worker's bridge, set by the worker's broker (Syncer.bind,
+	// never by the control plane, which can't know it); a request carrying this placeholder from
+	// any other address is refused, and so is every request while Source is unset.
 	VM      string     `json:"vm,omitempty"`
 	Source  netip.Addr `json:"source,omitempty"`
 	Kind    Kind       `json:"kind"`
@@ -209,7 +211,8 @@ var (
 )
 
 // Lookup returns the entry for placeholder if it is live, may be sent to host, and was issued to
-// the VM at src (when the entry names a source).
+// the VM at src. An entry with no source is refused from every address: unbound never means
+// "any VM".
 func (s *Store) Lookup(placeholder, host string, src netip.Addr) (Entry, error) {
 	s.mu.RLock()
 	e, ok := s.entries[placeholder]
@@ -220,7 +223,7 @@ func (s *Store) Lookup(placeholder, host string, src netip.Addr) (Entry, error) 
 	if !hostAllowed(e.Kind, host) {
 		return Entry{}, ErrWrongHost
 	}
-	if e.Source.IsValid() && e.Source.Unmap() != src.Unmap() {
+	if !e.Source.IsValid() || e.Source.Unmap() != src.Unmap() {
 		return Entry{}, ErrWrongSource
 	}
 	return e, nil
