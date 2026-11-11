@@ -4,6 +4,14 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **The worker Mac's VM firewall opens Nomad RPC towards the control plane only.** The
+  `com.apple/grove-vm` anchor passed TCP 4647 to any address, so root in a VM could reach that port
+  on every private and tailnet address. The pass now names the control plane's address (this Mac's
+  own when the control plane runs here), resolved when the install plan is built; a name that does
+  not resolve fails the step instead of opening the port everywhere. After upgrading, `grove doctor`
+  reports `host-firewall` as changed until an admin runs the root step again (`grove setup`). See
+  docs/OPERATIONS.md "The worker Mac's own firewall" if Nomad is not on the control plane's host.
+
 - **Linux pools can pull private images (GHCR), and environment images can be tags.** Nomad's docker
   driver on a Linux VM pulled the pool's `runnerImage` and a job's environment image anonymously, so
   `ghcr.io/gm2211/argos-ci` failed with `unauthorized`. `grove registry pull enable --user <u> --repo

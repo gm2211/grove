@@ -179,11 +179,13 @@ func CheckAdminAccount(ctx context.Context, r Runner, name string) error {
 // the admin's join returned), and the plists in it are pinned by the SHA-256 of what this process
 // renders. Nothing else in the plan is checked or applied.
 //
-// A worker's controller URL goes only into the wrapper, an unprivileged step of the user's own, so
-// opts may leave it empty (repairing an install whose wrapper this process can't read).
+// A worker's controller URL goes into the wrapper, an unprivileged step of the user's own, so opts
+// may leave it empty (repairing an install whose wrapper this process can't read). The VM
+// firewall's Nomad RPC pass then takes the control plane's address from the grove server URL
+// (nomadRPCSource), which the root-owned broker plist names.
 func PendingRootSteps(ctx context.Context, r Runner, opts Options) ([]Step, error) {
 	if opts.Role == RoleWorker && opts.Controller == "" {
-		opts.Controller = "https://controller.not-used-by-root-steps.invalid"
+		opts.Controller = rootStepsControllerPlaceholder
 	}
 	steps, err := BuildPlan(r, opts, io.Discard)
 	if err != nil {
