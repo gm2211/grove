@@ -202,6 +202,13 @@ also closes the ways a job user could use it (`macosLockdownScript`, `internal/f
 
 A step that fails stops the startup script, so the VM takes no job, and Orchard restarts it.
 
+## Releases
+
+Nobody tags a release. When CI is green on main and the commit changes what a release ships (the Go
+code, the UI, the job templates, the install script, the release config),
+`.github/workflows/autorelease.yml` tags the next patch version and runs the release for it. A new
+minor or major version is still a `v*` tag pushed by hand; automatic releases continue from it.
+
 ## Rolling a new image
 
 Pool images (`ghcr.io/gm2211/grove-{linux,macos}-worker:latest`) are Packer-built under `images/`.
