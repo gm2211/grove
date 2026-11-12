@@ -421,7 +421,11 @@ code, change the model with it, and when you fix a bug a model found, add its mu
 
 CI (`.github/workflows/ci.yml`) runs `go build/vet/test` on `ubuntu-latest` and `macos-latest`,
 plus the `ui` build when `ui/package.json` exists. Releases (`.github/workflows/release.yml`) run
-on `v*` tags via goreleaser (`.goreleaser.yaml`), which also regenerates `Formula/grove.rb` in
+via goreleaser (`.goreleaser.yaml`) and need no hands: when CI is green on main and the commit
+changes what a release ships, `.github/workflows/autorelease.yml` tags the next patch version
+(`.github/scripts/next-release-tag.sh`) and calls release.yml for it. Never ask the operator to
+push a tag for a patch release; a hand-pushed `v*` tag is only for a new minor or major version.
+goreleaser also regenerates `Formula/grove.rb` in
 this same repo — grove is its own Homebrew tap, no separate `gm2211/homebrew-tap` repo or PAT.
 
 ## If asked to install grove on this machine

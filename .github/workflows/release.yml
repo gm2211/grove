@@ -1,9 +1,18 @@
 name: release
 
+# A release is cut for a pushed v* tag, and for the tag autorelease.yml creates when main is green:
+# a tag pushed with the workflow's own GITHUB_TOKEN does not start workflows, so autorelease.yml
+# calls this one with the tag instead.
 on:
   push:
     tags:
       - "v*"
+  workflow_call:
+    inputs:
+      tag:
+        description: The v* tag to release. It must already exist.
+        required: true
+        type: string
 
 # Every action is pinned to a commit, with its release in the trailing comment: a tag can be moved
 # to other code, a commit cannot. Resolve a new pin with
@@ -32,6 +41,8 @@ jobs:
           - {goos: linux, goarch: amd64}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Fetch Orchard at the pinned commit
         run: |
@@ -86,6 +97,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0

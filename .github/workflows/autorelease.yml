@@ -1,0 +1,64 @@
+name: autorelease
+
+# Nobody tags a release by hand: when CI is green on main and the commit changes what a release
+# ships, this tags the next patch version and runs release.yml for it.
+#
+# - Only after CI succeeded for a push to main, and only for main's current tip: an older green
+#   run is skipped, the newest one releases everything before it.
+# - Only when something a release ships changed since the last tag (the Go code, the UI, the job
+#   templates, the install script, the release config). Docs, specs, images and the Formula commit
+#   goreleaser pushes back do not cut a release, so a release never triggers another.
+# - A different minor or major version is still a tag pushed by hand, which release.yml takes as
+#   before; the next automatic release continues from it.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autorelease
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # pushing the tag
+    outputs:
+      tag: ${{ steps.next.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Decide the next tag
+        id: next
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: .github/scripts/next-release-tag.sh "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Push the tag
+        if: steps.next.outputs.tag != ''
+        env:
+          TAG: ${{ steps.next.outputs.tag }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          git tag "$TAG" "$HEAD_SHA"
+          git push origin "refs/tags/$TAG"
+
+  release:
+    needs: tag
+    if: needs.tag.outputs.tag != ''
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.tag.outputs.tag }}
