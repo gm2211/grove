@@ -162,6 +162,8 @@ func runBroker(cmd *cobra.Command, _ []string) error {
 	go unlocks.run(ctx)
 	proxy := &broker.Proxy{Store: store, CA: ca, Resync: syncer.Sync, Synced: syncer.Synced}
 	go syncer.Run(ctx)
+	// No entries: no job on this Mac is using a credential that a restart would drop.
+	go runAutoUpdate(ctx, "broker", func(context.Context) bool { return store.Len() == 0 }, restartSelf)
 
 	slog.Info("broker: starting", "listen", listen, "ca", filepath.Join(caDir, "broker-ca.pem"))
 	for ctx.Err() == nil {

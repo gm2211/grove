@@ -4,6 +4,15 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **grove updates itself.** `grove serve` and the worker's broker look for a newer release every
+  hour and, while no job is running, install it: the archive is verified against the release's
+  `checksums.txt`, the new binary must run and report the expected version, the old one is kept as
+  `grove.<version>.bak`, and a worker's install is re-run with the new binary (never with sudo).
+  Each daemon then restarts onto the new binary. `grove self-update` does the same by hand,
+  `update: {auto: false}` in config.yaml turns it off. A Homebrew-installed grove is not replaced
+  (the Cellar belongs to whoever runs brew), but its daemons still restart onto a binary `brew
+  upgrade` put under them.
+
 - **A pool whose image can't be pulled stays up on its last good image.** `grove serve` remembers
   the last image each pool ran (`images.json`). When the image `fleet.yaml` names can't be pulled
   it recreates the pool's VMs with that last good image, retries the named one after 30 minutes and
