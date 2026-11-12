@@ -49,6 +49,7 @@ func init() {
 	var hosts []string
 	var allow []string
 	var ttl time.Duration
+	var renew string
 	enable := &cobra.Command{
 		Use:   "enable",
 		Short: "Arm a GitHub credential so jobs can clone private repositories.",
@@ -71,7 +72,7 @@ func init() {
 			if ttl <= 0 {
 				return errors.New("--ttl must be positive: a credential is never armed forever")
 			}
-			req := gitauth.EnableRequest{Token: token, Hosts: hosts, Repos: repos, Allow: allow, TTL: ttl.String()}
+			req := gitauth.EnableRequest{Token: token, Hosts: hosts, Repos: repos, Allow: allow, TTL: ttl.String(), Renew: renew}
 			status, err := client.EnableGitHubSourcing(cmd.Context(), req)
 			if err != nil {
 				return err
@@ -86,6 +87,7 @@ func init() {
 	enable.Flags().StringArrayVar(&repos, "repo", nil, "owner/name the credential may clone (required, repeatable; \"owner/*\" allows every repo of an owner)")
 	enable.Flags().StringArrayVar(&hosts, "host", nil, "git host the credential may be used against (repeatable, default github.com — set for GitHub Enterprise)")
 	enable.Flags().StringArrayVar(&allow, "allow", nil, "principal id or tag:<name> whose jobs may clone with the credential (repeatable; none = operators only)")
+	enable.Flags().StringVar(&renew, "renew", "", "\"gh\": before the token expires, the control plane replaces it with the one `gh auth token` prints for the user `grove serve` runs as, keeping the repos, allow list and TTL; it still lapses if that gh login is gone")
 	enable.Flags().DurationVar(&ttl, "ttl", gitauth.DefaultTTL, "auto-disable and wipe the token after this long, e.g. 4h (at most 720h)")
 	github.AddCommand(enable)
 
@@ -154,6 +156,9 @@ func printGitHubSourcingStatus(out io.Writer, status *gitauth.Status) {
 	fmt.Fprintf(out, "  token:       sha256:%s\n", status.TokenFingerprint)
 	if status.ExpiresAt != nil {
 		fmt.Fprintf(out, "  expires:     %s (in %s)\n", status.ExpiresAt.Format(time.RFC3339), time.Until(*status.ExpiresAt).Round(time.Minute))
+	}
+	if status.Renew != "" {
+		fmt.Fprintf(out, "  renews:      from %s on the control plane, at half its lifetime\n", status.Renew)
 	}
 	if status.EnabledBy != "" && status.EnabledAt != nil {
 		fmt.Fprintf(out, "  enabled by:  %s at %s\n", status.EnabledBy, status.EnabledAt.Format(time.RFC3339))
