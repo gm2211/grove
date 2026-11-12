@@ -52,7 +52,16 @@ func fakeMacOSLockdown(t *testing.T, fakeBin, script string, gated bool) (rewrit
 		}
 	}
 	securityLog = filepath.Join(t.TempDir(), "security.log")
-	stub := "#!/bin/sh\necho \"$*\" >> " + shQuote(securityLog) + "\nexit \"${GROVE_TEST_SECURITY_EXIT:-0}\"\n"
+	// Like macOS 26's: no rule named "deny" to copy (the old shorthand answers NO), a rule on
+	// stdin is stored, and read prints what is stored.
+	rights := filepath.Join(t.TempDir(), "right.plist")
+	stub := "#!/bin/sh\necho \"$*\" >> " + shQuote(securityLog) + "\n" +
+		"[ \"${GROVE_TEST_SECURITY_EXIT:-0}\" = 0 ] || exit \"$GROVE_TEST_SECURITY_EXIT\"\n" +
+		"case \"$*\" in\n" +
+		"  'authorizationdb write system.privilege.admin') cat > " + shQuote(rights) + " ;;\n" +
+		"  'authorizationdb read system.privilege.admin') cat " + shQuote(rights) + " ;;\n" +
+		"  *) echo 'NO (-60005)' >&2; exit 1 ;;\n" +
+		"esac\n"
 	if err := os.WriteFile(filepath.Join(fakeBin, "security"), []byte(stub), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +103,8 @@ func TestMacOSLockdownScript(t *testing.T) {
 		}
 	}
 	log, _ := os.ReadFile(securityLog)
-	if string(log) != "authorizationdb write system.privilege.admin deny\nauthorizationdb write system.privilege.admin deny\n" {
+	once := "authorizationdb write system.privilege.admin\nauthorizationdb read system.privilege.admin\n"
+	if string(log) != once+once {
 		t.Errorf("security calls = %q", log)
 	}
 

@@ -4,6 +4,11 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **macOS 26 guests no longer boot-loop in the lockdown.** macOS 26 removed the authorization rule
+  named `deny`, so `security authorizationdb write system.privilege.admin deny` answered
+  `NO (-60005)`, the startup script exited 1 and Orchard restarted the VM forever. The right is now
+  written as a `class=deny` rule on stdin and read back; the script still stops if it isn't denied.
+
 - **grove updates itself.** `grove serve` and the worker's broker look for a newer release every
   hour and, while no job is running, install it: the archive is verified against the release's
   `checksums.txt`, the new binary must run and report the expected version, the old one is kept as

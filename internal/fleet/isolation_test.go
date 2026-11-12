@@ -595,7 +595,8 @@ func TestBuildStartupScript_IsolatedMacOSRunsThroughFakeSudo(t *testing.T) {
 			"printf '%s\\n' 'An asterisk (*) denotes that a network service is disabled.' 'Ethernet' '*Thunderbolt Bridge' 'Wi-Fi'\n",
 		"dscl":      "#!/bin/sh\n[ \"$2\" = -read ] || exit 64\nexit 56\n", // no job user yet
 		"launchctl": "#!/bin/sh\nexit 64\n",
-		"sudo":      "#!/bin/sh\nset -eu\n[ \"${1:-}\" = \"-n\" ] || exit 65\nshift\nprintf '%s\\n' \"$*\" >> \"$GROVE_TEST_SUDO_LOG\"\n",
+		"sudo": "#!/bin/sh\nset -eu\n[ \"${1:-}\" = \"-n\" ] || exit 65\nshift\nprintf '%s\\n' \"$*\" >> \"$GROVE_TEST_SUDO_LOG\"\n" +
+			"case \"$*\" in 'security authorizationdb read '*) echo '<key>class</key> <string>deny</string>' ;; esac\n",
 	} {
 		if err := os.WriteFile(filepath.Join(fakeBin, name), []byte(body), 0o755); err != nil {
 			t.Fatal(err)
@@ -633,7 +634,7 @@ func TestBuildStartupScript_IsolatedMacOSRunsThroughFakeSudo(t *testing.T) {
 	}
 	tail := strings.Join(got[len(want):], "\n")
 	for _, step := range []string{"dscl . -create /Users/_grovejob UniqueID 7460", "mkdir -p /private/var/grove-job", "chmod 0700 /private/var/grove-job",
-		"security authorizationdb write system.privilege.admin deny", "tee /usr/local/etc/grove/pf-jobs.conf", "tee /Library/LaunchDaemons/com.grove.pf-jobs.plist"} {
+		"security authorizationdb write system.privilege.admin", "security authorizationdb read system.privilege.admin", "tee /usr/local/etc/grove/pf-jobs.conf", "tee /Library/LaunchDaemons/com.grove.pf-jobs.plist"} {
 		if !strings.Contains(tail, step) {
 			t.Errorf("privileged steps miss %q:\n%s", step, tail)
 		}

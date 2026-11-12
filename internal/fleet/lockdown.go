@@ -9,8 +9,10 @@ package fleet
 //     A caller that is root still passes su through pam_rootok, and sudo, which Orchard and grove
 //     use as admin, has its own PAM file and is untouched.
 //   - system.privilege.admin, the right behind GUI-style privilege prompts (osascript's "with
-//     administrator privileges", AuthorizationExecuteWithPrivileges), is denied outright. sudo
-//     doesn't go through authorization rights.
+//     administrator privileges", AuthorizationExecuteWithPrivileges), is denied outright: written
+//     as a class=deny rule on stdin and read back (macOS 26 dropped the rule named "deny" the
+//     old shorthand copied, which made the script exit 1 and the VM boot-loop). sudo doesn't go
+//     through authorization rights.
 //
 // SSH to admin is closed by the pf anchor (macosSSHBlockRule). Every step is idempotent, since the
 // script runs at every boot, and a failed one stops the script before Nomad takes work.
@@ -33,7 +35,22 @@ for grove_pam in /etc/pam.d/su /etc/pam.d/login; do
     exit 1
   fi
 done
-if ! grove_priv security authorizationdb write system.privilege.admin deny >/dev/null 2>&1; then
+# The right is written as a rule of class deny: macOS 26 no longer has the built-in rule named
+# "deny" that the shorthand (authorizationdb write <right> deny) copied, and answers NO (-60005).
+grove_priv security authorizationdb write system.privilege.admin >/dev/null 2>&1 <<'GROVE_AUTHZ_DENY' || true
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>class</key>
+	<string>deny</string>
+	<key>comment</key>
+	<string>grove: nothing in a job VM may ask for administrator privileges</string>
+</dict>
+</plist>
+GROVE_AUTHZ_DENY
+# Believe only what reads back.
+if ! grove_priv security authorizationdb read system.privilege.admin 2>/dev/null | tr -d '[:space:]' | grep -qF '<key>class</key><string>deny</string>'; then
   echo "grove: could not deny the system.privilege.admin right" >&2
   exit 1
 fi
