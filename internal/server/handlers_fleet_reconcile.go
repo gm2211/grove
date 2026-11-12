@@ -58,6 +58,9 @@ type FleetReconcileResponse struct {
 	LastError string                  `json:"lastError,omitempty"`
 	Interval  string                  `json:"interval,omitempty"`
 	Enabled   bool                    `json:"enabled"`
+	// Fallbacks lists the pools running on their last good image because the one fleet.yaml
+	// names can't be pulled (fleet.ImageHolds).
+	Fallbacks []fleet.PlannedFallback `json:"fallbacks,omitempty"`
 }
 
 // FleetReconcileSummary is the subset of FleetReconcileResponse folded into GET /fleet's own
@@ -89,6 +92,7 @@ func (s *FleetReconcileStatus) response() FleetReconcileResponse {
 		LastRunAt: s.lastRunAt,
 		LastPlan:  planNames(s.lastPlan),
 		Enabled:   s.enabled,
+		Fallbacks: s.lastPlan.Fallbacks,
 	}
 	if s.interval > 0 {
 		resp.Interval = s.interval.String()

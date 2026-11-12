@@ -4,6 +4,16 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **A pool whose image can't be pulled stays up on its last good image.** `grove serve` remembers
+  the last image each pool ran (`images.json`). When the image `fleet.yaml` names can't be pulled
+  it recreates the pool's VMs with that last good image, retries the named one after 30 minutes and
+  then at doubling intervals up to 6 hours, and switches over by itself once it runs. A changed
+  `image:` is tried at once. A VM that failed for want of its image is reported as
+  `image-unavailable` instead of `failed`.
+
+- **Releases are automatic.** `autorelease.yml` tags and releases the next patch version when CI is
+  green on main and the commit changes what a release ships. Nobody pushes a patch tag.
+
 - **macOS images: a host-side scrub before the scan, and no tailnet search domain during the
   build.** The guest logs until it powers off, after the in-guest scrub, and a leaked image's last
   log file held the tailnet name. `make images-macos*` now runs `images/scan/scrub-tart-vm.sh` on

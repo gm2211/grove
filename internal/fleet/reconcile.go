@@ -60,6 +60,9 @@ type Options struct {
 	// (see Enrol and registryauth.Store): the operator-armed registry credential when it covers
 	// one of the pool's images, else an empty login. Nil leaves the VMs' login as it is.
 	RegistryPull RegistryPull
+	// Images, when set, keeps a pool on the last image it ran while the image it names can't be
+	// pulled (see ImageHolds). Nil creates every VM with its pool's named image.
+	Images *ImageHolds
 	// Load sizes elastic pools (see Pool.MaxPerWorker and autoscale.go). Nil keeps each elastic
 	// pool at its current size, clamped to its bounds.
 	Load *JobLoad
@@ -129,6 +132,9 @@ type Plan struct {
 	// running, and any other VM of it is deleted, so a pool asked to be isolated never keeps an
 	// unisolated VM.
 	Blocked []PlannedBlock
+	// Fallbacks lists the pools created with their last good image because the one they name
+	// can't be pulled (see ImageHolds). Such a pool keeps taking jobs.
+	Fallbacks []PlannedFallback
 	// Unmatched lists the shared pools that no online, schedulable worker can host: no VM of
 	// them can exist until a matching worker appears, so their jobs can never be placed.
 	Unmatched []string
@@ -204,6 +210,11 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 				}
 			}
 			continue
+		}
+
+		if image, fallback := r.Options.Images.effective(pool, r.Options.now()); fallback != nil {
+			pool.Image = image
+			plan.Fallbacks = append(plan.Fallbacks, *fallback)
 		}
 
 		matched := false
@@ -484,6 +495,13 @@ func (r *Reconciler) Run(ctx context.Context, interval time.Duration) error {
 	var enrolment EnrolState
 
 	tick := func() {
+		if r.Options.Images != nil {
+			if vms, err := r.Client.ListVMs(ctx); err == nil {
+				for _, note := range r.Options.Images.Observe(r.Spec, vms, r.Options.now()) {
+					logger.Printf("fleet: %s", note)
+				}
+			}
+		}
 		plan, err := r.Plan(ctx)
 		if err != nil {
 			logger.Printf("fleet: plan failed: %v", err)
