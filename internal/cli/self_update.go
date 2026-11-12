@@ -238,15 +238,16 @@ func runAutoUpdate(ctx context.Context, name string, idle func(context.Context) 
 
 func (u *updater) check(ctx context.Context) error {
 	var log bytes.Buffer
-	if err := u.finishPending(ctx, &log); err != nil {
-		return err
-	}
+	// A pending worker re-install that fails must not stop the look for a newer release: the
+	// newer grove may be what fixes it (0.1.45 could never get past its own failing re-install to
+	// the release that repaired it).
+	pendingErr := u.finishPending(ctx, &log)
 	latest, err := install.LatestGroveRelease(ctx, u.runner)
 	if err != nil {
-		return err
+		return errors.Join(pendingErr, err)
 	}
 	if !install.NewerVersion(latest, u.diskVersion(ctx)) {
-		return nil
+		return pendingErr
 	}
 	err = u.update(ctx, latest, &log)
 	for _, line := range strings.Split(strings.TrimSpace(log.String()), "\n") {

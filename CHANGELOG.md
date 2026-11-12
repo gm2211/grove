@@ -4,6 +4,11 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Self-update: a failing pending re-install no longer blocks newer releases.** The hourly check
+  returned as soon as the worker re-install left over from the previous update failed, so it never
+  looked for the release that fixed it. It now always looks for and installs a newer release, and
+  reports the pending failure alongside.
+
 - **Self-update: the worker re-install runs with a usable PATH and never bootstraps Homebrew.**
   A launchd job's PATH has neither `brew` nor `tailscale`, so the install a self-update runs
   failed its tailscale check and tried to install Homebrew. It now gets Homebrew's and the user's
