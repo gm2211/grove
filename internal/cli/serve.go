@@ -236,6 +236,20 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 	}
 	srv := server.New(oc, nc, ds, ac, serverOpts)
 	go reloadOperatorTokenOnHangup(ctx, srv, cfg.Server.Token)
+	// Idle means no job is pending or running: a restart drops the in-memory credential entries
+	// their brokers sync from here.
+	go runAutoUpdate(ctx, "serve", func(ctx context.Context) bool {
+		jobs, err := ds.List(ctx)
+		if err != nil {
+			return false
+		}
+		for _, j := range jobs {
+			if j.Status == dispatch.StatusPending || j.Status == dispatch.StatusRunning {
+				return false
+			}
+		}
+		return true
+	}, restartSelf)
 
 	// Recreate TTL-recycled VMs: ARCHITECTURE.md's "Recycling / hygiene" step 3 says grove's fleet
 	// reconciler notices a deleted VM and recreates it, but until now `grove serve` never actually

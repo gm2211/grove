@@ -334,6 +334,15 @@ privileged step, printed for an admin. Keep it that way:
 - Every pass comes before the block. `hostfirewall_test.go` loads the anchor on the macOS CI
   runner's real pf (`GROVE_PF_TEST=1`).
 
+## Self-update — nobody upgrades grove by hand
+
+`internal/install/selfupdate.go` and `internal/cli/self_update.go`: `grove serve` and the broker
+install newer releases by themselves (`runAutoUpdate`) and restart. Keep it that way: nothing is
+installed unless the archive matches the release's `checksums.txt` and the new binary reports the
+expected version; never while a job is pending or running (a restart drops in-memory credential
+entries); never through sudo or into a path this user doesn't own (Homebrew's is left to brew);
+never a development build. Never tell the operator to upgrade a machine by hand when this covers it.
+
 ## Image holds — a pool never goes down for a bad image
 
 `internal/fleet/imagehold.go`: `grove serve` keeps a pool on the last image a VM of it ran while

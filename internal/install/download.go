@@ -174,7 +174,12 @@ func hasReleaseVersion(opts Options) bool {
 // orchardReleaseDownload resolves the release's Orchard asset and its expected digest from the
 // release's checksums.txt (fetched through r over HTTPS, like grove itself).
 func orchardReleaseDownload(ctx context.Context, r Runner, opts Options) (pinnedDownload, error) {
-	asset := orchardAssetName(opts)
+	return releaseDownload(ctx, r, opts, orchardAssetName(opts))
+}
+
+// releaseDownload resolves one asset of grove's opts.GroveVersion release and its expected digest
+// from that release's checksums.txt.
+func releaseDownload(ctx context.Context, r Runner, opts Options, asset string) (pinnedDownload, error) {
 	sums, _, err := r.Run(ctx, "curl", "-fsSL", "--proto", "=https", "--tlsv1.2", groveReleaseURL(opts, "checksums.txt"))
 	if err != nil {
 		return pinnedDownload{}, fmt.Errorf("fetch release checksums: %w", err)

@@ -202,6 +202,24 @@ also closes the ways a job user could use it (`macosLockdownScript`, `internal/f
 
 A step that fails stops the startup script, so the VM takes no job, and Orchard restarts it.
 
+## Upgrading grove on a machine
+
+Nothing to do where grove is the user's own binary (a release tarball in `~/.local/bin`, as on the
+control plane): `grove serve` and the worker's broker check for a newer release hourly and, while
+no job is pending or running, install it (verified against the release's `checksums.txt`; the old
+binary stays beside it as `grove.<version>.bak`), re-run the worker install with it (`--no-sudo`:
+a changed root step is printed in the log, never run), and restart themselves. `grove self-update`
+does it on demand, `grove self-update --check` only looks. Turn it off with `update: {auto: false}`
+in config.yaml.
+
+Where grove is Homebrew's, the brew user runs `brew upgrade grove`; the daemons notice the newer
+binary within ten minutes and restart onto it by themselves once idle. To roll back, move
+`grove.<version>.bak` over `grove` and set `update: {auto: false}`.
+
+A restart of the Orchard worker loses a keychain unlock typed into the Map (it lives in that
+process's session), so a Mac that relies on it needs the unlock again after an update that changed
+the worker wrapper.
+
 ## Releases
 
 Nobody tags a release. When CI is green on main and the commit changes what a release ships (the Go

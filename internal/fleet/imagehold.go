@@ -62,7 +62,7 @@ type poolImageState struct {
 const imageHoldsVersion = 1
 
 type imageHoldsFile struct {
-	Version int                    `json:"version"`
+	Version int                        `json:"version"`
 	Pools   map[string]*poolImageState `json:"pools"`
 }
 

@@ -36,6 +36,20 @@ type Config struct {
 	Enrollment EnrollmentConfig `yaml:"enrollment,omitempty"`
 	// Worker records how this Mac's worker was installed, so a re-run installs it the same way.
 	Worker WorkerConfig `yaml:"worker,omitempty"`
+	// Update controls grove updating itself (see `grove self-update`).
+	Update UpdateConfig `yaml:"update,omitempty"`
+}
+
+// UpdateConfig is the `update:` block.
+type UpdateConfig struct {
+	// Auto, when false, stops `grove serve` and the worker's broker from installing newer grove
+	// releases by themselves. Unset means on.
+	Auto *bool `yaml:"auto,omitempty"`
+}
+
+// AutoUpdate reports whether this machine's daemons update grove by themselves.
+func (c *Config) AutoUpdate() bool {
+	return c == nil || c.Update.Auto == nil || *c.Update.Auto
 }
 
 // WorkerConfig is what `grove install --role worker` remembers about the worker on this Mac.
