@@ -7,6 +7,7 @@ import { Button } from "./Button";
 const label: Record<FleetProblem["kind"], string> = {
   "needs-unlock": "keychain locked",
   "boot-loop": "boot loop",
+  "image-unavailable": "image can't be pulled",
   failed: "failed",
   "not-joined": "never joined Nomad",
 };

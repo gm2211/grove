@@ -334,6 +334,15 @@ privileged step, printed for an admin. Keep it that way:
 - Every pass comes before the block. `hostfirewall_test.go` loads the anchor on the macOS CI
   runner's real pf (`GROVE_PF_TEST=1`).
 
+## Image holds — a pool never goes down for a bad image
+
+`internal/fleet/imagehold.go`: `grove serve` keeps a pool on the last image a VM of it ran while
+the image it names can't be pulled (`ImageHolds`, `images.json`), retries the named image on a
+growing interval and switches back by itself. Keep it that way: a failure to get an image must
+never need the operator to edit fleet.yaml to get the pool's jobs running again, only `Observe`
+writes the store (Plan reads it), and it holds image names and Orchard messages, never a
+credential. `internal/fleet/imagehold_test.go` asserts it.
+
 ## `internal/snooze` — why a worker is paused
 
 Orchard has one pause bit per worker, so `pauses.json` (next to `devices.json`, mode 0600,

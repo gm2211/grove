@@ -322,6 +322,11 @@ func printPlan(w io.Writer, plan fleet.Plan) {
 		fmt.Fprintf(w, "! blocked pool=%s: %s\n", b.Pool, b.Reason)
 	}
 
+	for _, f := range plan.Fallbacks {
+		fmt.Fprintf(w, "! pool=%s runs on its last good image %s: %s can't be pulled (%s); next try %s\n",
+			f.Pool, f.Running, f.Image, f.Reason, f.RetryAt.Local().Format("15:04"))
+	}
+
 	if plan.Empty() {
 		if len(plan.Blocked) == 0 {
 			fmt.Fprintln(w, "up to date")

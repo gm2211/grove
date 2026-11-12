@@ -219,6 +219,16 @@ After pushing a new tag:
    (`POST /api/v1/vms/{name}/recycle` per VM, or delete them directly — the reconciler notices spec
    drift and recreates against the new image either way).
 
+**An image that can't be pulled does not take the pool down.** If the image a pool names can't be
+pulled (never pushed, deleted, a registry login that doesn't cover it), `grove serve` puts the pool
+back on the last image a VM of it ran, which the worker still has in Tart's cache, and keeps taking
+jobs. It tries the named image again after 30 minutes, then at doubling intervals up to 6 hours
+(each try recycles one VM), and moves the pool over by itself once a VM runs it. Changing `image:`
+is tried at once. `grove fleet plan`, the serve log and `GET /api/v1/fleet/reconcile` (`fallbacks`)
+say when a pool is on its last good image and why. The memory is `images.json` next to
+`devices.json` (image names and Orchard's messages only). A pool that has never run anything has no
+image to fall back to: its VM shows as `image-unavailable` and is retried every 10 minutes.
+
 ## Pausing a Mac
 
 To stop work landing on a worker (maintenance, moving it, thermal issues):

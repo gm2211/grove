@@ -254,6 +254,14 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 		loop := newFleetReconcileLoop(cfg, oc, srv.FleetReconcile())
 		loop.health = poolHealth
 		loop.registry = registryStore
+		// Image names and Orchard's messages only; without it the pool just isn't kept on its last
+		// good image, so a broken file must not stop serve.
+		if holds, err := fleet.OpenImageHolds(filepath.Join(filepath.Dir(cfgPath), "images.json")); err != nil {
+			slog.Warn("serve: fleet reconciler: image holds unreadable; starting empty", "err", err)
+			loop.images, _ = fleet.OpenImageHolds("")
+		} else {
+			loop.images = holds
+		}
 		if purger, ok := nomad.AsNodePurger(nc); ok {
 			loop.nodes = &fleet.NodeSweeper{Nodes: purger}
 		}
@@ -394,6 +402,9 @@ type fleetReconcileLoop struct {
 	// registry is the operator-armed registry pull credential, which Enrol writes into the Linux
 	// VMs whose pools' images it covers; nil gives every VM an empty login.
 	registry *registryauth.Store
+	// images keeps a pool on the last image it ran while the one it names can't be pulled (see
+	// fleet.ImageHolds); nil turns that off.
+	images *fleet.ImageHolds
 
 	// jobs, vmLoads and tracker feed elastic pools' autoscaling (see fleet.JobLoad); nil leaves
 	// elastic pools at their current size.
@@ -493,6 +504,14 @@ func (l *fleetReconcileLoop) tick(ctx context.Context) {
 	options.Load = l.jobLoad(ctx, time.Now())
 	if l.registry != nil {
 		options.RegistryPull = l.registry
+	}
+	if l.images != nil {
+		options.Images = l.images
+		if vms, verr := l.client.ListVMs(ctx); verr == nil {
+			for _, note := range l.images.Observe(spec, vms, time.Now()) {
+				slog.Warn("serve: fleet reconciler: " + note)
+			}
+		}
 	}
 	r := &fleet.Reconciler{
 		Client:  l.client,

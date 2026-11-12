@@ -16,6 +16,9 @@ const (
 	ProblemNeedsUnlock = "needs-unlock"
 	// ProblemBootLoop: Orchard keeps restarting the VM (BootLoopRestarts or more).
 	ProblemBootLoop = "boot-loop"
+	// ProblemImageUnavailable: the worker could not get the VM's image (ImageUnavailable): it was
+	// never pushed or was deleted, or the registry login doesn't cover it.
+	ProblemImageUnavailable = "image-unavailable"
 	// ProblemFailed: the VM failed for another reason and waits for the reconciler to rebuild it.
 	ProblemFailed = "failed"
 	// ProblemNotJoined: the VM has run for NotJoinedAfter with no ready Nomad node of its name, so
@@ -39,7 +42,8 @@ type Problem struct {
 }
 
 // Problems lists the VMs in vms that can't take jobs, most urgent kind first, then by VM name. A
-// VM shows up once, under the first kind that applies: needs-unlock, boot-loop, failed, not-joined.
+// VM shows up once, under the first kind that applies: needs-unlock, boot-loop, image-unavailable, failed,
+// not-joined.
 func Problems(vms []orchard.VM, nodes []nomad.Node, now time.Time) []Problem {
 	ready := map[string]bool{}
 	for _, n := range nodes {
@@ -65,6 +69,9 @@ func Problems(vms []orchard.VM, nodes []nomad.Node, now time.Time) []Problem {
 			if vm.StatusMessage != "" {
 				p.Detail += " (last: " + vm.StatusMessage + ")"
 			}
+		case vm.Status == "failed" && ImageUnavailable(vm.StatusMessage):
+			p.Kind = ProblemImageUnavailable
+			p.Detail = "the worker can't get image " + vm.Image + ": " + vm.StatusMessage
 		case vm.Status == "failed":
 			p.Kind = ProblemFailed
 			p.Detail = "failed"
@@ -80,7 +87,7 @@ func Problems(vms []orchard.VM, nodes []nomad.Node, now time.Time) []Problem {
 		}
 		out = append(out, p)
 	}
-	rank := map[string]int{ProblemNeedsUnlock: 0, ProblemBootLoop: 1, ProblemFailed: 2, ProblemNotJoined: 3}
+	rank := map[string]int{ProblemNeedsUnlock: 0, ProblemBootLoop: 1, ProblemImageUnavailable: 2, ProblemFailed: 3, ProblemNotJoined: 4}
 	sort.Slice(out, func(i, j int) bool {
 		if rank[out[i].Kind] != rank[out[j].Kind] {
 			return rank[out[i].Kind] < rank[out[j].Kind]

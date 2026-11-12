@@ -96,7 +96,7 @@ func loginSessionHint(worker string) string {
 	if worker == "" {
 		worker = "the worker"
 	}
-	return "the worker user on " + worker + " has no login session (macOS guests need its unlocked login keychain; log it in, fast user switching or auto-login)"
+	return "the worker user on " + worker + " has no login session (macOS guests need its unlocked login keychain; log it in at the Mac, fast user switching works, or use the Map's Unlock keychain)"
 }
 
 // PoolHealth remembers, from the fleet reconciler's ticks, why a shared pool has no node that can

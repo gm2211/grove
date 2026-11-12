@@ -106,7 +106,7 @@ export interface FleetEntry {
 
 /** A VM that can't take jobs, and why (GET /fleet `problems`, grove's fleet.Problems). */
 export interface FleetProblem {
-  kind: "needs-unlock" | "boot-loop" | "failed" | "not-joined";
+  kind: "needs-unlock" | "boot-loop" | "image-unavailable" | "failed" | "not-joined";
   vm: string;
   pool?: string;
   worker?: string;
