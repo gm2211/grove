@@ -28,7 +28,34 @@ func withJobsDir(t *testing.T, script, dir string) string {
 	if strings.Count(script, jobsDirLine) != 1 {
 		t.Fatalf("script has %d %q lines, want 1", strings.Count(script, jobsDirLine), jobsDirLine)
 	}
-	return strings.Replace(script, jobsDirLine, "grove_jobs="+dir, 1)
+	script = strings.Replace(script, jobsDirLine, "grove_jobs="+dir, 1)
+	// The clone token's directory: a test's own, never the host's /private/var/tmp.
+	if strings.Contains(script, srcTmpLine) {
+		srcTmp := filepath.Join(filepath.Dir(dir), "srctmp")
+		if err := os.MkdirAll(srcTmp, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		script = strings.Replace(script, srcTmpLine, "grove_srctmp="+srcTmp, 1)
+	}
+	return script
+}
+
+const srcTmpLine = "grove_srctmp=/private/var/tmp"
+
+// On macOS the clone runs as _grovesrc but the task as root, whose $TMPDIR (/var/folders/zz/…/T)
+// is closed to every other user: the token's directory must not be made there, or _grovesrc
+// can't read the token and every private clone fails ("cat: …/token: Permission denied").
+func TestMacOSCloneTokenDirIsReachableByTheCloneUser(t *testing.T) {
+	for _, file := range []string{"build.nomad.hcl", "agent.nomad.hcl"} {
+		kind := strings.TrimSuffix(file, ".nomad.hcl")
+		hcl := render(t, file, renderData{Kind: kind, Pool: "macos"})
+		if strings.Contains(hcl, `tokdir="$(mktemp -d)"`) {
+			t.Errorf("%s: the token directory is made in root's own $TMPDIR, which _grovesrc can't enter", file)
+		}
+		if !strings.Contains(hcl, srcTmpLine) || !strings.Contains(hcl, `mktemp -d "$grove_srctmp/grove-src.XXXXXX"`) {
+			t.Errorf("%s: the token directory is not made under %s", file, srcTmpLine)
+		}
+	}
 }
 
 // fakeMacHost writes stand-ins for the commands a macOS job's root tasks use on the host into
