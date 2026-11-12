@@ -4,6 +4,12 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Self-update: the worker re-install runs with a usable PATH and never bootstraps Homebrew.**
+  A launchd job's PATH has neither `brew` nor `tailscale`, so the install a self-update runs
+  failed its tailscale check and tried to install Homebrew. It now gets Homebrew's and the user's
+  bin directories on PATH and runs with `GROVE_UNATTENDED=1`, under which the `homebrew` step
+  refuses instead of running the installer.
+
 - **macOS 26 guests no longer boot-loop in the lockdown.** macOS 26 removed the authorization rule
   named `deny`, so `security authorizationdb write system.privilege.admin deny` answered
   `NO (-60005)`, the startup script exited 1 and Orchard restarted the VM forever. The right is now
