@@ -121,3 +121,11 @@ func TestSelfUpdate_RefusesABinaryOfAnotherVersion(t *testing.T) {
 		t.Fatalf("err = %v, replaced = %t", err, r.replaced)
 	}
 }
+
+func TestUnattendedPath_PutsHomebrewFirstAndKeepsTheRest(t *testing.T) {
+	got := UnattendedPath("/usr/bin:/bin:/opt/homebrew/bin", "/Users/argos")
+	want := "/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/Users/argos/.local/bin:/usr/bin:/bin"
+	if got != want {
+		t.Fatalf("got %s\nwant %s", got, want)
+	}
+}

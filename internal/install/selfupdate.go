@@ -169,3 +169,26 @@ func WorkerInstalledHere(opts Options) bool {
 	_, err := os.Stat(filepath.Join(opts.ConfigDir(), workerWrapperName))
 	return err == nil
 }
+
+// UnattendedEnv, set in the environment of an install that nobody is watching (the one a
+// self-update runs), keeps it to re-rendering what grove owns: it never bootstraps Homebrew.
+const UnattendedEnv = "GROVE_UNATTENDED"
+
+// UnattendedPath is the PATH for such an install: the caller's, with the places Homebrew and a
+// user-local grove live put first. A LaunchAgent or LaunchDaemon gets only
+// /usr/bin:/bin:/usr/sbin:/sbin, where neither brew nor tailscale is.
+func UnattendedPath(current, home string) string {
+	dirs := []string{"/opt/homebrew/bin", "/usr/local/bin", "/home/linuxbrew/.linuxbrew/bin"}
+	if home != "" {
+		dirs = append(dirs, filepath.Join(home, ".local", "bin"))
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, d := range append(dirs, filepath.SplitList(current)...) {
+		if d != "" && !seen[d] {
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
+	return strings.Join(out, string(os.PathListSeparator))
+}

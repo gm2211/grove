@@ -150,8 +150,12 @@ func (u *updater) finishPendingLocked(ctx context.Context, out io.Writer) error 
 		c := exec.CommandContext(ictx, u.exe, "install", "--role", "worker", "--no-sudo")
 		var buf bytes.Buffer
 		c.Stdout, c.Stderr = &buf, &buf
+		home, _ := os.UserHomeDir()
+		c.Env = append(os.Environ(),
+			"PATH="+install.UnattendedPath(os.Getenv("PATH"), home),
+			install.UnattendedEnv+"=1")
 		if err := c.Run(); err != nil {
-			return fmt.Errorf("re-run the worker install with the new grove: %w\n%s", err, tail(buf.String(), 2000))
+			return fmt.Errorf("re-run the worker install with the new grove: %w\n%s", err, tail(buf.String(), 6000))
 		}
 		fmt.Fprintln(out, "worker install re-run with the new grove")
 	}

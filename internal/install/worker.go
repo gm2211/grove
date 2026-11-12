@@ -101,6 +101,11 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 				return err == nil, nil
 			},
 			Apply: func(ctx context.Context) error {
+				if os.Getenv(UnattendedEnv) != "" {
+					// A daemon's PATH may simply lack brew; bootstrapping a package manager is
+					// never something an update does on its own.
+					return errors.New("brew is not on PATH, and an unattended run does not install Homebrew")
+				}
 				script, err := fetchVerified(ctx, r, opts, homebrewInstallerDownload())
 				if err != nil {
 					return err
