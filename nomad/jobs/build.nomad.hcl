@@ -330,7 +330,10 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         as_src() { (cd / && sudo -n -H -u _grovesrc env HOME=/var/empty GIT_TERMINAL_PROMPT=0 "$@"); }
         chown _grovesrc "$state"
         if [ -n "$token" ]; then
-          tokdir="$(mktemp -d)"
+          # Not under root's own $TMPDIR (/var/folders/zz/…/T, mode 0700): _grovesrc could not get
+          # through it to read the token, and every private clone failed with "Permission denied".
+          grove_srctmp=/private/var/tmp
+          tokdir="$(mktemp -d "$grove_srctmp/grove-src.XXXXXX")"
           printf '%s' "$token" > "$tokdir/token"
           chmod 0400 "$tokdir/token"
           chown -R _grovesrc "$tokdir"
