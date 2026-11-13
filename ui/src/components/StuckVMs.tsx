@@ -45,19 +45,19 @@ export function StuckVMs({ problems }: { problems?: FleetProblem[] }) {
           <li
             key={p.vm}
             className="flex flex-col gap-2 border-t py-2 first:border-t-0"
-            style={{ borderColor: "#2a2416" }}
+            style={{ borderColor: "#3a3220" }}
           >
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
               <span className="badge" data-kind={p.kind}>
                 {label[p.kind] ?? p.kind}
               </span>
               <span className="mono text-[12.5px] text-[#eaf4f4]">{p.vm}</span>
-              {p.worker && <span className="mono text-[11.5px] text-[#8c9a9e]">on {p.worker}</span>}
+              {p.worker && <span className="mono text-[11.5px] text-[#a3b0b4]">on {p.worker}</span>}
               <span className="text-[12px] text-[#c3d1d5]">{p.detail}</span>
               {unlockable(p) && unlocking !== p.worker && (
                 <span className="ml-auto">
                   {sent[p.worker!] ? (
-                    <span className="text-[12px] text-[#8c9a9e]">password sent; the VM recovers on its next boot</span>
+                    <span className="text-[12px] text-[#a3b0b4]">password sent; the VM recovers on its next boot</span>
                   ) : (
                     <Button size="sm" variant="primary" onClick={() => setUnlocking(p.worker!)}>
                       Unlock keychain
@@ -120,7 +120,7 @@ function UnlockForm({ worker, onDone, onCancel }: { worker: string; onDone: () =
       <Button size="sm" type="button" onClick={onCancel}>
         Cancel
       </Button>
-      <span className="w-full text-[11.5px] text-[#8c9a9e]">
+      <span className="w-full text-[11.5px] text-[#a3b0b4]">
         Kept in memory until that Mac's worker collects it (within a minute), then forgotten. Nothing stores it, so
         after a reboot you unlock again.
       </span>

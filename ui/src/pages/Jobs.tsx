@@ -78,7 +78,7 @@ export function JobsPage() {
 
       <div className="panel min-h-0 flex-1 overflow-auto">
         <div className="min-w-[980px]">
-          <div className="trow thead sticky top-0 z-[1] bg-[#0b0e11]" style={{ gridTemplateColumns: COLS }}>
+          <div className="trow thead sticky top-0 z-[1] bg-[#24282d]" style={{ gridTemplateColumns: COLS }}>
             <span>Job</span>
             <span>Kind</span>
             <span>Pool</span>
@@ -111,17 +111,17 @@ export function JobsPage() {
                 {job.request.repo ? (
                   `${shortRepo(job.request.repo)}@${job.request.ref ?? "HEAD"}`
                 ) : (
-                  <span className="text-[#68767b]">{job.request.script.split("\n")[0]}</span>
+                  <span className="text-[#8a979c]">{job.request.script.split("\n")[0]}</span>
                 )}
               </span>
               <span>
                 <StatusPill status={job.status} />
               </span>
-              <span className="mono truncate text-[11.5px] text-[#8c9a9e]">{job.node ?? "—"}</span>
+              <span className="mono truncate text-[11.5px] text-[#a3b0b4]">{job.node ?? "—"}</span>
               <span className="mono text-[12px] text-[#9fb0b5]">{formatJobDuration(job.startedAt, job.finishedAt)}</span>
               <span className="flex min-w-0 flex-col gap-0.5">
                 <span className="mono truncate text-[11.5px] text-[#9fb0b5]">{job.request.requester ?? "—"}</span>
-                <span className="mono text-[10.5px] text-[#4f5c61]">{formatRelativeAge(job.submittedAt)}</span>
+                <span className="mono text-[10.5px] text-[#77838a]">{formatRelativeAge(job.submittedAt)}</span>
               </span>
             </div>
           ))}

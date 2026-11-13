@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { NavLink, Outlet } from "react-router";
+import { Link, NavLink, Outlet, useLocation } from "react-router";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "../api/client";
+import { api, ApiError } from "../api/client";
+import { hasToken } from "../lib/settings";
 import { Logo } from "./Logo";
 import { GearIcon, ListIcon, MapIcon, SendIcon } from "./Icons";
 
@@ -28,16 +29,30 @@ export function Layout() {
     refetchInterval: 15_000,
     retry: false,
   });
-  const ok = !!health.data?.ok;
-  const label = health.isLoading ? "checking" : ok ? "control plane" : "unreachable";
+  // One question decides whether anything else renders: does the control plane know who this
+  // browser is? A refused whoami shows the signed-out screen alone, never tabs of empty tables
+  // and a healthy-looking dot (/healthz answers anyone).
+  const who = useQuery({
+    queryKey: ["whoami"],
+    queryFn: api.whoAmI,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+    retry: false,
+  });
+  const refused = who.error instanceof ApiError && (who.error.status === 401 || who.error.status === 403);
+  const onSettings = useLocation().pathname === "/settings";
+  const up = !!health.data?.ok;
+  const ok = up && !refused;
+  const label = health.isLoading ? "checking" : refused ? "signed out" : up ? "control plane" : "unreachable";
+  const nav = refused ? NAV.filter((item) => item.to === "/settings") : NAV;
 
   return (
     <div className="flex h-full min-h-screen flex-col">
       <header className="topbar">
         <Logo />
-        <span className="hidden h-5 w-px bg-[#171d21] sm:block" />
+        <span className="hidden h-5 w-px bg-[#30363c] sm:block" />
         <nav className="flex min-w-0 gap-5 overflow-x-auto sm:gap-6">
-          {NAV.map((item) => (
+          {nav.map((item) => (
             <NavLink key={item.to} to={item.to} className={({ isActive }) => `navlink ${isActive ? "active" : ""}`}>
               <span className="hidden sm:inline-flex">{item.icon}</span>
               {item.label}
@@ -65,9 +80,29 @@ export function Layout() {
         </div>
       </header>
       <main className="flex min-h-0 flex-1 flex-col">
-        <Outlet />
+        {who.isLoading ? null : refused && !onSettings ? <SignedOut status={(who.error as ApiError).status} /> : <Outlet />}
       </main>
     </div>
+  );
+}
+
+/** The only thing a browser the control plane doesn't recognise gets to see. */
+function SignedOut({ status }: { status: number }) {
+  const lede =
+    status === 403
+      ? "The control plane knows this browser but grants it no access to the dashboard."
+      : hasToken()
+        ? "The control plane refused the API token saved in this browser. It was rotated or revoked."
+        : "The control plane doesn't recognise this browser: it holds no API token, and this machine's Tailscale identity is not granted access.";
+  return (
+    <View>
+      <ViewHead kicker="Signed out" title="This browser isn't signed in to grove" lede={lede} />
+      <div>
+        <Link to="/settings" className="act act-rec">
+          Open settings
+        </Link>
+      </div>
+    </View>
   );
 }
 

@@ -44,7 +44,7 @@ export function PendingJoins() {
         <h2 className="m-0 text-[13.5px] font-medium text-[#eaf4f4]">
           {data.length === 1 ? "A Mac is waiting to join" : `${data.length} Macs are waiting to join`}
         </h2>
-        <span className="ml-auto text-[12px] text-[#8c9a9e]">Approving mints its worker and device credentials.</span>
+        <span className="ml-auto text-[12px] text-[#a3b0b4]">Approving mints its worker and device credentials.</span>
       </div>
 
       <ul className="m-0 flex list-none flex-col p-0">
@@ -54,14 +54,14 @@ export function PendingJoins() {
             <li
               key={join.code}
               className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t py-2 first:border-t-0"
-              style={{ borderColor: "#2a2416" }}
+              style={{ borderColor: "#3a3220" }}
             >
               <span className="mono text-[12.5px] text-[#eaf4f4]">{join.name}</span>
-              <span className="mono text-[11.5px] text-[#8c9a9e]">
+              <span className="mono text-[11.5px] text-[#a3b0b4]">
                 {join.node ? `${join.tailnetIp} (${join.node})` : join.tailnetIp}
               </span>
               <span className="mono text-[12px] tracking-[0.18em] text-[#e6c580]">{join.code}</span>
-              <span className="mono text-[11px] text-[#68767b]">expires in {formatDurationMs(expiresInMs)}</span>
+              <span className="mono text-[11px] text-[#8a979c]">expires in {formatDurationMs(expiresInMs)}</span>
               {join.replacesWorker ? (
                 // Approving this hands another machine an existing worker's name and its jobs'
                 // credentials, so it is not one click: the CLI asks for --replace.

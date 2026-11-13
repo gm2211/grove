@@ -6,7 +6,7 @@
 @import "@fontsource/newsreader/latin-400.css";
 
 /*
- * grove's control plane wears Argos's "Nocturne" look: near-black canvas, teal accent, mono
+ * grove's control plane wears Argos's "Nocturne" look: dark grey canvas (never near-black: the operator banned it), teal accent, mono
  * kickers and labels, a serif headline per view. Tokens first, then the handful of primitives
  * every page builds from (ported from Argos's map view; class names kept where they match).
  * The fonts are bundled, not fetched: the UI is served from a private tailnet and must render
@@ -15,44 +15,44 @@
 :root {
   color-scheme: dark;
 
-  --bg: #07090b;
-  --bg-panel: #0b0e11;
-  --bg-sunk: #06080a;
-  --bg-hover: #0e1418;
-  --line: #12171a;
-  --line-2: #171d21;
-  --border: #1a2126;
-  --border-2: #22292e;
-  --border-3: #2a343a;
-  --border-hi: #3d4a51;
+  --bg: #1d2024;
+  --bg-panel: #24282d;
+  --bg-sunk: #181b1e;
+  --bg-hover: #2b3036;
+  --line: #2a2f34;
+  --line-2: #30363c;
+  --border: #353b42;
+  --border-2: #3d444b;
+  --border-3: #474f57;
+  --border-hi: #5b656d;
 
   --fg: #e4ecef;
   --fg-bright: #eaf4f4;
   --fg-2: #c3d1d5;
   --fg-3: #9fb0b5;
-  --fg-muted: #8c9a9e;
-  --fg-faint: #68767b;
-  --fg-dim: #5c696e;
-  --fg-ghost: #3d4a51;
+  --fg-muted: #a3b0b4;
+  --fg-faint: #8a979c;
+  --fg-dim: #7d8a8f;
+  --fg-ghost: #6b767d;
 
   --accent: #7ee7c7;
   --accent-hi: #a8f0da;
   --accent-ink: #06110d;
-  --accent-line: #2a5348;
-  --accent-wash: #0a1512;
-  --accent-wash-2: #0c1a17;
+  --accent-line: #3a6a5d;
+  --accent-wash: #1f2b28;
+  --accent-wash-2: #223330;
 
   --amber: #e0b25f;
   --amber-line: #5a4a24;
-  --amber-wash: #12100a;
+  --amber-wash: #2c2819;
   --red: #e06a6a;
   --red-text: #eda3a3;
   --red-line: #5c3a3a;
-  --red-wash: #1a0f0f;
+  --red-wash: #332124;
   --blue: #8fd0e7;
-  --blue-line: #2a4453;
-  --blue-wash: #0c1519;
-  --grey: #4f5c61;
+  --blue-line: #3a5a6b;
+  --blue-wash: #1f2a30;
+  --grey: #77838a;
 
   /* Status aliases the pages use. */
   --status-pending: var(--blue);
@@ -122,7 +122,7 @@ button {
   height: 9px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #1e262b;
+  background: #383f46;
   border-radius: 6px;
 }
 ::-webkit-scrollbar-track {
@@ -321,12 +321,12 @@ button {
 .act-armed {
   background: var(--red);
   border-color: var(--red);
-  color: #170606;
+  color: #2e1c1e;
 }
 .act-armed:hover:not(:disabled) {
   background: #ec8484;
   border-color: #ec8484;
-  color: #170606;
+  color: #2e1c1e;
 }
 
 .iconbtn {
@@ -336,7 +336,7 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid #1e262b;
+  border: 1px solid #383f46;
   border-radius: 7px;
   background: transparent;
   color: var(--fg-muted);
@@ -384,7 +384,7 @@ button {
   align-items: center;
   gap: 7px;
   padding: 6px 11px;
-  border: 1px solid #1e262b;
+  border: 1px solid #383f46;
   border-radius: 7px;
   background: transparent;
   font-family: var(--font-mono);
@@ -528,7 +528,7 @@ textarea.input {
     opacity 140ms ease;
 }
 .mapnode:hover {
-  border-color: #2f3a41;
+  border-color: #4d555d;
 }
 .mapnode[data-on="1"] {
   border-color: var(--accent-line);

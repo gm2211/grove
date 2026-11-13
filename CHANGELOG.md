@@ -4,6 +4,15 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **The control plane finds Homebrew's tailscale under launchd.** A LaunchAgent's PATH has no
+  Homebrew directory, so `grove serve` found no tailscale CLI and turned Tailscale identity auth
+  off: every browser without a token got "unauthorized". `FindTailscale` now also looks in
+  `/opt/homebrew/bin` and `/usr/local/bin`.
+
+- **Dashboard: one signed-out screen, and no near-black.** A browser the control plane refuses
+  sees a single "not signed in" view with only Settings reachable, never tabs of empty tables
+  under a green status dot. The canvas and panels moved from near-black to dark greys.
+
 - **Self-update: a failing pending re-install no longer blocks newer releases.** The hourly check
   returned as soon as the worker re-install left over from the previous update failed, so it never
   looked for the release that fixed it. It now always looks for and installs a newer release, and

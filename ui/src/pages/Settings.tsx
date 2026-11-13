@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getServerUrl, getToken, setServerUrl, setToken } from "../lib/settings";
 import { api } from "../api/client";
 import { Button } from "../components/Button";
@@ -18,9 +18,13 @@ export function SettingsPage() {
   const { data: principal } = useQuery({ queryKey: ["whoami"], queryFn: api.whoAmI, staleTime: 60_000, retry: false });
   const operator = principal?.scopes.includes("operator") ?? false;
 
+  const queryClient = useQueryClient();
+
   function save() {
     setServerUrl(url);
     setToken(token);
+    // Everything on screen was fetched as the old identity (or refused as it).
+    void queryClient.invalidateQueries();
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }

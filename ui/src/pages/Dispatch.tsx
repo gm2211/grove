@@ -183,7 +183,7 @@ export function DispatchPage() {
         {formError && <div className="mono text-[12px] text-[#eda3a3]">{formError}</div>}
         {submit.isError && <div className="mono text-[12px] text-[#eda3a3]">{String(submit.error)}</div>}
 
-        <div className="flex items-center gap-3 border-t border-[#171d21] pt-5">
+        <div className="flex items-center gap-3 border-t border-[#30363c] pt-5">
           <Button type="submit" variant="solid" disabled={submit.isPending}>
             {submit.isPending ? "Dispatching…" : "Dispatch"}
           </Button>
