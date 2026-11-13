@@ -156,6 +156,11 @@ for it, deliberately.
   rejected, so it can't probe what is armed. Redispatch reuses the first dispatch's payload and
   never asks again.
 - Nothing is armed forever: `Enable` always sets an expiry (`DefaultTTL` 24h, `MaxTTL` 30 days).
+  An operator may arm it with `--renew gh`: `grove serve` then swaps in the token `gh auth token`
+  prints for its own user at half-life (`Store.Renew`, `internal/cli/serve_github_renew.go`),
+  keeping repos, allow list and TTL. Renewal never arms: only an enabled, unexpired credential
+  armed to renew is touched, and the token goes from gh's stdout to the store, never argv, env,
+  a file or a log.
   The one exception to both rules is a version 1 `github.json` (`adoptLegacyLocked`): any
   submitter, for at most `LegacyGrace` (24h) after first load, warned in `Status` and the log.
   Never widen it, and never write a state without `Version: stateVersion`.

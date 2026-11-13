@@ -899,6 +899,12 @@ grove github enable --repo gm2211/grove --allow tag:argos --ttl 4h   # --repo is
 grove github status
 grove github disable                               # wipes the token from the control plane
 ```
+Add `--renew gh` (with `--ttl 720h`, say) to stop it lapsing: at half its lifetime `grove serve`
+replaces the token with the one `gh auth token` prints for the user it runs as, keeping the
+repositories, the allow list and the TTL. It needs `gh` logged in for that user on the control
+plane; if that login is gone the credential lapses at its expiry, and `grove github disable` ends
+it at once as before.
+
 
 Notes worth knowing before you arm it:
 

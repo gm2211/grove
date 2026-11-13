@@ -18,7 +18,9 @@
 // scope, so nothing tells it whether a credential is armed or what it covers.
 //
 // Nothing stays armed forever: Enable always sets an expiry (DefaultTTL when none is asked for,
-// never more than MaxTTL). A credential armed by a grove from before the allow list (a version 1
+// never more than MaxTTL). An operator may arm it to renew itself (EnableOptions.Renew): the
+// control plane then swaps in a fresh token from its own `gh` login at half-life, and the
+// credential still lapses if that login is gone or the operator disarms it. A credential armed by a grove from before the allow list (a version 1
 // file) is the one exception to both rules, for LegacyGrace after this grove first loads it; see
 // adoptLegacyLocked.
 package gitauth
@@ -95,6 +97,9 @@ type Status struct {
 	// Legacy is true for a credential armed by a grove from before the allow list. Until ExpiresAt
 	// it is handed to any submitter's job, as that grove did.
 	Legacy bool `json:"legacy,omitempty"`
+	// Renew says where the control plane gets a fresh token before this one expires ("gh"), or
+	// is empty when the credential simply lapses.
+	Renew string `json:"renew,omitempty"`
 	// Warning says what an operator should do about this credential, when there is something.
 	Warning string `json:"warning,omitempty"`
 }
@@ -114,7 +119,14 @@ type EnableRequest struct {
 	// principal id (a device credential's id, "tailscale:<stable id>") or "tag:<name>". Empty
 	// means operators only.
 	Allow []string `json:"allow,omitempty"`
+	// Renew, when "gh", lets the control plane replace the token before it expires with the one
+	// `gh auth token` prints for the user `grove serve` runs as (see Store.Renew). Empty means the
+	// credential lapses at its expiry.
+	Renew string `json:"renew,omitempty"`
 }
+
+// RenewFromGH is the one renewal source: the GitHub CLI's login of the control plane's own user.
+const RenewFromGH = "gh"
 
 // EnableOptions is the in-process form of EnableRequest, with TTL already parsed and the arming
 // principal recorded.
@@ -126,11 +138,13 @@ type EnableOptions struct {
 	TTL   time.Duration
 	By    string
 	Allow []string
+	// Renew is "" or RenewFromGH.
+	Renew string
 }
 
 // Options converts a wire request into EnableOptions, parsing and validating TTL.
 func (r EnableRequest) Options(by string) (EnableOptions, error) {
-	opts := EnableOptions{Token: r.Token, Hosts: r.Hosts, Repos: r.Repos, By: by, Allow: r.Allow}
+	opts := EnableOptions{Token: r.Token, Hosts: r.Hosts, Repos: r.Repos, By: by, Allow: r.Allow, Renew: strings.TrimSpace(r.Renew)}
 	if strings.TrimSpace(r.TTL) != "" {
 		ttl, err := time.ParseDuration(strings.TrimSpace(r.TTL))
 		if err != nil {
@@ -160,6 +174,10 @@ type state struct {
 	Allow []string `json:"allow,omitempty"`
 	// Legacy marks a credential a version 1 file held armed; see adoptLegacyLocked.
 	Legacy bool `json:"legacy,omitempty"`
+	// Renew is where a fresh token comes from before this one expires ("" or RenewFromGH), and
+	// TTLSeconds the lifetime each renewal gives it (the one it was armed with).
+	Renew      string `json:"renew,omitempty"`
+	TTLSeconds int64  `json:"ttlSeconds,omitempty"`
 }
 
 // Store persists the armed credential at path, mode 0600, through an atomic same-directory
@@ -270,6 +288,10 @@ func (s *Store) Enable(opts EnableOptions) (Status, error) {
 		return Status{}, fmt.Errorf("gitauth: ttl %s is longer than the maximum, %s", ttl, MaxTTL)
 	}
 
+	if opts.Renew != "" && opts.Renew != RenewFromGH {
+		return Status{}, fmt.Errorf("gitauth: renew must be %q or empty", RenewFromGH)
+	}
+
 	now := time.Now().UTC()
 	expires := now.Add(ttl)
 	next := state{
@@ -282,6 +304,10 @@ func (s *Store) Enable(opts EnableOptions) (Status, error) {
 		EnabledBy: strings.TrimSpace(opts.By),
 		ExpiresAt: &expires,
 		Allow:     allow,
+		Renew:     opts.Renew,
+	}
+	if opts.Renew != "" {
+		next.TTLSeconds = int64(ttl / time.Second)
 	}
 
 	s.mu.Lock()
@@ -386,6 +412,52 @@ func (s *Store) expireLocked(now time.Time) {
 	_ = s.persistLocked()
 }
 
+// RenewDue reports whether an armed credential that renews itself has used up half its lifetime:
+// time to fetch a fresh token (see Renew). Renewing early leaves weeks of retries before a
+// failing source lets the credential lapse.
+func (s *Store) RenewDue(now time.Time) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.expireLocked(now)
+	if !s.state.Enabled || s.state.Renew == "" || s.state.ExpiresAt == nil || s.state.TTLSeconds <= 0 {
+		return false
+	}
+	half := time.Duration(s.state.TTLSeconds) * time.Second / 2
+	return s.state.ExpiresAt.Sub(now) < half
+}
+
+// Renew replaces the armed token with a fresh one from the credential's renewal source and
+// restarts its lifetime. Everything the operator chose stays as armed: repositories, hosts, the
+// allow list and the lifetime. It refuses a credential that wasn't armed to renew, or has lapsed:
+// renewal never arms anything by itself.
+func (s *Store) Renew(token string, now time.Time) (Status, error) {
+	if s == nil {
+		return Status{}, errors.New("gitauth: private-repo sourcing is not configured on this control plane")
+	}
+	token, err := validateToken(token)
+	if err != nil {
+		return Status{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.expireLocked(now)
+	if !s.state.Enabled || s.state.Renew == "" || s.state.TTLSeconds <= 0 {
+		return Status{}, errors.New("gitauth: no armed credential that renews itself")
+	}
+	previous := s.state
+	expires := now.UTC().Add(time.Duration(s.state.TTLSeconds) * time.Second)
+	s.state.Token = token
+	s.state.ExpiresAt = &expires
+	if err := s.persistLocked(); err != nil {
+		s.state = previous
+		return Status{}, fmt.Errorf("gitauth: persist renewed credential: %w", err)
+	}
+	return s.statusLocked(), nil
+}
+
 func (s *Store) statusLocked() Status {
 	st := Status{
 		Enabled:    s.state.Enabled,
@@ -397,6 +469,9 @@ func (s *Store) statusLocked() Status {
 		LastUsedAt: s.state.LastUsedAt,
 		Allow:      append([]string(nil), s.state.Allow...),
 		Legacy:     s.state.Enabled && s.state.Legacy,
+	}
+	if s.state.Enabled {
+		st.Renew = s.state.Renew
 	}
 	if s.state.Token != "" {
 		st.TokenFingerprint = Fingerprint(s.state.Token)
