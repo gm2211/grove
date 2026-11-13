@@ -53,13 +53,13 @@ export function JobDetailPage() {
 
   return (
     <View fill>
-      <div className="mono flex items-center gap-[9px] text-[11.5px] text-[#68767b]">
+      <div className="mono flex items-center gap-[9px] text-[11.5px] text-[#8a979c]">
         <Link to="/jobs">jobs</Link>
-        <span className="text-[#2a343a]">›</span>
+        <span className="text-[#474f57]">›</span>
         {job.node && (
           <>
             <Link to={`/map?v=${encodeURIComponent(job.node)}&j=${encodeURIComponent(job.id)}`}>{job.node}</Link>
-            <span className="text-[#2a343a]">›</span>
+            <span className="text-[#474f57]">›</span>
           </>
         )}
         <span>{job.id}</span>
@@ -109,7 +109,7 @@ export function JobDetailPage() {
           </Section>
 
           <Section label="Script">
-            <pre className="m-0 overflow-auto rounded-lg border border-[#171d21] bg-[#06080a] p-3 text-[11.5px] leading-[1.6] text-[#c3d1d5]">
+            <pre className="m-0 overflow-auto rounded-lg border border-[#30363c] bg-[#181b1e] p-3 text-[11.5px] leading-[1.6] text-[#c3d1d5]">
               {job.request.script}
             </pre>
           </Section>
@@ -145,7 +145,7 @@ export function JobDetailPage() {
             <span className="kicker" style={{ fontSize: 10 }}>
               Live log
             </span>
-            <label className="mono flex items-center gap-2 text-[11px] text-[#8c9a9e]">
+            <label className="mono flex items-center gap-2 text-[11px] text-[#a3b0b4]">
               <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} className="accent-[#7ee7c7]" />
               follow
             </label>
@@ -230,10 +230,10 @@ function Lifecycle({ job }: { job: Job }) {
           return (
             <div key={i} className="stage">
               <span className="spine">
-                <span className={s.live ? "dot live" : ""} style={{ background: off ? "#1e262b" : TONES[s.tone as Tone].dot }} />
+                <span className={s.live ? "dot live" : ""} style={{ background: off ? "#383f46" : TONES[s.tone as Tone].dot }} />
               </span>
               <span className="flex min-w-0 flex-col gap-0.5">
-                <span className="name" style={{ color: off ? "#4f5c61" : s.live ? "var(--accent)" : "#c3d1d5" }}>
+                <span className="name" style={{ color: off ? "#77838a" : s.live ? "var(--accent)" : "#c3d1d5" }}>
                   {s.name}
                 </span>
                 {s.what && <span className="what">{s.what}</span>}

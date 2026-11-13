@@ -149,7 +149,7 @@ export function PrivateRepoSourcing({ operator }: { operator: boolean }) {
       </div>
 
       {error && <div className="mono text-[11.5px] text-[#eda3a3]">{String(error)}</div>}
-      <p className="m-0 text-[12px] leading-[1.55] text-[#5c696e]">
+      <p className="m-0 text-[12px] leading-[1.55] text-[#7d8a8f]">
         While this is on, a build/agent job whose repo URL matches gets the credential for its{" "}
         <code className="mono">git clone</code> only when an operator, or a principal named under allow, submitted it.
         Don't name a worker Mac's own credential. It always expires (24h when auto-off is empty, 720h at most). Use an{" "}

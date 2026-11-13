@@ -157,12 +157,12 @@ function busiestVM(w: WorkerView): VMView | undefined {
 function Crumbs({ sel }: { sel: Selection }) {
   const parts = [sel.worker?.name, sel.vm?.vm.name, sel.job?.id].filter(Boolean) as string[];
   return (
-    <div className="mono flex flex-wrap items-center gap-[9px] text-[11.5px] text-[#68767b]">
+    <div className="mono flex flex-wrap items-center gap-[9px] text-[11.5px] text-[#8a979c]">
       {parts.length === 0 && <span>nothing selected · pick a worker to walk the tree</span>}
       {parts.map((p) => (
         <span key={p} className="flex items-center gap-[9px]">
           <span className="text-[#7ee7c7]">{p}</span>
-          <span className="text-[#2a343a]">›</span>
+          <span className="text-[#474f57]">›</span>
         </span>
       ))}
       {parts.length > 0 && <span>selected</span>}
@@ -455,7 +455,7 @@ function VMTable({ model, onPick }: { model: FleetModel; onPick: (worker: string
   const rows = model.workers.flatMap((w) => w.vms.map((v) => ({ w, v })));
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
-      <span className="mono text-[11.5px] text-[#68767b]">
+      <span className="mono text-[11.5px] text-[#8a979c]">
         The same machinery as a table: every VM, the Mac it runs on, its Nomad node and what it is running.
       </span>
       <div className="panel min-h-0 flex-1 overflow-auto">
@@ -487,7 +487,7 @@ function VMTable({ model, onPick }: { model: FleetModel; onPick: (worker: string
               <span className="mono truncate text-[12px] text-[#c3d1d5]">
                 {v.running.length ? v.running.map((j) => j.id).join(", ") : <span className="text-[#46545a]">idle</span>}
               </span>
-              <span className="mono text-[12px] text-[#8c9a9e]">
+              <span className="mono text-[12px] text-[#a3b0b4]">
                 {v.ttlLeftMs !== undefined ? formatShort(v.ttlLeftMs) : "—"}
               </span>
             </div>

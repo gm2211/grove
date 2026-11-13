@@ -70,14 +70,14 @@ function Stages({ label, rows }: { label: string; rows: StageRow[] }) {
       <div className="stages">
         {rows.map((s, i) => {
           const off = s.tone === "off";
-          const dot = off ? "#1e262b" : TONES[s.tone as Tone].dot;
+          const dot = off ? "#383f46" : TONES[s.tone as Tone].dot;
           return (
             <div key={i} className="stage">
               <span className="spine">
                 <span className={s.live ? "dot live" : ""} style={{ background: dot }} />
               </span>
               <span className="flex min-w-0 flex-col gap-0.5">
-                <span className="name" style={{ color: off ? "#4f5c61" : s.live ? "var(--accent)" : "#c3d1d5" }}>
+                <span className="name" style={{ color: off ? "#77838a" : s.live ? "var(--accent)" : "#c3d1d5" }}>
                   {s.name}
                 </span>
                 {s.what && <span className="what">{s.what}</span>}

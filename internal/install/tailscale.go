@@ -24,8 +24,11 @@ var ErrAppStoreTailscale = errors.New(
 		"so it can't come up unattended on a headless Mac. Install the standalone variant from " +
 		"https://tailscale.com/download/macos and remove the App Store app")
 
+// tailscaleHomebrewBinaries are where Homebrew puts the CLI (Apple silicon, then Intel).
+var tailscaleHomebrewBinaries = []string{"/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale"}
+
 // FindTailscale locates the tailscale CLI, looking first at the standalone app bundle's binary,
-// then in PATH via lookPath. If neither is found but the App Store app bundle exists (without a
+// then in PATH via lookPath, then (macOS) in Homebrew's directories, which launchd's PATH lacks. If neither is found but the App Store app bundle exists (without a
 // working CLI), it returns ErrAppStoreTailscale. exists checks whether a path is present (tests
 // pass a fake so they aren't at the mercy of what's actually installed on the machine running
 // them); a nil exists defaults to a real os.Stat-backed check.
@@ -45,6 +48,13 @@ func FindTailscale(lookPath func(string) (string, error), exists func(string) bo
 		return path, nil
 	}
 	if runtime.GOOS == "darwin" {
+		// A LaunchAgent or LaunchDaemon gets launchd's PATH, which has no Homebrew directory:
+		// `grove serve` then found no CLI and turned Tailscale identity auth off for everyone.
+		for _, path := range tailscaleHomebrewBinaries {
+			if exists(path) {
+				return path, nil
+			}
+		}
 		if exists(TailscaleAppStoreBundle) {
 			return "", ErrAppStoreTailscale
 		}
