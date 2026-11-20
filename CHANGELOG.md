@@ -4,6 +4,11 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **macOS native toolchains install again.** The installer pointed mise's global and system configs
+  at `/dev/null`, which mise 2026.10.24 refuses ("unknown config file type: /dev/null"), so every
+  job that asked for a toolchain failed before it started (exit 70). They now point at an empty
+  `mise-empty.toml` in the install directory; still nothing outside it is read.
+
 - **The control plane finds Homebrew's tailscale under launchd.** A LaunchAgent's PATH has no
   Homebrew directory, so `grove serve` found no tailscale CLI and turned Tailscale identity auth
   off: every browser without a token got "unauthorized". `FindTailscale` now also looks in
