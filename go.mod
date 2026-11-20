@@ -1,6 +1,6 @@
 module github.com/gm2211/grove
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/cirruslabs/orchard v0.0.0-00010101000000-000000000000
