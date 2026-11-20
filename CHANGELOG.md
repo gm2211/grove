@@ -4,6 +4,11 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **A job's own local servers answer.** Jobs on a pool with a credential broker ran with an empty
+  `NO_PROXY`, so a request to `127.0.0.1` (a test suite's HTTP stand-in) went to the broker, which
+  dials only public addresses and refused it. Loopback (`localhost`, `127.0.0.1`, `::1`) is now
+  exempt; everything else still goes through the broker.
+
 - **macOS native toolchains install again.** The installer pointed mise's global and system configs
   at `/dev/null`, which mise 2026.10.24 refuses ("unknown config file type: /dev/null"), so every
   job that asked for a toolchain failed before it started (exit 70). They now point at an empty
