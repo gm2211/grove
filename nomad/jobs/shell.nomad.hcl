@@ -305,7 +305,9 @@ job "grove-{{.Kind}}-{{.Pool}}" {
           } >> "$grove_bundle"
           chmod 0644 "$grove_bundle"
           export HTTPS_PROXY="$grove_broker" HTTP_PROXY="$grove_broker" https_proxy="$grove_broker" http_proxy="$grove_broker"
-          export NO_PROXY="" no_proxy=""
+          # Loopback never goes through the broker: a job's own local servers (a test's HTTP
+          # stand-in) must answer, and the broker dials only public addresses. Nothing else is exempt.
+          export NO_PROXY="localhost,127.0.0.1,::1" no_proxy="localhost,127.0.0.1,::1"
           export SSL_CERT_FILE="$grove_bundle" CURL_CA_BUNDLE="$grove_bundle" GIT_SSL_CAINFO="$grove_bundle"
           export REQUESTS_CA_BUNDLE="$grove_bundle" NODE_EXTRA_CA_CERTS="$grove_bundle"
         elif case "$(env)" in *gph1_*) true ;; *) false ;; esac; then
