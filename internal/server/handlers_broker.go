@@ -78,6 +78,14 @@ func (s *Server) handleBrokerEntries(w http.ResponseWriter, r *http.Request) {
 		entries = []broker.Entry{}
 	}
 	resp := BrokerEntriesResponse{Entries: entries}
+	if !s.brokerBound(p) {
+		// A credential from before bindings existed works from any tailnet address, so it gets its
+		// jobs' entries (the worker keeps running) and nothing more: never the worker user's
+		// keychain password, never the registry login. `grove setup` on the Mac replaces it.
+		w.Header().Set("Cache-Control", "no-store")
+		s.writeJSON(w, http.StatusOK, resp)
+		return
+	}
 	if pw, ok := s.keychainUnlocks.take(p.Name); ok {
 		resp.KeychainUnlock = pw
 		s.log.Info("keychain unlock collected by the worker's broker", "worker", p.Name)
@@ -93,14 +101,40 @@ func (s *Server) handleBrokerEntries(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, resp)
 }
 
+// brokerBound reports whether p's broker credential is bound to a machine (see Binding). Only a
+// bound one is handed the keychain unlock or the VM image login.
+func (s *Server) brokerBound(p Principal) bool {
+	if s.opts.AccessStore == nil {
+		return false
+	}
+	bind, ok := s.opts.AccessStore.Binding(p.ID)
+	return ok && bind.Bound()
+}
+
+// workerBrokerUnbound reports whether worker has broker credentials and none of them is bound, so
+// nothing could safely collect a secret queued for it.
+func (s *Server) workerBrokerUnbound(worker string) bool {
+	if s.opts.AccessStore == nil {
+		return false
+	}
+	binds := s.opts.AccessStore.BrokerBindings(worker)
+	for _, b := range binds {
+		if b.Bound() {
+			return false
+		}
+	}
+	return len(binds) > 0
+}
+
 // brokerPeerAllowed reports whether r comes from the machine p's broker credential is bound to:
 // the Tailscale node that joined when Tailscale can name both, otherwise the address the join
 // request came from. That covers a worker on the control plane's own Mac, whose broker reaches
 // `grove serve` from this machine's own tailnet address or from loopback, the same address its
 // join came from. The local socket has no peer address and so never matches a binding.
 //
-// A credential from before bindings existed has none and keeps working from anywhere, with one
-// warning per credential: the worker gets a bound one the next time `grove setup` runs on it.
+// A credential from before bindings existed has none and keeps working from anywhere for its
+// jobs' entries only (handleBrokerEntries withholds the keychain unlock and the VM image login),
+// with one warning per credential: the worker gets a bound one the next time `grove setup` runs.
 func (s *Server) brokerPeerAllowed(r *http.Request, p Principal) bool {
 	if s.opts.AccessStore == nil {
 		// A broker-only principal always comes from the store; without one there is nothing to
@@ -113,7 +147,7 @@ func (s *Server) brokerPeerAllowed(r *http.Request, p Principal) bool {
 	}
 	if !bind.Bound() {
 		if _, warned := s.unboundBrokerWarned.LoadOrStore(p.ID, true); !warned {
-			s.log.Warn("broker: this worker's broker credential is not bound to its machine (it was issued before credentials were bound), so it works from any tailnet address; run `grove setup` on that Mac again to replace it",
+			s.log.Warn("broker: this worker's broker credential is not bound to its machine (it was issued before credentials were bound), so it works from any tailnet address and is handed no keychain unlock or registry login; run `grove setup` on that Mac again to replace it",
 				"worker", p.Name, "device", p.ID)
 		}
 		return true

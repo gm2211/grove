@@ -9,6 +9,36 @@ All notable changes to grove are documented here.
   job that asked for a toolchain failed before it started (exit 70). They now point at an empty
   `mise-empty.toml` in the install directory; still nothing outside it is read.
 
+- **Security: self-update installs only what the release workflow built from `main`.** An update
+  used to be trusted on the `checksums.txt` of the same release, so anyone able to publish a
+  release (a pushed `v*` tag, from any branch) could run code on every machine. `grove serve`, the
+  broker and the worker's Orchard download now also verify the archive's Sigstore build provenance
+  offline (`internal/provenance`): signed by this repository's release workflow, on a GitHub-hosted
+  runner, from a commit on `main`. Nothing skips it. The release workflow itself refuses a tag
+  whose commit is not on `main`. The first release with this is still installed by the old check;
+  every one after it is verified.
+
+- **Security: the release's publishing job no longer runs npm.** The UI is built with
+  `npm ci --ignore-scripts` in a job with read-only permissions and handed over as an artifact;
+  `go mod verify` replaces `go mod tidy` before the build.
+
+- **Security: a worker's Orchard token is confined to its own worker and VMs.** In the Orchard
+  fork, a worker's service account can no longer exec into, port-forward to, create, delete or
+  rewrite other workers' VMs, or rename itself onto another worker.
+
+- **Security: a broker credential not bound to its machine gets no secrets beyond its jobs'.**
+  Credentials from before v0.1.43 work from any tailnet address; they are no longer handed the
+  keychain unlock or the VM image registry login, and "Unlock keychain" refuses such a worker
+  until `grove setup` has run on it again.
+
+- **A pool whose VM `image` is a tag is warned about**, like `runnerImage` already was.
+
+- **Docs and the rootless notice no longer suggest macOS automatic login**, which stores the login
+  password on disk.
+
+- Added `SECURITY.md`, `.github/CODEOWNERS` and a weekly `govulncheck` workflow; a test keeps the
+  Orchard commit installs build equal to the one `go.mod` compiles against.
+
 - **The control plane finds Homebrew's tailscale under launchd.** A LaunchAgent's PATH has no
   Homebrew directory, so `grove serve` found no tailscale CLI and turned Tailscale identity auth
   off: every browser without a token got "unauthorized". `FindTailscale` now also looks in

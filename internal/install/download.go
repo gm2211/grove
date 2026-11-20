@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/gm2211/grove/internal/provenance"
 )
 
 // Pinned third-party downloads. grove never installs a "latest" binary it fetched with curl: each
@@ -35,7 +37,7 @@ const (
 	// It must carry the guest password fallback on every login path (gm2211/orchard#7, #8).
 	// grove's release workflow reads this constant to build the Orchard assets it attaches to every
 	// release (orchardAssetName), so bumping the pin here is the whole change.
-	OrchardForkCommit = "316f0c6736fb24a136907df4583e67a060ec9de5"
+	OrchardForkCommit = "bd232c59313b93ce101a064a92cde41888434dba"
 )
 
 // nomadZipSHA256 is the SHA-256 of nomad_<NomadVersion>_<os>_<arch>.zip, keyed "os/arch".
@@ -171,12 +173,6 @@ func hasReleaseVersion(opts Options) bool {
 	return v != "" && v != "dev" && !strings.Contains(v, "-next")
 }
 
-// orchardReleaseDownload resolves the release's Orchard asset and its expected digest from the
-// release's checksums.txt (fetched through r over HTTPS, like grove itself).
-func orchardReleaseDownload(ctx context.Context, r Runner, opts Options) (pinnedDownload, error) {
-	return releaseDownload(ctx, r, opts, orchardAssetName(opts))
-}
-
 // releaseDownload resolves one asset of grove's opts.GroveVersion release and its expected digest
 // from that release's checksums.txt.
 func releaseDownload(ctx context.Context, r Runner, opts Options, asset string) (pinnedDownload, error) {
@@ -195,4 +191,70 @@ func releaseDownload(ctx context.Context, r Runner, opts Options, asset string) 
 		}
 	}
 	return pinnedDownload{}, fmt.Errorf("release checksums.txt lists no %s", asset)
+}
+
+// fetchReleaseAsset downloads one asset of grove's opts.GroveVersion release and returns the
+// staged path only when two independent things hold: its SHA-256 is the one that release's
+// checksums.txt gives, and GitHub holds a build provenance attestation for that digest showing
+// grove's release workflow built it (verifyReleaseProvenance). The checksum alone proves nothing
+// about who made the release: checksums.txt is one more file in it.
+func fetchReleaseAsset(ctx context.Context, r Runner, opts Options, asset string) (string, pinnedDownload, error) {
+	d, err := releaseDownload(ctx, r, opts, asset)
+	if err != nil {
+		return "", d, err
+	}
+	staged, err := fetchVerified(ctx, r, opts, d)
+	if err != nil {
+		return "", d, err
+	}
+	if err := verifyReleaseProvenance(ctx, r, opts, d.SHA256); err != nil {
+		_, _, _ = r.Run(ctx, "rm", "-f", staged)
+		return "", d, fmt.Errorf("verify %s: %w", d.URL, err)
+	}
+	return staged, d, nil
+}
+
+// githubAPI fetches a GitHub REST API URL through r, like every other download: HTTPS only, and
+// no token, since everything grove asks about is public.
+func githubAPI(ctx context.Context, r Runner, url string) (string, error) {
+	stdout, _, err := r.Run(ctx, "curl", "-fsSL", "--proto", "=https", "--tlsv1.2",
+		"-H", "Accept: application/vnd.github+json", url)
+	return stdout, err
+}
+
+// verifyReleaseProvenance checks that the release asset with this SHA-256 was built by grove's
+// release workflow for the opts.GroveVersion release, and fails closed: no attestation, one that
+// does not verify, or a GitHub that cannot be asked all refuse the asset.
+//
+// A release that workflow built from a hand-pushed tag (a new minor or major version) ran the
+// release.yml of the tagged commit, and a tag can be pushed on any commit, so that commit must
+// also be on main. A release autorelease.yml cut ran main's own workflow on main's tip.
+func verifyReleaseProvenance(ctx context.Context, r Runner, opts Options, sha256hex string) error {
+	verify := opts.provenanceVerify
+	if verify == nil {
+		verify = provenance.Verify
+	}
+	attestations, err := githubAPI(ctx, r, provenance.AttestationsURL(sha256hex))
+	if err != nil {
+		return fmt.Errorf("fetch the build attestation (grove installs no release it cannot trace to its release workflow): %w", err)
+	}
+	res, err := verify([]byte(attestations), sha256hex, opts.GroveVersion)
+	if err != nil {
+		return err
+	}
+	if !res.NeedsAncestryCheck() {
+		return nil
+	}
+	compare, err := githubAPI(ctx, r, provenance.AncestryURL(res.Commit))
+	if err != nil {
+		return fmt.Errorf("check that the released commit %s is on main: %w", res.Commit, err)
+	}
+	onMain, err := provenance.OnMain([]byte(compare))
+	if err != nil {
+		return err
+	}
+	if !onMain {
+		return fmt.Errorf("provenance: the release was built from commit %s (%s), which is not on main; refusing it", res.Commit, res.Ref)
+	}
+	return nil
 }

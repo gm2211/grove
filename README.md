@@ -79,7 +79,7 @@ device. Each device has its own revocable `read + build + agent` credential; raw
 (operator or an explicit `dispatch:shell` credential) and named secrets remain privileged. Only control-plane
 operator credentials can approve/revoke devices or change worker/VM state.
 
-Full walkthrough (roles, flags, failure modes like FileVault blocking auto-login):
+Full walkthrough (roles, flags, failure modes like FileVault and reboots):
 [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Use from Claude Code / Codex
