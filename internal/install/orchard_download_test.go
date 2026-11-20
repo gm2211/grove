@@ -63,6 +63,7 @@ func TestOrchardAssetNameAndURL(t *testing.T) {
 
 func TestEnsureOrchardBinary_DownloadsVerifiedReleaseAsset(t *testing.T) {
 	opts, dest := orchardDownloadOpts(t, orchardTestVersion, false)
+	opts.provenanceVerify = provenanceFromMain
 	r := NewFakeRunner()
 	want := strings.Repeat("b", 64)
 	d := scriptOrchardRelease(r, opts, want, want)

@@ -1,0 +1,11 @@
+# What decides the bytes every grove machine installs by itself. With "Require review from Code
+# Owners" on main's branch protection, a change here needs the owner's review.
+/.github/           @gm2211
+/.goreleaser.yaml   @gm2211
+/scripts/           @gm2211
+/internal/provenance/ @gm2211
+/internal/install/selfupdate.go @gm2211
+/internal/install/download.go   @gm2211
+/go.mod             @gm2211
+/go.sum             @gm2211
+/ui/package-lock.json @gm2211

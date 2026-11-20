@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"github.com/gm2211/grove/internal/broker"
 	"github.com/gm2211/grove/internal/dispatch"
 	"github.com/gm2211/grove/internal/orchard"
+	"github.com/gm2211/grove/internal/registryauth"
 	"github.com/gm2211/grove/internal/tsauth"
 )
 
@@ -422,5 +424,66 @@ func TestBrokerOnlyJoin(t *testing.T) {
 	}
 	if code, _ := h.poll(j2, ""); code != http.StatusNotFound {
 		t.Errorf("acknowledged request retained: %d", code)
+	}
+}
+
+// An unbound (pre-binding) credential works from any tailnet address, so it is handed its jobs'
+// entries and nothing else: no registry login, and no keychain password is even queued for it.
+func TestUnboundLegacyBrokerCredentialGetsNoKeychainUnlockOrRegistryLogin(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+	const token = "legacy-token"
+	legacy := `{"version":1,"credentials":[{"id":"aaaa","name":"mac-1","scopes":["broker"],"source":"join",` +
+		`"createdAt":"2026-01-01T00:00:00Z","tokenHash":"` + hashToken(token) + `"}]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	access, err := NewAccessStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := registryauth.NewStore(filepath.Join(t.TempDir(), "registry-pull.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pull = "ghp_unboundMustNeverSeeThis0123"
+	if _, err := store.Enable(registryauth.EnableOptions{User: "gm2211", Token: pull, Repos: []string{"gm2211/grove-macos-worker"}}); err != nil {
+		t.Fatal(err)
+	}
+	ds := &fakeDispatch{jobs: map[string]*dispatch.Job{}}
+	srv := newTestServer(nil, nil, ds, Options{
+		Token: "operator", AccessStore: access, RegistryAuth: store,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		WorkerVMImages: func(context.Context, string) ([]string, error) {
+			return []string{"ghcr.io/gm2211/grove-macos-worker:latest"}, nil
+		},
+	})
+
+	rec := peerRequest(srv, http.MethodPost, "/api/v1/workers/mac-1/unlock-keychain", `{"password":"hunter2-pw"}`, "127.0.0.1:1", "operator")
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "grove setup") {
+		t.Fatalf("queueing a keychain unlock for an unbound worker: %d %s, want 409 naming `grove setup`", rec.Code, rec.Body)
+	}
+	if _, pending := srv.keychainUnlocks.pending("mac-1"); pending {
+		t.Fatal("the password was queued for a credential that works from anywhere")
+	}
+	// Even one queued some other way is not handed over.
+	srv.keychainUnlocks.put("mac-1", "hunter2-pw")
+	rec = peerRequest(srv, http.MethodGet, "/api/v1/broker/entries?vmImagePull=1", "", "100.64.0.99:1", token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("an unbound credential still gets its entries: %d %s", rec.Code, rec.Body)
+	}
+	for _, secret := range []string{"hunter2-pw", pull, "vmImagePull", "keychainUnlock"} {
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Errorf("answer to an unbound credential holds %q:\n%s", secret, rec.Body)
+		}
+	}
+
+	// A bound credential for the same worker collects both.
+	bound, _, err := access.IssueJoinedBound("mac-1", []string{ScopeBroker}, Binding{IP: "100.64.0.20"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = peerRequest(srv, http.MethodGet, "/api/v1/broker/entries?vmImagePull=1", "", "100.64.0.20:1", bound)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "hunter2-pw") || !strings.Contains(rec.Body.String(), pull) {
+		t.Fatalf("a bound credential should collect the unlock and the login: %d %s", rec.Code, rec.Body)
 	}
 }

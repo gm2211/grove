@@ -125,6 +125,12 @@ func (s *Server) handleQueueKeychainUnlock(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "password must be one line", http.StatusBadRequest)
 		return
 	}
+	if s.workerBrokerUnbound(name) {
+		// Its broker credential would work from any tailnet address, so the password is never
+		// queued for it (handleBrokerEntries would not hand it over either).
+		http.Error(w, "this worker's broker credential was issued before credentials were bound to their machine; run `grove setup` on that Mac, then unlock again", http.StatusConflict)
+		return
+	}
 	exp := s.keychainUnlocks.put(name, req.Password)
 	req.Password = ""
 	s.log.Info("keychain unlock queued for a worker's broker", "worker", name, "by", principalFromContext(r.Context()).Name)

@@ -583,14 +583,11 @@ func ensureOrchardBinary(ctx context.Context, r Runner, opts Options, dest strin
 }
 
 // downloadOrchardBinary installs the Orchard asset of grove's own release: fetched, SHA-256
-// verified against that release's checksums.txt, extracted beside dest and renamed over it.
+// verified against that release's checksums.txt, its build provenance verified (fetchReleaseAsset),
+// extracted beside dest and renamed over it.
 func downloadOrchardBinary(ctx context.Context, r Runner, opts Options, dest string, out io.Writer) error {
-	d, err := orchardReleaseDownload(ctx, r, opts)
-	if err != nil {
-		return err
-	}
 	fmt.Fprintf(out, "        downloading prebuilt Orchard %s from grove v%s\n", OrchardForkCommit[:12], strings.TrimPrefix(opts.GroveVersion, "v"))
-	staged, err := fetchVerified(ctx, r, opts, d)
+	staged, d, err := fetchReleaseAsset(ctx, r, opts, orchardAssetName(opts))
 	if err != nil {
 		return err
 	}

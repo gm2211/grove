@@ -55,6 +55,12 @@ func Load(path string) (*Spec, error) {
 func (s *Spec) Warnings() []string {
 	var out []string
 	for _, p := range s.Pools {
+		if strings.Contains(p.Image, "/") && !imagePinnedByDigest(p.Image) {
+			// A name with no "/" is a local Tart VM, which no registry can repoint.
+			out = append(out, fmt.Sprintf(
+				"pool %q: image %q is a tag, which a push to that repository can point at another VM image; every new VM of the pool boots it, and the pool's jobs run inside. Pin it by digest once the pool is stable: <repository>@sha256:<digest>",
+				p.Name, p.Image))
+		}
 		if p.RunnerImage == "" {
 			continue
 		}
