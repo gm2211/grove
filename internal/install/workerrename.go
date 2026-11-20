@@ -71,8 +71,8 @@ func (o Options) retireWorkerRecord(ctx context.Context, ep config.Endpoint, nam
 	return d.DeleteWorker(ctx, name)
 }
 
-// fleetSelectorEdit is one workerSelector value rewritten.
-type fleetSelectorEdit struct{ Pool, Key, Old, New string }
+// fleetSelectorEdit is one workerSelector (or preferWorkers) value rewritten.
+type fleetSelectorEdit struct{ Pool, Field, Key, Old, New string }
 
 // rewriteFleetSelectors points the workerSelector of every pool that matched a worker with oldLabels
 // at newLabels. A pool whose selector the old labels did not satisfy is not that worker's, and is
@@ -96,34 +96,39 @@ func rewriteFleetSelectors(data []byte, oldLabels, newLabels string) ([]byte, []
 		return data, nil, nil
 	}
 	for _, pool := range pools.Content {
-		sel := mappingValue(pool, "workerSelector")
-		if sel == nil || sel.Kind != yaml.MappingNode || len(sel.Content) == 0 {
-			continue
-		}
-		matched := true
-		for i := 0; i+1 < len(sel.Content); i += 2 {
-			if oldMap[sel.Content[i].Value] != sel.Content[i+1].Value {
-				matched = false
+		for _, field := range []string{"workerSelector", "preferWorkers"} {
+			sel := mappingValue(pool, field)
+			if sel == nil || sel.Kind != yaml.MappingNode || len(sel.Content) == 0 {
+				continue
 			}
-		}
-		if !matched {
-			continue
-		}
-		poolName := ""
-		if n := mappingValue(pool, "name"); n != nil {
-			poolName = n.Value
-		}
-		for i := 0; i+1 < len(sel.Content); i += 2 {
-			k, v := sel.Content[i].Value, sel.Content[i+1]
-			for _, c := range changes {
-				if c.Key != k || c.Old != v.Value {
-					continue
+			matched := true
+			for i := 0; i+1 < len(sel.Content); i += 2 {
+				if oldMap[sel.Content[i].Value] != sel.Content[i+1].Value {
+					matched = false
 				}
-				if c.New == "" {
-					return nil, nil, fmt.Errorf("pool %q selects %s=%s, which the worker's new labels (%s) no longer carry; add it with --labels or change the pool's workerSelector", poolName, k, c.Old, newLabels)
+			}
+			if !matched {
+				continue
+			}
+			poolName := ""
+			if n := mappingValue(pool, "name"); n != nil {
+				poolName = n.Value
+			}
+			for i := 0; i+1 < len(sel.Content); i += 2 {
+				k, v := sel.Content[i].Value, sel.Content[i+1]
+				for _, c := range changes {
+					if c.Key != k || c.Old != v.Value {
+						continue
+					}
+					if c.New == "" {
+						if field == "preferWorkers" {
+							continue // only a preference: the pool still runs elsewhere
+						}
+						return nil, nil, fmt.Errorf("pool %q selects %s=%s, which the worker's new labels (%s) no longer carry; add it with --labels or change the pool's workerSelector", poolName, k, c.Old, newLabels)
+					}
+					edits = append(edits, fleetSelectorEdit{Pool: poolName, Field: field, Key: k, Old: c.Old, New: c.New})
+					v.Value = c.New
 				}
-				edits = append(edits, fleetSelectorEdit{Pool: poolName, Key: k, Old: c.Old, New: c.New})
-				v.Value = c.New
 			}
 		}
 	}
@@ -186,7 +191,7 @@ func renameWorkerStep(r Runner, opts Options, id workerIdentity, ds []daemon, bk
 				}
 				updated = next
 				for _, e := range edits {
-					fmt.Fprintf(out, "        fleet.yaml: pool %s workerSelector %s: %s -> %s\n", e.Pool, e.Key, e.Old, e.New)
+					fmt.Fprintf(out, "        fleet.yaml: pool %s %s %s: %s -> %s\n", e.Pool, e.Field, e.Key, e.Old, e.New)
 				}
 			}
 			if !bytes.Equal(updated, data) {

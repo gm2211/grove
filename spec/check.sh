@@ -55,6 +55,16 @@ check S2  attempts.qnt attemptsRetry            invariant accounting            
 check S2  attempts.qnt attemptsNoRetry          invariant accounting                   holds
 check L5  attempts.qnt attemptsRetry            temporal  terminates                   holds
 check L5  attempts.qnt attemptsNoRetry          temporal  terminates                   holds
+check S23 reschedule.qnt rescheduleRetry        invariant accounting                   holds
+check S23 reschedule.qnt rescheduleNoRetry      invariant accounting                   holds
+check S23 reschedule.qnt reschedulePoisoned     invariant accounting                   holds
+check S23 reschedule.qnt rescheduleNomadReplaces invariant atMostMaxRuns               fails
+check S23 reschedule.qnt rescheduleBefore       invariant noUnwatchedRun               fails
+check S23 reschedule.qnt rescheduleBefore       invariant atMostMaxRuns                fails
+check S23 reschedule.qnt rescheduleBeforeNoRetry invariant endedMeansStopped           fails
+check L11 reschedule.qnt rescheduleRetry        temporal  terminates                   holds
+check L11 reschedule.qnt rescheduleNoRetry      temporal  terminates                   holds
+check L11 reschedule.qnt reschedulePoisoned     temporal  terminates                   holds
 check L7  fleet.qnt    fleetTTL                 invariant noJobOnRecyclingVM           holds
 check L7  fleet.qnt    fleetTTL                 invariant drainedBeforeRecycle         holds
 check L7  fleet.qnt    fleetTTL                 temporal  alwaysComesBack              holds
@@ -106,8 +116,8 @@ if [ -n "${SPECIFY:-}" ]; then
 	out=$(cd "$spec/.." && LEAN_PATH="$spec/lean/.lake/build/lib/lean" "$SPECIFY" formal check \
 		--spec spec/grove.spec --timeout-ms 300000 2>/dev/null) || true
 	got=$(python3 -c 'import json,sys; r=json.load(sys.stdin); n=len(r["results"]); p=sum(x["outcome"]["status"]=="passed" for x in r["results"]); print(f"{p}/{n}" if r["valid"] else f"FAILED {p}/{n}")' <<<"$out" 2>/dev/null || echo error)
-	row S1-9 specify "grove.spec formal check" 18/18 "$got"
-	[ "$got" = 18/18 ] || fail=1
+	row S1-9 specify "grove.spec formal check" 19/19 "$got"
+	[ "$got" = 19/19 ] || fail=1
 fi
 
 # grove.spec: the 21 properties as Specify behaviors. Its formal links (Quint invariants by seeded
@@ -116,8 +126,8 @@ if [ -n "${SPECIFY:-}" ]; then
 	out=$(cd "$spec/.." && LEAN_PATH="$spec/lean/.lake/build/lib/lean" "$SPECIFY" formal check \
 		--spec spec/grove.spec --timeout-ms 300000 2>/dev/null) || true
 	got=$(python3 -c 'import json,sys; r=json.load(sys.stdin); n=len(r["results"]); p=sum(x["outcome"]["status"]=="passed" for x in r["results"]); print(f"{p}/{n}" if r["valid"] else f"FAILED {p}/{n}")' <<<"$out" 2>/dev/null || echo error)
-	row S1-9 specify "grove.spec formal check" 18/18 "$got"
-	[ "$got" = 18/18 ] || fail=1
+	row S1-9 specify "grove.spec formal check" 19/19 "$got"
+	[ "$got" = 19/19 ] || fail=1
 fi
 
 # S10: CodeQL taint queries. Each leak query must find nothing; the coverage query must find each

@@ -249,6 +249,28 @@ say when a pool is on its last good image and why. The memory is `images.json` n
 `devices.json` (image names and Orchard's messages only). A pool that has never run anything has no
 image to fall back to: its VM shows as `image-unavailable` and is retried every 10 minutes.
 
+## Preferring a Mac without pinning a pool to it
+
+A pool whose `workerSelector` names one Mac (`host: studio`) has nowhere to run while that Mac is
+asleep, rebooting or gone: its VMs go, and its jobs wait and then fail with "no nodes available".
+`grove serve` logs a warning for such a pool. Split what the pool needs from what it prefers:
+
+```yaml
+pools:
+  - name: macos
+    workerSelector: {arch: arm64}   # hard: only Macs that can run it
+    preferWorkers: {host: studio}   # soft: there while studio is up
+```
+
+While an online, unpaused Mac matches `preferWorkers` (and `workerSelector`), the pool runs only
+there. While none does, it spills onto every Mac `workerSelector` allows (`Plan.Spilled` lists such
+pools), and when a preferred Mac comes back the pool moves back: a spilled VM stays until its job
+is done, then goes ("a preferred worker of the pool is back"). An elastic pool scales up on its
+preferred Macs the same way. Jobs that were running on a Mac that left are rerun elsewhere
+(docs/JOBS.md "When a shared pool's VM or Mac goes away"). A worker rename rewrites both maps.
+With no `workerSelector` at all, every Mac runs the pool and nothing needs to change when one
+leaves or joins.
+
 ## Pausing a Mac
 
 To stop work landing on a worker (maintenance, moving it, thermal issues):

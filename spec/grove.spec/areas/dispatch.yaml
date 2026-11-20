@@ -55,6 +55,32 @@ behaviors:
         maxSteps: 30
         samples: 2000
         seed: 1
+  - id: shared-lost-jobs-run-within-budget
+    description: >-
+      A shared-pool job lost with its VM or Mac runs at most three times, once if it may not be
+      rerun; quarantine needs losses after its script started on two machines, or one such loss of
+      a job like one already quarantined; and once grove ends the job, Nomad holds no copy of it
+      that could still run.
+    details: >-
+      S23. Attacker J (a job that crashes Macs, resubmitted). Nomad 2.0.7 replaces a lost
+      allocation even with reschedule attempts = 0; the model's rescheduleNomadReplaces instance
+      shows the extra run that lets in, and rescheduleBefore the unwatched copy the old grove left.
+      Exhaustive TLC checks in spec/check.sh; Go tests in internal/dispatch/reschedule_test.go.
+    tags: [security, s23]
+    formal:
+      - tool: quint
+        file: ../quint/reschedule.qnt
+        main: rescheduleRetry
+        property: accounting
+        mode: simulate
+        maxSteps: 30
+        samples: 2000
+        seed: 1
+  - id: shared-jobs-terminate
+    description: >-
+      Every shared-pool job ends, however often its VMs and Macs go away.
+    details: L11. Temporal property (terminates in reschedule.qnt), checked by TLC.
+    tags: [liveness, l11]
   - id: job-image-is-allowlisted-and-pinned
     description: >-
       A shared-pool job's image is its pool's runner image or a digest-pinned image its pool

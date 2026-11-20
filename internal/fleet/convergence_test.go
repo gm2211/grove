@@ -65,6 +65,9 @@ func randomFleet(rng *rand.Rand) (*Spec, []orchard.Worker) {
 		if rng.Intn(3) == 0 {
 			p.TTL = Duration(12 * time.Hour)
 		}
+		if rng.Intn(2) == 0 {
+			p.PreferWorkers = map[string]string{"host": fmt.Sprintf("mac%d", rng.Intn(4))}
+		}
 		spec.Pools = append(spec.Pools, p)
 	}
 	var workers []orchard.Worker
@@ -73,7 +76,7 @@ func randomFleet(rng *rand.Rand) (*Spec, []orchard.Worker) {
 		if rng.Intn(4) == 0 {
 			w = legacyWorker(w.Name)
 		}
-		w.Labels = map[string]string{"tier": tiers[rng.Intn(2)]}
+		w.Labels = map[string]string{"tier": tiers[rng.Intn(2)], "host": w.Name}
 		w.SchedulingPaused = rng.Intn(4) == 0
 		w.Offline = rng.Intn(5) == 0
 		workers = append(workers, w)
@@ -83,7 +86,8 @@ func randomFleet(rng *rand.Rand) (*Spec, []orchard.Worker) {
 
 // L6 (spec/README.md): from any starting fleet, one Plan + Apply reaches a state whose next Plan
 // is empty, and stays there: the reconciler converges and never flaps. Every VM it leaves runs on
-// an online, unpaused worker its pool's selector matches.
+// an online, unpaused worker its pool's selector matches, and on one of its preferred workers
+// whenever one of those is available.
 func TestL6_ReconcilerConvergesWithoutFlapping(t *testing.T) {
 	ctx := context.Background()
 	for seed := int64(0); seed < 500; seed++ {
@@ -142,6 +146,10 @@ func TestL6_ReconcilerConvergesWithoutFlapping(t *testing.T) {
 				t.Fatalf("seed %d: VM %s on worker %s outside pool %s's selector", seed, vm.Name, worker, pool)
 			case guestPasswordBlock(*p, w) != "":
 				t.Fatalf("seed %d: macOS VM %s on worker %s without guest password rotation", seed, vm.Name, worker)
+			}
+			// With a preferred worker available, nothing runs off the preferred workers.
+			if on, _ := placement(*p, workers); !on[worker] {
+				t.Fatalf("seed %d: VM %s on worker %s, off pool %s's placement %v", seed, vm.Name, worker, pool, on)
 			}
 		}
 	}

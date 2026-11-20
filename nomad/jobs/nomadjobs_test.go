@@ -234,6 +234,11 @@ func TestRenderedHCLParsesWithJobspec2(t *testing.T) {
 					if len(job.TaskGroups) != 1 {
 						t.Fatalf("expected exactly one group, got %d", len(job.TaskGroups))
 					}
+					// Nomad must never replace a lost allocation itself: grove reruns lost jobs within
+					// its budget and quarantine (internal/dispatch reschedule.go).
+					if d := job.TaskGroups[0].Disconnect; d == nil || d.Replace == nil || *d.Replace || d.LostAfter == nil || *d.LostAfter < 12*time.Hour {
+						t.Errorf("group disconnect = %+v, want replace = false and a lost_after of hours", d)
+					}
 					tasks := map[string]*nomadapi.Task{}
 					var names []string
 					for _, task := range job.TaskGroups[0].Tasks {

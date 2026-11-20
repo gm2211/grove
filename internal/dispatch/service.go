@@ -161,6 +161,9 @@ type Options struct {
 	// LogStreamGracePeriod overrides defaultLogStreamGracePeriod — mainly for tests. See
 	// watchForTerminal.
 	LogStreamGracePeriod time.Duration
+	// UnknownGrace overrides DefaultUnknownGrace: how long a shared pool's allocation may stay
+	// "unknown" (Nomad lost contact with its node) before grove treats it as lost.
+	UnknownGrace time.Duration
 }
 
 type cachedStatus struct {
@@ -211,6 +214,9 @@ func New(nc nomad.Client, opts Options) (Service, error) {
 	}
 	if opts.FallbackNoNodesAfter <= 0 {
 		opts.FallbackNoNodesAfter = defaultFallbackNoNodesAfter
+	}
+	if opts.UnknownGrace <= 0 {
+		opts.UnknownGrace = DefaultUnknownGrace
 	}
 	if opts.LogTerminalPollInterval <= 0 {
 		opts.LogTerminalPollInterval = defaultLogTerminalPollInterval
@@ -662,6 +668,10 @@ func deriveStatus(alloc *nomad.Allocation) Status {
 		return StatusFailed
 	case "lost":
 		return StatusLost
+	case "unknown":
+		// Nomad lost contact with the node (nomad/jobs: disconnect, replace = false). The job may
+		// well still run there; grove treats it as lost after Options.UnknownGrace.
+		return StatusRunning
 	default:
 		return StatusPending
 	}
@@ -775,6 +785,15 @@ func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {
 		} // a GetNode error here is non-fatal — placement partially populated (AllocID/NodeID still set) beats failing the whole Get/List call over a node lookup blip.
 		if s.pools[rec.Request.Pool].Isolated {
 			s.applyAttempts(rec.ID, &updated)
+		}
+	}
+	if len(allocs) > 0 && !s.pools[rec.Request.Pool].Isolated && !s.pools[runPool(rec)].Isolated {
+		// A shared pool's lost job: grove reruns it, within its budget, or ends it (reschedule.go).
+		if job, handled, err := s.handleLosses(ctx, rec, &updated, allocs); handled {
+			return job, err
+		}
+		if updated.Status == StatusSuccess || updated.Status == StatusFailed {
+			s.recordExit(ctx, &updated, latestAllocation(allocs))
 		}
 	}
 
@@ -995,7 +1014,11 @@ func (s *service) markLost(rec *record, reason string) (*Job, error) {
 // it has waited out the grace, its pool (the fallback pool once it moved) shows no eligible node,
 // and the fleet knows the cause. A job that can still fall back to another pool is left to it.
 func (s *service) unplaceableReason(rec *record, evals []nomad.Evaluation, now time.Time) string {
-	if s.opts.PoolHealth == nil || now.Sub(rec.SubmittedAt) < s.opts.UnplaceableGrace || !noPoolNodes(evals) {
+	waitingFrom := rec.SubmittedAt
+	if rec.PendingSince != nil && rec.PendingSince.After(waitingFrom) {
+		waitingFrom = *rec.PendingSince // a requeued job waits afresh
+	}
+	if s.opts.PoolHealth == nil || now.Sub(waitingFrom) < s.opts.UnplaceableGrace || !noPoolNodes(evals) {
 		return ""
 	}
 	pool := rec.Request.Pool

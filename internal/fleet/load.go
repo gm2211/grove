@@ -52,9 +52,18 @@ func Load(path string) (*Spec, error) {
 // repository decides what runs next to the token. A job's environment image has to be a digest
 // already; grove's own default is one (dispatch.DefaultRunnerImage). A tag stays valid, since
 // fleets use them, and is only warned about. The macos pool runs jobs natively, in no container.
+//
+// A pool whose workerSelector names one Mac (`host: <name>`): when that Mac sleeps, reboots or
+// leaves, the pool has nowhere to run and its jobs wait or fail. preferWorkers keeps the
+// preference and lets the pool spill onto the other Macs meanwhile.
 func (s *Spec) Warnings() []string {
 	var out []string
 	for _, p := range s.Pools {
+		if host, ok := p.WorkerSelector["host"]; ok {
+			out = append(out, fmt.Sprintf(
+				"pool %q: workerSelector pins it to one Mac (host: %s), so the pool stops whenever that Mac is away; drop it to let every Mac run the pool, or move `host: %s` to preferWorkers to keep a preference while other Macs cover for it",
+				p.Name, host, host))
+		}
 		if strings.Contains(p.Image, "/") && !imagePinnedByDigest(p.Image) {
 			// A name with no "/" is a local Tart VM, which no registry can repoint.
 			out = append(out, fmt.Sprintf(

@@ -86,6 +86,8 @@ type scaling struct {
 	createReasons map[string]string
 	deleteReasons map[string]string
 	swaps         map[string]bool
+	// on is, per pool, the workers its VMs belong on now (see placement).
+	on map[string]map[string]bool
 }
 
 func (s *scaling) poolIndexes(pool, worker string) []int {
@@ -104,10 +106,12 @@ func (r *Reconciler) scale(workers []orchard.Worker, vms []orchard.VM) *scaling 
 		createReasons: map[string]string{},
 		deleteReasons: map[string]string{},
 		swaps:         map[string]bool{},
+		on:            map[string]map[string]bool{},
 	}
 	pools := map[string]Pool{}
 	for _, p := range r.Spec.Pools {
 		pools[p.Name] = p
+		s.on[p.Name], _ = placement(p, workers)
 	}
 
 	// Start from what runs now.
@@ -124,7 +128,7 @@ func (r *Reconciler) scale(workers []orchard.Worker, vms []orchard.VM) *scaling 
 		min, max := p.Bounds()
 		s.indexes[p.Name] = map[string][]int{}
 		for _, w := range workers {
-			if !eligible(p, w) {
+			if !s.eligible(p, w) {
 				continue
 			}
 			var idx []int
@@ -169,8 +173,8 @@ func (r *Reconciler) scale(workers []orchard.Worker, vms []orchard.VM) *scaling 
 	return s
 }
 
-func eligible(p Pool, w orchard.Worker) bool {
-	return !w.Offline && !w.SchedulingPaused && labelsContain(w.Labels, p.WorkerSelector)
+func (s *scaling) eligible(p Pool, w orchard.Worker) bool {
+	return s.on[p.Name][w.Name]
 }
 
 // addIndex appends the lowest index not yet in idx (sorted).
@@ -236,7 +240,7 @@ func (s *scaling) roomiest(p Pool, workers []orchard.Worker, pools map[string]Po
 	_, max := p.Bounds()
 	best, bestFree := "", int64(-1)
 	for _, w := range workers {
-		if !eligible(p, w) || len(s.indexes[p.Name][w.Name]) >= max {
+		if !s.eligible(p, w) || len(s.indexes[p.Name][w.Name]) >= max {
 			continue
 		}
 		free, ok := s.fits(p, w, pools, byName)
@@ -312,7 +316,7 @@ func (s *scaling) swap(p Pool, waiting int, workers []orchard.Worker, pools map[
 	}
 	var best *victim
 	for _, w := range workers {
-		if !eligible(p, w) || len(s.indexes[p.Name][w.Name]) >= max {
+		if !s.eligible(p, w) || len(s.indexes[p.Name][w.Name]) >= max {
 			continue
 		}
 		if last, ok := load.LastSwap[w.Name]; ok && now.Sub(last) < SwapCooldown {

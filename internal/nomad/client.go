@@ -287,6 +287,12 @@ func pickTask(states map[string]*nomadapi.TaskState) (string, *nomadapi.TaskStat
 	return names[0], states[names[0]]
 }
 
+// mainStarted reports whether the allocation's "main" task has started.
+func mainStarted(states map[string]*nomadapi.TaskState) bool {
+	ts, ok := states["main"]
+	return ok && ts != nil && !ts.StartedAt.IsZero()
+}
+
 // terminalTaskDetails extracts an allocation's exit code, terminating signal (if any) and
 // infra-fault failure reason (if any) from its task events. It replaces the separate
 // per-call-site "walk Events backwards for the Terminated one" scan that allocFromStub and
@@ -388,6 +394,7 @@ func allocFromStub(a *nomadapi.AllocationListStub) Allocation {
 		FinishedAt:    finishedAt(ts),
 		Signal:        signal,
 		FailureReason: failureReason,
+		Started:       mainStarted(a.TaskStates),
 	}
 }
 
@@ -410,6 +417,7 @@ func allocFromFull(a *nomadapi.Allocation) Allocation {
 		FinishedAt:    finishedAt(ts),
 		Signal:        signal,
 		FailureReason: failureReason,
+		Started:       mainStarted(a.TaskStates),
 	}
 }
 

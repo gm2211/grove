@@ -89,7 +89,8 @@ func (o Options) logger() *log.Logger {
 }
 
 // Reconciler makes Orchard match a fleet Spec: for every online, non-paused worker whose labels
-// satisfy a pool's WorkerSelector, it ensures pool.PerWorker VMs exist, pinned to that worker;
+// satisfy a pool's WorkerSelector (narrowed to its PreferWorkers while one of those is available,
+// see placement), it ensures pool.PerWorker VMs exist, pinned to that worker;
 // VMs that are no longer desired (worker gone offline/paused, selector no longer matches,
 // perWorker shrank) or whose spec has drifted are deleted.
 type Reconciler struct {
@@ -146,6 +147,9 @@ type Plan struct {
 	// Such a pool is not in Unmatched: capacity exists and may come back (a snooze ends), so the
 	// job service can queue its jobs instead of failing them.
 	PausedOnly []PlannedPause
+	// Spilled lists the pools with PreferWorkers that run on their other workers because no
+	// preferred one is available right now.
+	Spilled []string
 	// ListedAt is when Plan started listing Orchard's workers: the pause bits above are no newer.
 	// PoolHealth compares it with when a snooze ended (snooze.Store.EndedAt).
 	ListedAt time.Time
@@ -194,6 +198,7 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 	desired := make(map[string]bool)
 	blocked := make(map[string]string)
 	unsafeHosts := make(map[string]string) // "pool/worker" → guestPasswordBlock
+	failback := make(map[string]bool)      // "pool/worker" off the pool's preferred workers
 	scaled := r.scale(workers, vms)
 
 	for _, pool := range r.Spec.Pools {
@@ -217,6 +222,10 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 			plan.Fallbacks = append(plan.Fallbacks, *fallback)
 		}
 
+		on, spilled := placement(pool, workers)
+		if spilled {
+			plan.Spilled = append(plan.Spilled, pool.Name)
+		}
 		matched := false
 		var pausedMatch []string
 		for _, worker := range workers {
@@ -236,6 +245,13 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 				plan.Blocked = append(plan.Blocked, PlannedBlock{Pool: pool.Name, Reason: problem})
 				unsafeHosts[pool.Name+"/"+worker.Name] = problem
 				continue // and any VM it has there is swept below
+			}
+			if !on[worker.Name] {
+				// A preferred worker of the pool is available: the pool moves back there. A VM it
+				// spilled here leaves once idle; the sweep below deletes the rest.
+				failback[pool.Name+"/"+worker.Name] = true
+				r.keepBusy(pool, worker.Name, vms, desired)
+				continue
 			}
 
 			indexes := scaled.poolIndexes(pool.Name, worker.Name)
@@ -320,6 +336,8 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 			reason = "unsafe: " + problem
 		} else if why, ok := scaled.deleteReasons[vm.Name]; ok {
 			reason = why
+		} else if failback[pool+"/"+worker] {
+			reason = "a preferred worker of the pool is back"
 		}
 
 		plan.Deletes = append(plan.Deletes, PlannedDelete{
@@ -625,6 +643,46 @@ func findVM(vms []orchard.VM, name string) (orchard.VM, bool) {
 	}
 
 	return orchard.VM{}, false
+}
+
+// placement is the set of workers pool's VMs belong on now: every online, unpaused worker that
+// its WorkerSelector allows and that can run it (guestPasswordBlock), narrowed to those matching
+// PreferWorkers while any of them is among it. spilled says the pool has preferred workers and
+// none is available, so it runs on the others.
+func placement(pool Pool, workers []orchard.Worker) (on map[string]bool, spilled bool) {
+	on = map[string]bool{}
+	preferred := map[string]bool{}
+	for _, w := range workers {
+		if w.Offline || w.SchedulingPaused || !labelsContain(w.Labels, pool.WorkerSelector) || guestPasswordBlock(pool, w) != "" {
+			continue
+		}
+		on[w.Name] = true
+		if len(pool.PreferWorkers) > 0 && labelsContain(w.Labels, pool.PreferWorkers) {
+			preferred[w.Name] = true
+		}
+	}
+	if len(pool.PreferWorkers) == 0 {
+		return on, false
+	}
+	if len(preferred) == 0 {
+		return on, len(on) > 0
+	}
+	return preferred, false
+}
+
+// keepBusy keeps pool's VMs on worker that are running a job (JobLoad.Busy) although the pool no
+// longer belongs there (a preferred worker came back): each goes once its job is done, never under
+// it. Without a JobLoad nothing is known to be busy.
+func (r *Reconciler) keepBusy(pool Pool, worker string, vms []orchard.VM, desired map[string]bool) {
+	if r.Options.Load == nil {
+		return
+	}
+	for _, vm := range vms {
+		p, w, _, ok := ParseVMName(vm.Name)
+		if ok && p == pool.Name && w == worker && vm.Labels[LabelWorkerPin] == worker && r.Options.Load.Busy[vm.Name] {
+			desired[vm.Name] = true
+		}
+	}
 }
 
 func labelsContain(have, want map[string]string) bool {
