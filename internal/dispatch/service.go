@@ -246,9 +246,6 @@ func validate(req JobRequest) error {
 	default:
 		return fmt.Errorf("dispatch: unknown kind %q", req.Kind)
 	}
-	if req.Pool == "" {
-		return fmt.Errorf("dispatch: pool is required")
-	}
 	if req.Script == "" {
 		return fmt.Errorf("dispatch: script is required")
 	}
@@ -424,6 +421,15 @@ func (s *service) pinEnvironment(ctx context.Context, req JobRequest) (JobReques
 func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error) {
 	if err := validate(req); err != nil {
 		return nil, false, err
+	}
+	// A job that names no pool is placed from its description; from here on it has one, as if
+	// the caller had named it (record, meta, fallback and status alike).
+	if req.Pool == "" {
+		pool, err := s.placePool(req)
+		if err != nil {
+			return nil, false, err
+		}
+		req.Pool = pool
 	}
 	if err := s.validateResources(req); err != nil {
 		return nil, false, err

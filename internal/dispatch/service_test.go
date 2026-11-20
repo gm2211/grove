@@ -72,7 +72,7 @@ func TestSubmit_Validation(t *testing.T) {
 	}{
 		{"missing kind", JobRequest{Pool: "linux", Script: "true"}},
 		{"unknown kind", JobRequest{Kind: "bogus", Pool: "linux", Script: "true"}},
-		{"missing pool", JobRequest{Kind: KindShell, Script: "true"}},
+		{"no pool named and no pool to place it in", JobRequest{Kind: KindShell, Script: "true"}},
 		{"missing script", JobRequest{Kind: KindShell, Pool: "linux"}},
 		{"missing repo for build", JobRequest{Kind: KindBuild, Pool: "linux", Script: "true"}},
 		{"missing repo for agent", JobRequest{Kind: KindAgent, Pool: "linux", Script: "true"}},

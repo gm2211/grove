@@ -25,7 +25,10 @@ const (
 // JobRequest is everything needed to run a unit of work somewhere in the fleet.
 type JobRequest struct {
 	Kind Kind `json:"kind"`
-	// Pool constrains placement (meta.pool on Nomad nodes), e.g. "linux" | "macos" | "gpu".
+	// Pool is the fleet.yaml pool the job runs in. Leave it empty: Submit then places the job from
+	// what it asks for (placePool: a shared macOS pool first, a shared Linux pool for a job whose
+	// environment is an image with no toolchain), and the job's record carries the pool chosen. Name
+	// one only for a sealed pool, which is a decision about trust that a description doesn't carry.
 	Pool string `json:"pool"`
 	Repo string `json:"repo,omitempty"` // git URL
 	Ref  string `json:"ref,omitempty"`  // commit SHA, branch or tag

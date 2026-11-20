@@ -78,13 +78,12 @@ the task's working directory (shell). Example:
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&pool, "pool", "", "target pool (required), e.g. linux, macos, gpu")
+	cmd.Flags().StringVar(&pool, "pool", "", "pool to run in; leave it out and grove places the job from its description")
 	cmd.Flags().StringVar(&kind, "kind", string(dispatch.KindShell), "job kind: build|agent|shell")
 	cmd.Flags().StringVar(&repo, "repo", "", "git repo URL (required for build/agent)")
 	cmd.Flags().StringVar(&ref, "ref", "", "git ref: branch, tag or commit SHA")
 	cmd.Flags().StringArrayVar(&envs, "env", nil, "environment variable KEY=VALUE (repeatable)")
 	cmd.Flags().DurationVar(&timeout, "timeout", 0, "job timeout, e.g. 30m")
 	cmd.Flags().BoolVar(&follow, "follow", false, "stream logs until the job finishes")
-	_ = cmd.MarkFlagRequired("pool")
 	Root.AddCommand(cmd)
 }

@@ -4,6 +4,12 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **A job no longer names its pool.** `pool` is optional on a job request (API, `grove dispatch`,
+  the MCP `grove_run` tool, the dashboard's dispatch form): the control plane places the job from
+  what it asks for. A shared macOS pool comes first; a shared Linux pool takes a job whose
+  environment is an image with no toolchain. A sealed pool is still chosen only by name. Requests
+  that name a pool behave as before.
+
 - **A job's own local servers answer.** Jobs on a pool with a credential broker ran with an empty
   `NO_PROXY`, so a request to `127.0.0.1` (a test suite's HTTP stand-in) went to the broker, which
   dials only public addresses and refused it. Loopback (`localhost`, `127.0.0.1`, `::1`) is now

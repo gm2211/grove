@@ -40,7 +40,7 @@ func (h *handlers) fleet(ctx context.Context, _ *mcpsdk.CallToolRequest, _ fleet
 // --- grove_run -----------------------------------------------------------------------------
 
 type runArgs struct {
-	Pool           string            `json:"pool" jsonschema:"pool to run on, e.g. linux or macos (see grove_fleet for available pools)"`
+	Pool           string            `json:"pool,omitempty" jsonschema:"optional: leave empty and grove places the job from its description; name a pool only for a sealed one (see grove_fleet)"`
 	Script         string            `json:"script" jsonschema:"bash script to run with bash -eo pipefail"`
 	Repo           string            `json:"repo,omitempty" jsonschema:"git URL to clone before running the script; omit for a bare shell job"`
 	Ref            string            `json:"ref,omitempty" jsonschema:"commit SHA, branch, or tag to check out (used with repo)"`
@@ -73,9 +73,6 @@ var pollInterval = 2 * time.Second
 const maxWait = 30 * time.Minute
 
 func (h *handlers) run(ctx context.Context, req *mcpsdk.CallToolRequest, args runArgs) (*mcpsdk.CallToolResult, *runResult, error) {
-	if strings.TrimSpace(args.Pool) == "" {
-		return nil, nil, errors.New("pool is required")
-	}
 	if strings.TrimSpace(args.Script) == "" {
 		return nil, nil, errors.New("script is required")
 	}
