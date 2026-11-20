@@ -69,7 +69,7 @@ type JobRequest struct {
 	// a request that exceeds them with a 400. See docs/JOBS.md "Per-job resource sizing" for the
 	// full limitation and the plan for real per-dispatch sizing.
 	Resources *ResourceHint `json:"resources,omitempty"`
-	// RetryLost says whether a sealed pool's job is rerun in another VM when its VM dies under it
+	// RetryLost says whether a job is rerun in another VM when its VM dies under it
 	// (up to MaxAttempts runs, and never again once it was lost on QuarantineMachines different
 	// machines). Nil means the default: build and shell jobs are rerun, agent jobs are not, since
 	// an agent may already have pushed or posted something a rerun would do twice.
@@ -167,8 +167,9 @@ type Job struct {
 	// rather than a genuine script failure.
 	FailureReason *string    `json:"failureReason,omitempty"`
 	Placement     *Placement `json:"placement,omitempty"`
-	// Attempts lists where a sealed pool's job ran, one entry per run: a job whose VM died under it
-	// is rerun in another (see JobRequest.RetryLost). Empty for other pools.
+	// Attempts lists where the job ran, one entry per run: a job whose VM died under it is rerun
+	// in another (see JobRequest.RetryLost). A sealed pool's driver records every run; a shared
+	// pool's job gets an entry per lost or finished allocation (reschedule.go).
 	Attempts []Attempt `json:"attempts,omitempty"`
 	// Quarantined is set on a failed job that grove stopped running because it was lost on
 	// QuarantineMachines different machines: the job itself most likely takes them down, so it

@@ -1,6 +1,8 @@
-// Package health watches where sealed pools' jobs get lost and acts on machines that keep losing
-// them: a VM that loses jobs again and again is rebuilt, and a Mac whose VMs keep losing them stops
-// getting work until an operator resumes it (`grove worker resume`).
+// Package health watches where jobs get lost and acts on machines that keep losing them: a VM that
+// loses jobs again and again is rebuilt (sealed and shared pools alike), and a Mac whose sealed
+// VMs keep losing them stops getting work until an operator resumes it (`grove worker resume`).
+// A shared pool's losses never pause a Mac: in a shared pool a Mac leaving (sleep, reboot,
+// unplugged) is routine, its jobs are rerun elsewhere, and it rejoins when it is back.
 //
 // It reads the attempt records the job drivers keep (dispatch.Job.Attempts). A job grove
 // quarantined is left out: it takes machines down, so its losses say nothing about them.
@@ -73,12 +75,17 @@ func (m *Monitor) Run(ctx context.Context, interval time.Duration) error {
 // event is one finished attempt.
 type event struct {
 	at      time.Time
+	start   time.Time
 	job     string
 	vm      string // name/UID: a rebuilt VM keeps its name but is a new VM
 	vmName  string
 	vmUID   string
 	machine string
 	lost    bool
+	// shared marks a shared pool's attempt (one with a Nomad allocation). Its VM counts, its
+	// machine doesn't: a worker Mac leaving the fleet loses every shared job on it at once, and
+	// is welcome back when it returns (dispatch's reschedule.go reruns those jobs elsewhere).
+	shared bool
 }
 
 // Tick looks at the recent attempts and acts on what they show.
@@ -96,8 +103,14 @@ func (m *Monitor) Tick(ctx context.Context) {
 			continue
 		}
 		m.rebuilt[vm] = true
-		// The VM may already have been replaced under the same name; the new one is innocent.
-		if current, err := m.Orchard.GetVM(ctx, losses.vmName); err != nil || current == nil || current.UID != losses.vmUID {
+		// The VM may already have been replaced under the same name; the new one is innocent. A
+		// shared pool's attempt names its VM but not its UID (Nomad knows only the name): there,
+		// a VM created after the first of the losses began is the replacement.
+		current, err := m.Orchard.GetVM(ctx, losses.vmName)
+		if err != nil || current == nil {
+			continue
+		}
+		if (losses.vmUID != "" && current.UID != losses.vmUID) || (losses.vmUID == "" && !current.CreatedAt.Before(losses.firstStart)) {
 			continue
 		}
 		m.Log.Warn("health: rebuilding a VM that keeps losing jobs", "vm", losses.vmName, "jobs", sortedKeys(losses.jobs))
@@ -107,7 +120,13 @@ func (m *Monitor) Tick(ctx context.Context) {
 		}
 	}
 
-	byMachine := lossesBy(events, func(e event) string { return e.machine })
+	machineEvents := events[:0:0]
+	for _, e := range events {
+		if !(e.shared && e.lost) {
+			machineEvents = append(machineEvents, e)
+		}
+	}
+	byMachine := lossesBy(machineEvents, func(e event) string { return e.machine })
 	if len(byMachine) == 0 {
 		return
 	}
@@ -208,8 +227,8 @@ func recentEvents(jobs []dispatch.Job, since time.Time) []event {
 				continue // canceled or never set up: says nothing about the machine
 			}
 			events = append(events, event{
-				at: *a.FinishedAt, job: job.ID, vm: a.VM + "/" + a.VMUID, vmName: a.VM, vmUID: a.VMUID,
-				machine: a.Worker, lost: a.Outcome == dispatch.AttemptLost,
+				at: *a.FinishedAt, start: a.StartedAt, job: job.ID, vm: a.VM + "/" + a.VMUID, vmName: a.VM, vmUID: a.VMUID,
+				machine: a.Worker, lost: a.Outcome == dispatch.AttemptLost, shared: a.Alloc != "",
 			})
 		}
 	}
@@ -221,8 +240,10 @@ func recentEvents(jobs []dispatch.Job, since time.Time) []event {
 type losses struct {
 	vmName string
 	vmUID  string
-	jobs   map[string]bool
-	events []event
+	// firstStart is when the earliest of the losses began.
+	firstStart time.Time
+	jobs       map[string]bool
+	events     []event
 }
 
 // after counts the different jobs lost after t, and in how many different VMs.
@@ -247,7 +268,10 @@ func lossesBy(events []event, key func(event) string) map[string]losses {
 		}
 		l, ok := out[k]
 		if !ok {
-			l = losses{vmName: e.vmName, vmUID: e.vmUID, jobs: map[string]bool{}}
+			l = losses{vmName: e.vmName, vmUID: e.vmUID, firstStart: e.start, jobs: map[string]bool{}}
+		}
+		if e.start.Before(l.firstStart) {
+			l.firstStart = e.start
 		}
 		l.jobs[e.job] = true
 		l.events = append(l.events, e)

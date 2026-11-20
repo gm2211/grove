@@ -4,6 +4,27 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **A shared pool's lost job is rerun instead of staying lost.** When a VM or its Mac goes away
+  mid-job (sleep, reboot, crash, a worker leaving), grove now reruns the job on the pool's other
+  VMs, by the sealed pools' rules: at most 3 runs, agent jobs not rerun (`retryLost`), and a job
+  lost after its script started on 2 different Macs quarantined as a poison pill. A resubmitted
+  copy of a quarantined job (same kind, pool, repo, ref and script, within 24 hours) is
+  quarantined on its first such loss, so it can't take down two more Macs each time. Attempts are
+  kept on the job, and a shared VM that keeps losing jobs is rebuilt; a Mac is never paused for a
+  shared pool's losses.
+
+- **Nomad no longer reruns lost allocations behind grove's back.** With `reschedule { attempts =
+  0 }`, Nomad 2.0.7 still placed a replacement for an allocation on a node that went down, with no
+  limit, and a job grove had already marked lost could run later, unwatched. The job templates now
+  set `disconnect { replace = false, lost_after = "24h" }`: the allocation stays `unknown`, grove
+  calls it lost after a minute, and every job grove ends has its Nomad job stopped first.
+
+- **`preferWorkers`: prefer a Mac without pinning a pool to it.** A pool runs only on the workers
+  matching `preferWorkers` while one is available, spills onto every `workerSelector` match while
+  none is, and moves back when a preferred Mac returns, leaving a spilled VM until its job is done.
+  `grove serve` warns about a pool whose `workerSelector` names one `host`. See
+  docs/OPERATIONS.md "Preferring a Mac without pinning a pool to it".
+
 - **The control plane finds Homebrew's tailscale under launchd.** A LaunchAgent's PATH has no
   Homebrew directory, so `grove serve` found no tailscale CLI and turned Tailscale identity auth
   off: every browser without a token got "unauthorized". `FindTailscale` now also looks in

@@ -43,7 +43,7 @@ images/                         Packer templates
 nomad/jobs/                     parameterized Nomad job HCL
 scripts/install.sh              curl | sh → brew tap + grove install
 docs/                            INSTALL.md, OPERATIONS.md
-spec/                            22 properties: Quint models, Lean proofs, CodeQL queries, Specify spec (spec/grove.spec); spec/check.sh (see spec/README.md)
+spec/                            24 properties: Quint models, Lean proofs, CodeQL queries, Specify spec (spec/grove.spec); spec/check.sh (see spec/README.md)
 ```
 
 **Contract packages** (`config`, `orchard`, `nomad`, `dispatch`, `fleet` *types*) define the Go
@@ -351,6 +351,28 @@ growing interval and switches back by itself. Keep it that way: a failure to get
 never need the operator to edit fleet.yaml to get the pool's jobs running again, only `Observe`
 writes the store (Plan reads it), and it holds image names and Orchard messages, never a
 credential. `internal/fleet/imagehold_test.go` asserts it.
+
+## Lost jobs and workers coming and going — keep it that way
+
+Macs leave and rejoin (sleep, reboot, unplugged); a shared pool's job on one is grove's to rerun,
+never Nomad's (`internal/dispatch/reschedule.go`, spec S23/L11, `spec/quint/reschedule.qnt`).
+
+- Nomad 2.0.7 replaces a lost allocation even with `reschedule { attempts = 0 }`. build, agent and
+  shell keep `disconnect { replace = false, lost_after = "24h" }` (`nomadjobs_test.go` asserts it),
+  so a lost VM's allocation stays `unknown` with no replacement; grove calls it lost after
+  `DefaultUnknownGrace`.
+- `decideLost` is the only verdict: at most `MaxAttempts` runs (evictions free), `retryLost`
+  respected, quarantine on `QuarantineMachines` machines after the script started, or on the first
+  such loss of a job whose `poisonFingerprint` was quarantined within `PoisonMemory`. A loss on an
+  unnamed machine or before the script started never quarantines. Change the model with it
+  (`TestDecideLost_MatchesModel`).
+- Every path that ends a lost job stops its Nomad job first and stays non-terminal if the stop
+  fails; a rerun goes through `redispatch` (old copy purged) with no pin to the lost worker.
+- A shared pool's losses rebuild VMs in `internal/health` but never pause a Mac.
+- Placement: `workerSelector` is what a pool needs, `preferWorkers` what it prefers (`placement` in
+  `internal/fleet/reconcile.go`, used by Plan and autoscale alike). A VM spilled off the preferred
+  workers is kept while `JobLoad.Busy`, never deleted under its job. Enrol (S3) checks only the
+  hard selector. `Spec.Warnings` flags a `host:` in `workerSelector`.
 
 ## `internal/snooze` — why a worker is paused
 

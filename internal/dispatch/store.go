@@ -27,6 +27,9 @@ type record struct {
 	// PendingSince, when later than SubmittedAt, is where the pending timeout starts counting:
 	// the end of a snooze that kept the job queued (see PoolWaiter).
 	PendingSince *time.Time `json:"pendingSince,omitempty"`
+	// UnknownSince is when grove first saw each of the job's allocations "unknown" (Nomad lost
+	// contact with its node). After Options.UnknownGrace it counts as lost (reschedule.go).
+	UnknownSince map[string]time.Time `json:"unknownSince,omitempty"`
 }
 
 // store is a thread-safe in-memory job store, persisted as JSON so history survives restarts.

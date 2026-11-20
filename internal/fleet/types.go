@@ -33,6 +33,13 @@ type Pool struct {
 	// Labels above, this is evaluated entirely by grove itself while planning (internal/fleet
 	// Reconciler.Plan) and never reaches Orchard.
 	WorkerSelector map[string]string `yaml:"workerSelector,omitempty" json:"workerSelector,omitempty"`
+	// PreferWorkers is a soft WorkerSelector: while at least one online, unpaused worker that
+	// can run the pool matches it, the pool runs only there; while none does (the preferred Macs
+	// are asleep, rebooting or gone), the pool spills onto every worker WorkerSelector allows, and
+	// it moves back once a preferred worker returns, leaving a spilled VM until its job finishes.
+	// Put what a pool merely likes here (`host: studio`) and keep WorkerSelector for what it
+	// needs (a label only capable Macs carry), so a pool never goes down with one Mac.
+	PreferWorkers map[string]string `yaml:"preferWorkers,omitempty" json:"preferWorkers,omitempty"`
 	// Scripts run inside the guest (see ARCHITECTURE.md → Recycling). Paths or inline.
 	StartupScript   string   `yaml:"startupScript,omitempty" json:"startupScript,omitempty"`
 	ShutdownScript  string   `yaml:"shutdownScript,omitempty" json:"shutdownScript,omitempty"`

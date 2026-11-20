@@ -55,23 +55,10 @@ func (s *service) Evict(ctx context.Context, worker, reason string) (requeued, l
 }
 
 func (s *service) requeueEvicted(ctx context.Context, rec *record, worker, reason string) error {
-	pool := rec.Request.Pool
-	if rec.Fallback != nil {
-		pool = rec.Fallback.To
-	}
-	if err := s.redispatch(ctx, rec, pool); err != nil {
+	rec.Evictions = append(rec.Evictions, Eviction{Worker: worker, At: time.Now().UTC(), Reason: reason})
+	if err := s.requeue(ctx, rec, runPool(rec), fmt.Sprintf("requeued: worker %s was snoozed", worker)); err != nil {
+		rec.Evictions = rec.Evictions[:len(rec.Evictions)-1]
 		return err
 	}
-	rec.Status = StatusPending
-	rec.AllocID, rec.Node, rec.ExitCode = "", "", nil
-	rec.StartedAt, rec.Placement, rec.Signal = nil, nil, nil
-	rec.PendingReason = fmt.Sprintf("requeued: worker %s was snoozed", worker)
-	rec.Evictions = append(rec.Evictions, Eviction{Worker: worker, At: time.Now().UTC(), Reason: reason})
-	if err := s.store.put(rec); err != nil {
-		return fmt.Errorf("dispatch: persist job %s: %w", rec.ID, err)
-	}
-	s.mu.Lock()
-	delete(s.cache, rec.ID)
-	s.mu.Unlock()
 	return nil
 }

@@ -35,6 +35,16 @@ job "grove-{{.Kind}}-{{.Pool}}" {
       attempts = 0
     }
 
+    # reschedule { attempts = 0 } does not cover a lost allocation: when its node goes down, Nomad
+    # places a replacement anyway, outside grove's budget and quarantine (seen on Nomad 2.0.7).
+    # This keeps a lost VM's allocation "unknown" instead, with no replacement, so grove alone
+    # decides whether the job runs again (internal/dispatch reschedule.go). lost_after only bounds
+    # how long Nomad waits if grove is gone that long; grove's own grace is a minute.
+    disconnect {
+      lost_after = "24h"
+      replace    = false
+    }
+
 {{if eq .Pool "macos"}}
     # prepare: a root prestart task, on macOS only, that does for a shell job what "source" does
     # for a build or an agent before "main" starts: kill what earlier jobs left running as the

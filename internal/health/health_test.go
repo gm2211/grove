@@ -24,6 +24,7 @@ func (f *fakeJobs) List(context.Context) ([]dispatch.Job, error) { return f.jobs
 type fakeOrchard struct {
 	orchard.Client
 	vms     map[string]string // name -> uid
+	created map[string]time.Time
 	workers []orchard.Worker
 	deleted []string
 	paused  []string
@@ -34,7 +35,7 @@ func (o *fakeOrchard) GetVM(_ context.Context, name string) (*orchard.VM, error)
 	if !ok {
 		return nil, nil
 	}
-	return &orchard.VM{Name: name, UID: uid}, nil
+	return &orchard.VM{Name: name, UID: uid, CreatedAt: o.created[name]}, nil
 }
 func (o *fakeOrchard) DeleteVM(_ context.Context, name string) error {
 	o.deleted = append(o.deleted, name)
@@ -212,5 +213,43 @@ func TestSnoozedMachineStillRecordsHealthReason(t *testing.T) {
 	}
 	if got := st.Reasons("mac1", now.Add(2*time.Hour)); !slices.Equal(got, []string{snooze.ReasonHealth}) {
 		t.Fatalf("after the snooze: reasons = %v", got)
+	}
+}
+
+// shared is a shared pool's attempt: Nomad names the VM, not its UID, and an allocation.
+func shared(vm, machine, outcome string, ago time.Duration) dispatch.Attempt {
+	a := attempt(vm, machine, outcome, ago)
+	a.VMUID, a.Alloc = "", "alloc-"+vm+"-"+ago.String()
+	return a
+}
+
+func TestSharedLossesRebuildTheVMButNeverPauseTheMac(t *testing.T) {
+	// mac1 left the fleet twice with jobs on both its VMs: every one of them was lost.
+	m, o := newMonitor([]dispatch.Job{
+		job("a", shared("linux-mac1-0", "mac1", dispatch.AttemptLost, 40*time.Minute)),
+		job("b", shared("linux-mac1-1", "mac1", dispatch.AttemptLost, 40*time.Minute)),
+		job("c", shared("linux-mac1-0", "mac1", dispatch.AttemptLost, 10*time.Minute)),
+		job("d", shared("linux-mac1-1", "mac1", dispatch.AttemptLost, 10*time.Minute)),
+	})
+	m.Tick(context.Background())
+	if len(o.paused) != 0 {
+		t.Errorf("paused %v: a Mac leaving a shared pool is welcome back", o.paused)
+	}
+	slices.Sort(o.deleted)
+	if !slices.Equal(o.deleted, []string{"linux-mac1-0", "linux-mac1-1"}) {
+		t.Errorf("deleted %v, want both VMs that lost two jobs rebuilt", o.deleted)
+	}
+}
+
+func TestSharedLossesLeaveAReplacedVMAlone(t *testing.T) {
+	m, o := newMonitor([]dispatch.Job{
+		job("a", shared("linux-mac1-0", "mac1", dispatch.AttemptLost, 40*time.Minute)),
+		job("b", shared("linux-mac1-0", "mac1", dispatch.AttemptLost, 10*time.Minute)),
+	})
+	// The VM under that name was created after the first loss: it is a new VM.
+	o.created = map[string]time.Time{"linux-mac1-0": now.Add(-30 * time.Minute)}
+	m.Tick(context.Background())
+	if len(o.deleted) != 0 {
+		t.Errorf("deleted %v", o.deleted)
 	}
 }
