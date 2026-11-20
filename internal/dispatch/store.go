@@ -30,6 +30,12 @@ type record struct {
 	// UnknownSince is when grove first saw each of the job's allocations "unknown" (Nomad lost
 	// contact with its node). After Options.UnknownGrace it counts as lost (reschedule.go).
 	UnknownSince map[string]time.Time `json:"unknownSince,omitempty"`
+	// NotDispatched marks the record of a submit whose Dispatch answered with an error: the caller
+	// was told it was refused, so an idempotency key never finds it. SweepUntil, while set, is
+	// until when the reconcile sweep keeps looking for a copy Nomad may still have made of it
+	// (service.notDispatched).
+	NotDispatched bool       `json:"notDispatched,omitempty"`
+	SweepUntil    *time.Time `json:"sweepUntil,omitempty"`
 }
 
 // store is a thread-safe in-memory job store, persisted as JSON so history survives restarts.
@@ -105,7 +111,7 @@ func (s *store) findByIdempotencyKey(key, submittedBy string) (*record, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, r := range s.jobs {
-		if r.Request.IdempotencyKey == key && r.Request.SubmittedBy == submittedBy {
+		if r.Request.IdempotencyKey == key && r.Request.SubmittedBy == submittedBy && !r.NotDispatched {
 			cp := *r
 			return &cp, true
 		}

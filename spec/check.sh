@@ -65,6 +65,19 @@ check S23 reschedule.qnt rescheduleBeforeNoRetry invariant endedMeansStopped    
 check L11 reschedule.qnt rescheduleRetry        temporal  terminates                   holds
 check L11 reschedule.qnt rescheduleNoRetry      temporal  terminates                   holds
 check L11 reschedule.qnt reschedulePoisoned     temporal  terminates                   holds
+check S24 lifecycle.qnt lifecycleFixed          invariant safe                         holds
+check S24 lifecycle.qnt lifecycleFixedNoRetry   invariant safe                         holds
+check S24 lifecycle.qnt lifecycleBefore         invariant oneLiveCopy                  fails
+check S24 lifecycle.qnt lifecycleBefore         invariant noUnwatchedCopy              fails
+check S24 lifecycle.qnt lifecycleBefore         invariant endIsFinal                   fails
+check S24 lifecycle.qnt lifecycleBefore         invariant atMostMaxRuns                fails
+check S24 lifecycle.qnt lifecycleBeforeAmbiguous invariant noUnwatchedCopy             fails
+check S24 lifecycle.qnt lifecycleFixed          invariant neverRerun                   fails
+check S24 lifecycle.qnt lifecycleFixed          invariant neverCanceled                fails
+check S24 lifecycle.qnt lifecycleFixed          invariant refusedCopyNeverStopped      fails
+check L12 lifecycle.qnt lifecycleFixed          temporal  settles                      holds
+check L12 lifecycle.qnt lifecycleFixedNoRetry   temporal  settles                      holds
+check L12 lifecycle.qnt lifecycleBefore         temporal  settles                      fails
 check L7  fleet.qnt    fleetTTL                 invariant noJobOnRecyclingVM           holds
 check L7  fleet.qnt    fleetTTL                 invariant drainedBeforeRecycle         holds
 check L7  fleet.qnt    fleetTTL                 temporal  alwaysComesBack              holds
@@ -110,17 +123,7 @@ total=$(python3 -B -c 'import importlib.util,sys; s=importlib.util.spec_from_fil
 row S1 mutants "old bugs caught by conformance" "$total/$total" "$killed/$total"
 [ "$killed" = "$total" ] || fail=1
 
-# grove.spec: the 21 properties as Specify behaviors. Its formal links (Quint invariants by seeded
-# simulation, Lean theorems) must all pass; temporal properties stay with the TLC rows above.
-if [ -n "${SPECIFY:-}" ]; then
-	out=$(cd "$spec/.." && LEAN_PATH="$spec/lean/.lake/build/lib/lean" "$SPECIFY" formal check \
-		--spec spec/grove.spec --timeout-ms 300000 2>/dev/null) || true
-	got=$(python3 -c 'import json,sys; r=json.load(sys.stdin); n=len(r["results"]); p=sum(x["outcome"]["status"]=="passed" for x in r["results"]); print(f"{p}/{n}" if r["valid"] else f"FAILED {p}/{n}")' <<<"$out" 2>/dev/null || echo error)
-	row S1-9 specify "grove.spec formal check" 19/19 "$got"
-	[ "$got" = 19/19 ] || fail=1
-fi
-
-# grove.spec: the 21 properties as Specify behaviors. Its formal links (Quint invariants by seeded
+# grove.spec: the properties as Specify behaviors. Its formal links (Quint invariants by seeded
 # simulation, Lean theorems) must all pass; temporal properties stay with the TLC rows above.
 if [ -n "${SPECIFY:-}" ]; then
 	out=$(cd "$spec/.." && LEAN_PATH="$spec/lean/.lake/build/lib/lean" "$SPECIFY" formal check \
