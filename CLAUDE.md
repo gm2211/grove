@@ -44,7 +44,7 @@ images/                         Packer templates
 nomad/jobs/                     parameterized Nomad job HCL
 scripts/install.sh              curl | sh → brew tap + grove install
 docs/                            INSTALL.md, OPERATIONS.md
-spec/                            24 properties: Quint models, Lean proofs, CodeQL queries, Specify spec (spec/grove.spec); spec/check.sh (see spec/README.md)
+spec/                            26 properties: Quint models, Lean proofs, CodeQL queries, Specify spec (spec/grove.spec); spec/check.sh (see spec/README.md)
 ```
 
 **Contract packages** (`config`, `orchard`, `nomad`, `dispatch`, `fleet` *types*) define the Go
@@ -379,6 +379,24 @@ never Nomad's (`internal/dispatch/reschedule.go`, spec S23/L11, `spec/quint/resc
   `internal/fleet/reconcile.go`, used by Plan and autoscale alike). A VM spilled off the preferred
   workers is kept while `JobLoad.Busy`, never deleted under its job. Enrol (S3) checks only the
   hard selector. `Spec.Warnings` flags a `host:` in `workerSelector`.
+
+## One job, one watched copy — keep it that way
+
+A job is one record (jobs.json) naming one Nomad copy (`NomadJobID`), and many callers reconcile
+it at once: the 30 s sweep, every API Get and List, each worker's broker sync, Evict, log
+followers (spec S24/L12, `spec/quint/lifecycle.qnt`).
+
+- Every writer of a job's record holds `service.lockJob(id)` from reading the record to its last
+  write, and reads it under the lock (`reconcile` re-reads the store; never act on a caller's copy
+  from `store.list()`). A new writer takes the lock too; a caller already holding it uses
+  `reconcileLocked`.
+- A job that ended stays ended: Cancel of a terminal job is a no-op.
+- A Dispatch error is not proof that nothing was dispatched. A new job is dispatched under its id as
+  Nomad's idempotency token (`nomad.TokenDispatcher`); on an error grove stops any copy with that
+  token and keeps a `NotDispatched` record that `sweepNotDispatched` re-checks until
+  `dispatchCommitWindow` passes. Never return a refusal while a copy may be left running.
+- `internal/conformance/lifecycle_test.go` replays each counterexample against the real service and
+  `spec/mutants.py` puts each bug back; keep both passing, and change the model with the code.
 
 ## `internal/snooze` — why a worker is paused
 

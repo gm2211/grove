@@ -81,6 +81,24 @@ behaviors:
       Every shared-pool job ends, however often its VMs and Macs go away.
     details: L11. Temporal property (terminates in reschedule.qnt), checked by TLC.
     tags: [liveness, l11]
+  - id: one-job-one-watched-copy
+    description: >-
+      Nomad never holds two copies of a job that could run; every copy that could run is the one
+      grove's record follows, on a record still open or a refused submit's record while grove
+      hunts the copy down; a job that ended stays ended; Nomad starts a job at most 3 times.
+    details: >-
+      S24. No attacker: grove's own callers racing on one record (the sweep, API reads, broker
+      syncs, Evict, Cancel), and a Nomad that fails a Dispatch it committed. lifecycleBefore and
+      lifecycleBeforeAmbiguous show the four ways it failed before the per-job lock and the
+      idempotency-token sweep. Exhaustive TLC checks in spec/check.sh; the counterexamples
+      replayed against the real code in internal/conformance/lifecycle_test.go.
+    tags: [safety, s24]
+  - id: every-submit-settles
+    description: >-
+      Every submit settles: an accepted job ends, a refused one leaves nothing in Nomad that could
+      run, and once a job has ended no copy of it is left queued or running.
+    details: L12. Temporal property (settles in lifecycle.qnt), checked by TLC.
+    tags: [liveness, l12]
   - id: job-image-is-allowlisted-and-pinned
     description: >-
       A shared-pool job's image is its pool's runner image or a digest-pinned image its pool
