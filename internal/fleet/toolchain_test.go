@@ -251,7 +251,7 @@ func TestToolchainInstallerInstallsAndCaches(t *testing.T) {
 	}
 	for _, want := range []string{
 		"mise install | cwd=" + realDir, "HOME=/var/empty", "DATA=" + dir + "/data", "CACHE=" + dir + "/cache",
-		"GLOBAL=/dev/null", "COMPILE=0", "RUSTUP_HOME=" + dir + "/rustup", "CARGO_HOME=" + dir + "/cargo", "YES=1",
+		"GLOBAL=" + dir + "/mise-empty.toml", "COMPILE=0", "RUSTUP_HOME=" + dir + "/rustup", "CARGO_HOME=" + dir + "/cargo", "YES=1",
 		"mise exec -- rustup default 1.99.1", "TOKEN=\n",
 	} {
 		if !strings.Contains(log, want) {
