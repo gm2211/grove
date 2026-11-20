@@ -206,7 +206,9 @@ A step that fails stops the startup script, so the VM takes no job, and Orchard 
 
 Nothing to do where grove is the user's own binary (a release tarball in `~/.local/bin`, as on the
 control plane): `grove serve` and the worker's broker check for a newer release hourly and, while
-no job is pending or running, install it (verified against the release's `checksums.txt`; the old
+no job is pending or running, install it (verified against the release's `checksums.txt` and against its signed build
+provenance: only a build the release workflow made from a commit on `main` is installed, and there
+is no switch to skip that; the old
 binary stays beside it as `grove.<version>.bak`), re-run the worker install with it (`--no-sudo`:
 a changed root step is printed in the log, never run), and restart themselves. `grove self-update`
 does it on demand, `grove self-update --check` only looks. Turn it off with `update: {auto: false}`
@@ -727,7 +729,9 @@ online the old credential is revoked, including a broker-only credential that wa
 `grove access issue --scope broker` when that was still allowed. For the control plane's own
 worker: `grove access revoke` its old broker credential, delete `~/.config/grove/credentials/broker`
 and run `grove install --role worker` there again. Until a worker is re-joined, its unbound
-credential is a plain bearer token: revoke it (`grove access revoke DEVICE_ID`) if it may have
+credential still gets its jobs' entries, so the worker keeps running, but never the keychain unlock
+(the panel's "Unlock keychain" answers 409 for that worker) or the registry login for VM images
+(the worker falls back to its own `credentials/registry` file). It is a plain bearer token: revoke it (`grove access revoke DEVICE_ID`) if it may have
 leaked.
 
 A machine may hold at most 5 join requests waiting for approval (256 in total); more get a 429

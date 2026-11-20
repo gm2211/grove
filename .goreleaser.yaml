@@ -2,9 +2,11 @@ version: 2
 
 project_name: grove
 
+# The release builds exactly the modules go.sum names: verify them, never re-resolve them
+# (`go mod tidy` here could change what is built without a commit saying so).
 before:
   hooks:
-    - go mod tidy
+    - go mod verify
 
 builds:
   - id: grove

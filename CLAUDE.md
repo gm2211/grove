@@ -29,6 +29,7 @@ internal/dispatch/            JobRequest → parameterized Nomad job; status; lo
 internal/server/              HTTP API (/api/v1/…) + embedded UI; token + Tailscale-identity auth
 internal/tsauth/              Tailscale identity (tailscale whois on the peer address) → scopes
 internal/secrets/             operator-set named job secrets (JobRequest.Secrets)
+internal/provenance/          release build provenance: Sigstore attestation, built on main (self-update, Orchard download)
 internal/pki/                 grove's Nomad CA: server, grove-client and per-VM node certificates (mTLS)
 internal/gitauth/             operator-armed private-repo credential (see below)
 internal/grant/               allow-list syntax (principal id, tag:<name>) shared by gitauth and secrets
@@ -338,8 +339,13 @@ privileged step, printed for an admin. Keep it that way:
 
 `internal/install/selfupdate.go` and `internal/cli/self_update.go`: `grove serve` and the broker
 install newer releases by themselves (`runAutoUpdate`) and restart. Keep it that way: nothing is
-installed unless the archive matches the release's `checksums.txt` and the new binary reports the
-expected version; never while a job is pending or running (a restart drops in-memory credential
+installed unless the archive matches the release's `checksums.txt`, its build provenance verifies
+(`internal/provenance`: a Sigstore attestation, checked offline against the embedded trusted root,
+that the release workflow of this repository built these bytes on a GitHub-hosted runner from a
+commit on `main`; a hand-pushed tag's commit must also be on `main`, asked of GitHub) and the new
+binary reports the expected version. No flag, config key or environment variable skips the
+provenance check, and a failure to fetch or verify it means no update, never an unverified one. The
+Orchard binary a worker downloads goes through the same `fetchReleaseAsset`. Never while a job is pending or running (a restart drops in-memory credential
 entries); never through sudo or into a path this user doesn't own (Homebrew's is left to brew);
 never a development build. Never tell the operator to upgrade a machine by hand when this covers it.
 
@@ -463,7 +469,11 @@ CI (`.github/workflows/ci.yml`) runs `go build/vet/test` on `ubuntu-latest` and 
 plus the `ui` build when `ui/package.json` exists. Releases (`.github/workflows/release.yml`) run
 via goreleaser (`.goreleaser.yaml`) and need no hands: when CI is green on main and the commit
 changes what a release ships, `.github/workflows/autorelease.yml` tags the next patch version
-(`.github/scripts/next-release-tag.sh`) and calls release.yml for it. Never ask the operator to
+(`.github/scripts/next-release-tag.sh`) and calls release.yml for it. release.yml's `gate` job
+refuses a tag that is not `vX.Y.Z` or whose commit is not on `main`, and only the `goreleaser` job
+holds write permissions: the UI is built (`npm ci --ignore-scripts`) in a read-only job and handed
+over as an artifact. Keep both: no npm, and no step that runs repository-chosen code beyond `go
+build`, in the job that can publish. Never ask the operator to
 push a tag for a patch release; a hand-pushed `v*` tag is only for a new minor or major version.
 goreleaser also regenerates `Formula/grove.rb` in
 this same repo — grove is its own Homebrew tap, no separate `gm2211/homebrew-tap` repo or PAT.
@@ -493,7 +503,7 @@ Decision tree:
 6. **Remove** (later): `grove uninstall --role worker [--user <user>] --dry-run`, then without
    `--dry-run` (docs/OPERATIONS.md "Removing a worker Mac").
 
-Full walkthrough, flags, and failure modes (Local Network permission popup, FileVault blocking
-auto-login, Mac App Store Tailscale, the 2-macOS-VM cap): **[docs/INSTALL.md](docs/INSTALL.md)**.
+Full walkthrough, flags, and failure modes (Local Network permission popup, FileVault and
+reboots, Mac App Store Tailscale, the 2-macOS-VM cap): **[docs/INSTALL.md](docs/INSTALL.md)**.
 Day-2 operations (recycling, image rollouts, pausing a Mac, logs, upgrading):
 **[docs/OPERATIONS.md](docs/OPERATIONS.md)**.

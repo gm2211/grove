@@ -285,9 +285,10 @@ absolute program paths, because launchd starts jobs with a minimal `PATH`.
 
 **The trade-off: a LaunchAgent only runs while its user has a GUI login session.** A LaunchDaemon
 needed nobody logged in; a rootless worker does not start at boot until its user has logged in at the
-Mac, and stops when that user logs out. So the Mac needs that user logged in: turn on automatic login
-for it (System Settings -> Users & Groups -> Automatically log in as), or, with FileVault on (which
-disables automatic login), unlock the disk and log in once after each reboot. Switch back to
+Mac, and stops when that user logs out. So the Mac needs that user logged in: log in as that user at
+the Mac once after each reboot. Don't turn on macOS automatic login for it: that stores the login
+password on disk, which grove never does or asks for. A worker that must come back from a reboot by
+itself should use LaunchDaemons instead. Switch back to
 LaunchDaemons any time: re-run the install as the user with `--rootless=false` and run the block it
 prints; the root script boots the agents out. Other accounts' superseded worker stacks are not this
 user's to remove: the doctor reports them (`worker-shape`).
@@ -501,7 +502,7 @@ the control plane (fetched at worker start) or the legacy credentials file.
 - **`grove install` can't get Orchard** (`install the prebuilt Orchard from grove vX … no Go toolchain`):
   the installer downloads `orchard_<os>_<arch>.tar.gz` from its own release
   (`github.com/gm2211/grove/releases/download/v<version>/`) and checks it against that release's
-  `checksums.txt`. It builds `./cmd/orchard` from source (needs Go; a minute or two) only when
+  `checksums.txt` and its signed build provenance (needs `api.github.com`). It builds `./cmd/orchard` from source (needs Go; a minute or two) only when
   that asset is missing, which is the case for a dev build or a release older than the assets, and
   Go is on `PATH`. Fix: install a released grove (`brew upgrade grove`) or install Go and re-run.
 - **`Refusing to load formula … from untrusted tap …`**: recent Homebrew (see `brew trust --help`)

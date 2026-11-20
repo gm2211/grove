@@ -134,11 +134,12 @@ exit 2
 		"older release":               {gh: "refuse", version: "v0.0.99", wantOK: true, wantOut: "predates grove's build attestations"},
 		"verified":                    {gh: "ok", version: "v0.1.43", wantOK: true, wantOut: "build provenance verified", wantCall: verify},
 		"verified, minor bump":        {gh: "ok", version: "v0.2.0", wantOK: true, wantOut: "build provenance verified", wantCall: verify},
-		"verified against the tag": {gh: "ok sourceref", version: "v1.0.0", wantOK: true, wantOut: "build provenance verified",
-			wantCall: verify + " --source-ref refs/tags/v1.0.0"},
+		// A release cut by autorelease.yml is signed from main, so the tag is never the source ref asked for.
+		"verified, gh knows --source-ref": {gh: "ok sourceref", version: "v1.0.0", wantOK: true, wantOut: "build provenance verified",
+			wantCall: verify},
 		"refused": {gh: "refuse", version: "v0.1.43", wantOut: "could not be verified", wantCall: verify},
-		"refused against the tag": {gh: "refuse sourceref", version: "v0.1.43", wantOut: "could not be verified for v0.1.43",
-			wantCall: verify + " --source-ref refs/tags/v0.1.43"},
+		"refused, gh knows --source-ref": {gh: "refuse sourceref", version: "v0.1.43", wantOut: "could not be verified",
+			wantCall: verify},
 		"refused, skip asked": {gh: "refuse", version: "v0.1.43", skip: true, wantOK: true, wantOut: "provenance not verified (GROVE_SKIP_PROVENANCE=1)"},
 	} {
 		t.Run(name, func(t *testing.T) {

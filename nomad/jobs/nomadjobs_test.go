@@ -934,7 +934,7 @@ if [ -n "${SSL_CERT_FILE:-}" ]; then cat "$SSL_CERT_FILE"; fi
 	out := run("GROVE_BROKER=http://192.168.64.1:3128", "GROVE_BROKER_CA="+ca)
 	for _, line := range []string{
 		"HTTPS_PROXY=http://192.168.64.1:3128", "HTTP_PROXY=http://192.168.64.1:3128",
-		"https_proxy=http://192.168.64.1:3128", "http_proxy=http://192.168.64.1:3128", "NO_PROXY=\n",
+		"https_proxy=http://192.168.64.1:3128", "http_proxy=http://192.168.64.1:3128", "NO_PROXY=localhost,127.0.0.1,::1\n",
 		"GROVE_BROKER=<unset>", "GROVE_BROKER_CA=<unset>",
 		"SYSTEM ROOTS\n-----BEGIN CERTIFICATE-----\n" + ca[:64] + "\n" + ca[64:128] + "\n" + ca[128:] + "\n-----END CERTIFICATE-----\n",
 	} {

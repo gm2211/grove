@@ -136,7 +136,12 @@ func TestPrefer_WithoutPreferWorkersNothingChanges(t *testing.T) {
 
 func TestWarnings_HostPinnedSelector(t *testing.T) {
 	s := &Spec{Pools: []Pool{{Name: "macos", WorkerSelector: map[string]string{"host": "studio"}}, preferPool()}}
-	w := s.Warnings()
+	var w []string
+	for _, x := range s.Warnings() {
+		if strings.Contains(x, "workerSelector") {
+			w = append(w, x)
+		}
+	}
 	if len(w) != 1 || !strings.Contains(w[0], `pool "macos"`) || !strings.Contains(w[0], "preferWorkers") {
 		t.Errorf("warnings = %q", w)
 	}

@@ -114,7 +114,9 @@ advertise {
       config {
         image              = "${NOMAD_META_task_image}"
         entrypoint         = ["/bin/sh"]
-        args               = ["-c", ". /etc/os-release; echo probe-ran-in-$ID"]
+        # The sleep keeps the container alive until Nomad's docker logger has attached: one that
+        # exits within milliseconds can finish before it does, and its output is then lost.
+        args               = ["-c", ". /etc/os-release; echo probe-ran-in-$ID; sleep 3"]
         image_pull_timeout = "15m"
       }
     }

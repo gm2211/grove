@@ -61,8 +61,14 @@ func (s *Spec) Warnings() []string {
 	for _, p := range s.Pools {
 		if host, ok := p.WorkerSelector["host"]; ok {
 			out = append(out, fmt.Sprintf(
-				"pool %q: workerSelector pins it to one Mac (host: %s), so the pool stops whenever that Mac is away; move `host: %s` to preferWorkers to keep the preference and let the pool run on other Macs meanwhile (keep in workerSelector only labels the pool really needs)",
+				"pool %q: workerSelector pins it to one Mac (host: %s), so the pool stops whenever that Mac is away; drop it to let every Mac run the pool, or move `host: %s` to preferWorkers to keep a preference while other Macs cover for it",
 				p.Name, host, host))
+		}
+		if strings.Contains(p.Image, "/") && !imagePinnedByDigest(p.Image) {
+			// A name with no "/" is a local Tart VM, which no registry can repoint.
+			out = append(out, fmt.Sprintf(
+				"pool %q: image %q is a tag, which a push to that repository can point at another VM image; every new VM of the pool boots it, and the pool's jobs run inside. Pin it by digest once the pool is stable: <repository>@sha256:<digest>",
+				p.Name, p.Image))
 		}
 		if p.RunnerImage == "" {
 			continue

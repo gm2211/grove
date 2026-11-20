@@ -78,7 +78,7 @@ func newUpdateRunner(t *testing.T) (*updateRunner, Options) {
 		t.Fatal(err)
 	}
 	return &updateRunner{t: t, sum: strings.Repeat("a", 64), newVer: "0.1.44", exe: exe},
-		Options{Home: home, GOOS: "darwin", GOARCH: "arm64", GroveVersion: "0.1.43"}
+		Options{Home: home, GOOS: "darwin", GOARCH: "arm64", GroveVersion: "0.1.43", provenanceVerify: provenanceFromMain}
 }
 
 func TestSelfUpdate_InstallsAVerifiedRelease(t *testing.T) {
