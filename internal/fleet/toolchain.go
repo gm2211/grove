@@ -256,13 +256,17 @@ mkdir "$dir" "$dir/tmp" "$dir/home"
   [ -z "$node_v" ] || echo "node = \"$node_v\""
   [ -z "$py_v" ] || echo "python = \"$py_v\""
 } > "$dir/mise.toml"
+# mise's own global and system configs point at an empty file, so nothing outside $dir is read.
+# Not /dev/null: mise 2026.10.24 refuses it ("unknown config file type: /dev/null") and every
+# toolchain install failed.
+: > "$dir/mise-empty.toml"
 
 cd "$dir"
 
 run_mise() {
   env -i PATH="$PATH" HOME=/var/empty LC_ALL=C TMPDIR="$dir/tmp" \
     MISE_DATA_DIR="$dir/data" MISE_CACHE_DIR="$dir/cache" MISE_STATE_DIR="$dir/state" \
-    MISE_GLOBAL_CONFIG_FILE=/dev/null MISE_SYSTEM_CONFIG_FILE=/dev/null \
+    MISE_GLOBAL_CONFIG_FILE="$dir/mise-empty.toml" MISE_SYSTEM_CONFIG_FILE="$dir/mise-empty.toml" \
     MISE_TRUSTED_CONFIG_PATHS="$dir" MISE_PYTHON_COMPILE=0 \
     RUSTUP_HOME="$dir/rustup" CARGO_HOME="$dir/cargo" MISE_YES=1 \
     "$mise_bin" "$@"

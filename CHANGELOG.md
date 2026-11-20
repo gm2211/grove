@@ -4,6 +4,11 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **macOS native toolchains install again.** The installer pointed mise's global and system configs
+  at `/dev/null`, which mise 2026.10.24 refuses ("unknown config file type: /dev/null"), so every
+  job that asked for a toolchain failed before it started (exit 70). They now point at an empty
+  `mise-empty.toml` in the install directory; still nothing outside it is read.
+
 - **Security: self-update installs only what the release workflow built from `main`.** An update
   used to be trusted on the `checksums.txt` of the same release, so anyone able to publish a
   release (a pushed `v*` tag, from any branch) could run code on every machine. `grove serve`, the
