@@ -139,13 +139,19 @@ for it, deliberately.
   and answers `TokenFor(repoURL)`. It is the `dispatch.Options.RepoAuth` implementation.
 - `grove serve` builds ONE store and hands the same pointer to both the dispatch service and the
   HTTP server, so arming/disarming takes effect on the next dispatch with no restart.
-- The token goes into the build/agent dispatch PAYLOAD (`grove-payload/1`, token line, script)
-  and nowhere else. Only the job's `source` prestart task receives the payload: it clones, then
-  deletes it, so the caller's script never sees the token in its env, argv or files. Never put it
-  in `env_json` or any dispatch meta (every task sees those), onto `Job.Request.Env`, into the
-  on-disk job history, or back out of the API (`Status` carries only a fingerprint). Keep it that
-  way — `internal/dispatch/repoauth_test.go`, `nomad/jobs/nomadjobs_test.go` and
-  `internal/server/handlers_github_test.go` assert it.
+- A shared pool's VM never holds the token. Its build/agent dispatch PAYLOAD (`grove-payload/1`,
+  token line, script) carries a placeholder; the token goes into the broker registry as that
+  job's `github` entry (`clonePlaceholderKey` on the record, so UpdateCredentials keeps it), and the
+  worker's broker swaps it in on the way to github.com. The `source` task clones through the broker
+  (`http.proxy`, `http.sslCAInfo` with the broker's CA, as `-c` options, since sudo drops the
+  environment) and fails closed on a VM with no broker; the macOS fence lets `_grovesrc` reach the
+  broker. Only a sealed pool (no broker) or a host the broker doesn't serve (GitHub Enterprise)
+  gets the token itself in the payload. Only the job's `source` prestart task receives the
+  payload: it clones, then deletes it, so the caller's script never sees either in its env, argv
+  or files. Never put the token in `env_json` or any dispatch meta (every task sees those), onto
+  `Job.Request.Env`, into the on-disk job history, or back out of the API (`Status` carries only a
+  fingerprint). Keep it that way — `internal/dispatch/repoauth_test.go`,
+  `nomad/jobs/nomadjobs_test.go` and `internal/server/handlers_github_test.go` assert it.
 - Arming always names repositories (`--repo owner/name` or `owner/*`); an empty scope covers
   nothing.
 - A dispatch scope is not enough to get the token: every worker Mac holds one, and a worker can

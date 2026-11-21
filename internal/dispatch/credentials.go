@@ -43,6 +43,11 @@ func validateCredentials(req JobRequest) error {
 	return nil
 }
 
+// clonePlaceholderKey is where a job record's Placeholders keeps the placeholder that stands for
+// the armed clone credential. It is no shell variable name, so it never clashes with a
+// credential's Env, never reaches the job's env, and UpdateCredentials keeps its entry.
+const clonePlaceholderKey = "grove:clone"
+
 // mintPlaceholders returns a fresh placeholder for each credential, by Env.
 func mintPlaceholders(creds []Credential) (map[string]string, error) {
 	if len(creds) == 0 {

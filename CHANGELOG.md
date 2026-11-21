@@ -4,6 +4,13 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **The private-repo clone token no longer enters a job's VM.** On a shared pool the clone now
+  gets a placeholder, and the worker's credential broker swaps the real token in on the way to
+  github.com, the same way it handles a job's own credentials. A VM with no broker fails the
+  clone and says why. Sealed pools, which can't reach a broker, and GitHub Enterprise hosts still
+  get the token as before. macOS VMs are rebuilt, when idle, so the clone's git user can reach the
+  broker.
+
 - **A slow Tailscale lookup no longer answers 401.** A caller that signs in with its tailnet
   identity (the dashboard in a browser, curl over Tailscale) got a 401 after exactly 5 s whenever
   the first `tailscale whois` after the 30 s cache lapsed was slow (5.75 s measured on a Mac
