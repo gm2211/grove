@@ -4,8 +4,9 @@
 ## JobRequest onto `nomad job dispatch`.
 ##
 ## build: clones repo@ref, runs the dispatched script, and exits with the script's exit code.
-## ./artifacts/** is collected only on sealed pools (sandbox.nomad.hcl, from the control plane);
-## a shared pool's VM has no way to write to the control plane's artifact store.
+## ./artifacts/** is collected by the control plane, which alone writes its artifact store: on a
+## sealed pool `grove sandbox run` copies it out of the VM; on a shared pool `grove serve` reads it
+## out of the finished allocation's directory through Nomad (internal/dispatch/shared_artifacts.go).
 
 job "grove-{{.Kind}}-{{.Pool}}" {
   datacenters = ["dc1"]
@@ -719,8 +720,8 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         set -e
 
         # No artifact upload here: the artifact store is a directory on the control plane that
-        # only the control plane writes (sealed pools' `grove sandbox run` copies ./artifacts/**
-        # out of the VM). A shared-pool VM has no credential that could write to it.
+        # only the control plane writes. It reads ./artifacts/** out of this allocation's
+        # directory once the job ends; a shared-pool VM has no credential that could write to it.
 
         exit $code
         EOF

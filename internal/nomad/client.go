@@ -440,6 +440,39 @@ func (c *client) Logs(ctx context.Context, allocID, task, stream string, follow 
 	return pr, nil
 }
 
+var _ AllocFiles = (*client)(nil)
+
+func (c *client) ListAllocDir(ctx context.Context, allocID, path string) ([]AllocFile, error) {
+	alloc, _, err := c.raw.Allocations().Info(allocID, qOpts(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("get allocation %s: %w", allocID, wrapNotFound(err))
+	}
+	infos, _, err := c.raw.AllocFS().List(alloc, path, qOpts(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("list %s of allocation %s: %w", path, allocID, err)
+	}
+	out := make([]AllocFile, 0, len(infos))
+	for _, fi := range infos {
+		if fi == nil {
+			continue
+		}
+		out = append(out, AllocFile{Name: fi.Name, IsDir: fi.IsDir, Size: fi.Size, Mode: fi.FileMode})
+	}
+	return out, nil
+}
+
+func (c *client) ReadAllocFile(ctx context.Context, allocID, path string, limit int64) (io.ReadCloser, error) {
+	alloc, _, err := c.raw.Allocations().Info(allocID, qOpts(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("get allocation %s: %w", allocID, wrapNotFound(err))
+	}
+	rc, err := c.raw.AllocFS().ReadAt(alloc, path, 0, limit, qOpts(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("read %s of allocation %s: %w", path, allocID, err)
+	}
+	return rc, nil
+}
+
 // streamLogs copies frames from frames into pw until frames closes or ctx is done. frames always
 // takes priority over errCh: on every iteration it first drains whatever is *already* queued on
 // frames (non-blocking) before ever considering errCh, so a completion/error signal that becomes

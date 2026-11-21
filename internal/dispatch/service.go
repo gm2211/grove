@@ -995,6 +995,10 @@ func (s *service) reconcileLocked(ctx context.Context, rec *record) (*Job, error
 	}
 
 	rec.Job = updated
+	if isTerminal(updated.Status) && s.artifacts != nil {
+		// Reached once per job: a terminal record returns at the top of reconcile.
+		s.collectSharedArtifacts(ctx, rec, &updated)
+	}
 	if isTerminal(updated.Status) && len(rec.Job.Artifacts) == 0 && s.artifacts != nil {
 		if objs, aerr := s.artifacts.List(ctx, artifactPrefix(rec.ID)); aerr != nil {
 			// Artifact listing is best-effort — a store hiccup shouldn't fail the whole
