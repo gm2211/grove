@@ -10,8 +10,8 @@ meant to run as a grove job (CI builds, agent sessions, `grove exec`).
 
 | `JobRequest.Kind` | Nomad job | Clones `repo@ref`? | Uploads artifacts? | Notes |
 |---|---|:---:|:---:|---|
-| `build` | `grove-build-<pool>` | yes | sealed pools: `./artifacts/**` (see below) | CI-style: run a script, keep what it produced. On a shared pool artifacts are not collected yet: the VM has no way to write to the control plane's artifact store. |
-| `agent` | `grove-agent-<pool>` | yes | no | Long-running Claude Code / Codex session; `kill_timeout = "10m"` so a cancel lets it shut down cleanly instead of SIGKILL. |
+| `build` | `grove-build-<pool>` | yes | `./artifacts/**` (see below) | CI-style: run a script, keep what it produced. A shared pool's VM can't write to the control plane's artifact store, so once the job ends the control plane reads the regular files under the checkout's `./artifacts` out of the allocation's directory through Nomad (at most 2000 files, 512 MiB; symlinks skipped). |
+| `agent` | `grove-agent-<pool>` | yes | `./artifacts/**`, as `build` | Long-running Claude Code / Codex session; `kill_timeout = "10m"` so a cancel lets it shut down cleanly instead of SIGKILL. |
 | `shell` | `grove-shell-<pool>` | no | no | Arbitrary command against whatever's already on disk — what `grove exec` and the MCP `grove_run` tool use. |
 
 `<pool>` is whatever `Pool` values exist in `fleet.yaml` (`linux`, `macos`, and any future pool);

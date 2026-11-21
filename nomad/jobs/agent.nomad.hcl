@@ -3,7 +3,8 @@
 ## See README.md for the full dispatch contract and docs/JOBS.md.
 ##
 ## agent: long-running coding-agent session (Claude Code / Codex) against a checkout of repo@ref.
-## Same clone + env behavior as "build", but no artifact upload, and a generous kill_timeout so a
+## Same clone + env behavior as "build" (./artifacts/** left in the checkout are collected the same
+## way), and a generous kill_timeout so a
 ## cancel (`grove exec` cancel / DELETE /jobs/{id}) gives the agent process time to shut down
 ## cleanly instead of being SIGKILLed mid-write.
 

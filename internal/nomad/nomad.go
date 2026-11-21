@@ -119,3 +119,22 @@ type Client interface {
 
 	Ping(ctx context.Context) error
 }
+
+// AllocFile is one entry of an allocation directory listing. Mode is Go's FileMode string as the
+// client node reports it ("-rw-r--r--" for a regular file, "L…" for a symlink, "d…" for a
+// directory).
+type AllocFile struct {
+	Name  string
+	IsDir bool
+	Size  int64
+	Mode  string
+}
+
+// AllocFiles reads a finished allocation's directory on its client node, through the Nomad
+// servers, the same way Logs does. The real Client implements it; dispatch uses it to collect a
+// shared pool's job artifacts. Paths are relative to the allocation directory ("alloc/data/…").
+type AllocFiles interface {
+	ListAllocDir(ctx context.Context, allocID, path string) ([]AllocFile, error)
+	// ReadAllocFile streams at most limit bytes of one file.
+	ReadAllocFile(ctx context.Context, allocID, path string, limit int64) (io.ReadCloser, error)
+}

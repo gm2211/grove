@@ -4,6 +4,11 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **Shared pools' build and agent jobs keep their artifacts.** Only sealed pools collected
+  `./artifacts/**` before, so an agent job on the macOS pool (where jobs that name no pool now go)
+  always came back with none. Once such a job ends, the control plane now reads the regular files
+  under its checkout's `./artifacts` out of the allocation through Nomad into the artifact store.
+
 - **A clone credential can renew itself: `grove github enable --renew gh`.** Armed that way, the
   control plane replaces the token at half its lifetime with the one `gh auth token` prints for
   the user `grove serve` runs as, keeping the repositories, allow list and TTL. The token goes from

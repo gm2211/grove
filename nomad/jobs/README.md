@@ -150,8 +150,8 @@ See docs/OPERATIONS.md "Native toolchains on macOS".
 
 | Kind    | Clone repo@ref | Artifact upload | `kill_timeout` |
 |---------|:---:|:---:|---|
-| `build` | yes | sealed pools only (by `grove sandbox run`, from the control plane) | default (5s) |
-| `agent` | yes | no  | `10m` — give a long-running coding-agent session time to shut down cleanly on cancel |
+| `build` | yes | by the control plane: `grove sandbox run` on sealed pools, read from the finished allocation on shared ones | default (5s) |
+| `agent` | yes | as `build` | `10m` — give a long-running coding-agent session time to shut down cleanly on cancel |
 | `shell` | no  | no  | default (5s) |
 
 ## Testing without a Nomad server
