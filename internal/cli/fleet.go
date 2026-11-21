@@ -327,6 +327,11 @@ func printPlan(w io.Writer, plan fleet.Plan) {
 			f.Pool, f.Running, f.Image, f.Reason, f.RetryAt.Local().Format("15:04"))
 	}
 
+	for _, m := range plan.ImageMissing {
+		fmt.Fprintf(w, "! pool=%s stays off worker=%s: it can't get %s there (%s); next try %s\n",
+			m.Pool, m.Worker, m.Image, m.Reason, m.RetryAt.Local().Format("15:04"))
+	}
+
 	if plan.Empty() {
 		if len(plan.Blocked) == 0 {
 			fmt.Fprintln(w, "up to date")

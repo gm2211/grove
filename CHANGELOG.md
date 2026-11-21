@@ -9,6 +9,35 @@ All notable changes to grove are documented here.
   what it asks for. A shared macOS pool comes first; a shared Linux pool takes a job whose
   environment is an image with no toolchain. A sealed pool is still chosen only by name. Requests
   that name a pool behave as before.
+- **A shared pool's lost job is rerun instead of staying lost.** When a VM or its Mac goes away
+  mid-job (sleep, reboot, crash, a worker leaving), grove now reruns the job on the pool's other
+  VMs, by the sealed pools' rules: at most 3 runs, agent jobs not rerun (`retryLost`), and a job
+  lost after its script started on 2 different Macs quarantined as a poison pill. A resubmitted
+  copy of a quarantined job (same kind, pool, repo, ref and script, within 24 hours) is
+  quarantined on its first such loss, so it can't take down two more Macs each time. Attempts are
+  kept on the job, and a shared VM that keeps losing jobs is rebuilt; a Mac is never paused for a
+  shared pool's losses.
+
+- **Nomad no longer reruns lost allocations behind grove's back.** With `reschedule { attempts =
+  0 }`, Nomad 2.0.7 still placed a replacement for an allocation on a node that went down, with no
+  limit, and a job grove had already marked lost could run later, unwatched. The job templates now
+  set `disconnect { replace = false, lost_after = "24h" }`: the allocation stays `unknown`, grove
+  calls it lost after a minute, and every job grove ends has its Nomad job stopped first.
+
+- **Pools name no Mac; grove learns where each can run.** A pool runs on every Mac that is up and
+  can get its image. A Mac that fails to get it while another Mac runs it, or while it is a local
+  Tart VM only one Mac built, is left out and retried after 30 minutes, doubling up to 6 hours, and
+  is back once a VM of the image runs there. So a pool on a local image needs no `host:` pin: it
+  stays where the image is and spreads once it is in a registry, and with no Mac left that has it
+  its jobs fall back to macOS. `grove fleet plan` and `GET /api/v1/fleet/reconcile`
+  (`imageMissing`) say which Macs a pool is off and why. `preferWorkers` (briefly a soft pin) is
+  ignored with a warning, and the `host:` pin warning now says to drop it. See docs/OPERATIONS.md
+  "Where pools run: every Mac that is up and can get the image".
+
+- **The starter fleet makes Linux VMs on demand on any Mac.** `grove install --role control-plane`
+  wrote pools with Orchard labels (`pool: linux`) that no worker advertises, so their VMs stayed
+  pending. It now selects no worker, and its `linux` pool is elastic from 0: a Linux VM appears on
+  a Mac with Linux jobs waiting and goes once idle.
 
 - **A job's own local servers answer.** Jobs on a pool with a credential broker ran with an empty
   `NO_PROXY`, so a request to `127.0.0.1` (a test suite's HTTP stand-in) went to the broker, which

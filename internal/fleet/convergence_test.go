@@ -73,7 +73,7 @@ func randomFleet(rng *rand.Rand) (*Spec, []orchard.Worker) {
 		if rng.Intn(4) == 0 {
 			w = legacyWorker(w.Name)
 		}
-		w.Labels = map[string]string{"tier": tiers[rng.Intn(2)]}
+		w.Labels = map[string]string{"tier": tiers[rng.Intn(2)], "host": w.Name}
 		w.SchedulingPaused = rng.Intn(4) == 0
 		w.Offline = rng.Intn(5) == 0
 		workers = append(workers, w)
@@ -83,14 +83,28 @@ func randomFleet(rng *rand.Rand) (*Spec, []orchard.Worker) {
 
 // L6 (spec/README.md): from any starting fleet, one Plan + Apply reaches a state whose next Plan
 // is empty, and stays there: the reconciler converges and never flaps. Every VM it leaves runs on
-// an online, unpaused worker its pool's selector matches.
+// an online, unpaused worker its pool's selector matches and that can get the pool's image.
 func TestL6_ReconcilerConvergesWithoutFlapping(t *testing.T) {
 	ctx := context.Background()
 	for seed := int64(0); seed < 500; seed++ {
 		rng := rand.New(rand.NewSource(seed))
 		spec, workers := randomFleet(rng)
 		sim := &simOrchard{fakeOrchardClient: fakeOrchardClient{workers: workers}}
-		r := &Reconciler{Client: sim, Spec: spec}
+		// Some Macs couldn't get some pools' images (ImageHolds): those pools stay off them.
+		images, _ := OpenImageHolds("")
+		for _, p := range spec.Pools {
+			for _, w := range workers {
+				if rng.Intn(3) == 0 {
+					st := images.pools[p.Name]
+					if st == nil {
+						st = &poolImageState{Missing: map[string]*HeldImage{}}
+						images.pools[p.Name] = st
+					}
+					st.Missing[w.Name] = &HeldImage{Image: p.Image, Reason: "failed to clone", Tries: 1, RetryAt: time.Now().Add(time.Hour)}
+				}
+			}
+		}
+		r := &Reconciler{Client: sim, Spec: spec, Options: Options{Images: images}}
 
 		// Start from some other fleet's leftovers: VMs grove made under a random older spec.
 		oldSpec, _ := randomFleet(rng)
@@ -142,6 +156,10 @@ func TestL6_ReconcilerConvergesWithoutFlapping(t *testing.T) {
 				t.Fatalf("seed %d: VM %s on worker %s outside pool %s's selector", seed, vm.Name, worker, pool)
 			case guestPasswordBlock(*p, w) != "":
 				t.Fatalf("seed %d: macOS VM %s on worker %s without guest password rotation", seed, vm.Name, worker)
+			}
+			// Nothing runs on a Mac that couldn't get the pool's image.
+			if on, _ := r.placement(*p, p.Image, workers); !on[worker] {
+				t.Fatalf("seed %d: VM %s on worker %s, off pool %s's placement %v", seed, vm.Name, worker, pool, on)
 			}
 		}
 	}

@@ -33,6 +33,10 @@ type Pool struct {
 	// Labels above, this is evaluated entirely by grove itself while planning (internal/fleet
 	// Reconciler.Plan) and never reaches Orchard.
 	WorkerSelector map[string]string `yaml:"workerSelector,omitempty" json:"workerSelector,omitempty"`
+	// PreferWorkers was a soft WorkerSelector in an earlier grove. It is ignored now, with a
+	// warning (Spec.Warnings): no pool names a Mac; grove runs it on every Mac that is up and can
+	// get its image (ImageHolds). Kept only so an old fleet.yaml still loads.
+	PreferWorkers map[string]string `yaml:"preferWorkers,omitempty" json:"preferWorkers,omitempty"`
 	// Scripts run inside the guest (see ARCHITECTURE.md → Recycling). Paths or inline.
 	StartupScript   string   `yaml:"startupScript,omitempty" json:"startupScript,omitempty"`
 	ShutdownScript  string   `yaml:"shutdownScript,omitempty" json:"shutdownScript,omitempty"`

@@ -403,7 +403,9 @@ func TestGet_LostAllocationSetsFailureReason(t *testing.T) {
 	nc := &fakeNomad{}
 	svc := newTestService(t, nc)
 
-	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true"})
+	// A job that allows a rerun is rescheduled instead (reschedule_test.go).
+	noRetry := false
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "true", RetryLost: &noRetry})
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}

@@ -44,7 +44,7 @@ images/                         Packer templates
 nomad/jobs/                     parameterized Nomad job HCL
 scripts/install.sh              curl | sh → brew tap + grove install
 docs/                            INSTALL.md, OPERATIONS.md
-spec/                            22 properties: Quint models, Lean proofs, CodeQL queries, Specify spec (spec/grove.spec); spec/check.sh (see spec/README.md)
+spec/                            26 properties: Quint models, Lean proofs, CodeQL queries, Specify spec (spec/grove.spec); spec/check.sh (see spec/README.md)
 ```
 
 **Contract packages** (`config`, `orchard`, `nomad`, `dispatch`, `fleet` *types*) define the Go
@@ -357,6 +357,49 @@ growing interval and switches back by itself. Keep it that way: a failure to get
 never need the operator to edit fleet.yaml to get the pool's jobs running again, only `Observe`
 writes the store (Plan reads it), and it holds image names and Orchard messages, never a
 credential. `internal/fleet/imagehold_test.go` asserts it.
+
+## Lost jobs and workers coming and going — keep it that way
+
+Macs leave and rejoin (sleep, reboot, unplugged); a shared pool's job on one is grove's to rerun,
+never Nomad's (`internal/dispatch/reschedule.go`, spec S23/L11, `spec/quint/reschedule.qnt`).
+
+- Nomad 2.0.7 replaces a lost allocation even with `reschedule { attempts = 0 }`. build, agent and
+  shell keep `disconnect { replace = false, lost_after = "24h" }` (`nomadjobs_test.go` asserts it),
+  so a lost VM's allocation stays `unknown` with no replacement; grove calls it lost after
+  `DefaultUnknownGrace`.
+- `decideLost` is the only verdict: at most `MaxAttempts` runs (evictions free), `retryLost`
+  respected, quarantine on `QuarantineMachines` machines after the script started, or on the first
+  such loss of a job whose `poisonFingerprint` was quarantined within `PoisonMemory`. A loss on an
+  unnamed machine or before the script started never quarantines. Change the model with it
+  (`TestDecideLost_MatchesModel`).
+- Every path that ends a lost job stops its Nomad job first and stays non-terminal if the stop
+  fails; a rerun goes through `redispatch` (old copy purged) with no pin to the lost worker.
+- A shared pool's losses rebuild VMs in `internal/health` but never pause a Mac.
+- Placement names no Mac: a pool runs on every online, unpaused worker its `workerSelector` (a
+  capability, never a host) allows and that can get its image (`placement` in
+  `internal/fleet/reconcile.go`, used by Plan and autoscale alike; `ImageHolds.Missing` learns, per
+  worker, an image that failed there while it runs elsewhere or is a local Tart VM, and retries on
+  a backoff). A VM left off its placement is kept while `JobLoad.Busy`, never deleted under its
+  job. Enrol (S3) checks only the hard selector. `Spec.Warnings` flags a `host:` in
+  `workerSelector`; `preferWorkers` is ignored, with a warning. Never add a way to pin a pool.
+
+## One job, one watched copy — keep it that way
+
+A job is one record (jobs.json) naming one Nomad copy (`NomadJobID`), and many callers reconcile
+it at once: the 30 s sweep, every API Get and List, each worker's broker sync, Evict, log
+followers (spec S24/L12, `spec/quint/lifecycle.qnt`).
+
+- Every writer of a job's record holds `service.lockJob(id)` from reading the record to its last
+  write, and reads it under the lock (`reconcile` re-reads the store; never act on a caller's copy
+  from `store.list()`). A new writer takes the lock too; a caller already holding it uses
+  `reconcileLocked`.
+- A job that ended stays ended: Cancel of a terminal job is a no-op.
+- A Dispatch error is not proof that nothing was dispatched. A new job is dispatched under its id as
+  Nomad's idempotency token (`nomad.TokenDispatcher`); on an error grove stops any copy with that
+  token and keeps a `NotDispatched` record that `sweepNotDispatched` re-checks until
+  `dispatchCommitWindow` passes. Never return a refusal while a copy may be left running.
+- `internal/conformance/lifecycle_test.go` replays each counterexample against the real service and
+  `spec/mutants.py` puts each bug back; keep both passing, and change the model with the code.
 
 ## `internal/snooze` — why a worker is paused
 

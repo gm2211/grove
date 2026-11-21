@@ -55,6 +55,50 @@ behaviors:
         maxSteps: 30
         samples: 2000
         seed: 1
+  - id: shared-lost-jobs-run-within-budget
+    description: >-
+      A shared-pool job lost with its VM or Mac runs at most three times, once if it may not be
+      rerun; quarantine needs losses after its script started on two machines, or one such loss of
+      a job like one already quarantined; and once grove ends the job, Nomad holds no copy of it
+      that could still run.
+    details: >-
+      S23. Attacker J (a job that crashes Macs, resubmitted). Nomad 2.0.7 replaces a lost
+      allocation even with reschedule attempts = 0; the model's rescheduleNomadReplaces instance
+      shows the extra run that lets in, and rescheduleBefore the unwatched copy the old grove left.
+      Exhaustive TLC checks in spec/check.sh; Go tests in internal/dispatch/reschedule_test.go.
+    tags: [security, s23]
+    formal:
+      - tool: quint
+        file: ../quint/reschedule.qnt
+        main: rescheduleRetry
+        property: accounting
+        mode: simulate
+        maxSteps: 30
+        samples: 2000
+        seed: 1
+  - id: shared-jobs-terminate
+    description: >-
+      Every shared-pool job ends, however often its VMs and Macs go away.
+    details: L11. Temporal property (terminates in reschedule.qnt), checked by TLC.
+    tags: [liveness, l11]
+  - id: one-job-one-watched-copy
+    description: >-
+      Nomad never holds two copies of a job that could run; every copy that could run is the one
+      grove's record follows, on a record still open or a refused submit's record while grove
+      hunts the copy down; a job that ended stays ended; Nomad starts a job at most 3 times.
+    details: >-
+      S24. No attacker: grove's own callers racing on one record (the sweep, API reads, broker
+      syncs, Evict, Cancel), and a Nomad that fails a Dispatch it committed. lifecycleBefore and
+      lifecycleBeforeAmbiguous show the four ways it failed before the per-job lock and the
+      idempotency-token sweep. Exhaustive TLC checks in spec/check.sh; the counterexamples
+      replayed against the real code in internal/conformance/lifecycle_test.go.
+    tags: [safety, s24]
+  - id: every-submit-settles
+    description: >-
+      Every submit settles: an accepted job ends, a refused one leaves nothing in Nomad that could
+      run, and once a job has ended no copy of it is left queued or running.
+    details: L12. Temporal property (settles in lifecycle.qnt), checked by TLC.
+    tags: [liveness, l12]
   - id: job-image-is-allowlisted-and-pinned
     description: >-
       A shared-pool job's image is its pool's runner image or a digest-pinned image its pool

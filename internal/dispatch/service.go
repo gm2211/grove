@@ -161,6 +161,9 @@ type Options struct {
 	// LogStreamGracePeriod overrides defaultLogStreamGracePeriod — mainly for tests. See
 	// watchForTerminal.
 	LogStreamGracePeriod time.Duration
+	// UnknownGrace overrides DefaultUnknownGrace: how long a shared pool's allocation may stay
+	// "unknown" (Nomad lost contact with its node) before grove treats it as lost.
+	UnknownGrace time.Duration
 }
 
 type cachedStatus struct {
@@ -179,6 +182,31 @@ type service struct {
 
 	mu    sync.Mutex
 	cache map[string]cachedStatus
+
+	// jobLocks serialize everything that reads a job's record and writes it back (lockJob).
+	jobLocksMu sync.Mutex
+	jobLocks   map[string]*sync.Mutex
+}
+
+// lockJob takes job id's lock and returns its unlock. Every writer of a job's record (reconcile,
+// Cancel, requeue through Evict, the tombstone sweep, artifact expiry) holds it from reading the
+// record to its last write, and reads the record under it: without it, two callers (the sweep and
+// an API Get, say) both acted on the same lost allocation and dispatched two reruns, or a reconcile
+// that read the record before a Cancel wrote it back as running (spec S24, lifecycle.qnt).
+// Keyed by anything a caller needs serialized; Submit uses it for an idempotency key.
+func (s *service) lockJob(id string) func() {
+	s.jobLocksMu.Lock()
+	if s.jobLocks == nil {
+		s.jobLocks = map[string]*sync.Mutex{}
+	}
+	m, ok := s.jobLocks[id]
+	if !ok {
+		m = &sync.Mutex{}
+		s.jobLocks[id] = m
+	}
+	s.jobLocksMu.Unlock()
+	m.Lock()
+	return m.Unlock
 }
 
 // New builds a dispatch Service backed by nc. It opens (or creates) the on-disk job store.
@@ -211,6 +239,9 @@ func New(nc nomad.Client, opts Options) (Service, error) {
 	}
 	if opts.FallbackNoNodesAfter <= 0 {
 		opts.FallbackNoNodesAfter = defaultFallbackNoNodesAfter
+	}
+	if opts.UnknownGrace <= 0 {
+		opts.UnknownGrace = DefaultUnknownGrace
 	}
 	if opts.LogTerminalPollInterval <= 0 {
 		opts.LogTerminalPollInterval = defaultLogTerminalPollInterval
@@ -446,6 +477,8 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	}
 
 	if req.IdempotencyKey != "" {
+		// Two submits with one key must not both miss the lookup and both dispatch.
+		defer s.lockJob("idempotency\x00" + req.SubmittedBy + "\x00" + req.IdempotencyKey)()
 		if rec, ok := s.store.findByIdempotencyKey(req.IdempotencyKey, req.SubmittedBy); ok {
 			job, err := s.reconcile(ctx, rec)
 			if err != nil {
@@ -513,6 +546,7 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	if len(env) > 0 {
 		envJSON, err := json.Marshal(env)
 		if err != nil {
+			s.creds.RemoveJob(id)
 			return nil, false, fmt.Errorf("dispatch: marshal env: %w", err)
 		}
 		meta["env_json"] = string(envJSON)
@@ -520,6 +554,7 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	if len(req.Meta) > 0 {
 		metaJSON, err := json.Marshal(req.Meta)
 		if err != nil {
+			s.creds.RemoveJob(id)
 			return nil, false, fmt.Errorf("dispatch: marshal meta: %w", err)
 		}
 		meta["grove_meta_json"] = string(metaJSON)
@@ -543,9 +578,10 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	}
 
 	name := jobName(req.Kind, req.Pool)
-	res, err := s.nomad.Dispatch(ctx, name, meta, payload)
+	res, err := s.dispatchNew(ctx, name, meta, payload, id)
 	if err != nil {
 		s.creds.RemoveJob(id)
+		s.notDispatched(ctx, id, req, name, err)
 		return nil, false, fmt.Errorf("dispatch %s: %w", name, err)
 	}
 
@@ -568,6 +604,94 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	}
 	job := rec.Job
 	return &job, true, nil
+}
+
+// dispatchCommitWindow is how long after a Dispatch that errored grove keeps looking for a copy
+// Nomad may still have made of it (assumption A7 in spec/README.md: a dispatch Nomad has not
+// committed by then never commits).
+const dispatchCommitWindow = 10 * time.Minute
+
+// dispatchNew dispatches a new job's first copy under its grove id as Nomad's idempotency token,
+// when the client can (nomad.TokenDispatcher), so that a copy made by a Dispatch that errored can
+// still be found and stopped (notDispatched).
+func (s *service) dispatchNew(ctx context.Context, name string, meta map[string]string, payload []byte, id string) (*nomad.DispatchResult, error) {
+	if td, ok := nomad.AsTokenDispatcher(s.nomad); ok {
+		return td.DispatchWithToken(ctx, name, meta, payload, id)
+	}
+	return s.nomad.Dispatch(ctx, name, meta, payload)
+}
+
+// notDispatched handles a Dispatch that answered with an error. The caller is told the submit was
+// refused, but an error does not prove Nomad made no copy: it may have committed the dispatch and
+// then timed out, or commit it later. So grove stops any copy carrying the job's token now, and
+// keeps a record of the refused submit (failed, never returned by an idempotency key lookup) that
+// the reconcile sweep uses to look again until dispatchCommitWindow has passed (sweepNotDispatched).
+// Without a token there is nothing to look for, and nothing is kept, as before.
+func (s *service) notDispatched(ctx context.Context, id string, req JobRequest, name string, dispatchErr error) {
+	td, ok := nomad.AsTokenDispatcher(s.nomad)
+	if !ok {
+		return
+	}
+	if n, err := td.StopDispatched(ctx, name, id); err != nil {
+		slog.Warn("dispatch: could not yet check for a copy of a refused dispatch; the reconcile sweep will", "id", id, "job", name, "err", err)
+	} else if n > 0 {
+		slog.Warn("dispatch: stopped a copy Nomad made of a dispatch it answered with an error", "id", id, "job", name, "copies", n)
+	}
+	now := time.Now().UTC()
+	until := now.Add(dispatchCommitWindow)
+	reason := fmt.Sprintf("not dispatched: Nomad answered the dispatch with an error (%v); grove stops any copy of it Nomad made", dispatchErr)
+	rec := &record{
+		Job: Job{
+			ID:            id,
+			Request:       withoutCaller(withRedactedCredentials(withRedactedEnv(req))),
+			Status:        StatusFailed,
+			SubmittedAt:   now,
+			FinishedAt:    &now,
+			FailureReason: &reason,
+			Meta:          req.Meta,
+		},
+		NotDispatched: true,
+		SweepUntil:    &until,
+	}
+	if err := s.store.put(rec); err != nil {
+		slog.Warn("dispatch: could not record a refused dispatch", "id", id, "err", err)
+	}
+}
+
+// sweepNotDispatched looks once more, for every refused dispatch still inside its commit window
+// (and once after it), for a copy Nomad made, and stops it. Run on every reconcile tick.
+func (s *service) sweepNotDispatched(ctx context.Context, now time.Time) {
+	td, ok := nomad.AsTokenDispatcher(s.nomad)
+	if !ok {
+		return
+	}
+	for _, r := range s.store.list() {
+		if r.SweepUntil == nil {
+			continue
+		}
+		func() {
+			defer s.lockJob(r.ID)()
+			rec, ok := s.store.get(r.ID)
+			if !ok || rec.SweepUntil == nil {
+				return
+			}
+			name := jobName(rec.Request.Kind, rec.Request.Pool)
+			n, err := td.StopDispatched(ctx, name, rec.ID)
+			if err != nil {
+				slog.Warn("dispatch: checking for a copy of a refused dispatch failed", "id", rec.ID, "job", name, "err", err)
+				return
+			}
+			if n > 0 {
+				slog.Warn("dispatch: stopped a copy Nomad made of a dispatch it answered with an error", "id", rec.ID, "job", name, "copies", n)
+			}
+			if now.After(*rec.SweepUntil) {
+				rec.SweepUntil = nil
+				if err := s.store.put(rec); err != nil {
+					slog.Warn("dispatch: persist job failed", "id", rec.ID, "err", err)
+				}
+			}
+		}()
+	}
 }
 
 // RedactedEnvValue replaces every env value in the job history and in every Job handed back: the
@@ -668,6 +792,10 @@ func deriveStatus(alloc *nomad.Allocation) Status {
 		return StatusFailed
 	case "lost":
 		return StatusLost
+	case "unknown":
+		// Nomad lost contact with the node (nomad/jobs: disconnect, replace = false). The job may
+		// well still run there; grove treats it as lost after Options.UnknownGrace.
+		return StatusRunning
 	default:
 		return StatusPending
 	}
@@ -684,8 +812,19 @@ func latestAllocation(allocs []nomad.Allocation) nomad.Allocation {
 }
 
 // reconcile refreshes rec.Job's status from Nomad's allocations, subject to the status TTL cache,
-// and persists the refreshed record. Terminal jobs are never re-queried.
+// and persists the refreshed record. Terminal jobs are never re-queried. It holds the job's lock
+// and works on the record as stored now, whatever version the caller read: rec is overwritten
+// with it, then updated in place.
 func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {
+	defer s.lockJob(rec.ID)()
+	return s.reconcileLocked(ctx, rec)
+}
+
+// reconcileLocked is reconcile for a caller that already holds rec's job lock.
+func (s *service) reconcileLocked(ctx context.Context, rec *record) (*Job, error) {
+	if fresh, ok := s.store.get(rec.ID); ok {
+		*rec = *fresh
+	}
 	if isTerminal(rec.Status) {
 		job := rec.Job
 		return &job, nil
@@ -781,6 +920,15 @@ func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {
 		} // a GetNode error here is non-fatal — placement partially populated (AllocID/NodeID still set) beats failing the whole Get/List call over a node lookup blip.
 		if s.pools[rec.Request.Pool].Isolated {
 			s.applyAttempts(rec.ID, &updated)
+		}
+	}
+	if len(allocs) > 0 && !s.pools[rec.Request.Pool].Isolated && !s.pools[runPool(rec)].Isolated {
+		// A shared pool's lost job: grove reruns it, within its budget, or ends it (reschedule.go).
+		if job, handled, err := s.handleLosses(ctx, rec, &updated, allocs); handled {
+			return job, err
+		}
+		if updated.Status == StatusSuccess || updated.Status == StatusFailed {
+			s.recordExit(ctx, &updated, latestAllocation(allocs))
 		}
 	}
 
@@ -1001,7 +1149,11 @@ func (s *service) markLost(rec *record, reason string) (*Job, error) {
 // it has waited out the grace, its pool (the fallback pool once it moved) shows no eligible node,
 // and the fleet knows the cause. A job that can still fall back to another pool is left to it.
 func (s *service) unplaceableReason(rec *record, evals []nomad.Evaluation, now time.Time) string {
-	if s.opts.PoolHealth == nil || now.Sub(rec.SubmittedAt) < s.opts.UnplaceableGrace || !noPoolNodes(evals) {
+	waitingFrom := rec.SubmittedAt
+	if rec.PendingSince != nil && rec.PendingSince.After(waitingFrom) {
+		waitingFrom = *rec.PendingSince // a requeued job waits afresh
+	}
+	if s.opts.PoolHealth == nil || now.Sub(waitingFrom) < s.opts.UnplaceableGrace || !noPoolNodes(evals) {
 		return ""
 	}
 	pool := rec.Request.Pool
@@ -1128,6 +1280,7 @@ func (s *service) RunReconciler(ctx context.Context, interval time.Duration) err
 	s.stopLeakedUnplaced(ctx)
 
 	tick := func() {
+		s.sweepNotDispatched(ctx, time.Now().UTC())
 		recs := s.store.list()
 		for i := range recs {
 			if isTerminal(recs[i].Status) {
@@ -1437,9 +1590,14 @@ func (s *service) LogLines(ctx context.Context, id string, follow bool) (<-chan 
 }
 
 func (s *service) Cancel(ctx context.Context, id string) error {
+	defer s.lockJob(id)()
 	rec, ok := s.store.get(id)
 	if !ok {
 		return ErrNotFound
+	}
+	if isTerminal(rec.Status) {
+		// It already ended: its outcome stands (a finished job never turns into a canceled one).
+		return nil
 	}
 	if err := s.nomad.StopJob(ctx, rec.NomadJobID, false); err != nil {
 		return fmt.Errorf("dispatch: stop job %s: %w", id, err)
