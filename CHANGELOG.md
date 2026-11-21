@@ -4,6 +4,12 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **The Orchard controller is kept on the unit grove renders.** On a macOS control plane,
+  `grove serve` now, while idle, rewrites a stale controller plist and reloads a controller whose
+  flags drifted or whose environment holds `ORCHARD_BOOTSTRAP_ADMIN_TOKEN`, rolling back if it
+  doesn't come back within two minutes. Before, `grove doctor` reported it and waited for an
+  operator; a stale plist meant the next reboot cut every worker off.
+
 - **A worker Mac gone for a day is no longer silent.** `GET /fleet` (and the Map's stuck panel)
   lists a `worker-offline` problem for a worker that has been offline 24 hours or more and that
   nobody snoozed, with what to do: bring it back, snooze it, or remove it.

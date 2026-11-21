@@ -239,7 +239,7 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 	go runGitHubRenewal(ctx, gitAuthStore)
 	// Idle means no job is pending or running: a restart drops the in-memory credential entries
 	// their brokers sync from here.
-	go runAutoUpdate(ctx, "serve", func(ctx context.Context) bool {
+	idle := func(ctx context.Context) bool {
 		jobs, err := ds.List(ctx)
 		if err != nil {
 			return false
@@ -250,7 +250,10 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 			}
 		}
 		return true
-	}, restartSelf)
+	}
+	go runAutoUpdate(ctx, "serve", idle, restartSelf)
+	// The controller reload pauses scheduling for seconds, so it waits for idle too.
+	go runControllerHeal(ctx, filepath.Dir(cfgPath), oc, idle)
 
 	// Recreate TTL-recycled VMs: ARCHITECTURE.md's "Recycling / hygiene" step 3 says grove's fleet
 	// reconciler notices a deleted VM and recreates it, but until now `grove serve` never actually
