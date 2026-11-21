@@ -1273,6 +1273,15 @@ and environment of the plist it was bootstrapped from, so re-rendering the file 
 until the job is reloaded. `grove doctor` (`orchard-controller-unit`) and `grove install` report a
 running controller that differs from the rendered unit; install never restarts it.
 
+On macOS, `grove serve` does the steps below by itself (`install.HealOrchardController`, checked
+every 30 minutes, only while no job is pending or running): it rewrites a plist that differs from
+the rendered one, reloads a controller that runs other flags or holds
+`ORCHARD_BOOTSTRAP_ADMIN_TOKEN`, waits up to two minutes for the controller to answer, and
+otherwise puts back a plist with the arguments that were running (never the token) and reloads
+that. It reloads at most once a day and logs what it did. Deleting the `bootstrap-admin` service
+account (next section) stays a hand step: it needs that account's own admin credential.
+The manual steps, for Linux or when the log says it could not:
+
 Restart onto the rendered unit (control plane, as the user that owns the controller):
 
 1. Re-render: `grove install --role control-plane` (or `--dry-run` first). Check the plist:
