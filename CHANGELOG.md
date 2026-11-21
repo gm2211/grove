@@ -4,6 +4,13 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **A clone credential can renew itself: `grove github enable --renew gh`.** Armed that way, the
+  control plane replaces the token at half its lifetime with the one `gh auth token` prints for
+  the user `grove serve` runs as, keeping the repositories, allow list and TTL. The token goes from
+  gh's stdout into the store and nowhere else. Renewal never arms anything: a credential armed
+  without `--renew`, a lapsed one or a disarmed one is left alone, and a self-renewing one still
+  lapses when that gh login is gone. Off unless asked for.
+
 - **The private-repo clone token no longer enters a job's VM.** On a shared pool the clone now
   gets a placeholder, and the worker's credential broker swaps the real token in on the way to
   github.com, the same way it handles a job's own credentials. A VM with no broker fails the

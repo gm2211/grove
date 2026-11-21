@@ -236,6 +236,7 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 	}
 	srv := server.New(oc, nc, ds, ac, serverOpts)
 	go reloadOperatorTokenOnHangup(ctx, srv, cfg.Server.Token)
+	go runGitHubRenewal(ctx, gitAuthStore)
 	// Idle means no job is pending or running: a restart drops the in-memory credential entries
 	// their brokers sync from here.
 	go runAutoUpdate(ctx, "serve", func(ctx context.Context) bool {
