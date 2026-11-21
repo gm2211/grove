@@ -650,6 +650,65 @@ func TestSourceTaskKeepsCloneTokenFromScript(t *testing.T) {
 		}
 	})
 
+	// A shared pool's job gets a placeholder for the armed credential; the worker's broker swaps
+	// the real token in, so git goes through the broker and trusts its CA, and nothing else.
+	const placeholder = "gph1_lucw5l3spgq5i5jcf5vqc7m6bdxuerpyaktio2rsbshgpmoizkzq"
+	const brokerCA = "TUlJQnJva2VyQ0FmYWtlYmFzZTY0"
+	t.Run("a placeholder clones through the broker", func(t *testing.T) {
+		alloc, gitLog, code, out := run(t, "grove-payload/1\n"+placeholder+"\ntrue\n",
+			"GROVE_BROKER=http://192.168.64.1:3128", "GROVE_BROKER_CA="+brokerCA)
+		if code != 0 {
+			t.Fatalf("run.sh exit = %d\n%s", code, out)
+		}
+		argv, _ := os.ReadFile(gitLog + ".argv")
+		if !strings.Contains(string(argv), "-c\nhttp.proxy=http://192.168.64.1:3128\n") {
+			t.Fatalf("clone argv = %s, want the broker as git's proxy", argv)
+		}
+		_, after, ok := strings.Cut(string(argv), "-c\nhttp.sslCAInfo=")
+		if !ok {
+			t.Fatalf("clone argv = %s, want the broker's CA bundle", argv)
+		}
+		bundle, _, _ := strings.Cut(after, "\n")
+		b, err := os.ReadFile(bundle)
+		if err != nil || !strings.Contains(string(b), "-----BEGIN CERTIFICATE-----\n"+brokerCA+"\n-----END CERTIFICATE-----") {
+			t.Fatalf("CA bundle %s = %q (%v), want the broker's CA", bundle, b, err)
+		}
+		if strings.HasPrefix(bundle, alloc) {
+			t.Fatalf("CA bundle %s is in the alloc dir the job's script can change", bundle)
+		}
+		if b, _ := os.ReadFile(gitLog + ".helper"); !strings.Contains(string(b), "password="+placeholder) {
+			t.Fatalf("credential helper answered %q, want the placeholder", b)
+		}
+	})
+
+	t.Run("a placeholder on a VM with no broker fails closed", func(t *testing.T) {
+		for _, env := range [][]string{
+			nil,
+			{"GROVE_BROKER=${meta.grove_broker}", "GROVE_BROKER_CA=${meta.grove_broker_ca}"},
+			{"GROVE_BROKER=http://192.168.64.1:3128", "GROVE_BROKER_CA=not base64!"},
+			{"GROVE_BROKER=http://evil.example:8080", "GROVE_BROKER_CA=" + brokerCA},
+		} {
+			_, gitLog, code, out := run(t, "grove-payload/1\n"+placeholder+"\necho should-not-run\n", env...)
+			if code != 128 || !strings.Contains(out, "credential broker") || strings.Contains(out, "should-not-run") {
+				t.Errorf("%v: run.sh exit = %d, output %q", env, code, out)
+			}
+			if _, err := os.Stat(gitLog + ".argv"); err == nil {
+				t.Errorf("%v: git clone ran", env)
+			}
+		}
+	})
+
+	t.Run("a real token never goes through the broker", func(t *testing.T) {
+		_, gitLog, code, out := run(t, "grove-payload/1\n"+token+"\ntrue\n",
+			"GROVE_BROKER=http://192.168.64.1:3128", "GROVE_BROKER_CA="+brokerCA)
+		if code != 0 {
+			t.Fatalf("run.sh exit = %d\n%s", code, out)
+		}
+		if argv, _ := os.ReadFile(gitLog + ".argv"); strings.Contains(string(argv), "http.proxy") {
+			t.Fatalf("clone argv = %s: a sealed pool's token must not be sent to a proxy", argv)
+		}
+	})
+
 	t.Run("non-https repo is refused", func(t *testing.T) {
 		_, _, code, out := run(t, "grove-payload/1\n\ntrue\n", "NOMAD_META_repo=git@github.com:gm2211/private.git")
 		if code == 0 || !strings.Contains(out, "https://") {
@@ -663,6 +722,63 @@ func TestSourceTaskKeepsCloneTokenFromScript(t *testing.T) {
 // clone token must reach git only through a file that is gone once the task ends.
 func TestSourceTaskMacOSClonesAsFencedUser(t *testing.T) {
 	const token = "ghp_armed_secret"
+	r := runMacSourceTask(t, "grove-payload/1\n"+token+"\ntrue\n")
+	gitLog, sudoLog, tmp := r.gitLog, r.sudoLog, r.tmp
+	if b, err := os.ReadFile(gitLog + ".outside"); err == nil {
+		t.Fatalf("git must only run as _grovesrc:\n%s", b)
+	}
+	sudo, _ := os.ReadFile(sudoLog)
+	if !strings.Contains(string(sudo), "-u _grovesrc") || strings.Count(string(sudo), " git ") < 2 {
+		t.Fatalf("git did not run through sudo -u _grovesrc for every command:\n%s", sudo)
+	}
+	if strings.Contains(string(sudo), token) {
+		t.Fatalf("the token was on sudo's command line:\n%s", sudo)
+	}
+	if b, _ := os.ReadFile(gitLog + ".helper"); !strings.Contains(string(b), "password="+token) {
+		t.Fatalf("credential helper answered %q", b)
+	}
+	if b, _ := os.ReadFile(gitLog + ".env"); strings.Contains(string(b), token) {
+		t.Fatalf("the token reached git's environment through sudo")
+	}
+	entries, _ := os.ReadDir(tmp)
+	if len(entries) != 0 {
+		t.Fatalf("the token file was left behind: %v", entries)
+	}
+}
+
+// On macOS a placeholder clone goes through the broker as _grovesrc, which sudo hands neither
+// the job's environment nor root's: the proxy and the CA bundle reach git as -c options, and the
+// bundle sits in the token's directory (the one place _grovesrc can read) and goes with it.
+func TestSourceTaskMacOSClonesThroughTheBroker(t *testing.T) {
+	const placeholder = "gph1_lucw5l3spgq5i5jcf5vqc7m6bdxuerpyaktio2rsbshgpmoizkzq"
+	r := runMacSourceTask(t, "grove-payload/1\n"+placeholder+"\ntrue\n",
+		"GROVE_BROKER=http://192.168.64.1:3128", "GROVE_BROKER_CA=TUlJQnJva2VyQ0FmYWtlYmFzZTY0")
+	argv, _ := os.ReadFile(r.gitLog + ".argv")
+	if !strings.Contains(string(argv), "-c\nhttp.proxy=http://192.168.64.1:3128\n") {
+		t.Fatalf("clone argv = %s, want the broker as git's proxy", argv)
+	}
+	_, after, ok := strings.Cut(string(argv), "-c\nhttp.sslCAInfo=")
+	bundle, _, _ := strings.Cut(after, "\n")
+	if !ok || !strings.Contains(bundle, "/grove-src.") || filepath.Base(bundle) != "broker-ca.pem" {
+		t.Fatalf("clone argv = %s, want a CA bundle in the token's directory", argv)
+	}
+	if _, err := os.Stat(filepath.Dir(bundle)); !os.IsNotExist(err) {
+		t.Fatalf("the token's directory %s was left behind (stat err %v)", filepath.Dir(bundle), err)
+	}
+	if b, _ := os.ReadFile(r.gitLog + ".helper"); !strings.Contains(string(b), "password="+placeholder) {
+		t.Fatalf("credential helper answered %q, want the placeholder", b)
+	}
+	if entries, _ := os.ReadDir(r.tmp); len(entries) != 0 {
+		t.Fatalf("the token's directory was left behind: %v", entries)
+	}
+}
+
+type macSourceTaskRun struct{ gitLog, sudoLog, tmp string }
+
+// runMacSource runs the macOS build source.sh on payload with fake sudo, git and host commands,
+// and fails unless it exits 0.
+func runMacSourceTask(t *testing.T, payload string, extraEnv ...string) macSourceTaskRun {
+	t.Helper()
 	job, err := jobspec2.ParseWithConfig(&jobspec2.ParseConfig{
 		Path: "job.hcl", Body: []byte(render(t, "build.nomad.hcl", renderData{Kind: "build", Pool: "macos"})),
 	})
@@ -696,7 +812,7 @@ while [ $# -gt 0 ]; do case "$1" in -n|-H) shift ;; -u) shift 2 ;; *) break ;; e
 exec env -i PATH="$PATH" FAKE_GIT_LOG="$FAKE_GIT_LOG" FAKE_UNDER_SUDO=1 "$@"
 `)
 	fakeMacHost(t, bin)
-	write(filepath.Join(sourceDir, "request"), "grove-payload/1\n"+token+"\ntrue\n")
+	write(filepath.Join(sourceDir, "request"), payload)
 	write(filepath.Join(sourceDir, "source.sh"), withJobsDir(t, sourceSH, filepath.Join(root, "grove-jobs")))
 
 	cmd := exec.Command("/bin/bash", filepath.Join(sourceDir, "source.sh"))
@@ -712,6 +828,7 @@ exec env -i PATH="$PATH" FAKE_GIT_LOG="$FAKE_GIT_LOG" FAKE_UNDER_SUDO=1 "$@"
 		"FAKE_SUDO_LOG="+sudoLog,
 		"FAKE_HOST="+root,
 	)
+	cmd.Env = append(cmd.Env, extraEnv...)
 	if b, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("source.sh: %v\n%s", err, b)
 	}
@@ -719,26 +836,7 @@ exec env -i PATH="$PATH" FAKE_GIT_LOG="$FAKE_GIT_LOG" FAKE_UNDER_SUDO=1 "$@"
 		log, _ := os.ReadFile(filepath.Join(alloc, "data", "grove", "source.log"))
 		t.Fatalf("source.exit = %q\n%s", b, log)
 	}
-	if b, err := os.ReadFile(gitLog + ".outside"); err == nil {
-		t.Fatalf("git must only run as _grovesrc:\n%s", b)
-	}
-	sudo, _ := os.ReadFile(sudoLog)
-	if !strings.Contains(string(sudo), "-u _grovesrc") || strings.Count(string(sudo), " git ") < 2 {
-		t.Fatalf("git did not run through sudo -u _grovesrc for every command:\n%s", sudo)
-	}
-	if strings.Contains(string(sudo), token) {
-		t.Fatalf("the token was on sudo's command line:\n%s", sudo)
-	}
-	if b, _ := os.ReadFile(gitLog + ".helper"); !strings.Contains(string(b), "password="+token) {
-		t.Fatalf("credential helper answered %q", b)
-	}
-	if b, _ := os.ReadFile(gitLog + ".env"); strings.Contains(string(b), token) {
-		t.Fatalf("the token reached git's environment through sudo")
-	}
-	entries, _ := os.ReadDir(tmp)
-	if len(entries) != 0 {
-		t.Fatalf("the token file was left behind: %v", entries)
-	}
+	return macSourceTaskRun{gitLog: gitLog, sudoLog: sudoLog, tmp: tmp}
 }
 
 // TestSandboxTemplate checks the sealed-pool template: one raw_exec task on the control plane's

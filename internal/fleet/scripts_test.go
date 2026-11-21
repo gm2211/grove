@@ -831,7 +831,9 @@ func TestMacOSHomeFenceLoader_BrokerException(t *testing.T) {
 	for _, tc := range []struct {
 		name, route, want string
 	}{
-		{"gateway", "   route to: default\ndestination: default\n    gateway: 192.168.64.1\n  interface: en0", "pass out quick proto tcp from any to 192.168.64.1 port 3128 user " + MacOSJobUser + "\n"},
+		{"gateway", "   route to: default\ndestination: default\n    gateway: 192.168.64.1\n  interface: en0", "pass out quick proto tcp from any to 192.168.64.1 port 3128 user " + MacOSJobUser + "\n" +
+			// The clone's git user: its credential is a placeholder only the broker can swap.
+			"pass out quick proto tcp from any to 192.168.64.1 port 3128 user " + MacOSSourceUser + "\n"},
 		{"no gateway", "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

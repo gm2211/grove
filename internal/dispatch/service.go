@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -511,9 +512,25 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 	if t := req.Timeout.Duration(); t > 0 {
 		meta["timeout_seconds"] = strconv.FormatFloat(t.Seconds(), 'f', 0, 64)
 	}
-	// The armed private-repo credential (if any) goes into the payload only the job's source task
-	// reads, never env_json and never the record persisted below. See Options.RepoAuth.
+	// The armed private-repo credential (if any) never enters a shared pool's VM: its source task
+	// gets a placeholder in the payload, and the worker's broker swaps the token in on the way to
+	// github.com, exactly as for the job's own credentials. A sealed pool's VMs can't reach a
+	// broker, and the broker swaps nothing for a host it doesn't serve (GitHub Enterprise), so
+	// those get the token itself, in the payload only. Never env_json and never the record
+	// persisted below. See Options.RepoAuth.
 	cloneToken, repoCredentialUsed := s.repoCredential(req)
+	var cloneEntry *broker.Entry
+	if cloneToken != "" && !s.pools[req.Pool].Isolated && brokerServesRepo(req.Repo) {
+		if err := broker.CheckToken(cloneToken); err != nil {
+			return nil, false, fmt.Errorf("dispatch: the armed clone credential: %w", err)
+		}
+		ph, err := broker.NewPlaceholder()
+		if err != nil {
+			return nil, false, fmt.Errorf("dispatch: mint placeholder: %w", err)
+		}
+		cloneEntry = &broker.Entry{Placeholder: ph, Job: id, Kind: broker.KindGitHub, Token: cloneToken}
+		cloneToken = ph
+	}
 	// Named secrets go the same way, and nowhere else: env_json below holds only the caller's
 	// own Env and credential placeholders.
 	secrets, err := s.secretValues(req)
@@ -538,8 +555,14 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 		return nil, false, err
 	}
 	env = withPlaceholders(env, placeholders)
-	if len(req.Credentials) > 0 {
-		if err := s.creds.Put(id, credentialEntries(id, req.Credentials, placeholders)); err != nil {
+	entries := credentialEntries(id, req.Credentials, placeholders)
+	recPlaceholders := placeholders
+	if cloneEntry != nil {
+		entries = append(entries, *cloneEntry)
+		recPlaceholders = withPlaceholders(placeholders, map[string]string{clonePlaceholderKey: cloneEntry.Placeholder})
+	}
+	if len(entries) > 0 {
+		if err := s.creds.Put(id, entries); err != nil {
 			return nil, false, fmt.Errorf("dispatch: %w", err)
 		}
 	}
@@ -596,7 +619,7 @@ func (s *service) Submit(ctx context.Context, req JobRequest) (*Job, bool, error
 			RepoCredentialUsed: repoCredentialUsed,
 		},
 		NomadJobID:   res.DispatchedJobID,
-		Placeholders: placeholders,
+		Placeholders: recPlaceholders,
 	}
 	if err := s.store.put(rec); err != nil {
 		s.creds.RemoveJob(id)
@@ -744,6 +767,16 @@ func (s *service) repoCredential(req JobRequest) (string, bool) {
 		return "", false
 	}
 	return token, true
+}
+
+// brokerServesRepo reports whether repoURL's host is one the broker swaps a github credential
+// for, so that a placeholder clones it.
+func brokerServesRepo(repoURL string) bool {
+	u, err := url.Parse(repoURL)
+	if err != nil || u.Scheme != "https" || u.Port() != "" {
+		return false
+	}
+	return slices.Contains(broker.KindGitHub.Hosts(), strings.ToLower(u.Hostname()))
 }
 
 // secretValues resolves the job's named secrets now, so a rotated secret reaches the next job with

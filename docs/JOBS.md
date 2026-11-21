@@ -93,7 +93,9 @@ only a task that declares `dispatch_payload`, and has three forms (`internal/dis
 | `grove-payload/1\n<token>\n<script>` | a build or agent job that names no secret |
 | `grove-payload/2\n<token>\n<secrets>\n<script>` | any job that names a secret |
 
-`<token>` is the armed clone token or an empty line (always empty for a shell job). `<secrets>` is
+`<token>` is the armed clone credential or an empty line (always empty for a shell job): on a
+shared pool a broker placeholder (`gph1_…`) for it, on a sealed pool or for a host the broker
+doesn't serve the token itself (see [Private repositories](#private-repositories)). `<secrets>` is
 one line: standard base64 of a JSON object of name to value, so a value may hold any text,
 newlines and quotes included. Version 2 is sent only when a job names a secret; everything else is
 dispatched exactly as before version 2 existed. A shell script may not start with
@@ -299,8 +301,14 @@ All three need the **operator** credential, reads included — the status names 
 control plane is currently willing to clone privately.
 
 While it is armed, `internal/dispatch`'s `Submit` asks the store about each build/agent job's
-`repo` and submitter and, when both are in scope, puts the token in that dispatch's payload, which
-only the job's `source` prestart task receives. What is in scope:
+`repo` and submitter and, when both are in scope, gives that dispatch's payload, which only the
+job's `source` prestart task receives, the credential for the clone. On a shared pool that is a
+placeholder, not the token: the token stays in the control plane's broker registry as the job's
+`github` credential, and the worker's credential broker swaps it in on the way to github.com, so
+the token never enters the VM. The source task sends the clone through the broker (trusting its
+CA), and fails it, saying why, on a VM that has no broker. A sealed pool, whose VMs can't reach a
+broker, and a host the broker doesn't serve (GitHub Enterprise) still get the token itself in the
+payload. What is in scope:
 
 - **submitters** — an operator, or a principal on the `allow` list: a device credential's id, a
   Tailscale identity's `tailscale:<stable id>`, or a Tailscale tag (`tag:argos`), the syntax named

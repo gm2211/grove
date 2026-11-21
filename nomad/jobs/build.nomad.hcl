@@ -67,6 +67,13 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         sidecar = false
       }
 
+      # The node's credential broker, for a clone whose credential is a placeholder (see
+      # source.sh); like run.sh, source.sh checks both before using them.
+      env {
+        GROVE_BROKER    = "${meta.grove_broker}"
+        GROVE_BROKER_CA = "${meta.grove_broker_ca}"
+      }
+
 {{if eq .Pool "macos"}}
       driver = "raw_exec"
 
@@ -325,6 +332,31 @@ job "grove-{{.Kind}}-{{.Pool}}" {
           finish 2
         fi
 
+        # A shared pool's job never holds the armed clone credential: its payload carries a
+        # placeholder (gph1_...), which the worker's credential broker swaps for the real token on
+        # the way to the repository's host, as it does for the job's own credentials. Such a clone
+        # goes through the broker, trusting its CA, and fails closed on a VM that has none.
+        grove_broker="$${GROVE_BROKER:-}"
+        grove_broker_ca="$${GROVE_BROKER_CA:-}"
+        unset GROVE_BROKER GROVE_BROKER_CA
+        via_broker=""
+        case "$token" in
+          gph1_*)
+            case "$grove_broker" in
+              http://*:3128) ;;
+              *) grove_broker="" ;;
+            esac
+            case "$grove_broker_ca" in
+              "" | *[!A-Za-z0-9+/=]*) grove_broker="" ;;
+            esac
+            if [ -z "$grove_broker" ]; then
+              echo "grove: the clone credential is held by this worker's credential broker, but this VM has none, so the repository can't be cloned with it" >> "$log"
+              finish 128
+            fi
+            via_broker=1
+            ;;
+        esac
+
         # The token reaches git only through this process's environment and an inline credential
         # helper: never argv (visible to every user in `ps`), never a config file, never the
         # checkout's .git/config.
@@ -355,6 +387,29 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         auth=(-c credential.helper=)
         if [ -n "$token" ]; then
           auth+=(-c "credential.https://$host.helper=$helper")
+        fi
+        if [ -n "$via_broker" ]; then
+          # The system's roots (for any other host git is sent to, tunnelled untouched) plus the
+          # broker's CA, which is name-constrained to the hosts it swaps credentials for. In the
+          # token's directory on macOS, the one place this task's git user can read.
+          grove_bundle="$${tokdir:-$NOMAD_TASK_DIR}/broker-ca.pem"
+          : > "$grove_bundle"
+          for grove_roots in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+            if [ -s "$grove_roots" ]; then
+              cat "$grove_roots" > "$grove_bundle"
+              break
+            fi
+          done
+          {
+            echo "-----BEGIN CERTIFICATE-----"
+            printf '%s\n' "$grove_broker_ca" | fold -w 64
+            echo "-----END CERTIFICATE-----"
+          } >> "$grove_bundle"
+          chmod 0444 "$grove_bundle"
+{{if eq .Pool "macos"}}
+          chown _grovesrc "$grove_bundle"
+{{end}}
+          auth+=(-c "http.proxy=$grove_broker" -c "http.sslCAInfo=$grove_bundle")
         fi
 
         work="$state/work"

@@ -371,8 +371,9 @@ fi
 // The startup script runs it inline (so a failure stops the script before Nomad takes work), and a
 // LaunchDaemon reruns it at every boot.
 //
-// withBroker (shared pools) lets the job user, and only the job user, reach the default gateway's
-// broker.Port ahead of the fence: the host's credential broker. The gateway is read when the
+// withBroker (shared pools) lets the job user and the clone's git user (MacOSSourceUser, whose
+// clone credential is a placeholder only the broker can use), and no one else, reach the default
+// gateway's broker.Port ahead of the fence: the host's credential broker. The gateway is read when the
 // anchor loads (at boot it waits up to a minute for DHCP); with none there is no exception, and
 // jobs can't reach the broker. A sealed guest can't reach its host at all, so it gets no exception.
 func macosFenceLoader(withBroker bool) string {
@@ -393,6 +394,7 @@ done
 `
 		pass = `  if [ -n "$grove_gateway" ]; then
     printf 'pass out quick proto tcp from any to %s port ` + fmt.Sprint(broker.Port) + ` user ` + MacOSJobUser + `\n' "$grove_gateway"
+    printf 'pass out quick proto tcp from any to %s port ` + fmt.Sprint(broker.Port) + ` user ` + MacOSSourceUser + `\n' "$grove_gateway"
   fi
 `
 	}
