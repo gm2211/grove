@@ -111,7 +111,8 @@ func (r *Reconciler) scale(workers []orchard.Worker, vms []orchard.VM) *scaling 
 	pools := map[string]Pool{}
 	for _, p := range r.Spec.Pools {
 		pools[p.Name] = p
-		s.on[p.Name], _ = placement(p, workers)
+		image, _ := r.Options.Images.effective(p, now)
+		s.on[p.Name], _ = r.placement(p, image, workers)
 	}
 
 	// Start from what runs now.

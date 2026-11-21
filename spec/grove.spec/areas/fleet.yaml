@@ -7,7 +7,8 @@ behaviors:
   - id: reconcile-converges
     description: >-
       From any fleet, one Plan and Apply converges: the next Plan is empty and stays empty, and
-      every VM left runs on an online, unpaused worker its pool's selector matches.
+      every VM left runs on an online, unpaused worker its pool's selector matches and that can
+      get the pool's image.
     details: L6. Go property test over 500 random fleets (TestL6_ReconcilerConvergesWithoutFlapping).
     tags: [liveness, l6]
   - id: drained-before-recycle

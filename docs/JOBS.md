@@ -523,10 +523,9 @@ false, lost_after = "24h" }`. A shared pool's losses also feed the health rules 
 difference: a shared VM that lost 2 different jobs is rebuilt, but a Mac is never paused for a
 shared pool's losses, because a Mac leaving loses every job on it at once and is welcome back.
 
-Where a pool runs at all is fleet.yaml's business: keep `workerSelector` for what the pool needs,
-and put a preference for particular Macs in `preferWorkers`, so the pool moves to the other Macs
-while its preferred ones are away (docs/OPERATIONS.md "Preferring a Mac without pinning a pool to
-it").
+Where a pool runs follows from the fleet itself: every Mac that is up and can get the pool's image,
+learned as Macs come and go, with no Mac named in fleet.yaml (docs/OPERATIONS.md "Where pools run:
+every Mac that is up and can get the image").
 
 ### Artifact retention
 

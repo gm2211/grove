@@ -799,17 +799,22 @@ func updateConfig(dir string, mutate func(*config.Config)) error {
 	return config.Save(filepath.Join(dir, "config.yaml"), cfg)
 }
 
+// starterFleetYAML names what jobs can ask for, never where they run: every Mac that is up runs
+// macOS jobs, and Linux VMs from a registry image are made on whichever Macs have Linux jobs
+// waiting (elastic, none while idle). No pool selects a worker (no Labels, no WorkerSelector):
+// workers advertise only host and arch, so a selector here would leave the pool's VMs pending.
 func starterFleetYAML() string {
+	zero, two := 0, 2
 	spec := fleet.Spec{
 		Pools: []fleet.Pool{
 			{
-				Name:      "linux",
-				Image:     "ghcr.io/gm2211/grove-linux-worker:latest",
-				PerWorker: 1,
-				CPU:       4,
-				Memory:    8192,
-				TTL:       fleet.Duration(12 * hour),
-				Labels:    map[string]string{"pool": "linux"},
+				Name:         "linux",
+				Image:        "ghcr.io/gm2211/grove-linux-worker:latest",
+				MinPerWorker: &zero,
+				MaxPerWorker: &two,
+				CPU:          4,
+				Memory:       8192,
+				TTL:          fleet.Duration(12 * hour),
 			},
 			{
 				Name:      "macos",
@@ -818,7 +823,6 @@ func starterFleetYAML() string {
 				CPU:       4,
 				Memory:    8192,
 				TTL:       fleet.Duration(12 * hour),
-				Labels:    map[string]string{"pool": "macos"},
 			},
 		},
 	}

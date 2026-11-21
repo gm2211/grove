@@ -375,10 +375,13 @@ never Nomad's (`internal/dispatch/reschedule.go`, spec S23/L11, `spec/quint/resc
 - Every path that ends a lost job stops its Nomad job first and stays non-terminal if the stop
   fails; a rerun goes through `redispatch` (old copy purged) with no pin to the lost worker.
 - A shared pool's losses rebuild VMs in `internal/health` but never pause a Mac.
-- Placement: `workerSelector` is what a pool needs, `preferWorkers` what it prefers (`placement` in
-  `internal/fleet/reconcile.go`, used by Plan and autoscale alike). A VM spilled off the preferred
-  workers is kept while `JobLoad.Busy`, never deleted under its job. Enrol (S3) checks only the
-  hard selector. `Spec.Warnings` flags a `host:` in `workerSelector`.
+- Placement names no Mac: a pool runs on every online, unpaused worker its `workerSelector` (a
+  capability, never a host) allows and that can get its image (`placement` in
+  `internal/fleet/reconcile.go`, used by Plan and autoscale alike; `ImageHolds.Missing` learns, per
+  worker, an image that failed there while it runs elsewhere or is a local Tart VM, and retries on
+  a backoff). A VM left off its placement is kept while `JobLoad.Busy`, never deleted under its
+  job. Enrol (S3) checks only the hard selector. `Spec.Warnings` flags a `host:` in
+  `workerSelector`; `preferWorkers` is ignored, with a warning. Never add a way to pin a pool.
 
 ## One job, one watched copy — keep it that way
 

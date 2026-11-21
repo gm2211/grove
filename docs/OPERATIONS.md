@@ -249,27 +249,30 @@ say when a pool is on its last good image and why. The memory is `images.json` n
 `devices.json` (image names and Orchard's messages only). A pool that has never run anything has no
 image to fall back to: its VM shows as `image-unavailable` and is retried every 10 minutes.
 
-## Preferring a Mac without pinning a pool to it
+## Where pools run: every Mac that is up and can get the image
 
-A pool whose `workerSelector` names one Mac (`host: studio`) has nowhere to run while that Mac is
-asleep, rebooting or gone: its VMs go, and its jobs wait and then fail with "no nodes available".
-`grove serve` logs a warning for such a pool. Split what the pool needs from what it prefers:
+A pool names what a job asks for (`linux`, `macos`), never a Mac. `grove serve` runs each pool on
+every Mac that is online, unpaused and able to get the pool's image, and that set changes by
+itself as Macs sleep, reboot, leave and come back. A Linux pool is a Linux VM on a Mac: any Mac
+runs one, so with `minPerWorker: 0` (the starter fleet) Linux VMs exist only on the Macs that have
+Linux jobs waiting, and go once idle.
 
-```yaml
-pools:
-  - name: macos
-    workerSelector: {arch: arm64}   # hard: only Macs that can run it
-    preferWorkers: {host: studio}   # soft: there while studio is up
-```
+**grove learns which Macs have a pool's image.** When a Mac fails to get it ("failed to clone",
+"failed to pull") while another Mac runs it, or while it is a local Tart VM (a name with no `/`,
+which only the Mac that built it has), the pool stays off that Mac and tries it again after 30
+minutes, then at doubling intervals up to 6 hours. Once a VM of the image runs there, the Mac is
+back for good. A VM of the pool still running a job on such a Mac stays until the job is done.
+`grove fleet plan`, the serve log and `GET /api/v1/fleet/reconcile` (`imageMissing`) list the Macs
+a pool is off and why; the memory is `images.json`. With no Mac left that has the image, the pool
+has no worker, and its jobs fall back to macOS (docs/JOBS.md "Falling back to macOS"). So a pool
+on a local image needs no pin: it stays on the Mac that built the image, and spreads to every Mac
+once the image is pushed to a registry and fleet.yaml names that.
 
-While an online, unpaused Mac matches `preferWorkers` (and `workerSelector`), the pool runs only
-there. While none does, it spills onto every Mac `workerSelector` allows (`Plan.Spilled` lists such
-pools), and when a preferred Mac comes back the pool moves back: a spilled VM stays until its job
-is done, then goes ("a preferred worker of the pool is back"). An elastic pool scales up on its
-preferred Macs the same way. Jobs that were running on a Mac that left are rerun elsewhere
-(docs/JOBS.md "When a shared pool's VM or Mac goes away"). A worker rename rewrites both maps.
-With no `workerSelector` at all, every Mac runs the pool and nothing needs to change when one
-leaves or joins.
+Don't pin a pool to a Mac. A `workerSelector` naming one Mac (`host: studio`) stops the pool
+whenever that Mac is away, and `grove serve` warns about it; keep `workerSelector` only for a
+capability some Macs lack (`arch: arm64`). `preferWorkers`, a soft pin in an earlier grove, is
+ignored with a warning. Jobs that were running on a Mac that left are rerun elsewhere
+(docs/JOBS.md "When a shared pool's VM or Mac goes away").
 
 ## Pausing a Mac
 

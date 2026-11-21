@@ -57,6 +57,50 @@ type poolImageState struct {
 	// Good is the image of the last VM of the pool seen running.
 	Good string     `json:"good,omitempty"`
 	Held *HeldImage `json:"held,omitempty"`
+	// Missing lists, by worker, the Macs that could not get the pool's named image while another
+	// Mac runs it (or while it is a local Tart VM, which only the Macs that built it have). The
+	// pool stays off such a Mac until RetryAt, so nobody has to pin a pool to the Macs that have
+	// its image: grove learns which ones do.
+	Missing map[string]*HeldImage `json:"missing,omitempty"`
+}
+
+// ImageMissing is a worker a pool stays off because it could not get the pool's image there.
+type ImageMissing struct {
+	Pool    string    `json:"pool"`
+	Worker  string    `json:"worker"`
+	Image   string    `json:"image"`
+	Reason  string    `json:"reason"`
+	Since   time.Time `json:"since"`
+	RetryAt time.Time `json:"retryAt"`
+}
+
+// localImage reports whether image is a local Tart VM name (no "/"), which Tart clones without a
+// registry: only a Mac that built or pulled it has it.
+func localImage(image string) bool { return image != "" && !strings.Contains(image, "/") }
+
+// missingOn lists the workers pool stays off at now because they could not get image, its
+// effective image. A worker whose retry is due is tried again.
+func (h *ImageHolds) missingOn(pool Pool, image string, now time.Time) map[string]ImageMissing {
+	if h == nil || image != pool.Image {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	p := h.pools[pool.Name]
+	if p == nil {
+		return nil
+	}
+	var out map[string]ImageMissing
+	for w, m := range p.Missing {
+		if m == nil || m.Image != pool.Image || !now.Before(m.RetryAt) {
+			continue
+		}
+		if out == nil {
+			out = map[string]ImageMissing{}
+		}
+		out[w] = ImageMissing{Pool: pool.Name, Worker: w, Image: m.Image, Reason: m.Reason, Since: m.Since, RetryAt: m.RetryAt}
+	}
+	return out
 }
 
 const imageHoldsVersion = 1
@@ -153,17 +197,19 @@ func (h *ImageHolds) Observe(spec *Spec, vms []orchard.VM, now time.Time) []stri
 		if p == nil {
 			p = &poolImageState{}
 		}
-		before := *p
-		var beforeHeld HeldImage
-		if p.Held != nil {
-			beforeHeld = *p.Held
-		}
+		before, _ := json.Marshal(p)
 
 		if p.Held != nil && p.Held.Image != pool.Image {
 			p.Held = nil // fleet.yaml names another image now
 		}
+		for w, m := range p.Missing {
+			if m == nil || m.Image != pool.Image {
+				delete(p.Missing, w)
+			}
+		}
 
 		namedRuns, other, failure := false, "", ""
+		runsOn, failedOn := map[string]bool{}, map[string]string{}
 		for _, vm := range vms {
 			vmPool, worker, _, ok := ParseVMName(vm.Name)
 			if !ok || vmPool != pool.Name || vm.Labels[LabelWorkerPin] != worker {
@@ -172,11 +218,50 @@ func (h *ImageHolds) Observe(spec *Spec, vms []orchard.VM, now time.Time) []stri
 			switch {
 			case vm.Status == "running" && vm.Image == pool.Image:
 				namedRuns = true
+				runsOn[worker] = true
 			case vm.Status == "running" && vm.Image != "":
 				other = vm.Image
 			case vm.Status == "failed" && vm.Image == pool.Image && ImageUnavailable(vm.StatusMessage):
 				failure = vm.StatusMessage
+				failedOn[worker] = vm.StatusMessage
 			}
+		}
+
+		// One Mac that can't get the image while another runs it (or while it is a local VM) is
+		// that Mac's problem, not the pool's: the pool stays off it and tries again later.
+		for w := range runsOn {
+			if p.Missing[w] != nil {
+				notes = append(notes, fmt.Sprintf("pool %s: worker %s has image %s now; back on it", pool.Name, w, pool.Image))
+				delete(p.Missing, w)
+			}
+		}
+		perWorker := namedRuns || (localImage(pool.Image) && (p.Good == "" || p.Good == pool.Image))
+		for w, msg := range failedOn {
+			if !perWorker || runsOn[w] {
+				continue
+			}
+			if p.Missing == nil {
+				p.Missing = map[string]*HeldImage{}
+			}
+			m := p.Missing[w]
+			if m == nil {
+				m = &HeldImage{Image: pool.Image, Since: now}
+				p.Missing[w] = m
+			}
+			if m.Tries == 0 || !now.Before(m.RetryAt) {
+				m.Tries++
+				m.Reason = msg
+				m.RetryAt = now.Add(imageHoldBackoff(m.Tries))
+				notes = append(notes, fmt.Sprintf(
+					"pool %s: worker %s can't get image %s (%s); keeping the pool off it, next try at %s",
+					pool.Name, w, pool.Image, msg, m.RetryAt.UTC().Format(time.RFC3339)))
+			}
+		}
+		if perWorker {
+			failure = "" // handled per worker above; the pool itself is fine
+		}
+		if len(p.Missing) == 0 {
+			p.Missing = nil
 		}
 		if !namedRuns && other != "" {
 			p.Good = other
@@ -203,11 +288,15 @@ func (h *ImageHolds) Observe(spec *Spec, vms []orchard.VM, now time.Time) []stri
 			}
 		}
 
-		if p.Good == "" && p.Held == nil {
+		if p.Good == "" && p.Held == nil && p.Missing == nil {
+			if _, kept := h.pools[pool.Name]; kept {
+				delete(h.pools, pool.Name)
+				changed = true
+			}
 			continue
 		}
 		h.pools[pool.Name] = p
-		if before.Good != p.Good || (before.Held == nil) != (p.Held == nil) || (p.Held != nil && *p.Held != beforeHeld) {
+		if after, _ := json.Marshal(p); string(after) != string(before) {
 			changed = true
 		}
 	}
