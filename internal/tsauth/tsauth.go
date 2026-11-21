@@ -97,8 +97,14 @@ type whoisResponse struct {
 	CapMap map[string][]json.RawMessage `json:"CapMap"`
 }
 
+// whoisTimeout bounds one `tailscale whois` exec. A cold one (the first after the cache lapses)
+// has been measured at 5.75 s on a Mac Studio, and the old 5 s bound turned every such request
+// into a 401 for a caller with nothing else to authenticate with. The answer is still cached for
+// only cacheTTL, so a longer wait never stretches how long a grant outlives a policy change.
+const whoisTimeout = 20 * time.Second
+
 func (c CLIWhoIs) WhoIs(ctx context.Context, addr netip.Addr) (Identity, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, whoisTimeout)
 	defer cancel()
 	stdout, stderr, err := c.Runner.Run(ctx, c.Bin, "whois", "--json", addr.String())
 	if err != nil {
