@@ -5,21 +5,21 @@
 class Grove < Formula
   desc "Your Macs as a private build/agent cloud: Tart VMs via Orchard, jobs via Nomad."
   homepage "https://github.com/gm2211/grove"
-  version "0.1.56"
+  version "0.1.57"
   license "MIT"
 
   on_macos do
     if Hardware::CPU.intel?
-      url "https://github.com/gm2211/grove/releases/download/v0.1.56/grove_darwin_amd64.tar.gz"
-      sha256 "3b58dfa4c5403b118e402dc89312f2d1b8789629a42a2b7d9892aa1567c47a8d"
+      url "https://github.com/gm2211/grove/releases/download/v0.1.57/grove_darwin_amd64.tar.gz"
+      sha256 "b75e6f4565e5e0dc8815c1b5155b6ca2fdf115122dac81f51443857196dacf63"
 
       define_method(:install) do
         bin.install "grove"
       end
     end
     if Hardware::CPU.arm?
-      url "https://github.com/gm2211/grove/releases/download/v0.1.56/grove_darwin_arm64.tar.gz"
-      sha256 "d536adb58793c553fca79abdc49ca75722512f9db7217cefacf68cd5d985e1d7"
+      url "https://github.com/gm2211/grove/releases/download/v0.1.57/grove_darwin_arm64.tar.gz"
+      sha256 "377610096c376120e95d77e2967051a3658274c128b569eff13515d5fe32e2bb"
 
       define_method(:install) do
         bin.install "grove"
@@ -29,15 +29,15 @@ class Grove < Formula
 
   on_linux do
     if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?
-      url "https://github.com/gm2211/grove/releases/download/v0.1.56/grove_linux_amd64.tar.gz"
-      sha256 "cd63c0d8e216f014c4846f0a66076ba5e6f7e92e35cb9502ac45a219e824993f"
+      url "https://github.com/gm2211/grove/releases/download/v0.1.57/grove_linux_amd64.tar.gz"
+      sha256 "54b3af71a1d005b59e2e57edbccb0422b5f55578b0ac9e3c173029a480220c24"
       define_method(:install) do
         bin.install "grove"
       end
     end
     if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?
-      url "https://github.com/gm2211/grove/releases/download/v0.1.56/grove_linux_arm64.tar.gz"
-      sha256 "e4e3b4b30078dbe029b20acaceba8c7e72d7990146ebd230e2dfaea13ffb76c2"
+      url "https://github.com/gm2211/grove/releases/download/v0.1.57/grove_linux_arm64.tar.gz"
+      sha256 "80d5ed6ee008ea8bc00c850f1f256faff9c27b649bcc245b6be916276cdaa506"
       define_method(:install) do
         bin.install "grove"
       end
