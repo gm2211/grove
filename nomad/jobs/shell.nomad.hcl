@@ -35,6 +35,16 @@ job "grove-{{.Kind}}-{{.Pool}}" {
       attempts = 0
     }
 
+    # reschedule { attempts = 0 } does not cover a lost allocation: when its node goes down, Nomad
+    # places a replacement anyway, outside grove's budget and quarantine (seen on Nomad 2.0.7).
+    # This keeps a lost VM's allocation "unknown" instead, with no replacement, so grove alone
+    # decides whether the job runs again (internal/dispatch reschedule.go). lost_after only bounds
+    # how long Nomad waits if grove is gone that long; grove's own grace is a minute.
+    disconnect {
+      lost_after = "24h"
+      replace    = false
+    }
+
 {{if eq .Pool "macos"}}
     # prepare: a root prestart task, on macOS only, that does for a shell job what "source" does
     # for a build or an agent before "main" starts: kill what earlier jobs left running as the
@@ -305,7 +315,9 @@ job "grove-{{.Kind}}-{{.Pool}}" {
           } >> "$grove_bundle"
           chmod 0644 "$grove_bundle"
           export HTTPS_PROXY="$grove_broker" HTTP_PROXY="$grove_broker" https_proxy="$grove_broker" http_proxy="$grove_broker"
-          export NO_PROXY="" no_proxy=""
+          # Loopback never goes through the broker: a job's own local servers (a test's HTTP
+          # stand-in) must answer, and the broker dials only public addresses. Nothing else is exempt.
+          export NO_PROXY="localhost,127.0.0.1,::1" no_proxy="localhost,127.0.0.1,::1"
           export SSL_CERT_FILE="$grove_bundle" CURL_CA_BUNDLE="$grove_bundle" GIT_SSL_CAINFO="$grove_bundle"
           export REQUESTS_CA_BUNDLE="$grove_bundle" NODE_EXTRA_CA_CERTS="$grove_bundle"
         elif case "$(env)" in *gph1_*) true ;; *) false ;; esac; then

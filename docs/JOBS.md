@@ -93,7 +93,9 @@ only a task that declares `dispatch_payload`, and has three forms (`internal/dis
 | `grove-payload/1\n<token>\n<script>` | a build or agent job that names no secret |
 | `grove-payload/2\n<token>\n<secrets>\n<script>` | any job that names a secret |
 
-`<token>` is the armed clone token or an empty line (always empty for a shell job). `<secrets>` is
+`<token>` is the armed clone credential or an empty line (always empty for a shell job): on a
+shared pool a broker placeholder (`gph1_…`) for it, on a sealed pool or for a host the broker
+doesn't serve the token itself (see [Private repositories](#private-repositories)). `<secrets>` is
 one line: standard base64 of a JSON object of name to value, so a value may hold any text,
 newlines and quotes included. Version 2 is sent only when a job names a secret; everything else is
 dispatched exactly as before version 2 existed. A shell script may not start with
@@ -168,6 +170,22 @@ operator; 404 for an unknown job, 409 once it has ended):
 ```json
 {"credentials": [{"env": "GH_TOKEN", "token": "ghs_…new"}]}
 ```
+
+## Where a job runs
+
+A job describes what it needs (kind, repo, script, toolchain or image, size) and names no pool:
+`"pool"` is optional, and `Submit` places the job (`internal/dispatch/placement.go`). The job's
+record then carries the pool chosen, and everything else behaves as if the caller had named it.
+
+- A shared macOS pool comes first. A macOS guest runs what a Linux one does once the job names its
+  toolchain, and it is the only one that runs Apple work.
+- A shared Linux pool takes a job whose environment is an image with no toolchain (macOS runs no
+  containers), when its `environments.allow` permits the image; and any job when the fleet has no
+  macOS pool that can run it.
+- A pool whose per-job size is smaller than the job's `resources` is skipped. Ties break by name.
+- A sealed pool is never chosen: it is a decision about how far the job is trusted, so it is the
+  one case where a caller names the pool.
+- When no pool can run the job, the submit fails with a 400 saying why for each pool.
 
 ## Falling back to macOS
 
@@ -283,8 +301,14 @@ All three need the **operator** credential, reads included — the status names 
 control plane is currently willing to clone privately.
 
 While it is armed, `internal/dispatch`'s `Submit` asks the store about each build/agent job's
-`repo` and submitter and, when both are in scope, puts the token in that dispatch's payload, which
-only the job's `source` prestart task receives. What is in scope:
+`repo` and submitter and, when both are in scope, gives that dispatch's payload, which only the
+job's `source` prestart task receives, the credential for the clone. On a shared pool that is a
+placeholder, not the token: the token stays in the control plane's broker registry as the job's
+`github` credential, and the worker's credential broker swaps it in on the way to github.com, so
+the token never enters the VM. The source task sends the clone through the broker (trusting its
+CA), and fails it, saying why, on a VM that has no broker. A sealed pool, whose VMs can't reach a
+broker, and a host the broker doesn't serve (GitHub Enterprise) still get the token itself in the
+payload. What is in scope:
 
 - **submitters** — an operator, or a principal on the `allow` list: a device credential's id, a
   Tailscale identity's `tailscale:<stable id>`, or a Tailscale tag (`tag:argos`), the syntax named
@@ -493,8 +517,39 @@ A job that cannot start because of a snooze is queued, not failed. Its `pendingR
 and `queuedUntil` is when the snoozed worker is due back. The queue belongs to the pool: any other
 matching worker takes the job as soon as it is free, and the 30 minute pending timeout counts
 from `queuedUntil`. A shared-pool job moved off a snoozed worker by `--now` lists the moves in
-`evictions` (`worker`, `at`, `reason`). Reruns and quarantine cover sealed pools only; a
-shared pool's job that is lost stays lost.
+`evictions` (`worker`, `at`, `reason`).
+
+### When a shared pool's VM or Mac goes away: reruns and poison pills
+
+Macs come and go: a laptop sleeps, a Mac reboots or is unplugged, a worker leaves the fleet. A
+shared pool's job on such a Mac is rerun on the pool's other VMs by the same rules as a sealed
+pool's (`internal/dispatch/reschedule.go`):
+
+- Nomad marks the job's allocation `unknown` once the VM stops answering. The job page keeps
+  showing it `running`: the VM may just be on a slow network. After a minute without contact grove
+  calls it lost, records the attempt (`attempts[]`, with its `alloc`, `vm`, `worker` and whether
+  the script had started) and dispatches the job again. Any worker of the pool may take it; the
+  rerun carries nothing about the lost one. The old Nomad job is purged, so if the Mac comes back
+  its copy is stopped there.
+- A job runs at most 3 times. Only a lost VM starts a rerun, and `retryLost` decides as above:
+  agent jobs end `lost`.
+- A job lost after its script started on 2 different Macs is quarantined: it ends `failed` with
+  `quarantined: true`, and is not run again.
+- A resubmitted poison pill doesn't get to take down two more Macs: a job with the same kind,
+  pool, repo, ref and script as one quarantined in the last 24 hours is quarantined the first time
+  it is lost after its script started. A different script, or a day later, starts afresh.
+- Whenever grove ends such a job, it stops its Nomad job first, so nothing of it runs later behind
+  grove's back.
+
+Nomad itself never reruns a lost allocation: it does by default, even with `reschedule
+{ attempts = 0 }` (checked on Nomad 2.0.7), so the job templates set `disconnect { replace =
+false, lost_after = "24h" }`. A shared pool's losses also feed the health rules above, with one
+difference: a shared VM that lost 2 different jobs is rebuilt, but a Mac is never paused for a
+shared pool's losses, because a Mac leaving loses every job on it at once and is welcome back.
+
+Where a pool runs follows from the fleet itself: every Mac that is up and can get the pool's image,
+learned as Macs come and go, with no Mac named in fleet.yaml (docs/OPERATIONS.md "Where pools run:
+every Mac that is up and can get the image").
 
 ### Artifact retention
 

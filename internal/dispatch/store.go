@@ -20,13 +20,23 @@ type record struct {
 	Job
 	NomadJobID string `json:"nomadJobId"`
 	// Placeholders maps each of the job's credentials (by Env) to the placeholder the job got,
-	// so UpdateCredentials can put fresh tokens behind the same placeholders. A placeholder is
+	// so UpdateCredentials can put fresh tokens behind the same placeholders, and holds the clone
+	// credential's placeholder under clonePlaceholderKey, so an update keeps its entry. A placeholder is
 	// worthless without the in-memory registry entry, and it never leaves the record: the API
 	// returns only Job.
 	Placeholders map[string]string `json:"placeholders,omitempty"`
 	// PendingSince, when later than SubmittedAt, is where the pending timeout starts counting:
 	// the end of a snooze that kept the job queued (see PoolWaiter).
 	PendingSince *time.Time `json:"pendingSince,omitempty"`
+	// UnknownSince is when grove first saw each of the job's allocations "unknown" (Nomad lost
+	// contact with its node). After Options.UnknownGrace it counts as lost (reschedule.go).
+	UnknownSince map[string]time.Time `json:"unknownSince,omitempty"`
+	// NotDispatched marks the record of a submit whose Dispatch answered with an error: the caller
+	// was told it was refused, so an idempotency key never finds it. SweepUntil, while set, is
+	// until when the reconcile sweep keeps looking for a copy Nomad may still have made of it
+	// (service.notDispatched).
+	NotDispatched bool       `json:"notDispatched,omitempty"`
+	SweepUntil    *time.Time `json:"sweepUntil,omitempty"`
 }
 
 // store is a thread-safe in-memory job store, persisted as JSON so history survives restarts.
@@ -102,7 +112,7 @@ func (s *store) findByIdempotencyKey(key, submittedBy string) (*record, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, r := range s.jobs {
-		if r.Request.IdempotencyKey == key && r.Request.SubmittedBy == submittedBy {
+		if r.Request.IdempotencyKey == key && r.Request.SubmittedBy == submittedBy && !r.NotDispatched {
 			cp := *r
 			return &cp, true
 		}

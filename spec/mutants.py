@@ -89,6 +89,48 @@ MUTANTS = [
         "new": "func Wake(ctx context.Context, p Pauser, st *Store, worker string, now time.Time) (resumed bool, still []string, err error) {\n",
         "test": "TestS1_WritersHoldTheWorkersLock",
     },
+    {
+        "name": "reconcile without the job's lock (two reruns of one lost job)",
+        "file": "internal/dispatch/service.go",
+        "old": "func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {\n\tdefer s.lockJob(rec.ID)()\n",
+        "new": "func (s *service) reconcile(ctx context.Context, rec *record) (*Job, error) {\n",
+        "test": "TestS24_ConcurrentReconcilesRerunALostJobOnce",
+    },
+    {
+        "name": "Cancel without the job's lock (a racing reconcile un-cancels the job)",
+        "file": "internal/dispatch/service.go",
+        "old": "func (s *service) Cancel(ctx context.Context, id string) error {\n\tdefer s.lockJob(id)()\n",
+        "new": "func (s *service) Cancel(ctx context.Context, id string) error {\n",
+        "test": "TestS24_CancelRacingAReconcileStaysCanceled",
+    },
+    {
+        "name": "Cancel overwrites a finished job's outcome",
+        "file": "internal/dispatch/service.go",
+        "old": "\tif isTerminal(rec.Status) {\n\t\t// It already ended: its outcome stands",
+        "new": "\tif false && isTerminal(rec.Status) {\n\t\t// It already ended: its outcome stands",
+        "test": "TestS24_CancelOfAFinishedJobKeepsItsOutcome",
+    },
+    {
+        "name": "a Dispatch error is taken as proof nothing was dispatched",
+        "file": "internal/dispatch/service.go",
+        "old": "\t\ts.notDispatched(ctx, id, req, name, err)\n",
+        "new": "",
+        "test": "TestS24_RefusedDispatchLeavesNoCopy",
+    },
+    {
+        "name": "the reconcile sweep stops looking for a refused dispatch's late copy",
+        "file": "internal/dispatch/service.go",
+        "old": "\t\ts.sweepNotDispatched(ctx, time.Now().UTC())\n",
+        "new": "",
+        "test": "TestS24_RefusedDispatchLeavesNoCopy",
+    },
+    {
+        "name": "two submits with one idempotency key both dispatch",
+        "file": "internal/dispatch/service.go",
+        "old": "\t\tdefer s.lockJob(\"idempotency\\x00\" + req.SubmittedBy + \"\\x00\" + req.IdempotencyKey)()\n",
+        "new": "",
+        "test": "TestS24_ConcurrentSubmitsWithOneKeyDispatchOnce",
+    },
 ]
 
 

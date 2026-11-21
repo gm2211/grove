@@ -102,18 +102,11 @@ verify_provenance() {
 		log "provenance not verified (gh is not signed in to github.com); checksum verified"
 		return 0
 	fi
-	# Newer gh can also hold the attestation to the tag it was built from, which stops an older,
-	# genuinely attested archive being served as this release.
-	if gh attestation verify --help 2>/dev/null | grep -q -- '--source-ref'; then
-		gh attestation verify "$1" --repo gm2211/grove \
-			--signer-workflow gm2211/grove/.github/workflows/release.yml \
-			--source-ref "refs/tags/$2" >/dev/null ||
-			die "build provenance of $(basename "$1") could not be verified for $2; refusing to install it (GROVE_SKIP_PROVENANCE=1 installs on the checksum alone)"
-	else
-		gh attestation verify "$1" --repo gm2211/grove \
-			--signer-workflow gm2211/grove/.github/workflows/release.yml >/dev/null ||
-			die "build provenance of $(basename "$1") could not be verified; refusing to install it (GROVE_SKIP_PROVENANCE=1 installs on the checksum alone)"
-	fi
+	# Not --source-ref refs/tags/<version>: a release autorelease.yml cut ran the release workflow
+	# from main (its certificate says refs/heads/main), and only a hand-pushed tag ran from the tag.
+	gh attestation verify "$1" --repo gm2211/grove \
+		--signer-workflow gm2211/grove/.github/workflows/release.yml >/dev/null ||
+		die "build provenance of $(basename "$1") could not be verified; refusing to install it (GROVE_SKIP_PROVENANCE=1 installs on the checksum alone)"
 	log "build provenance verified (release workflow of gm2211/grove, $2)"
 }
 

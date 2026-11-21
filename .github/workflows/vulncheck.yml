@@ -1,0 +1,28 @@
+name: Vulnerability scan
+
+# Reports known vulnerabilities in the Go code grove ships and in what it calls. It is its own
+# workflow, not part of CI, so a newly published advisory never blocks a release by itself.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  pull_request:
+    paths: ["go.mod", "go.sum", ".github/workflows/vulncheck.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
+      # A pinned version: the Go checksum database fixes what this module version is.
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...

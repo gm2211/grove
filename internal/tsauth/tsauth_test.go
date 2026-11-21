@@ -134,10 +134,16 @@ func TestAuthenticateCaches(t *testing.T) {
 	}
 }
 
-type fakeRunner struct{ args []string }
+type fakeRunner struct {
+	args     []string
+	deadline time.Duration
+}
 
-func (f *fakeRunner) Run(_ context.Context, name string, args ...string) (string, string, error) {
+func (f *fakeRunner) Run(ctx context.Context, name string, args ...string) (string, string, error) {
 	f.args = append([]string{name}, args...)
+	if d, ok := ctx.Deadline(); ok {
+		f.deadline = time.Until(d)
+	}
 	return taggedWhoIs, "", nil
 }
 
@@ -149,6 +155,10 @@ func TestCLIWhoIs(t *testing.T) {
 	}
 	if strings.Join(r.args, " ") != "/usr/bin/tailscale whois --json 100.64.0.1" {
 		t.Fatalf("ran %v", r.args)
+	}
+	// A cold whois has taken 5.75 s; a bound near that turns a slow answer into a 401.
+	if r.deadline < 15*time.Second {
+		t.Fatalf("whois runs with %v to answer, want at least 15s", r.deadline)
 	}
 }
 

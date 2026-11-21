@@ -206,7 +206,9 @@ A step that fails stops the startup script, so the VM takes no job, and Orchard 
 
 Nothing to do where grove is the user's own binary (a release tarball in `~/.local/bin`, as on the
 control plane): `grove serve` and the worker's broker check for a newer release hourly and, while
-no job is pending or running, install it (verified against the release's `checksums.txt`; the old
+no job is pending or running, install it (verified against the release's `checksums.txt` and against its signed build
+provenance: only a build the release workflow made from a commit on `main` is installed, and there
+is no switch to skip that; the old
 binary stays beside it as `grove.<version>.bak`), re-run the worker install with it (`--no-sudo`:
 a changed root step is printed in the log, never run), and restart themselves. `grove self-update`
 does it on demand, `grove self-update --check` only looks. Turn it off with `update: {auto: false}`
@@ -246,6 +248,31 @@ is tried at once. `grove fleet plan`, the serve log and `GET /api/v1/fleet/recon
 say when a pool is on its last good image and why. The memory is `images.json` next to
 `devices.json` (image names and Orchard's messages only). A pool that has never run anything has no
 image to fall back to: its VM shows as `image-unavailable` and is retried every 10 minutes.
+
+## Where pools run: every Mac that is up and can get the image
+
+A pool names what a job asks for (`linux`, `macos`), never a Mac. `grove serve` runs each pool on
+every Mac that is online, unpaused and able to get the pool's image, and that set changes by
+itself as Macs sleep, reboot, leave and come back. A Linux pool is a Linux VM on a Mac: any Mac
+runs one, so with `minPerWorker: 0` (the starter fleet) Linux VMs exist only on the Macs that have
+Linux jobs waiting, and go once idle.
+
+**grove learns which Macs have a pool's image.** When a Mac fails to get it ("failed to clone",
+"failed to pull") while another Mac runs it, or while it is a local Tart VM (a name with no `/`,
+which only the Mac that built it has), the pool stays off that Mac and tries it again after 30
+minutes, then at doubling intervals up to 6 hours. Once a VM of the image runs there, the Mac is
+back for good. A VM of the pool still running a job on such a Mac stays until the job is done.
+`grove fleet plan`, the serve log and `GET /api/v1/fleet/reconcile` (`imageMissing`) list the Macs
+a pool is off and why; the memory is `images.json`. With no Mac left that has the image, the pool
+has no worker, and its jobs fall back to macOS (docs/JOBS.md "Falling back to macOS"). So a pool
+on a local image needs no pin: it stays on the Mac that built the image, and spreads to every Mac
+once the image is pushed to a registry and fleet.yaml names that.
+
+Don't pin a pool to a Mac. A `workerSelector` naming one Mac (`host: studio`) stops the pool
+whenever that Mac is away, and `grove serve` warns about it; keep `workerSelector` only for a
+capability some Macs lack (`arch: arm64`). `preferWorkers`, a soft pin in an earlier grove, is
+ignored with a warning. Jobs that were running on a Mac that left are rerun elsewhere
+(docs/JOBS.md "When a shared pool's VM or Mac goes away").
 
 ## Pausing a Mac
 
@@ -705,7 +732,9 @@ online the old credential is revoked, including a broker-only credential that wa
 `grove access issue --scope broker` when that was still allowed. For the control plane's own
 worker: `grove access revoke` its old broker credential, delete `~/.config/grove/credentials/broker`
 and run `grove install --role worker` there again. Until a worker is re-joined, its unbound
-credential is a plain bearer token: revoke it (`grove access revoke DEVICE_ID`) if it may have
+credential still gets its jobs' entries, so the worker keeps running, but never the keychain unlock
+(the panel's "Unlock keychain" answers 409 for that worker) or the registry login for VM images
+(the worker falls back to its own `credentials/registry` file). It is a plain bearer token: revoke it (`grove access revoke DEVICE_ID`) if it may have
 leaked.
 
 A machine may hold at most 5 join requests waiting for approval (256 in total); more get a 429

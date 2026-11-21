@@ -33,45 +33,43 @@ func (s *service) Evict(ctx context.Context, worker, reason string) (requeued, l
 		if isTerminal(rec.Status) || s.pools[rec.Request.Pool].Isolated {
 			continue
 		}
-		// Refresh first: the stored placement may be a status poll behind.
-		if _, rerr := s.reconcile(ctx, rec); rerr != nil {
-			slog.Warn("dispatch: refreshing a job before eviction failed", "id", rec.ID, "err", rerr)
-		}
-		if rec.Placement == nil || rec.Placement.WorkerID != worker || isTerminal(rec.Status) {
-			continue
-		}
-		if !rec.Request.retryLost() {
+		switch s.evictOne(ctx, rec, worker, reason) {
+		case "requeued":
+			requeued = append(requeued, rec.ID)
+		case "left":
 			left = append(left, rec.ID)
-			continue
 		}
-		if err := s.requeueEvicted(ctx, rec, worker, reason); err != nil {
-			slog.Warn("dispatch: evicting a job off a snoozed worker failed; leaving it running", "id", rec.ID, "worker", worker, "err", err)
-			left = append(left, rec.ID)
-			continue
-		}
-		requeued = append(requeued, rec.ID)
 	}
 	return requeued, left, nil
 }
 
-func (s *service) requeueEvicted(ctx context.Context, rec *record, worker, reason string) error {
-	pool := rec.Request.Pool
-	if rec.Fallback != nil {
-		pool = rec.Fallback.To
+// evictOne refreshes rec and requeues it off worker, holding the job's lock throughout so no
+// other reconcile acts on the same placement in between. It says "requeued", "left" or "" (the
+// job is not on worker, or ended).
+func (s *service) evictOne(ctx context.Context, rec *record, worker, reason string) string {
+	defer s.lockJob(rec.ID)()
+	// Refresh first: the stored placement may be a status poll behind.
+	if _, rerr := s.reconcileLocked(ctx, rec); rerr != nil {
+		slog.Warn("dispatch: refreshing a job before eviction failed", "id", rec.ID, "err", rerr)
 	}
-	if err := s.redispatch(ctx, rec, pool); err != nil {
+	if rec.Placement == nil || rec.Placement.WorkerID != worker || isTerminal(rec.Status) {
+		return ""
+	}
+	if !rec.Request.retryLost() {
+		return "left"
+	}
+	if err := s.requeueEvicted(ctx, rec, worker, reason); err != nil {
+		slog.Warn("dispatch: evicting a job off a snoozed worker failed; leaving it running", "id", rec.ID, "worker", worker, "err", err)
+		return "left"
+	}
+	return "requeued"
+}
+
+func (s *service) requeueEvicted(ctx context.Context, rec *record, worker, reason string) error {
+	rec.Evictions = append(rec.Evictions, Eviction{Worker: worker, At: time.Now().UTC(), Reason: reason})
+	if err := s.requeue(ctx, rec, runPool(rec), fmt.Sprintf("requeued: worker %s was snoozed", worker)); err != nil {
+		rec.Evictions = rec.Evictions[:len(rec.Evictions)-1]
 		return err
 	}
-	rec.Status = StatusPending
-	rec.AllocID, rec.Node, rec.ExitCode = "", "", nil
-	rec.StartedAt, rec.Placement, rec.Signal = nil, nil, nil
-	rec.PendingReason = fmt.Sprintf("requeued: worker %s was snoozed", worker)
-	rec.Evictions = append(rec.Evictions, Eviction{Worker: worker, At: time.Now().UTC(), Reason: reason})
-	if err := s.store.put(rec); err != nil {
-		return fmt.Errorf("dispatch: persist job %s: %w", rec.ID, err)
-	}
-	s.mu.Lock()
-	delete(s.cache, rec.ID)
-	s.mu.Unlock()
 	return nil
 }

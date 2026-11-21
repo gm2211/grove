@@ -70,7 +70,8 @@ func (s *service) expireArtifacts(ctx context.Context, now time.Time) {
 		if !known {
 			continue
 		}
-		// Re-read: the record may have changed while the store was being swept.
+		// Re-read under the job's lock: the record may have changed while the store was swept.
+		unlock := s.lockJob(id)
 		if rec, ok := s.store.get(id); ok {
 			at := now
 			rec.Artifacts = nil
@@ -82,5 +83,6 @@ func (s *service) expireArtifacts(ctx context.Context, now time.Time) {
 			delete(s.cache, id)
 			s.mu.Unlock()
 		}
+		unlock()
 	}
 }

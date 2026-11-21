@@ -16,6 +16,7 @@ import (
 	"github.com/gm2211/grove/internal/config"
 	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
+	"github.com/gm2211/grove/internal/provenance"
 	"github.com/gm2211/grove/internal/wire"
 )
 
@@ -90,8 +91,11 @@ type Options struct {
 	// GroveVersion is this grove binary's release version ("0.1.21"; empty or "dev" for a local
 	// build). The Orchard binary is downloaded from that release's assets before any source build.
 	GroveVersion string
-	GOOS         string // test override; defaults to runtime.GOOS
-	GOARCH       string // test override; defaults to runtime.GOARCH
+
+	// provenanceVerify replaces provenance.Verify in tests, which have no real release to show.
+	provenanceVerify func(attestations []byte, sha256hex, version string) (provenance.Result, error)
+	GOOS             string // test override; defaults to runtime.GOOS
+	GOARCH           string // test override; defaults to runtime.GOARCH
 	// LaunchDaemons is where system LaunchDaemons live. Test override; defaults to
 	// /Library/LaunchDaemons.
 	LaunchDaemons string

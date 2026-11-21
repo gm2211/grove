@@ -13,9 +13,9 @@ const ciPromptName = "grove_ci"
 func ciPrompt() *mcpsdk.Prompt {
 	return &mcpsdk.Prompt{
 		Name:        ciPromptName,
-		Description: "Run this repo's tests on a grove pool and report the result.",
+		Description: "Run this repo's tests on grove and report the result.",
 		Arguments: []*mcpsdk.PromptArgument{
-			{Name: "pool", Description: "grove pool to run on, e.g. linux or macos", Required: true},
+			{Name: "pool", Description: "optional: leave empty and grove picks where the job runs", Required: false},
 			{Name: "repo", Description: "git URL of the repo to test; defaults to the current repo's origin", Required: false},
 			{Name: "ref", Description: "commit SHA, branch, or tag to test; defaults to the current branch", Required: false},
 			{Name: "script", Description: "test command to run; defaults to the repo's usual test target (e.g. `make test`)", Required: false},
@@ -24,10 +24,7 @@ func ciPrompt() *mcpsdk.Prompt {
 }
 
 func (h *handlers) getCIPrompt(ctx context.Context, req *mcpsdk.GetPromptRequest) (*mcpsdk.GetPromptResult, error) {
-	pool := req.Params.Arguments["pool"]
-	if strings.TrimSpace(pool) == "" {
-		return nil, fmt.Errorf("%s prompt requires a pool argument", ciPromptName)
-	}
+	pool := strings.TrimSpace(req.Params.Arguments["pool"])
 	repo := req.Params.Arguments["repo"]
 	ref := req.Params.Arguments["ref"]
 	script := req.Params.Arguments["script"]
@@ -36,9 +33,17 @@ func (h *handlers) getCIPrompt(ctx context.Context, req *mcpsdk.GetPromptRequest
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "Run this repository's tests on grove pool `%s` and report back.\n\n", pool)
+	if pool != "" {
+		fmt.Fprintf(&b, "Run this repository's tests on grove pool `%s` and report back.\n\n", pool)
+	} else {
+		b.WriteString("Run this repository's tests on grove and report back.\n\n")
+	}
 	b.WriteString("Use the grove_run tool with:\n")
-	fmt.Fprintf(&b, "- pool: %s\n", pool)
+	if pool != "" {
+		fmt.Fprintf(&b, "- pool: %s\n", pool)
+	} else {
+		b.WriteString("- pool: leave it out; grove picks where the job runs\n")
+	}
 	if repo != "" {
 		fmt.Fprintf(&b, "- repo: %s\n", repo)
 	} else {
@@ -56,7 +61,7 @@ func (h *handlers) getCIPrompt(ctx context.Context, req *mcpsdk.GetPromptRequest
 		"of what broke; if it succeeded, summarize what ran.")
 
 	return &mcpsdk.GetPromptResult{
-		Description: "Run this repo's tests on a grove pool and report the result.",
+		Description: "Run this repo's tests on grove and report the result.",
 		Messages: []*mcpsdk.PromptMessage{
 			{
 				Role:    mcpsdk.Role("user"),

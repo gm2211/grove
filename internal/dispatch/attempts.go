@@ -11,7 +11,8 @@ import (
 	"time"
 )
 
-// MaxAttempts is how many times a sealed pool's job is run when its VM keeps dying under it: the
+// MaxAttempts is how many times a job is run when its VM keeps dying under it (a sealed pool's by
+// its driver, a shared pool's by reschedule.go): the
 // first run and up to two reruns. Only a lost VM starts another attempt; a job whose own script
 // fails, times out or is canceled is never rerun.
 const MaxAttempts = 3
@@ -47,6 +48,9 @@ type Attempt struct {
 	ExitCode   *int `json:"exitCode,omitempty"`
 	// Reason says why the attempt ended the way it did, for a lost or setup attempt.
 	Reason string `json:"reason,omitempty"`
+	// Alloc is the Nomad allocation of a shared pool's attempt (see reschedule.go). Empty for a
+	// sealed pool's, which the job's driver records.
+	Alloc string `json:"alloc,omitempty"`
 }
 
 // AttemptRecord is everything the job's driver (`grove sandbox run`) tells grove about where and

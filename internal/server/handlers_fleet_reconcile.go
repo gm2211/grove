@@ -61,6 +61,8 @@ type FleetReconcileResponse struct {
 	// Fallbacks lists the pools running on their last good image because the one fleet.yaml
 	// names can't be pulled (fleet.ImageHolds).
 	Fallbacks []fleet.PlannedFallback `json:"fallbacks,omitempty"`
+	// ImageMissing lists the Macs a pool stays off for now because they could not get its image.
+	ImageMissing []fleet.ImageMissing `json:"imageMissing,omitempty"`
 }
 
 // FleetReconcileSummary is the subset of FleetReconcileResponse folded into GET /fleet's own
@@ -89,10 +91,11 @@ func (s *FleetReconcileStatus) response() FleetReconcileResponse {
 	defer s.mu.RUnlock()
 
 	resp := FleetReconcileResponse{
-		LastRunAt: s.lastRunAt,
-		LastPlan:  planNames(s.lastPlan),
-		Enabled:   s.enabled,
-		Fallbacks: s.lastPlan.Fallbacks,
+		LastRunAt:    s.lastRunAt,
+		LastPlan:     planNames(s.lastPlan),
+		Enabled:      s.enabled,
+		Fallbacks:    s.lastPlan.Fallbacks,
+		ImageMissing: s.lastPlan.ImageMissing,
 	}
 	if s.interval > 0 {
 		resp.Interval = s.interval.String()

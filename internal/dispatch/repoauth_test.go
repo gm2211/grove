@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gm2211/grove/internal/broker"
 	"github.com/gm2211/grove/internal/gitauth"
 	"github.com/gm2211/grove/internal/grant"
 )
@@ -73,6 +74,28 @@ func dispatchedToken(t *testing.T, nc *fakeNomad) string {
 	return lines[1]
 }
 
+// brokeredCloneToken returns the token the broker registry holds behind the clone placeholder in
+// the single dispatch's payload, failing unless the payload holds a placeholder of kind github.
+func brokeredCloneToken(t *testing.T, svc Service, nc *fakeNomad) string {
+	t.Helper()
+	ph := dispatchedToken(t, nc)
+	if !strings.HasPrefix(ph, "gph1_") {
+		t.Fatalf("payload clone line = %q, want a broker placeholder", ph)
+	}
+	for _, id := range svc.(*service).creds.Jobs() {
+		for _, e := range svc.(*service).creds.Job(id) {
+			if e.Placeholder == ph {
+				if e.Kind != broker.KindGitHub {
+					t.Fatalf("clone placeholder's entry is kind %q, want github", e.Kind)
+				}
+				return e.Token
+			}
+		}
+	}
+	t.Fatalf("the broker registry holds nothing for the clone placeholder %q", ph)
+	return ""
+}
+
 func TestSubmit_InjectsArmedRepoCredential(t *testing.T) {
 	nc := &fakeNomad{}
 	auth := &fakeRepoAuth{repo: "https://github.com/gm2211/grove", token: "ghp_secret"}
@@ -86,11 +109,15 @@ func TestSubmit_InjectsArmedRepoCredential(t *testing.T) {
 		t.Fatalf("Submit: %v", err)
 	}
 
-	if got, want := dispatchedToken(t, nc), "ghp_secret"; got != want {
-		t.Fatalf("payload clone token = %q, want the armed token", got)
+	// A shared pool's VM gets a placeholder; the broker holds the token, for github.com only.
+	if got := brokeredCloneToken(t, svc, nc); got != "ghp_secret" {
+		t.Fatalf("broker holds %q behind the clone placeholder, want the armed token", got)
 	}
-	if want := "grove-payload/1\nghp_secret\nmake test"; string(nc.dispatchCalls[0].payload) != want {
+	if want := "grove-payload/1\n" + dispatchedToken(t, nc) + "\nmake test"; string(nc.dispatchCalls[0].payload) != want {
 		t.Fatalf("payload = %q, want %q", nc.dispatchCalls[0].payload, want)
+	}
+	if strings.Contains(string(nc.dispatchCalls[0].payload), "ghp_secret") {
+		t.Fatalf("the armed token reached a shared pool's payload: %q", nc.dispatchCalls[0].payload)
 	}
 	env := dispatchedEnv(t, nc)
 	if _, ok := env["GH_TOKEN"]; ok {
@@ -265,8 +292,8 @@ func TestSubmit_RepoCredentialOnlyForAnAllowedSubmitter(t *testing.T) {
 				t.Fatalf("Submit: %v (a submitter that isn't allowed must not be refused)", err)
 			}
 			got := dispatchedToken(t, nc)
-			if tc.want && got != "ghp_secret" {
-				t.Fatalf("payload clone token = %q, want the armed token", got)
+			if tc.want && brokeredCloneToken(t, svc, nc) != "ghp_secret" {
+				t.Fatalf("payload clone line = %q, want a placeholder for the armed token", got)
 			}
 			if !tc.want && (got != "" || strings.Contains(string(nc.dispatchCalls[0].payload), "ghp_secret")) {
 				t.Fatalf("a submitter the allow list doesn't name got the token: %q", nc.dispatchCalls[0].payload)
@@ -330,6 +357,83 @@ func TestSubmit_RefusedSubmitterCannotProbeTheArmedScope(t *testing.T) {
 		}
 		if string(got.call.payload) != string(unarmedCall.payload) {
 			t.Fatalf("%s: payload %q differs from an unarmed control plane's %q", name, got.call.payload, unarmedCall.payload)
+		}
+	}
+}
+
+// A sealed pool's VMs can't reach a broker, so they alone still get the token itself, in the
+// payload only.
+func TestSubmit_SealedPoolGetsTheCloneTokenItself(t *testing.T) {
+	nc := &fakeNomad{}
+	auth := &fakeRepoAuth{repo: "https://github.com/gm2211/grove", token: "ghp_secret"}
+	svc, err := New(nc, Options{
+		StorePath: filepath.Join(t.TempDir(), "jobs.json"), StatusTTL: time.Millisecond, RepoAuth: auth,
+		Pools: []PoolConfig{{Name: "sealed", Isolated: true}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, _, err := svc.Submit(context.Background(), JobRequest{
+		Kind: KindBuild, Pool: "sealed", Repo: "https://github.com/gm2211/grove", Script: "true",
+	}); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if got := dispatchedToken(t, nc); got != "ghp_secret" {
+		t.Fatalf("sealed pool's payload clone line = %q, want the armed token", got)
+	}
+	if n := svc.(*service).creds.Len(); n != 0 {
+		t.Fatalf("a sealed pool's job put %d entries in the broker registry", n)
+	}
+}
+
+// The broker swaps a github credential only for github.com, so a GitHub Enterprise clone still
+// gets the token itself in its payload, as before.
+func TestSubmit_CloneTokenForAHostTheBrokerDoesNotServe(t *testing.T) {
+	nc := &fakeNomad{}
+	auth := &fakeRepoAuth{repo: "https://ghe.example.com/o/r", token: "ghp_secret"}
+	svc := newServiceWithRepoAuth(t, nc, auth)
+	if _, _, err := svc.Submit(context.Background(), JobRequest{
+		Kind: KindBuild, Pool: "linux", Repo: "https://ghe.example.com/o/r", Script: "true",
+	}); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if got := dispatchedToken(t, nc); got != "ghp_secret" {
+		t.Fatalf("payload clone line = %q, want the armed token", got)
+	}
+	for _, repo := range []string{"https://github.com/o/r", "https://GitHub.com/o/r.git"} {
+		if !brokerServesRepo(repo) {
+			t.Errorf("brokerServesRepo(%q) = false", repo)
+		}
+	}
+	for _, repo := range []string{"https://github.com:8443/o/r", "http://github.com/o/r", "https://ghe.example.com/o/r", "https://evilgithub.com/o/r"} {
+		if brokerServesRepo(repo) {
+			t.Errorf("brokerServesRepo(%q) = true", repo)
+		}
+	}
+}
+
+// The clone placeholder's entry survives a credential update, which rewrites the job's entries.
+func TestUpdateCredentials_KeepsTheClonePlaceholder(t *testing.T) {
+	nc := &fakeNomad{}
+	auth := &fakeRepoAuth{repo: "https://github.com/gm2211/grove", token: "ghp_secret"}
+	svc := newServiceWithRepoAuth(t, nc, auth)
+	job, _, err := svc.Submit(context.Background(), JobRequest{
+		Kind: KindAgent, Pool: "linux", Repo: "https://github.com/gm2211/grove", Script: "true",
+		Credentials: []Credential{{Kind: broker.KindAnthropic, Env: "ANTHROPIC_API_KEY", Token: "sk-ant-old-token"}},
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if err := svc.UpdateCredentials(context.Background(), job.ID, []Credential{{Env: "ANTHROPIC_API_KEY", Token: "sk-ant-new-token"}}); err != nil {
+		t.Fatalf("UpdateCredentials: %v", err)
+	}
+	if got := brokeredCloneToken(t, svc, nc); got != "ghp_secret" {
+		t.Fatalf("after an update the broker holds %q behind the clone placeholder", got)
+	}
+	env := dispatchedEnv(t, nc)
+	for k, v := range env {
+		if v == dispatchedToken(t, nc) || strings.Contains(k, "clone") {
+			t.Fatalf("the clone placeholder reached the job's env as %s", k)
 		}
 	}
 }

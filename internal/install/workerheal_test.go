@@ -631,3 +631,15 @@ func TestHeal_RenameWithLoadedDaemonFinishesInOneRun(t *testing.T) {
 		t.Errorf("pending left over: %+v", rec)
 	}
 }
+
+func TestRewriteFleetSelectors_PreferWorkers(t *testing.T) {
+	const fleet = "pools:\n  - name: macos\n    workerSelector:\n      arch: arm64\n    preferWorkers:\n      host: studio\n"
+	out, edits, err := rewriteFleetSelectors([]byte(fleet), "host=studio,arch=arm64", "host=s2,arch=arm64")
+	if err != nil || len(edits) != 1 || edits[0].Field != "preferWorkers" || !strings.Contains(string(out), "host: s2") {
+		t.Fatalf("edits=%+v err=%v\n%s", edits, err, out)
+	}
+	// A preference the new labels drop is left alone, not refused: the pool still runs elsewhere.
+	if _, edits, err := rewriteFleetSelectors([]byte(fleet), "host=studio,arch=arm64", "arch=arm64"); err != nil || len(edits) != 0 {
+		t.Errorf("edits=%+v err=%v", edits, err)
+	}
+}

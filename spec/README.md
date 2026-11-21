@@ -1,14 +1,14 @@
 # spec/ — what grove promises, and the checks that hold it to them
 
-Twenty-two properties of grove, ten about progress (liveness, L) and twelve about who can do what
-(security, S), each written down in English, stated in the tool that fits it, and checked against
+Twenty-six properties of grove, twelve about progress (liveness, L) and fourteen about what may happen
+(safety: mostly who can do what, S), each written down in English, stated in the tool that fits it, and checked against
 the Go code. `spec/check.sh` runs all of it and fails if any result changes, in either direction:
 a property that should hold fails, or a "before" model stops finding the bug it was written for.
 CI runs it on every push (the `spec` job).
 
 | Tool | Used for | Where |
 |---|---|---|
-| **Quint**, checked by **TLC** (exhaustive) | control loops that race: snooze, dispatch, attempts, fleet, enrolment | `quint/*.qnt` |
+| **Quint**, checked by **TLC** (exhaustive) | control loops that race: snooze, dispatch, attempts, fleet, enrolment, a job's whole lifecycle | `quint/*.qnt` |
 | **Lean 4** | pure decisions over every possible input: route auth, artifact paths, the broker's swap | `lean/Grove/*.lean` |
 | **CodeQL** taint tracking | where secrets can flow in the Go code | `codeql/*.ql` |
 | **Specify** (`gm2211/specify`) | the same 22 properties as behaviors with stable IDs, linked to the Quint invariants and Lean theorems Specify can run | `grove.spec/` |
@@ -27,11 +27,13 @@ malicious or compromised job (**J**), a compromised worker Mac (**W**), a leaked
 | L3 | Every job reaches a terminal state. | Quint `dispatch.qnt` | Holds. |
 | L4 | A job queued only because its pool's workers are snoozed is never failed for it, and runs once the snooze ends. | Quint `dispatch.qnt` + Go `TestL4_…` | **Failed before**: in the up to 60 s between a snooze's end and the next fleet tick, the reconcile failed the job as "every worker is paused". Holds now. |
 | L5 | A sealed-pool job terminates, given that owners snooze its Macs and VMs drain only finitely often. | Quint `attempts.qnt` | Holds. |
-| L6 | From any fleet, one Plan + Apply converges: the next Plan is empty, and stays empty. Every VM left runs on an online, unpaused worker its pool's selector matches. | Go property test, 500 random fleets | Holds. |
+| L6 | From any fleet, one Plan + Apply converges: the next Plan is empty, and stays empty. Every VM left runs on an online, unpaused worker its pool's selector matches and that can get the pool's image. | Go property test, 500 random fleets | Holds. |
 | L7 | A VM reaching its TTL is drained before Orchard recycles it (no job lands on a dying VM), and the pool gets a replacement. | Quint `fleet.qnt` | Holds while DrainNode fails on fewer than 4 ticks in a row; the 4-failure instance shows the bound is tight. |
 | L8 | A running VM's Nomad certificate is renewed before it expires. | Quint `enrol.qnt` | Holds through any outage under 11 h; the 11 h instance shows the bound is tight. |
 | L9 | A genuine new VM eventually joins Nomad, even when a previous VM of its name still has a draining node. | Quint `enrol.qnt` | Holds, given the VM's Nomad client keeps retrying (strong fairness). |
 | L10 | A failed or boot-looping VM is rebuilt. | Quint `fleet.qnt` | Holds. |
+| L11 | Every shared-pool job ends, however often its VMs and Macs go away. | Quint `reschedule.qnt` | Holds. |
+| L12 | Every submit settles: an accepted job ends, a refused one leaves nothing in Nomad that could run, and once it has ended no copy of it is left queued or running. Holds with everything that touches the job at once: the reconcile sweep, API reads, a Cancel, losses and returns of its machine, a full fleet, and a Nomad that fails a Dispatch it committed. | Quint `lifecycle.qnt` | **Failed before this change**: a Cancel that read the record before a lost job's rerun stopped the old copy and recorded the job canceled, while the rerun stayed queued in Nomad for good, to run unwatched whenever a node freed up (`lifecycleBefore`). Holds now, given A7, that Nomad answers a reconcile that keeps retrying, and that a machine can't come back and go away forever (strong fairness). |
 
 ## Security
 
@@ -48,7 +50,9 @@ malicious or compromised job (**J**), a compromised worker Mac (**W**), a leaked
 | S9 | An artifact path can't leave the job's artifact directory. | C, J | Lean `ArtifactPath.lean` + differential test | Proved. |
 | S10 | Job secrets, the private-repo token, the registry pull login, broker credentials and node keys reach only their allowed destinations (the registry pull login: a Linux VM's Docker config, the registry it was armed for, and, in the `GET /broker/entries?vmImagePull=1` answer to the one worker whose pools' VM images it covers, which keeps it in its Orchard process environment only): never argv, a log, an API response, the job record or a VM spec. Job secrets and the private-repo token go into the dispatch payload only, never dispatch meta. | J, C | CodeQL, 5 queries | No flow found. A coverage query finds each secret at its allowed destination, which shows the queries aren't vacuous. The job-secret queries were changed (allowed destination: the payload, no longer `env_json`; dispatch meta is now a leak sink) without CodeQL at hand: until `spec/check.sh` has run with `CODEQL` set, read that row as unchecked. Go tests cover the same thing (`internal/dispatch/secrets_test.go`), and what the templates do with the payload is tested in `nomad/jobs/secrets_test.go`, not modelled. |
 | S11 | A shared-pool job's image is its pool's runner image or a digest-pinned image its pool allows (the control plane pins a tag to its digest at submit, or refuses the job), chosen by the control plane; a job with an environment leaves its pool only for a macOS pool that accepts its control-plane-validated native toolchain; the clone token runs only in the runner image or the root source task. | J (a caller choosing its own image, via `environment` or `meta`) | Go tests: `internal/dispatch/environment_test.go`, `internal/dispatch/environment_tag_test.go`, `nomad/jobs/nomadjobs_test.go` | Holds. A caller's `meta.image` used to be copied into dispatch meta; it no longer is. |
+| S23 | A shared-pool job lost with its VM or Mac runs at most 3 times (once if it may not be rerun); quarantine needs losses after its script started on 2 machines, or one such loss of a job with the same kind, pool, repo, ref and script as one quarantined in the last 24 h; and once grove ends the job, Nomad holds no copy that could still run. | J (a job that crashes Macs, resubmitted) | Quint `reschedule.qnt` + Go `internal/dispatch/reschedule_test.go` (`TestDecideLost_MatchesModel` compares `decideLost` with the model's verdict on all 1,032 inputs) | **Failed before this change**, two ways: a lost allocation ended the job without stopping its Nomad job, so a copy ran later unwatched (`rescheduleBefore`, `noUnwatchedRun`); and Nomad 2.0.7 replaces a lost allocation even with `reschedule { attempts = 0 }`, unboundedly (`rescheduleBefore`, `atMostMaxRuns`; seen on a real two-node cluster). Grove's own budget is not enough while Nomad replaces: one run too many slips in before the next reconcile (`rescheduleNomadReplaces`), which is why the job templates set `disconnect { replace = false }`. Holds now. |
 | S22 | A toolchain cache entry is written only by `_grovetool`, from versions the control plane validated; the job user can't write it. | J (a caller choosing what the macOS worker installs, or poisoning the cache a later job runs from) | Go tests: `internal/dispatch/toolchain_test.go` (Submit alone sets `toolchain_json`, from the validated, re-marshalled spec), `internal/fleet/isolation_test.go` (the installer runs as `_grovetool` from root-owned code, the cache is not writable by `_grovejob`) | Holds. |
+| S24 | One job, one watched copy: Nomad never holds two copies of a job that could run; every copy that could run is the one grove's record follows, on a record still open (or on a refused submit's record, while grove hunts the copy down); a job that ended stays ended (Cancel never turns a success into "canceled", a stale reconcile never turns a canceled job back into a running one); Nomad starts a job at most 3 times. | none: grove's own callers racing on one record, and Nomad errors | Quint `lifecycle.qnt` + Go `internal/conformance/lifecycle_test.go` (`TestS24_…`, each a TLC counterexample replayed against the real dispatch service) + 6 mutants | **Failed before this change**, four ways. Nothing serialized the callers that read a job's record and write it back (the 30 s sweep, every API Get and List, a worker's broker sync, Evict, Cancel), so: two of them handling one lost allocation dispatched two reruns, both live, one unwatched (`oneLiveCopy`, `atMostMaxRuns`; reproduced against the real code); a reconcile that read the record before a Cancel wrote it back as running (`endIsFinal`); a reconcile still holding the pre-rerun record marked the job lost while its rerun ran (`noUnwatchedCopy`). Cancel of a finished job overwrote its outcome. And a Dispatch that errored after Nomad committed it (or committed later) was a refusal with nothing recorded, so the copy ran unwatched (`lifecycleBeforeAmbiguous`). Two submits under one idempotency key could also both dispatch. Holds now, assuming A7. |
 
 ### How the models are tied to the code
 
@@ -71,7 +75,7 @@ stops doing what the model says:
 
 `spec/mutants.py` then puts each old bug back into a scratch copy, one at a time, and requires a
 conformance test to fail on it. A mutant that survives, or whose code is gone, fails the build.
-Today it holds 6: Engage marking a lapsed snooze's pause external, Wake and the Expirer clearing
+It holds 12: the 6 S24 bugs above (`TestS24_…`), and Engage marking a lapsed snooze's pause external, Wake and the Expirer clearing
 before resuming, resume going through while snoozed, pause skipping the operator reason, and Wake
 without the lock.
 
@@ -93,6 +97,16 @@ snooze, lapsed or not, as grove's own pause.
 - **Pool-crossing identity (S3).** `Reconciler.Enrol` enrols a VM only on a worker its pool's
   selector matches, that Orchard lists, and that Plan wouldn't block.
 
+- **One job, one watched copy (S24, L12).** Every writer of a job's record (reconcile, Cancel,
+  Evict's requeue, the refused-dispatch sweep, artifact expiry) holds that job's lock
+  (`dispatch.service.lockJob`) from reading the record to its last write, and reads the record under
+  it, never a caller's older copy. Cancel of a finished job changes nothing. Submit dispatches with
+  the job's id as Nomad's idempotency token (`nomad.TokenDispatcher`); when the Dispatch answers
+  with an error, grove stops any copy with that token, keeps a failed record of the refused submit
+  (`NotDispatched`, never returned for an idempotency key), and the reconcile sweep keeps looking
+  for a late copy until the window of A7 has passed. Submits under one idempotency key are
+  serialized.
+
 ### Assumptions (where a proof stops)
 
 - **A1.** Go's `ServeMux` cleans a path before routing, so `requiredScope` sees the path of the
@@ -105,9 +119,13 @@ snooze, lapsed or not, as grove's own pause.
   the Orchard fork scopes worker credentials, a compromised Mac can reach other Macs' VMs directly,
   and S3 is only as strong as that.
 - **A4.** Time: grove serve ticks every 30 s, and Orchard's TTL counts from a VM's creation.
-- **A5.** Model sizes: snooze uses one worker and six concurrent writers; dispatch uses one job
+- **A5.** Model sizes: lifecycle uses one job, two reconcilers and one Cancel, and up to 6 Nomad copies;
+  snooze uses one worker and six concurrent writers; dispatch uses one job
   and one worker; attempts uses 3 machines, 2 evictions and 1 drain; enrolment uses 2 workers and
   2 pools. TLC explores every interleaving within those bounds.
+- **A7.** A Dispatch Nomad hasn't committed within 10 minutes of answering it with an error never
+  commits. Grove keeps looking for, and stopping, a copy carrying the refused job's idempotency
+  token for that long (`dispatchCommitWindow`); a later commit would run unwatched.
 - **A6.** A VM's address: vmnet's shared network doesn't let one VM send from another VM's
   address, Tart reports the address a running VM actually holds (`tart ip`, from the DHCP lease
   of its MAC), and Orchard runs VM `<name>` as the local Tart VM `orchard-<name>-<uid>-<restarts>`.

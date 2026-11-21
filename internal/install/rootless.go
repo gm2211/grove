@@ -26,7 +26,7 @@ import (
 //	softnet-root      -> skipped: setuid root, so isolated network pools are unavailable
 //
 // The cost is that a LaunchAgent only runs while its user has a GUI login session, so the Mac must
-// keep that user logged in (auto-login, or a FileVault unlock at boot); a LaunchDaemon needed
+// keep that user logged in (log in at the Mac after each reboot); a LaunchDaemon needed
 // nobody logged in. See docs/INSTALL.md, "A worker with no root".
 
 const (
@@ -47,7 +47,7 @@ var agentRecheckDelay = time.Second
 const rootlessLost = `  - No VM firewall (host-firewall): VMs on this Mac are not fenced off the host's other ports and your LAN.
   - No isolated network pools (softnet-root): fleet.yaml pools with network: isolated can't run here.
   - The worker runs only while this user is logged in at the Mac (LaunchAgents need a GUI session):
-    turn on automatic login, or unlock FileVault and log in after a reboot.`
+    log that user in at the Mac after each reboot (grove never stores a login password, so no automatic login).`
 
 // applyRootlessConfig turns Rootless on for an install of a worker that config.yaml records as
 // rootless, so re-runs stay rootless without the flag. --rootless=false (NoAutoRootless) wins.

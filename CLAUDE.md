@@ -29,6 +29,7 @@ internal/dispatch/            JobRequest → parameterized Nomad job; status; lo
 internal/server/              HTTP API (/api/v1/…) + embedded UI; token + Tailscale-identity auth
 internal/tsauth/              Tailscale identity (tailscale whois on the peer address) → scopes
 internal/secrets/             operator-set named job secrets (JobRequest.Secrets)
+internal/provenance/          release build provenance: Sigstore attestation, built on main (self-update, Orchard download)
 internal/pki/                 grove's Nomad CA: server, grove-client and per-VM node certificates (mTLS)
 internal/gitauth/             operator-armed private-repo credential (see below)
 internal/grant/               allow-list syntax (principal id, tag:<name>) shared by gitauth and secrets
@@ -43,7 +44,7 @@ images/                         Packer templates
 nomad/jobs/                     parameterized Nomad job HCL
 scripts/install.sh              curl | sh → brew tap + grove install
 docs/                            INSTALL.md, OPERATIONS.md
-spec/                            22 properties: Quint models, Lean proofs, CodeQL queries, Specify spec (spec/grove.spec); spec/check.sh (see spec/README.md)
+spec/                            26 properties: Quint models, Lean proofs, CodeQL queries, Specify spec (spec/grove.spec); spec/check.sh (see spec/README.md)
 ```
 
 **Contract packages** (`config`, `orchard`, `nomad`, `dispatch`, `fleet` *types*) define the Go
@@ -138,13 +139,19 @@ for it, deliberately.
   and answers `TokenFor(repoURL)`. It is the `dispatch.Options.RepoAuth` implementation.
 - `grove serve` builds ONE store and hands the same pointer to both the dispatch service and the
   HTTP server, so arming/disarming takes effect on the next dispatch with no restart.
-- The token goes into the build/agent dispatch PAYLOAD (`grove-payload/1`, token line, script)
-  and nowhere else. Only the job's `source` prestart task receives the payload: it clones, then
-  deletes it, so the caller's script never sees the token in its env, argv or files. Never put it
-  in `env_json` or any dispatch meta (every task sees those), onto `Job.Request.Env`, into the
-  on-disk job history, or back out of the API (`Status` carries only a fingerprint). Keep it that
-  way — `internal/dispatch/repoauth_test.go`, `nomad/jobs/nomadjobs_test.go` and
-  `internal/server/handlers_github_test.go` assert it.
+- A shared pool's VM never holds the token. Its build/agent dispatch PAYLOAD (`grove-payload/1`,
+  token line, script) carries a placeholder; the token goes into the broker registry as that
+  job's `github` entry (`clonePlaceholderKey` on the record, so UpdateCredentials keeps it), and the
+  worker's broker swaps it in on the way to github.com. The `source` task clones through the broker
+  (`http.proxy`, `http.sslCAInfo` with the broker's CA, as `-c` options, since sudo drops the
+  environment) and fails closed on a VM with no broker; the macOS fence lets `_grovesrc` reach the
+  broker. Only a sealed pool (no broker) or a host the broker doesn't serve (GitHub Enterprise)
+  gets the token itself in the payload. Only the job's `source` prestart task receives the
+  payload: it clones, then deletes it, so the caller's script never sees either in its env, argv
+  or files. Never put the token in `env_json` or any dispatch meta (every task sees those), onto
+  `Job.Request.Env`, into the on-disk job history, or back out of the API (`Status` carries only a
+  fingerprint). Keep it that way — `internal/dispatch/repoauth_test.go`,
+  `nomad/jobs/nomadjobs_test.go` and `internal/server/handlers_github_test.go` assert it.
 - Arming always names repositories (`--repo owner/name` or `owner/*`); an empty scope covers
   nothing.
 - A dispatch scope is not enough to get the token: every worker Mac holds one, and a worker can
@@ -343,8 +350,13 @@ privileged step, printed for an admin. Keep it that way:
 
 `internal/install/selfupdate.go` and `internal/cli/self_update.go`: `grove serve` and the broker
 install newer releases by themselves (`runAutoUpdate`) and restart. Keep it that way: nothing is
-installed unless the archive matches the release's `checksums.txt` and the new binary reports the
-expected version; never while a job is pending or running (a restart drops in-memory credential
+installed unless the archive matches the release's `checksums.txt`, its build provenance verifies
+(`internal/provenance`: a Sigstore attestation, checked offline against the embedded trusted root,
+that the release workflow of this repository built these bytes on a GitHub-hosted runner from a
+commit on `main`; a hand-pushed tag's commit must also be on `main`, asked of GitHub) and the new
+binary reports the expected version. No flag, config key or environment variable skips the
+provenance check, and a failure to fetch or verify it means no update, never an unverified one. The
+Orchard binary a worker downloads goes through the same `fetchReleaseAsset`. Never while a job is pending or running (a restart drops in-memory credential
 entries); never through sudo or into a path this user doesn't own (Homebrew's is left to brew);
 never a development build. Never tell the operator to upgrade a machine by hand when this covers it.
 
@@ -356,6 +368,49 @@ growing interval and switches back by itself. Keep it that way: a failure to get
 never need the operator to edit fleet.yaml to get the pool's jobs running again, only `Observe`
 writes the store (Plan reads it), and it holds image names and Orchard messages, never a
 credential. `internal/fleet/imagehold_test.go` asserts it.
+
+## Lost jobs and workers coming and going — keep it that way
+
+Macs leave and rejoin (sleep, reboot, unplugged); a shared pool's job on one is grove's to rerun,
+never Nomad's (`internal/dispatch/reschedule.go`, spec S23/L11, `spec/quint/reschedule.qnt`).
+
+- Nomad 2.0.7 replaces a lost allocation even with `reschedule { attempts = 0 }`. build, agent and
+  shell keep `disconnect { replace = false, lost_after = "24h" }` (`nomadjobs_test.go` asserts it),
+  so a lost VM's allocation stays `unknown` with no replacement; grove calls it lost after
+  `DefaultUnknownGrace`.
+- `decideLost` is the only verdict: at most `MaxAttempts` runs (evictions free), `retryLost`
+  respected, quarantine on `QuarantineMachines` machines after the script started, or on the first
+  such loss of a job whose `poisonFingerprint` was quarantined within `PoisonMemory`. A loss on an
+  unnamed machine or before the script started never quarantines. Change the model with it
+  (`TestDecideLost_MatchesModel`).
+- Every path that ends a lost job stops its Nomad job first and stays non-terminal if the stop
+  fails; a rerun goes through `redispatch` (old copy purged) with no pin to the lost worker.
+- A shared pool's losses rebuild VMs in `internal/health` but never pause a Mac.
+- Placement names no Mac: a pool runs on every online, unpaused worker its `workerSelector` (a
+  capability, never a host) allows and that can get its image (`placement` in
+  `internal/fleet/reconcile.go`, used by Plan and autoscale alike; `ImageHolds.Missing` learns, per
+  worker, an image that failed there while it runs elsewhere or is a local Tart VM, and retries on
+  a backoff). A VM left off its placement is kept while `JobLoad.Busy`, never deleted under its
+  job. Enrol (S3) checks only the hard selector. `Spec.Warnings` flags a `host:` in
+  `workerSelector`; `preferWorkers` is ignored, with a warning. Never add a way to pin a pool.
+
+## One job, one watched copy — keep it that way
+
+A job is one record (jobs.json) naming one Nomad copy (`NomadJobID`), and many callers reconcile
+it at once: the 30 s sweep, every API Get and List, each worker's broker sync, Evict, log
+followers (spec S24/L12, `spec/quint/lifecycle.qnt`).
+
+- Every writer of a job's record holds `service.lockJob(id)` from reading the record to its last
+  write, and reads it under the lock (`reconcile` re-reads the store; never act on a caller's copy
+  from `store.list()`). A new writer takes the lock too; a caller already holding it uses
+  `reconcileLocked`.
+- A job that ended stays ended: Cancel of a terminal job is a no-op.
+- A Dispatch error is not proof that nothing was dispatched. A new job is dispatched under its id as
+  Nomad's idempotency token (`nomad.TokenDispatcher`); on an error grove stops any copy with that
+  token and keeps a `NotDispatched` record that `sweepNotDispatched` re-checks until
+  `dispatchCommitWindow` passes. Never return a refusal while a copy may be left running.
+- `internal/conformance/lifecycle_test.go` replays each counterexample against the real service and
+  `spec/mutants.py` puts each bug back; keep both passing, and change the model with the code.
 
 ## `internal/snooze` — why a worker is paused
 
@@ -446,7 +501,11 @@ CI (`.github/workflows/ci.yml`) runs `go build/vet/test` on `ubuntu-latest` and 
 plus the `ui` build when `ui/package.json` exists. Releases (`.github/workflows/release.yml`) run
 via goreleaser (`.goreleaser.yaml`) and need no hands: when CI is green on main and the commit
 changes what a release ships, `.github/workflows/autorelease.yml` tags the next patch version
-(`.github/scripts/next-release-tag.sh`) and calls release.yml for it. Never ask the operator to
+(`.github/scripts/next-release-tag.sh`) and calls release.yml for it. release.yml's `gate` job
+refuses a tag that is not `vX.Y.Z` or whose commit is not on `main`, and only the `goreleaser` job
+holds write permissions: the UI is built (`npm ci --ignore-scripts`) in a read-only job and handed
+over as an artifact. Keep both: no npm, and no step that runs repository-chosen code beyond `go
+build`, in the job that can publish. Never ask the operator to
 push a tag for a patch release; a hand-pushed `v*` tag is only for a new minor or major version.
 goreleaser also regenerates `Formula/grove.rb` in
 this same repo — grove is its own Homebrew tap, no separate `gm2211/homebrew-tap` repo or PAT.
@@ -476,7 +535,7 @@ Decision tree:
 6. **Remove** (later): `grove uninstall --role worker [--user <user>] --dry-run`, then without
    `--dry-run` (docs/OPERATIONS.md "Removing a worker Mac").
 
-Full walkthrough, flags, and failure modes (Local Network permission popup, FileVault blocking
-auto-login, Mac App Store Tailscale, the 2-macOS-VM cap): **[docs/INSTALL.md](docs/INSTALL.md)**.
+Full walkthrough, flags, and failure modes (Local Network permission popup, FileVault and
+reboots, Mac App Store Tailscale, the 2-macOS-VM cap): **[docs/INSTALL.md](docs/INSTALL.md)**.
 Day-2 operations (recycling, image rollouts, pausing a Mac, logs, upgrading):
 **[docs/OPERATIONS.md](docs/OPERATIONS.md)**.

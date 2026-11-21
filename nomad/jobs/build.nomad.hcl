@@ -41,6 +41,16 @@ job "grove-{{.Kind}}-{{.Pool}}" {
       attempts = 0
     }
 
+    # reschedule { attempts = 0 } does not cover a lost allocation: when its node goes down, Nomad
+    # places a replacement anyway, outside grove's budget and quarantine (seen on Nomad 2.0.7).
+    # This keeps a lost VM's allocation "unknown" instead, with no replacement, so grove alone
+    # decides whether the job runs again (internal/dispatch reschedule.go). lost_after only bounds
+    # how long Nomad waits if grove is gone that long; grove's own grace is a minute.
+    disconnect {
+      lost_after = "24h"
+      replace    = false
+    }
+
     # source: a prestart task that fetches the job's inputs before "main" starts, so the
     # private-repo credential never enters the environment, files or process tree of the
     # caller's script. Only this task declares dispatch_payload, so only it receives the
@@ -55,6 +65,13 @@ job "grove-{{.Kind}}-{{.Pool}}" {
       lifecycle {
         hook    = "prestart"
         sidecar = false
+      }
+
+      # The node's credential broker, for a clone whose credential is a placeholder (see
+      # source.sh); like run.sh, source.sh checks both before using them.
+      env {
+        GROVE_BROKER    = "${meta.grove_broker}"
+        GROVE_BROKER_CA = "${meta.grove_broker_ca}"
       }
 
 {{if eq .Pool "macos"}}
@@ -315,6 +332,31 @@ job "grove-{{.Kind}}-{{.Pool}}" {
           finish 2
         fi
 
+        # A shared pool's job never holds the armed clone credential: its payload carries a
+        # placeholder (gph1_...), which the worker's credential broker swaps for the real token on
+        # the way to the repository's host, as it does for the job's own credentials. Such a clone
+        # goes through the broker, trusting its CA, and fails closed on a VM that has none.
+        grove_broker="$${GROVE_BROKER:-}"
+        grove_broker_ca="$${GROVE_BROKER_CA:-}"
+        unset GROVE_BROKER GROVE_BROKER_CA
+        via_broker=""
+        case "$token" in
+          gph1_*)
+            case "$grove_broker" in
+              http://*:3128) ;;
+              *) grove_broker="" ;;
+            esac
+            case "$grove_broker_ca" in
+              "" | *[!A-Za-z0-9+/=]*) grove_broker="" ;;
+            esac
+            if [ -z "$grove_broker" ]; then
+              echo "grove: the clone credential is held by this worker's credential broker, but this VM has none, so the repository can't be cloned with it" >> "$log"
+              finish 128
+            fi
+            via_broker=1
+            ;;
+        esac
+
         # The token reaches git only through this process's environment and an inline credential
         # helper: never argv (visible to every user in `ps`), never a config file, never the
         # checkout's .git/config.
@@ -345,6 +387,29 @@ job "grove-{{.Kind}}-{{.Pool}}" {
         auth=(-c credential.helper=)
         if [ -n "$token" ]; then
           auth+=(-c "credential.https://$host.helper=$helper")
+        fi
+        if [ -n "$via_broker" ]; then
+          # The system's roots (for any other host git is sent to, tunnelled untouched) plus the
+          # broker's CA, which is name-constrained to the hosts it swaps credentials for. In the
+          # token's directory on macOS, the one place this task's git user can read.
+          grove_bundle="$${tokdir:-$NOMAD_TASK_DIR}/broker-ca.pem"
+          : > "$grove_bundle"
+          for grove_roots in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+            if [ -s "$grove_roots" ]; then
+              cat "$grove_roots" > "$grove_bundle"
+              break
+            fi
+          done
+          {
+            echo "-----BEGIN CERTIFICATE-----"
+            printf '%s\n' "$grove_broker_ca" | fold -w 64
+            echo "-----END CERTIFICATE-----"
+          } >> "$grove_bundle"
+          chmod 0444 "$grove_bundle"
+{{if eq .Pool "macos"}}
+          chown _grovesrc "$grove_bundle"
+{{end}}
+          auth+=(-c "http.proxy=$grove_broker" -c "http.sslCAInfo=$grove_bundle")
         fi
 
         work="$state/work"
@@ -567,7 +632,9 @@ job "grove-{{.Kind}}-{{.Pool}}" {
           } >> "$grove_bundle"
           chmod 0644 "$grove_bundle"
           export HTTPS_PROXY="$grove_broker" HTTP_PROXY="$grove_broker" https_proxy="$grove_broker" http_proxy="$grove_broker"
-          export NO_PROXY="" no_proxy=""
+          # Loopback never goes through the broker: a job's own local servers (a test's HTTP
+          # stand-in) must answer, and the broker dials only public addresses. Nothing else is exempt.
+          export NO_PROXY="localhost,127.0.0.1,::1" no_proxy="localhost,127.0.0.1,::1"
           export SSL_CERT_FILE="$grove_bundle" CURL_CA_BUNDLE="$grove_bundle" GIT_SSL_CAINFO="$grove_bundle"
           export REQUESTS_CA_BUNDLE="$grove_bundle" NODE_EXTRA_CA_CERTS="$grove_bundle"
         elif case "$(env)" in *gph1_*) true ;; *) false ;; esac; then

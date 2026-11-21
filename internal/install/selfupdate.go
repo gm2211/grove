@@ -14,7 +14,9 @@ import (
 
 // grove updates itself where its binary is this user's own file (a release tarball copied in
 // place, e.g. ~/.local/bin/grove): it downloads the newer release's archive, verifies it against
-// that release's checksums.txt, checks that the new binary runs and reports the expected version,
+// that release's checksums.txt and against its build provenance attestation (internal/provenance:
+// only an archive grove's release workflow built from main), checks that the new binary runs and
+// reports the expected version,
 // keeps the old one beside it as grove.<old>.bak, and renames the new one over it. A Homebrew
 // install is left to `brew upgrade` (the Cellar belongs to whoever runs brew), and a development
 // build never updates.
@@ -107,8 +109,9 @@ func InstalledGroveVersion(ctx context.Context, r Runner, exe string) (string, e
 }
 
 // SelfUpdate replaces the grove binary at exe with release target ("vX.Y.Z") for opts' platform.
-// Nothing is installed unless the archive matches the release's checksums.txt and the extracted
-// binary reports target as its version. The replaced binary is kept as <exe>.<its version>.bak.
+// Nothing is installed unless the archive matches the release's checksums.txt, GitHub holds a
+// build provenance attestation showing grove's release workflow built it from main
+// (fetchReleaseAsset), and the extracted binary reports target as its version. The replaced binary is kept as <exe>.<its version>.bak.
 func SelfUpdate(ctx context.Context, r Runner, opts Options, exe, target string, out io.Writer) error {
 	if err := SelfUpdatable(exe); err != nil {
 		return err
@@ -119,15 +122,12 @@ func SelfUpdate(ctx context.Context, r Runner, opts Options, exe, target string,
 	}
 	rel := opts
 	rel.GroveVersion = want
-	d, err := releaseDownload(ctx, r, rel, fmt.Sprintf("grove_%s_%s.tar.gz", opts.goos(), opts.goarch()))
-	if err != nil {
-		return err
-	}
 	fmt.Fprintf(out, "downloading grove %s\n", want)
-	staged, err := fetchVerified(ctx, r, opts, d)
+	staged, d, err := fetchReleaseAsset(ctx, r, rel, fmt.Sprintf("grove_%s_%s.tar.gz", opts.goos(), opts.goarch()))
 	if err != nil {
 		return err
 	}
+	fmt.Fprintf(out, "grove %s: checksum and build provenance verified\n", want)
 	defer os.Remove(staged)
 
 	tmp, err := os.MkdirTemp(filepath.Dir(exe), ".grove-update-")

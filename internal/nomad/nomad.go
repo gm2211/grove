@@ -57,6 +57,9 @@ type Allocation struct {
 	// DownloadError on the terminal task event), empty for an ordinary script failure (non-zero exit,
 	// no infra fault) or a still-running/pending allocation.
 	FailureReason string `json:"failureReason,omitempty"`
+	// Started is set once the allocation's "main" task (the caller's script) has started. A lost
+	// allocation whose main task never started says nothing about the job: only its setup ran.
+	Started bool `json:"started,omitempty"`
 }
 
 // DispatchResult is what Nomad returns for a parameterized job dispatch.

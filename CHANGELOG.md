@@ -10,6 +10,95 @@ All notable changes to grove are documented here.
   gh's stdout into the store and nowhere else. Renewal never arms anything: a credential armed
   without `--renew`, a lapsed one or a disarmed one is left alone, and a self-renewing one still
   lapses when that gh login is gone. Off unless asked for.
+
+- **The private-repo clone token no longer enters a job's VM.** On a shared pool the clone now
+  gets a placeholder, and the worker's credential broker swaps the real token in on the way to
+  github.com, the same way it handles a job's own credentials. A VM with no broker fails the
+  clone and says why. Sealed pools, which can't reach a broker, and GitHub Enterprise hosts still
+  get the token as before. macOS VMs are rebuilt, when idle, so the clone's git user can reach the
+  broker.
+
+- **A slow Tailscale lookup no longer answers 401.** A caller that signs in with its tailnet
+  identity (the dashboard in a browser, curl over Tailscale) got a 401 after exactly 5 s whenever
+  the first `tailscale whois` after the 30 s cache lapsed was slow (5.75 s measured on a Mac
+  Studio). grove now waits up to 20 s for it. Callers with a bearer token were never affected.
+
+- **A job no longer names its pool.** `pool` is optional on a job request (API, `grove dispatch`,
+  the MCP `grove_run` tool, the dashboard's dispatch form): the control plane places the job from
+  what it asks for. A shared macOS pool comes first; a shared Linux pool takes a job whose
+  environment is an image with no toolchain. A sealed pool is still chosen only by name. Requests
+  that name a pool behave as before.
+
+- **A shared pool's lost job is rerun instead of staying lost.** When a VM or its Mac goes away
+  mid-job (sleep, reboot, crash, a worker leaving), grove now reruns the job on the pool's other
+  VMs, by the sealed pools' rules: at most 3 runs, agent jobs not rerun (`retryLost`), and a job
+  lost after its script started on 2 different Macs quarantined as a poison pill. A resubmitted
+  copy of a quarantined job (same kind, pool, repo, ref and script, within 24 hours) is
+  quarantined on its first such loss, so it can't take down two more Macs each time. Attempts are
+  kept on the job, and a shared VM that keeps losing jobs is rebuilt; a Mac is never paused for a
+  shared pool's losses.
+
+- **Nomad no longer reruns lost allocations behind grove's back.** With `reschedule { attempts =
+  0 }`, Nomad 2.0.7 still placed a replacement for an allocation on a node that went down, with no
+  limit, and a job grove had already marked lost could run later, unwatched. The job templates now
+  set `disconnect { replace = false, lost_after = "24h" }`: the allocation stays `unknown`, grove
+  calls it lost after a minute, and every job grove ends has its Nomad job stopped first.
+
+- **Pools name no Mac; grove learns where each can run.** A pool runs on every Mac that is up and
+  can get its image. A Mac that fails to get it while another Mac runs it, or while it is a local
+  Tart VM only one Mac built, is left out and retried after 30 minutes, doubling up to 6 hours, and
+  is back once a VM of the image runs there. So a pool on a local image needs no `host:` pin: it
+  stays where the image is and spreads once it is in a registry, and with no Mac left that has it
+  its jobs fall back to macOS. `grove fleet plan` and `GET /api/v1/fleet/reconcile`
+  (`imageMissing`) say which Macs a pool is off and why. `preferWorkers` (briefly a soft pin) is
+  ignored with a warning, and the `host:` pin warning now says to drop it. See docs/OPERATIONS.md
+  "Where pools run: every Mac that is up and can get the image".
+
+- **The starter fleet makes Linux VMs on demand on any Mac.** `grove install --role control-plane`
+  wrote pools with Orchard labels (`pool: linux`) that no worker advertises, so their VMs stayed
+  pending. It now selects no worker, and its `linux` pool is elastic from 0: a Linux VM appears on
+  a Mac with Linux jobs waiting and goes once idle.
+
+- **A job's own local servers answer.** Jobs on a pool with a credential broker ran with an empty
+  `NO_PROXY`, so a request to `127.0.0.1` (a test suite's HTTP stand-in) went to the broker, which
+  dials only public addresses and refused it. Loopback (`localhost`, `127.0.0.1`, `::1`) is now
+  exempt; everything else still goes through the broker.
+
+- **macOS native toolchains install again.** The installer pointed mise's global and system configs
+  at `/dev/null`, which mise 2026.10.24 refuses ("unknown config file type: /dev/null"), so every
+  job that asked for a toolchain failed before it started (exit 70). They now point at an empty
+  `mise-empty.toml` in the install directory; still nothing outside it is read.
+
+- **Security: self-update installs only what the release workflow built from `main`.** An update
+  used to be trusted on the `checksums.txt` of the same release, so anyone able to publish a
+  release (a pushed `v*` tag, from any branch) could run code on every machine. `grove serve`, the
+  broker and the worker's Orchard download now also verify the archive's Sigstore build provenance
+  offline (`internal/provenance`): signed by this repository's release workflow, on a GitHub-hosted
+  runner, from a commit on `main`. Nothing skips it. The release workflow itself refuses a tag
+  whose commit is not on `main`. The first release with this is still installed by the old check;
+  every one after it is verified.
+
+- **Security: the release's publishing job no longer runs npm.** The UI is built with
+  `npm ci --ignore-scripts` in a job with read-only permissions and handed over as an artifact;
+  `go mod verify` replaces `go mod tidy` before the build.
+
+- **Security: a worker's Orchard token is confined to its own worker and VMs.** In the Orchard
+  fork, a worker's service account can no longer exec into, port-forward to, create, delete or
+  rewrite other workers' VMs, or rename itself onto another worker.
+
+- **Security: a broker credential not bound to its machine gets no secrets beyond its jobs'.**
+  Credentials from before v0.1.43 work from any tailnet address; they are no longer handed the
+  keychain unlock or the VM image registry login, and "Unlock keychain" refuses such a worker
+  until `grove setup` has run on it again.
+
+- **A pool whose VM `image` is a tag is warned about**, like `runnerImage` already was.
+
+- **Docs and the rootless notice no longer suggest macOS automatic login**, which stores the login
+  password on disk.
+
+- Added `SECURITY.md`, `.github/CODEOWNERS` and a weekly `govulncheck` workflow; a test keeps the
+  Orchard commit installs build equal to the one `go.mod` compiles against.
+
 - **The control plane finds Homebrew's tailscale under launchd.** A LaunchAgent's PATH has no
   Homebrew directory, so `grove serve` found no tailscale CLI and turned Tailscale identity auth
   off: every browser without a token got "unauthorized". `FindTailscale` now also looks in

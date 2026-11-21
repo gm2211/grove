@@ -321,7 +321,7 @@ func TestSpecWarnsOnARunnerImageThatIsATag(t *testing.T) {
 	} {
 		spec := &Spec{Pools: []Pool{{Name: tc.pool, Image: "ghcr.io/acme/vm:1", RunnerImage: tc.image}}}
 		warnings := strings.Join(spec.Warnings(), "\n")
-		if got := strings.Contains(warnings, "is a tag"); got != tc.warns {
+		if got := strings.Contains(warnings, "runnerImage") && strings.Contains(warnings, "is a tag, which a push to that repository can point at another image"); got != tc.warns {
 			t.Errorf("pool %s runnerImage %q: warns = %v, want %v (%s)", tc.pool, tc.image, got, tc.warns, warnings)
 		}
 		if tc.warns && !strings.Contains(warnings, "@sha256:<digest>") {
@@ -335,5 +335,26 @@ func TestSpecWarnsOnARunnerImageThatIsATag(t *testing.T) {
 	}
 	if !imagePinnedByDigest(dispatch.DefaultRunnerImage) {
 		t.Errorf("the default runner image %q is not pinned by digest", dispatch.DefaultRunnerImage)
+	}
+}
+
+// A pool's VM image is what every job of the pool runs inside, so a tag is warned about (never
+// refused: the starter fleet tracks grove's own :latest images). A digest and a local Tart VM
+// name, which no registry can repoint, are quiet.
+func TestSpecWarnsOnAVMImageThatIsATag(t *testing.T) {
+	const digest = "sha256:206f7ef0cada2c22a1cd916dc065fde1154b3ac12e89e7f2cf19c0cfc86d5be6"
+	for image, warns := range map[string]bool{
+		"ghcr.io/acme/vm:latest":      true,
+		"ghcr.io/acme/vm":             true,
+		"ghcr.io/acme/vm@sha256:abc":  true,
+		"ghcr.io/acme/vm@" + digest:   false,
+		"ghcr.io/acme/vm:1@" + digest: false,
+		"my-local-vm":                 false,
+	} {
+		spec := &Spec{Pools: []Pool{{Name: MacOSPool, Image: image}}}
+		warnings := strings.Join(spec.Warnings(), "\n")
+		if got := strings.Contains(warnings, "can point at another VM image"); got != warns {
+			t.Errorf("image %q: warns = %v, want %v (%s)", image, got, warns, warnings)
+		}
 	}
 }
