@@ -10,7 +10,17 @@ const label: Record<FleetProblem["kind"], string> = {
   "image-unavailable": "image can't be pulled",
   failed: "failed",
   "not-joined": "never joined Nomad",
+  "worker-offline": "worker offline",
 };
+
+/** What the section's heading calls the problems: VMs, workers, or both. */
+function heading(problems: FleetProblem[]): string {
+  const workers = problems.filter((p) => p.kind === "worker-offline").length;
+  const vms = problems.length - workers;
+  if (workers === 0) return vms === 1 ? "A VM can't take jobs" : `${vms} VMs can't take jobs`;
+  if (vms === 0) return workers === 1 ? "A worker has been offline for a day" : `${workers} workers have been offline for a day`;
+  return `${problems.length} parts of the fleet can't take jobs`;
+}
 
 /** A macOS VM's trouble that unlocking its worker user's keychain may fix. */
 function unlockable(p: FleetProblem): boolean {
@@ -19,8 +29,9 @@ function unlockable(p: FleetProblem): boolean {
 
 /**
  * The VMs that can't take jobs, and why: a locked keychain, a boot loop, a failure, or a VM that
- * runs but never registered a Nomad node. Each one is a pool short of capacity, and the reason is
- * otherwise only in `grove status` on the control plane. Renders nothing when every VM is fine.
+ * runs but never registered a Nomad node, plus any worker Mac offline for a day that nobody snoozed.
+ * Each one is a pool short of capacity, and the reason is otherwise only in `grove status` on the
+ * control plane. Renders nothing when every VM and worker is fine.
  *
  * A macOS VM that can't boot for its worker user's locked login keychain can be fixed from here:
  * type that user's password once, and the worker's broker hands it to the worker, which unlocks
@@ -37,13 +48,13 @@ export function StuckVMs({ problems }: { problems?: FleetProblem[] }) {
           stuck
         </span>
         <h2 className="m-0 text-[13.5px] font-medium text-[#eaf4f4]">
-          {problems.length === 1 ? "A VM can't take jobs" : `${problems.length} VMs can't take jobs`}
+          {heading(problems)}
         </h2>
       </div>
       <ul className="m-0 flex list-none flex-col p-0">
         {problems.map((p) => (
           <li
-            key={p.vm}
+            key={p.vm || `worker:${p.worker}`}
             className="flex flex-col gap-2 border-t py-2 first:border-t-0"
             style={{ borderColor: "#3a3220" }}
           >
@@ -51,8 +62,14 @@ export function StuckVMs({ problems }: { problems?: FleetProblem[] }) {
               <span className="badge" data-kind={p.kind}>
                 {label[p.kind] ?? p.kind}
               </span>
-              <span className="mono text-[12.5px] text-[#eaf4f4]">{p.vm}</span>
-              {p.worker && <span className="mono text-[11.5px] text-[#a3b0b4]">on {p.worker}</span>}
+              {p.vm ? (
+                <>
+                  <span className="mono text-[12.5px] text-[#eaf4f4]">{p.vm}</span>
+                  {p.worker && <span className="mono text-[11.5px] text-[#a3b0b4]">on {p.worker}</span>}
+                </>
+              ) : (
+                <span className="mono text-[12.5px] text-[#eaf4f4]">{p.worker}</span>
+              )}
               <span className="text-[12px] text-[#c3d1d5]">{p.detail}</span>
               {unlockable(p) && unlocking !== p.worker && (
                 <span className="ml-auto">

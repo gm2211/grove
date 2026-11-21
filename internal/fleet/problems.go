@@ -24,13 +24,22 @@ const (
 	// ProblemNotJoined: the VM has run for NotJoinedAfter with no ready Nomad node of its name, so
 	// it takes no job.
 	ProblemNotJoined = "not-joined"
+	// ProblemWorkerOffline: a worker Mac has sent no heartbeat for WorkerOfflineAfter and nobody
+	// snoozed it, so its pools have been short of it that long without anyone saying so.
+	ProblemWorkerOffline = "worker-offline"
 )
+
+// WorkerOfflineAfter is how long a worker may be offline, not snoozed, before it is a problem:
+// long enough to ride out a night asleep or a reboot, short enough that a Mac left unplugged is
+// noticed the next day.
+const WorkerOfflineAfter = 24 * time.Hour
 
 // NotJoinedAfter is how long a running VM may go without a ready Nomad node before it counts as
 // stuck: a healthy one boots, enrols and registers well within it.
 const NotJoinedAfter = 5 * time.Minute
 
-// Problem is one VM that can't take jobs, and why, for an operator to see at a glance.
+// Problem is one VM that can't take jobs, or one worker that has been gone too long
+// (ProblemWorkerOffline, VM empty), and why, for an operator to see at a glance.
 type Problem struct {
 	Kind     string    `json:"kind"`
 	VM       string    `json:"vm"`
@@ -95,4 +104,39 @@ func Problems(vms []orchard.VM, nodes []nomad.Node, now time.Time) []Problem {
 		return out[i].VM < out[j].VM
 	})
 	return out
+}
+
+// WorkerProblems lists the workers that have been offline for WorkerOfflineAfter or longer and
+// that snoozed doesn't cover, by name. A snooze is how an owner says "this Mac is away on
+// purpose"; without one, a worker that stays gone is something to fix (bring it back, snooze it,
+// or remove it), never a silent loss of capacity.
+func WorkerProblems(workers []orchard.Worker, snoozed func(name string) bool, now time.Time) []Problem {
+	var out []Problem
+	for _, w := range workers {
+		if !w.Offline || w.LastSeen.IsZero() || now.Sub(w.LastSeen) < WorkerOfflineAfter {
+			continue
+		}
+		if snoozed != nil && snoozed(w.Name) {
+			continue
+		}
+		out = append(out, Problem{
+			Kind:   ProblemWorkerOffline,
+			Worker: w.Name,
+			Since:  w.LastSeen,
+			Detail: fmt.Sprintf("offline for %s and not snoozed, so its pools run without it: bring it back, snooze it (grove worker snooze), or remove it (grove uninstall --role worker)",
+				offlineFor(now.Sub(w.LastSeen))),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Worker < out[j].Worker })
+	return out
+}
+
+// offlineFor says a long duration in hours, or days and hours past two days ("201h" reads worse
+// than "8d 9h").
+func offlineFor(d time.Duration) string {
+	h := int(d / time.Hour)
+	if h < 48 {
+		return fmt.Sprintf("%dh", h)
+	}
+	return fmt.Sprintf("%dd %dh", h/24, h%24)
 }

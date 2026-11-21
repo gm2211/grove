@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -39,5 +40,23 @@ func TestProblems_NamesEachStuckVMOnceWithItsReason(t *testing.T) {
 		if got[i].Detail == "" || got[i].Worker == "" {
 			t.Errorf("problem %d has no detail or worker: %+v", i, got[i])
 		}
+	}
+}
+
+func TestWorkerProblems_OnlyLongOfflineAndNotSnoozed(t *testing.T) {
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	workers := []orchard.Worker{
+		{Name: "away", Offline: true, LastSeen: now.Add(-WorkerOfflineAfter)},
+		{Name: "napping", Offline: true, LastSeen: now.Add(-WorkerOfflineAfter + time.Minute)},
+		{Name: "snoozed", Offline: true, LastSeen: now.Add(-72 * time.Hour)},
+		{Name: "never-seen", Offline: true},
+		{Name: "up", LastSeen: now.Add(-48 * time.Hour)},
+	}
+	got := WorkerProblems(workers, func(n string) bool { return n == "snoozed" }, now)
+	if len(got) != 1 || got[0].Worker != "away" || got[0].Kind != ProblemWorkerOffline || got[0].VM != "" || !got[0].Since.Equal(now.Add(-WorkerOfflineAfter)) {
+		t.Fatalf("WorkerProblems = %+v, want only away", got)
+	}
+	if !strings.Contains(got[0].Detail, "offline for 24h") {
+		t.Fatalf("detail = %q", got[0].Detail)
 	}
 }

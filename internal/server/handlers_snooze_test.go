@@ -273,3 +273,28 @@ func TestSnoozeScope_ValidationAndJoinGrant(t *testing.T) {
 		t.Errorf("worker host identity = %d, want 401", rec.Code)
 	}
 }
+
+// A worker gone for a day with nobody snoozing it is a problem on /fleet; a snoozed one is not.
+func TestFleet_LongOfflineUnsnoozedWorkerIsAProblem(t *testing.T) {
+	e := newSnoozeEnv(t)
+	gone := time.Now().Add(-201 * time.Hour)
+	for i := range e.oc.workers {
+		e.oc.workers[i].Offline = true
+		e.oc.workers[i].LastSeen = gone
+	}
+	e.do(http.MethodPost, "/workers/mac2/snooze", `{"for":"1h"}`, "operator")
+	rec := e.do(http.MethodGet, "/fleet", "", "operator")
+	var resp FleetResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	var offline []string
+	for _, p := range resp.Problems {
+		if p.Kind == "worker-offline" {
+			offline = append(offline, p.Worker+": "+p.Detail)
+		}
+	}
+	if len(offline) != 1 || !strings.HasPrefix(offline[0], "mac1: offline for 8d 9h and not snoozed") {
+		t.Fatalf("worker-offline problems = %q, want only mac1's", offline)
+	}
+}
