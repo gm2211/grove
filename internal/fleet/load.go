@@ -54,15 +54,22 @@ func Load(path string) (*Spec, error) {
 // fleets use them, and is only warned about. The macos pool runs jobs natively, in no container.
 //
 // A pool whose workerSelector names one Mac (`host: <name>`): when that Mac sleeps, reboots or
-// leaves, the pool has nowhere to run and its jobs wait or fail. preferWorkers keeps the
-// preference and lets the pool spill onto the other Macs meanwhile.
+// leaves, the pool has nowhere to run and its jobs wait or fail. grove needs no pin: it learns
+// which Macs can get a pool's image (ImageHolds) and runs the pool on those that are up.
+//
+// preferWorkers, which an earlier grove read as a soft pin, is ignored: placement is dynamic.
 func (s *Spec) Warnings() []string {
 	var out []string
 	for _, p := range s.Pools {
 		if host, ok := p.WorkerSelector["host"]; ok {
 			out = append(out, fmt.Sprintf(
-				"pool %q: workerSelector pins it to one Mac (host: %s), so the pool stops whenever that Mac is away; drop it to let every Mac run the pool, or move `host: %s` to preferWorkers to keep a preference while other Macs cover for it",
-				p.Name, host, host))
+				"pool %q: workerSelector pins it to one Mac (host: %s), so the pool stops whenever that Mac is away; drop it: grove runs the pool on every Mac that is up and can get its image, and learns which ones can",
+				p.Name, host))
+		}
+		if len(p.PreferWorkers) > 0 {
+			out = append(out, fmt.Sprintf(
+				"pool %q: preferWorkers is ignored; grove places the pool's VMs on every Mac that is up and can get its image. Remove it",
+				p.Name))
 		}
 		if strings.Contains(p.Image, "/") && !imagePinnedByDigest(p.Image) {
 			// A name with no "/" is a local Tart VM, which no registry can repoint.

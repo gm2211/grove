@@ -89,8 +89,7 @@ func (o Options) logger() *log.Logger {
 }
 
 // Reconciler makes Orchard match a fleet Spec: for every online, non-paused worker whose labels
-// satisfy a pool's WorkerSelector (narrowed to its PreferWorkers while one of those is available,
-// see placement), it ensures pool.PerWorker VMs exist, pinned to that worker;
+// satisfy a pool's WorkerSelector and that can get its image (see placement), it ensures pool.PerWorker VMs exist, pinned to that worker;
 // VMs that are no longer desired (worker gone offline/paused, selector no longer matches,
 // perWorker shrank) or whose spec has drifted are deleted.
 type Reconciler struct {
@@ -147,9 +146,9 @@ type Plan struct {
 	// Such a pool is not in Unmatched: capacity exists and may come back (a snooze ends), so the
 	// job service can queue its jobs instead of failing them.
 	PausedOnly []PlannedPause
-	// Spilled lists the pools with PreferWorkers that run on their other workers because no
-	// preferred one is available right now.
-	Spilled []string
+	// ImageMissing lists the workers each pool stays off because they could not get its image
+	// (see ImageHolds); it runs on its other workers meanwhile and tries them again later.
+	ImageMissing []ImageMissing
 	// ListedAt is when Plan started listing Orchard's workers: the pause bits above are no newer.
 	// PoolHealth compares it with when a snooze ended (snooze.Store.EndedAt).
 	ListedAt time.Time
@@ -198,7 +197,7 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 	desired := make(map[string]bool)
 	blocked := make(map[string]string)
 	unsafeHosts := make(map[string]string) // "pool/worker" → guestPasswordBlock
-	failback := make(map[string]bool)      // "pool/worker" off the pool's preferred workers
+	noImage := make(map[string]bool)       // "pool/worker" that can't get the pool's image for now
 	scaled := r.scale(workers, vms)
 
 	for _, pool := range r.Spec.Pools {
@@ -222,10 +221,8 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 			plan.Fallbacks = append(plan.Fallbacks, *fallback)
 		}
 
-		on, spilled := placement(pool, workers)
-		if spilled {
-			plan.Spilled = append(plan.Spilled, pool.Name)
-		}
+		on, missing := r.placement(pool, pool.Image, workers)
+		plan.ImageMissing = append(plan.ImageMissing, missing...)
 		matched := false
 		var pausedMatch []string
 		for _, worker := range workers {
@@ -239,20 +236,21 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 			if !labelsContain(worker.Labels, pool.WorkerSelector) {
 				continue
 			}
-			matched = true
-
 			if problem := guestPasswordBlock(pool, worker); problem != "" {
+				matched = true
 				plan.Blocked = append(plan.Blocked, PlannedBlock{Pool: pool.Name, Reason: problem})
 				unsafeHosts[pool.Name+"/"+worker.Name] = problem
 				continue // and any VM it has there is swept below
 			}
 			if !on[worker.Name] {
-				// A preferred worker of the pool is available: the pool moves back there. A VM it
-				// spilled here leaves once idle; the sweep below deletes the rest.
-				failback[pool.Name+"/"+worker.Name] = true
+				// This worker can't get the pool's image for now (ImageHolds), so the pool runs on
+				// the others; with none left the pool is unmatched and its jobs fall back. A VM of
+				// it still running a job here stays until the job is done; the sweep deletes the rest.
+				noImage[pool.Name+"/"+worker.Name] = true
 				r.keepBusy(pool, worker.Name, vms, desired)
 				continue
 			}
+			matched = true
 
 			indexes := scaled.poolIndexes(pool.Name, worker.Name)
 			if !pool.Elastic() {
@@ -336,8 +334,8 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 			reason = "unsafe: " + problem
 		} else if why, ok := scaled.deleteReasons[vm.Name]; ok {
 			reason = why
-		} else if failback[pool+"/"+worker] {
-			reason = "a preferred worker of the pool is back"
+		} else if noImage[pool+"/"+worker] {
+			reason = "this worker can't get the pool's image; the pool runs on the others"
 		}
 
 		plan.Deletes = append(plan.Deletes, PlannedDelete{
@@ -646,28 +644,25 @@ func findVM(vms []orchard.VM, name string) (orchard.VM, bool) {
 }
 
 // placement is the set of workers pool's VMs belong on now: every online, unpaused worker that
-// its WorkerSelector allows and that can run it (guestPasswordBlock), narrowed to those matching
-// PreferWorkers while any of them is among it. spilled says the pool has preferred workers and
-// none is available, so it runs on the others.
-func placement(pool Pool, workers []orchard.Worker) (on map[string]bool, spilled bool) {
+// its WorkerSelector allows, that can run it (guestPasswordBlock) and that has not failed to get
+// image, the pool's effective image, too recently to try again (ImageHolds.missingOn). Nothing
+// here names a Mac: which Macs run a pool follows from which ones are up and what they can run.
+// missing lists the workers left out for the image, for the plan.
+func (r *Reconciler) placement(pool Pool, image string, workers []orchard.Worker) (on map[string]bool, missing []ImageMissing) {
 	on = map[string]bool{}
-	preferred := map[string]bool{}
+	gone := r.Options.Images.missingOn(pool, image, r.Options.now())
 	for _, w := range workers {
 		if w.Offline || w.SchedulingPaused || !labelsContain(w.Labels, pool.WorkerSelector) || guestPasswordBlock(pool, w) != "" {
 			continue
 		}
-		on[w.Name] = true
-		if len(pool.PreferWorkers) > 0 && labelsContain(w.Labels, pool.PreferWorkers) {
-			preferred[w.Name] = true
+		if m, ok := gone[w.Name]; ok {
+			missing = append(missing, m)
+			continue
 		}
+		on[w.Name] = true
 	}
-	if len(pool.PreferWorkers) == 0 {
-		return on, false
-	}
-	if len(preferred) == 0 {
-		return on, len(on) > 0
-	}
-	return preferred, false
+	sort.Slice(missing, func(i, j int) bool { return missing[i].Worker < missing[j].Worker })
+	return on, missing
 }
 
 // keepBusy keeps pool's VMs on worker that are running a job (JobLoad.Busy) although the pool no

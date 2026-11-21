@@ -19,11 +19,20 @@ All notable changes to grove are documented here.
   set `disconnect { replace = false, lost_after = "24h" }`: the allocation stays `unknown`, grove
   calls it lost after a minute, and every job grove ends has its Nomad job stopped first.
 
-- **`preferWorkers`: prefer a Mac without pinning a pool to it.** A pool runs only on the workers
-  matching `preferWorkers` while one is available, spills onto every `workerSelector` match while
-  none is, and moves back when a preferred Mac returns, leaving a spilled VM until its job is done.
-  `grove serve` warns about a pool whose `workerSelector` names one `host`. See
-  docs/OPERATIONS.md "Preferring a Mac without pinning a pool to it".
+- **Pools name no Mac; grove learns where each can run.** A pool runs on every Mac that is up and
+  can get its image. A Mac that fails to get it while another Mac runs it, or while it is a local
+  Tart VM only one Mac built, is left out and retried after 30 minutes, doubling up to 6 hours, and
+  is back once a VM of the image runs there. So a pool on a local image needs no `host:` pin: it
+  stays where the image is and spreads once it is in a registry, and with no Mac left that has it
+  its jobs fall back to macOS. `grove fleet plan` and `GET /api/v1/fleet/reconcile`
+  (`imageMissing`) say which Macs a pool is off and why. `preferWorkers` (briefly a soft pin) is
+  ignored with a warning, and the `host:` pin warning now says to drop it. See docs/OPERATIONS.md
+  "Where pools run: every Mac that is up and can get the image".
+
+- **The starter fleet makes Linux VMs on demand on any Mac.** `grove install --role control-plane`
+  wrote pools with Orchard labels (`pool: linux`) that no worker advertises, so their VMs stayed
+  pending. It now selects no worker, and its `linux` pool is elastic from 0: a Linux VM appears on
+  a Mac with Linux jobs waiting and goes once idle.
 
 - **A job's own local servers answer.** Jobs on a pool with a credential broker ran with an empty
   `NO_PROXY`, so a request to `127.0.0.1` (a test suite's HTTP stand-in) went to the broker, which

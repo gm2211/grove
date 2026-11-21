@@ -125,8 +125,7 @@ pools:
     memory: 8192            # MiB
     ttl: 12h
     labels: {}               # extra Orchard *worker selectors* — see below, usually left empty
-    workerSelector: {}      # only workers whose labels ⊇ this map (what the pool needs)
-    preferWorkers: {}       # soft: only these while one is up, else every workerSelector match
+    workerSelector: {}      # only workers whose labels ⊇ this map; a capability, never a Mac's name
     network: isolated        # Softnet, host blocked: jobs reach only the public internet (see below)
   - name: macos
     image: ghcr.io/gm2211/grove-macos-worker:latest
@@ -145,9 +144,10 @@ Pool names are restricted to lowercase letters/digits, no dashes or dots (`fleet
 validation) — VM names are parsed back as `<pool>-<worker>-<n>` (`fleet.ParseVMName`), and worker
 names (real hostnames) routinely contain both, so the pool component must be unambiguous.
 
-Reconciler: for each online, non-paused worker matching `workerSelector` (narrowed to those
-matching `preferWorkers` while any of them is available; a VM spilled off them stays until its job
-is done), ensure `perWorker` VMs
+Reconciler: for each online, non-paused worker matching `workerSelector` that can get the pool's
+image (a Mac that failed to while another runs it, or while it is a local Tart VM, is left out and
+retried on a backoff, `fleet.ImageHolds`; a VM there still running a job stays until it is done),
+ensure `perWorker` VMs
 named `<pool>-<worker>-<n>` exist, `restart_policy: OnFailure`, `ttl_seconds` set, startup/shutdown
 scripts from the pool. A VM's pool and host are never labelled — they're derived from its name and
 its observed placement (`fleet.PoolAndHost`): pool from parsing the name, host from Orchard's

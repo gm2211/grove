@@ -27,7 +27,7 @@ malicious or compromised job (**J**), a compromised worker Mac (**W**), a leaked
 | L3 | Every job reaches a terminal state. | Quint `dispatch.qnt` | Holds. |
 | L4 | A job queued only because its pool's workers are snoozed is never failed for it, and runs once the snooze ends. | Quint `dispatch.qnt` + Go `TestL4_…` | **Failed before**: in the up to 60 s between a snooze's end and the next fleet tick, the reconcile failed the job as "every worker is paused". Holds now. |
 | L5 | A sealed-pool job terminates, given that owners snooze its Macs and VMs drain only finitely often. | Quint `attempts.qnt` | Holds. |
-| L6 | From any fleet, one Plan + Apply converges: the next Plan is empty, and stays empty. Every VM left runs on an online, unpaused worker its pool's selector matches. | Go property test, 500 random fleets | Holds. |
+| L6 | From any fleet, one Plan + Apply converges: the next Plan is empty, and stays empty. Every VM left runs on an online, unpaused worker its pool's selector matches and that can get the pool's image. | Go property test, 500 random fleets | Holds. |
 | L7 | A VM reaching its TTL is drained before Orchard recycles it (no job lands on a dying VM), and the pool gets a replacement. | Quint `fleet.qnt` | Holds while DrainNode fails on fewer than 4 ticks in a row; the 4-failure instance shows the bound is tight. |
 | L8 | A running VM's Nomad certificate is renewed before it expires. | Quint `enrol.qnt` | Holds through any outage under 11 h; the 11 h instance shows the bound is tight. |
 | L9 | A genuine new VM eventually joins Nomad, even when a previous VM of its name still has a draining node. | Quint `enrol.qnt` | Holds, given the VM's Nomad client keeps retrying (strong fairness). |
