@@ -157,7 +157,8 @@ sees (see docs/OPERATIONS.md "The credential broker"):
 
 `Submit` mints a placeholder (`gph1_…`) for each and puts the placeholder in `env_json` under
 `env`. The token stays in the control plane's memory, where the broker on the worker the job lands
-on pulls it. `kind` is `github`, `anthropic` or `openai` and fixes the hosts the token can reach.
+on pulls it. `kind` is `github`, `anthropic`, `openai`, `terraform` (app.terraform.io), `render`
+(api.render.com) or `cloudflare` (api.cloudflare.com) and fixes the hosts the token can reach.
 The stored job and the API keep `kind` and `env` only. Credentials are refused on a sealed pool,
 whose VMs can't reach a broker, and a job with credentials never falls back onto one. An unknown
 kind, an `env` that is also an `env` key or named secret, a name given twice, more than 8, or a

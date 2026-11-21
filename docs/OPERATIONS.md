@@ -606,10 +606,14 @@ larger body gets a 400.
 A job never holds a real credential. It gets a placeholder (`gph1_…`), and each worker Mac runs
 `grove broker`, the proxy its job VMs send traffic through (port 3128 on the VM bridge address,
 192.168.64.1 unless vmnet is configured otherwise). For a request to one of the fixed upstreams
-(github.com, api.github.com, api.anthropic.com, api.openai.com, chatgpt.com) the broker:
+(github.com, api.github.com, api.anthropic.com, api.openai.com, chatgpt.com, and for deploy
+jobs app.terraform.io, api.render.com and api.cloudflare.com) the broker:
 
 - terminates TLS with its own CA (`<grove config dir>/broker/broker-ca.pem`), which is
-  name-constrained to those five hosts, so it can't be used to impersonate any other site;
+  name-constrained to those hosts, so it can't be used to impersonate any other site. A CA kept
+  from a grove that served other hosts is replaced when the broker starts (`LoadOrCreateCA`):
+  VMs that trusted the old one keep it until they are recreated, and a new VM fetches the new one
+  at boot, so recycle shared VMs after an upgrade that adds a host;
 - refuses the request unless the placeholder is live, issued for that service, and sent from the
   job's own VM (see "Binding a placeholder to its VM" below);
 - swaps the placeholder for the real token in `Authorization` (Bearer, token or Basic, which is
@@ -995,7 +999,8 @@ loads; a guest with no IPv4 default route gets no exception.
 
 At boot a shared VM fetches the broker's CA from `http://<gateway>:3128/ca.pem` and keeps it only
 if it is a single CA certificate (pathlen 0) whose critical name constraints permit only the
-broker's hosts (github.com, api.github.com, api.anthropic.com, api.openai.com, chatgpt.com, or
+broker's hosts (github.com, api.github.com, api.anthropic.com, api.openai.com, chatgpt.com,
+app.terraform.io, api.render.com, api.cloudflare.com, or
 some of them) and exclude every IP address; even a forged CA that passes can vouch for no other
 site. The VM then
 advertises the broker as Nomad node meta (`grove_broker`, `grove_broker_ca`, in

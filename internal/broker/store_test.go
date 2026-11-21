@@ -162,7 +162,7 @@ func TestStoreDropVM(t *testing.T) {
 
 func TestInjectHostsAreFixed(t *testing.T) {
 	got := strings.Join(InjectHosts(), ",")
-	want := "api.anthropic.com,api.github.com,api.openai.com,chatgpt.com,github.com"
+	want := "api.anthropic.com,api.cloudflare.com,api.github.com,api.openai.com,api.render.com,app.terraform.io,chatgpt.com,github.com"
 	if got != want {
 		t.Fatalf("InjectHosts = %s, want %s", got, want)
 	}
