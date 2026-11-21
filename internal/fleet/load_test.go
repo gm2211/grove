@@ -284,6 +284,11 @@ func TestFallbackFor(t *testing.T) {
 	sealedMac.Network = NetworkIsolated
 	off := linux
 	off.Fallback = FallbackNone
+	toMac := linux
+	toMac.Fallback = "macos"
+	linux2 := Pool{Name: "linuxb", Image: "l", PerWorker: 1}
+	toLinux := linux
+	toLinux.Fallback = "linuxb"
 
 	for _, tt := range []struct {
 		name  string
@@ -291,10 +296,10 @@ func TestFallbackFor(t *testing.T) {
 		pool  Pool
 		want  string
 	}{
-		{"linux falls back to macos by default", []Pool{linux, macos}, linux, "macos"},
+		{"nothing falls back by default", []Pool{linux, macos}, linux, ""},
 		{"macos has no default fallback", []Pool{linux, macos}, macos, ""},
-		{"no macos pool", []Pool{linux}, linux, ""},
-		{"sealed macos isn't a target", []Pool{linux, sealedMac}, linux, ""},
+		{"a linux job never moves to macos, even when asked", []Pool{toMac, macos}, toMac, ""},
+		{"linux to another linux pool", []Pool{toLinux, linux2, macos}, toLinux, "linuxb"},
 		{"turned off", []Pool{off, macos}, off, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -306,6 +311,20 @@ func TestFallbackFor(t *testing.T) {
 				t.Fatalf("FallbackFor(%s) = %q, want %q", tt.pool.Name, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestWarnings_CrossOSFallbackIsIgnored(t *testing.T) {
+	spec := &Spec{Pools: []Pool{{Name: "linux", Image: "l", PerWorker: 1, Fallback: "macos"}, {Name: "macos", Image: "m", PerWorker: 1}}}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("an older fleet.yaml with fallback: macos must still load: %v", err)
+	}
+	var found bool
+	for _, w := range spec.Warnings() {
+		found = found || strings.Contains(w, `fallback "macos" is ignored`)
+	}
+	if !found {
+		t.Errorf("warnings = %q", spec.Warnings())
 	}
 }
 

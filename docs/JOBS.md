@@ -187,32 +187,30 @@ record then carries the pool chosen, and everything else behaves as if the calle
   one case where a caller names the pool.
 - When no pool can run the job, the submit fails with a 400 saying why for each pool.
 
-## Falling back to macOS
+## A job runs on its pool's OS, or not at all
 
-Most Linux build scripts run on macOS too, so a job a shared Linux pool can't place moves to the
-shared `macos` pool instead of waiting:
+A job submitted to a Linux pool runs on a Linux VM; one submitted to `macos` runs on macOS. grove
+never moves a job to a pool of the other OS: a Linux job that "succeeds" on macOS (printing
+`Darwin`) hides that its pool had no VM, and a script that needs docker, apt-get or ELF binaries
+would fail there anyway.
 
-- **When:** 20 seconds after submit when Nomad reports no node of the pool at all (every node it
-  evaluated was filtered out by `meta.pool`), or after 3 minutes unplaced when the pool's nodes are
-  all busy. A job moves at most once.
-- **How:** grove reads the dispatched job's meta and payload back from Nomad, dispatches them to
-  `grove-<kind>-macos`, then stops and purges the Linux copy, so exactly one copy is ever queued.
-  The job keeps its id; `job.fallback` says `{from, to, at, reason}`. On macOS it runs as a plain
-  process of the `_grovejob` user, not in the runner container (and so shares that user with
-  the VM's other jobs: see "Jobs sharing a macOS VM").
-- **Opting out:** `"pinPool": true` on the JobRequest keeps a job in its pool (use it for scripts
-  that need Linux: docker, apt-get, ELF binaries). A job with an `environment` (see "Job
-  environments") falls back only when it carries a `toolchain` and the fallback pool is a macOS
-  pool with `toolchains` enabled (see "Native toolchain on macOS"); an image-only environment
-  never falls back, since macOS has no containers to run its image in. `pinPool` always wins. A
-  job with `resources` also never falls back to a pool whose per-job size (`jobCPU`/`jobMemory`) is
-  smaller than the hint. Per pool, fleet.yaml `fallback: none` turns it off, or `fallback: <pool>` picks
-  another shared pool. Sealed (`network: isolated`) pools never fall back or take fallback jobs.
-- **Learning what doesn't work there:** jobs are grouped by kind, pool and repo. When the last 3
-  fallback runs of a group all failed (timeouts and cancels don't count), that group stops falling
-  back for 7 days after the last failure, and its jobs wait for their own pool, with
-  `pendingReason` saying why. A success among those runs keeps it on. The verdict is computed from
-  the job history, so it survives restarts and expires on its own.
+- **A pool with no VM yet waits for one.** An elastic pool scaled to zero (`minPerWorker: 0`)
+  counts the job as demand 30 seconds after submit and starts a VM for it on a Mac that has room
+  (or in place of an idle VM of another elastic pool); the job runs once that VM joins. It waits
+  up to the pending timeout (30 minutes).
+- **It fails loudly when no VM can come.** When no Mac can host the pool (none online, unpaused,
+  matching its `workerSelector` and able to get its image), every one is paused, enrolment fails or
+  its VMs boot-loop, the job fails after 3 minutes with `failureReason` saying which.
+- **Falling back within the same OS.** fleet.yaml `fallback: <pool>` moves a job its pool can't
+  place to another shared pool of the same OS, 20 seconds after submit when Nomad reports no node
+  of the pool, or after 3 minutes unplaced when they are all busy. grove reads the job's meta and
+  payload back from Nomad, dispatches them to the other pool, then stops and purges the first
+  copy; `job.fallback` says `{from, to, at, reason}`. Nothing falls back by default. A `fallback`
+  naming a pool of the other OS (an earlier grove moved Linux jobs to `macos` by default) is
+  ignored, with a warning. `"pinPool": true` keeps a job in its pool; a job with `resources` never
+  moves to a pool whose per-job size is smaller; sealed (`network: isolated`) pools never fall back
+  or take fallback jobs. When the last 3 fallback runs of a kind, pool and repo all failed, that
+  group stops falling back for 7 days and waits for its own pool, with `pendingReason` saying why.
 
 ## Per-job resource sizing
 
@@ -733,15 +731,12 @@ toolchain job that lost them.
 Where such a job can run:
 
 - **A Linux pool:** as above, with the image required and validated (the image is what runs there).
-  Because it carries a toolchain it may fall back to macOS (see "Falling back to macOS"), even
-  though an image-only environment may not.
+  It never moves to macOS (see "A job runs on its pool's OS, or not at all"): submit it to the
+  macOS pool to run it there natively.
 - **A macOS pool, submitted directly:** only a shared macOS pool with `toolchains: {enabled: true}`
   in fleet.yaml, and only an environment with a toolchain. `image` is optional and ignored; the
   job's `task_image` is the pool's runner image. `fleet.Load` accepts `toolchains` only on the
   shared `macos` pool, never on a Linux or sealed pool, and still refuses `environments` there.
-- **Falling back to macOS:** the target must be a macOS pool with toolchains enabled and its per-job
-  size must cover the job's `resources`. A pool without toolchains, a sealed pool or a smaller pool
-  is never a target.
 
 On the worker the installer runs as `_grovetool` from root-owned code and writes the cache; the job
 runs as `_grovejob`, which can read the cache but not write it (spec S22).

@@ -194,3 +194,29 @@ func TestFallback_SkipsAPoolWithNoReadyNode(t *testing.T) {
 		})
 	}
 }
+
+// A Linux job never moves to a macOS pool, even with a fallback configured: it waits for a VM of
+// its own pool (an elastic pool scales up for it), and fails saying why when none can come.
+func TestFallback_NeverAcrossOperatingSystems(t *testing.T) {
+	nc := fakeWithReadyPools()
+	svc := newTestServiceWithOpts(t, nc, Options{
+		Pools: []PoolConfig{
+			{Name: "linux", OS: "linux", Fallback: "macos"},
+			{Name: "macos", OS: "darwin"},
+		},
+		FallbackNoNodesAfter: time.Nanosecond,
+		FallbackAfter:        time.Nanosecond,
+	}).(*service)
+	job, _, err := svc.Submit(context.Background(), JobRequest{Kind: KindShell, Pool: "linux", Script: "uname -a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc.evaluationsByJob = map[string][]nomad.Evaluation{"grove-shell-linux/dispatch-1": noLinuxNodes()}
+	got, err := svc.Get(context.Background(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Fallback != nil || got.Status != StatusPending || len(nc.dispatchCalls) != 1 {
+		t.Fatalf("status=%s fallback=%+v dispatches=%d, want the job still pending on linux", got.Status, got.Fallback, len(nc.dispatchCalls))
+	}
+}

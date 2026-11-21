@@ -168,8 +168,8 @@ create; extra → delete; spec drift (image/cpu/memory/diskSize/restartPolicy/tt
 - **Scale down:** a VM above its pool's minimum that has had no job for 15m is removed, one per
   pool per tick.
 
-A job that fell back to macOS (docs/JOBS.md "Falling back to macOS") counts as demand for macOS,
-not Linux, so Linux VMs only come up for Linux jobs that can't run on macOS or are pinned there.
+A job never moves to a pool of another OS (docs/JOBS.md "A job runs on its pool's OS, or not at
+all"), so a Linux job waiting is demand for Linux: a Linux pool scaled to zero comes back for it.
 For example, one Linux and one macOS slot shared by two Macs:
 
 ```yaml
@@ -240,7 +240,7 @@ by the control plane at submit, or refused) and allowed by its pool's
 `environments.allow`, or `Submit` answers 400. grove delivers it as Nomad meta `task_image`
 (always set on a build: the environment image, else the pool's `runnerImage`), which build.nomad.hcl
 interpolates into the `main` task's docker `image`. The clone-token-holding `source` task stays on
-the pool's runner image. A job with an environment never falls back to macOS. `docs/JOBS.md` →
+the pool's runner image. No job falls back to a pool of another OS. `docs/JOBS.md` →
 "Job environments".
 
 Cloning a **private** repository needs a credential, and grove has none until an operator arms one

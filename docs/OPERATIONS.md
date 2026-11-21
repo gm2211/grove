@@ -264,7 +264,8 @@ minutes, then at doubling intervals up to 6 hours. Once a VM of the image runs t
 back for good. A VM of the pool still running a job on such a Mac stays until the job is done.
 `grove fleet plan`, the serve log and `GET /api/v1/fleet/reconcile` (`imageMissing`) list the Macs
 a pool is off and why; the memory is `images.json`. With no Mac left that has the image, the pool
-has no worker, and its jobs fall back to macOS (docs/JOBS.md "Falling back to macOS"). So a pool
+has no worker, and its jobs fail saying so (docs/JOBS.md "A job runs on its pool's OS, or not at
+all"); they never run on macOS instead. So a pool
 on a local image needs no pin: it stays on the Mac that built the image, and spreads to every Mac
 once the image is pushed to a registry and fleet.yaml names that.
 

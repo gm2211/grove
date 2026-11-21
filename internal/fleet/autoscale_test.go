@@ -151,3 +151,31 @@ func TestScale_MacOSLimitPerHost(t *testing.T) {
 		t.Fatalf("Apple allows 2 macOS VMs per Mac, got %+v", plan.Creates)
 	}
 }
+
+// The Studio's fleet: a fixed macOS VM and a Linux pool scaled to zero after sitting idle. A Linux
+// job waiting brings one Linux VM back, beside the macOS one.
+func TestScale_LinuxPoolAtZeroComesBackForAWaitingJob(t *testing.T) {
+	now := time.Date(2026, 11, 21, 14, 0, 0, 0, time.UTC)
+	spec := &Spec{Pools: []Pool{
+		{Name: "linux", Image: "ghcr.io/gm2211/grove-linux-worker:latest", CPU: 4, Memory: 8192, MinPerWorker: intp(0), MaxPerWorker: intp(2)},
+		{Name: "macos", Image: "m", CPU: 4, Memory: 8192, PerWorker: 1},
+	}}
+	r := &Reconciler{Spec: spec, Options: Options{Now: func() time.Time { return now }}}
+	macVM := runningVM(r, spec.Pools[1], "studio", 0, now.Add(-7*time.Hour))
+	r.Client = &fakeOrchardClient{workers: []orchard.Worker{mac("studio", 2)}, vms: []orchard.VM{macVM}}
+
+	// Idle: nothing to do, the pool stays at zero.
+	r.Options.Load = &JobLoad{Waiting: map[string]int{}, Busy: map[string]bool{macVM.Name: false}}
+	if plan, _ := r.Plan(context.Background()); !plan.Empty() {
+		t.Fatalf("idle fleet plan = %+v", plan)
+	}
+
+	r.Options.Load = &JobLoad{Waiting: map[string]int{"linux": 1}, Busy: map[string]bool{macVM.Name: false}}
+	plan, err := r.Plan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Creates) != 1 || plan.Creates[0].Pool != "linux" || plan.Creates[0].Worker != "studio" || len(plan.Deletes) != 0 {
+		t.Fatalf("want one Linux VM on studio and the macOS VM kept, got creates=%+v deletes=%+v", plan.Creates, plan.Deletes)
+	}
+}
