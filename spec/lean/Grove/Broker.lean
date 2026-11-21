@@ -24,7 +24,7 @@ namespace Grove.Broker
 
 open Grove
 
-inductive Kind | github | anthropic | openai | terraform | render | cloudflare
+inductive Kind | github | anthropic | openai | ghcr | terraform | render | cloudflare
   deriving DecidableEq, Repr
 
 /-- `kindHosts`: fixed in code, never configured. -/
@@ -32,6 +32,7 @@ def kindHosts : Kind → List Str
   | .github => ["github.com".toList, "api.github.com".toList]
   | .anthropic => ["api.anthropic.com".toList]
   | .openai => ["api.openai.com".toList, "chatgpt.com".toList]
+  | .ghcr => ["ghcr.io".toList]
   | .terraform => ["app.terraform.io".toList]
   | .render => ["api.render.com".toList]
   | .cloudflare => ["api.cloudflare.com".toList]
