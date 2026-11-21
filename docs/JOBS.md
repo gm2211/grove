@@ -169,6 +169,22 @@ operator; 404 for an unknown job, 409 once it has ended):
 {"credentials": [{"env": "GH_TOKEN", "token": "ghs_…new"}]}
 ```
 
+## Where a job runs
+
+A job describes what it needs (kind, repo, script, toolchain or image, size) and names no pool:
+`"pool"` is optional, and `Submit` places the job (`internal/dispatch/placement.go`). The job's
+record then carries the pool chosen, and everything else behaves as if the caller had named it.
+
+- A shared macOS pool comes first. A macOS guest runs what a Linux one does once the job names its
+  toolchain, and it is the only one that runs Apple work.
+- A shared Linux pool takes a job whose environment is an image with no toolchain (macOS runs no
+  containers), when its `environments.allow` permits the image; and any job when the fleet has no
+  macOS pool that can run it.
+- A pool whose per-job size is smaller than the job's `resources` is skipped. Ties break by name.
+- A sealed pool is never chosen: it is a decision about how far the job is trusted, so it is the
+  one case where a caller names the pool.
+- When no pool can run the job, the submit fails with a 400 saying why for each pool.
+
 ## Falling back to macOS
 
 Most Linux build scripts run on macOS too, so a job a shared Linux pool can't place moves to the

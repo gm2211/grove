@@ -4,6 +4,12 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **A job no longer names its pool.** `pool` is optional on a job request (API, `grove dispatch`,
+  the MCP `grove_run` tool, the dashboard's dispatch form): the control plane places the job from
+  what it asks for. A shared macOS pool comes first; a shared Linux pool takes a job whose
+  environment is an image with no toolchain. A sealed pool is still chosen only by name. Requests
+  that name a pool behave as before.
+
 - **A shared pool's lost job is rerun instead of staying lost.** When a VM or its Mac goes away
   mid-job (sleep, reboot, crash, a worker leaving), grove now reruns the job on the pool's other
   VMs, by the sealed pools' rules: at most 3 runs, agent jobs not rerun (`retryLost`), and a job

@@ -39,7 +39,6 @@ export function DispatchPage() {
   const [env, setEnv] = useState<EnvRow[]>([{ key: "", value: "" }]);
   const [formError, setFormError] = useState<string | null>(null);
 
-  const effectivePool = pool || pools[0] || "";
 
   const submit = useMutation({
     mutationFn: api.submitJob,
@@ -49,10 +48,6 @@ export function DispatchPage() {
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setFormError(null);
-    if (!effectivePool) {
-      setFormError("pool is required");
-      return;
-    }
     if (!script.trim()) {
       setFormError("script is required");
       return;
@@ -68,7 +63,7 @@ export function DispatchPage() {
     }
     submit.mutate({
       kind,
-      pool: effectivePool,
+      pool,
       repo: kind === "shell" ? undefined : repo || undefined,
       ref: kind === "shell" ? undefined : ref || undefined,
       script,
@@ -84,9 +79,9 @@ export function DispatchPage() {
   return (
     <View>
       <ViewHead
-        kicker="Dispatch · one job into one pool"
+        kicker="Dispatch · describe one job"
         title="Send a job to the fleet"
-        lede="It waits in its pool's queue until Nomad finds room in a VM, then streams its log here. Builds and agent sessions clone the repo first; shell jobs just run the script."
+        lede="Grove picks where it runs from what it asks for. It waits in that pool's queue until Nomad finds room in a VM, then streams its log here. Builds and agent sessions clone the repo first; shell jobs just run the script."
       />
       <form onSubmit={handleSubmit} className="panel flex max-w-3xl flex-col gap-5 p-5 sm:p-6">
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
@@ -109,8 +104,8 @@ export function DispatchPage() {
           </div>
           <label className="field">
             <span className="label">pool</span>
-            <select className="input" value={effectivePool} onChange={(e) => setPool(e.target.value)} name="pool">
-              {pools.length === 0 && <option value="">no pools observed</option>}
+            <select className="input" value={pool} onChange={(e) => setPool(e.target.value)} name="pool">
+              <option value="">automatic (grove picks)</option>
               {pools.map((p) => (
                 <option key={p} value={p}>
                   {p}
@@ -188,7 +183,7 @@ export function DispatchPage() {
             {submit.isPending ? "Dispatching…" : "Dispatch"}
           </Button>
           <span className="stat">
-            into <b>{effectivePool || "—"}</b> as <b>{kind}</b>
+            into <b>{pool || "the pool grove picks"}</b> as <b>{kind}</b>
           </span>
         </div>
       </form>

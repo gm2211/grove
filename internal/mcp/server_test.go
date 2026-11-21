@@ -372,15 +372,25 @@ func TestRunToolReportsTimeoutWithoutError(t *testing.T) {
 	}
 }
 
-func TestRunToolRequiresPoolAndScript(t *testing.T) {
+func TestRunToolRequiresScript(t *testing.T) {
 	fake := newFakeGroveAPI()
 	h := newTestHandlers(t, fake)
 
-	if _, _, err := h.run(t.Context(), nil, runArgs{Script: "x"}); err == nil {
-		t.Error("expected error when pool is empty")
-	}
 	if _, _, err := h.run(t.Context(), nil, runArgs{Pool: "linux"}); err == nil {
 		t.Error("expected error when script is empty")
+	}
+}
+
+// A job names no pool: grove places it from its description.
+func TestRunToolSendsNoPoolWhenNoneIsNamed(t *testing.T) {
+	fake := newFakeGroveAPI()
+	h := newTestHandlers(t, fake)
+
+	if _, _, err := h.run(t.Context(), nil, runArgs{Script: "echo hi", Wait: boolPtr(false)}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(fake.submittedJobs) != 1 || fake.submittedJobs[0].Pool != "" {
+		t.Fatalf("submitted %+v, want one job with no pool", fake.submittedJobs)
 	}
 }
 
@@ -596,8 +606,8 @@ func TestCIPromptDefinition(t *testing.T) {
 	for _, arg := range prompt.Arguments {
 		if arg.Name == "pool" {
 			foundPool = true
-			if !arg.Required {
-				t.Error("pool argument should be required")
+			if arg.Required {
+				t.Error("pool argument should be optional: grove picks the pool")
 			}
 		}
 	}
@@ -629,13 +639,18 @@ func TestCIPromptRendersToolCallInstructions(t *testing.T) {
 	}
 }
 
-func TestCIPromptRequiresPool(t *testing.T) {
+func TestCIPromptWithoutAPoolLeavesItToGrove(t *testing.T) {
 	fake := newFakeGroveAPI()
 	h := newTestHandlers(t, fake)
 
 	req := &mcpsdk.GetPromptRequest{Params: &mcpsdk.GetPromptParams{Arguments: map[string]string{}}}
-	if _, err := h.getCIPrompt(t.Context(), req); err == nil {
-		t.Error("expected error when pool argument is missing")
+	result, err := h.getCIPrompt(t.Context(), req)
+	if err != nil {
+		t.Fatalf("getCIPrompt: %v", err)
+	}
+	text := result.Messages[0].Content.(*mcpsdk.TextContent).Text
+	if !strings.Contains(text, "grove picks where the job runs") {
+		t.Errorf("prompt text = %q, want it to leave the pool to grove", text)
 	}
 }
 
