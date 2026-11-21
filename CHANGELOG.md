@@ -4,6 +4,10 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **A worker Mac gone for a day is no longer silent.** `GET /fleet` (and the Map's stuck panel)
+  lists a `worker-offline` problem for a worker that has been offline 24 hours or more and that
+  nobody snoozed, with what to do: bring it back, snooze it, or remove it.
+
 - **Shared pools' build and agent jobs keep their artifacts.** Only sealed pools collected
   `./artifacts/**` before, so an agent job on the macOS pool (where jobs that name no pool now go)
   always came back with none. Once such a job ends, the control plane now reads the regular files

@@ -120,6 +120,7 @@ func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
 		Nodes:   make([]FleetEntry, 0, len(nodes)),
 	}
 	now := time.Now()
+	snoozed := map[string]bool{}
 	for _, wrk := range workers {
 		entry := normalizeWorker(wrk, runningByWorker[wrk.Name])
 		if e := s.opts.Pauses.Get(wrk.Name); e.Snooze != nil || e.Health != nil || e.Operator != nil {
@@ -127,6 +128,7 @@ func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
 		}
 		if entry.SnoozedUntil != nil {
 			resp.Totals.WorkersSnoozed++
+			snoozed[wrk.Name] = true
 		}
 		resp.Workers = append(resp.Workers, entry)
 	}
@@ -169,7 +171,8 @@ func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp.Reconcile = s.fleetReconcile.summary()
-	resp.Problems = fleet.Problems(vms, nodes, now)
+	resp.Problems = append(fleet.Problems(vms, nodes, now),
+		fleet.WorkerProblems(workers, func(name string) bool { return snoozed[name] }, now)...)
 	if resp.Problems == nil {
 		resp.Problems = []fleet.Problem{}
 	}
