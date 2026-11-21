@@ -4,6 +4,11 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **A slow Tailscale lookup no longer answers 401.** A caller that signs in with its tailnet
+  identity (the dashboard in a browser, curl over Tailscale) got a 401 after exactly 5 s whenever
+  the first `tailscale whois` after the 30 s cache lapsed was slow (5.75 s measured on a Mac
+  Studio). grove now waits up to 20 s for it. Callers with a bearer token were never affected.
+
 - **A job no longer names its pool.** `pool` is optional on a job request (API, `grove dispatch`,
   the MCP `grove_run` tool, the dashboard's dispatch form): the control plane places the job from
   what it asks for. A shared macOS pool comes first; a shared Linux pool takes a job whose
