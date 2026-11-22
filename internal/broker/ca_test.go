@@ -97,3 +97,40 @@ func TestLoadOrCreateCAPersists(t *testing.T) {
 		t.Fatal("a CA with its key missing was silently replaced")
 	}
 }
+
+// A CA an older grove made, constrained to fewer hosts, can't sign leaves for the hosts added
+// since: loading it replaces it with one constrained to exactly InjectHosts.
+func TestLoadOrCreateCAReplacesStaleConstraints(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "broker")
+	saved := kindHosts[KindTerraform]
+	delete(kindHosts, KindTerraform)
+	old, err := LoadOrCreateCA(dir)
+	kindHosts[KindTerraform] = saved
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old.servesInjectHosts() {
+		t.Fatal("test setup: the old CA already covers every inject host")
+	}
+
+	ca, err := LoadOrCreateCA(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(ca.CertPEM(), old.CertPEM()) {
+		t.Fatal("a CA missing app.terraform.io was kept")
+	}
+	if !ca.servesInjectHosts() {
+		t.Fatalf("new CA permits %v, want %v", ca.cert.PermittedDNSDomains, InjectHosts())
+	}
+	if _, err := ca.Leaf("app.terraform.io"); err != nil {
+		t.Fatal(err)
+	}
+	again, err := LoadOrCreateCA(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(again.CertPEM(), ca.CertPEM()) {
+		t.Fatal("the replacement CA was not persisted")
+	}
+}
