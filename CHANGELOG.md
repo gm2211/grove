@@ -4,6 +4,11 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **`grove doctor` finds the Grove Tart copy.** It looked for `tart` only on PATH, which a login
+  shell never has the worker's Grove Tart shim on, so a worker that runs nothing but that copy was
+  reported as "tart: not installed" and its VM slots went unchecked. Doctor now asks the shim by its
+  absolute path when it is installed, and falls back to a `tart` on PATH.
+
 - **The Orchard controller is kept on the unit grove renders.** On a macOS control plane,
   `grove serve` now, while idle, rewrites a stale controller plist and reloads a controller whose
   flags drifted or whose environment holds `ORCHARD_BOOTSTRAP_ADMIN_TOKEN`, rolling back if it
