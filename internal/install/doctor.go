@@ -94,7 +94,7 @@ func RunDoctor(ctx context.Context, r Runner, opts Options, cfg *config.Config) 
 	results = append(results, checkServiceUnits(opts))
 	results = append(results, checkOrchardControllerDrift(ctx, r, opts, cfg)...)
 	results = append(results, checkTart(ctx, r, opts)...)
-	if _, err := opts.lookPath()("tart"); err == nil && opts.goos() == "darwin" {
+	if _, ok := doctorTart(opts); ok && opts.goos() == "darwin" {
 		results = append(results, checkSoftnet(ctx, r, opts, cfg))
 	}
 	results = append(results, checkTrustedTaps(ctx, r, opts, cfg != nil && cfg.Server.Listen != "")...)
@@ -563,10 +563,25 @@ func checkServiceUnits(opts Options) CheckResult {
 	return CheckResult{Name: "service-units", OK: true, Detail: strings.Join(names, ", ")}
 }
 
+// doctorTart is the tart doctor asks: the Grove Tart shim the worker runs, by absolute path, when
+// it is installed, else a tart on PATH. The worker's wrapper puts the shim first on its own PATH,
+// which a login shell's PATH never has, so looking only on PATH reported "tart: not installed" on
+// a worker that runs nothing but the Grove Tart copy (the Studio, 2026-11-24).
+func doctorTart(opts Options) (string, bool) {
+	if info, err := os.Stat(groveTartShimPath(opts)); err == nil && info.Mode().IsRegular() {
+		return groveTartShimPath(opts), true
+	}
+	if _, err := opts.lookPath()("tart"); err == nil {
+		return "tart", true
+	}
+	return "", false
+}
+
 // checkTart reports whether Tart is installed and, if so, how many macOS VM slots (grove's
 // "macos-*" pool VMs) are currently running against Apple's 2-VM-per-host cap.
 func checkTart(ctx context.Context, r Runner, opts Options) []CheckResult {
-	if _, err := opts.lookPath()("tart"); err != nil {
+	tart, ok := doctorTart(opts)
+	if !ok {
 		return []CheckResult{{
 			Name:        "tart",
 			OK:          false,
@@ -576,7 +591,7 @@ func checkTart(ctx context.Context, r Runner, opts Options) []CheckResult {
 	}
 	results := []CheckResult{{Name: "tart", OK: true, Detail: "installed"}}
 
-	stdout, _, err := r.Run(ctx, "tart", "list", "--format", "json")
+	stdout, _, err := r.Run(ctx, tart, "list", "--format", "json")
 	if err != nil {
 		results = append(results, CheckResult{
 			Name:        "tart-vm-slots",
