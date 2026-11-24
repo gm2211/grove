@@ -14,6 +14,7 @@ import (
 
 	"github.com/gm2211/grove/internal/artifacts"
 	"github.com/gm2211/grove/internal/dispatch"
+	"github.com/gm2211/grove/internal/fleet"
 	"github.com/gm2211/grove/internal/gitauth"
 	"github.com/gm2211/grove/internal/nomad"
 	"github.com/gm2211/grove/internal/orchard"
@@ -57,6 +58,10 @@ type Options struct {
 	// WorkerVMImages names the VM images (Pool.Image) of every pool that selects worker, for
 	// GET /broker/entries?vmImagePull=1. Nil means no worker is handed a registry login.
 	WorkerVMImages func(ctx context.Context, worker string) ([]string, error)
+	// BrokerCAs records, from each worker's broker sync (BrokerCAMadeHeader), when that broker
+	// made the CA it serves, for the fleet reconciler to rebuild VMs that trust an older one. Nil
+	// ignores the header.
+	BrokerCAs *fleet.BrokerCAs
 	// Pauses records why each worker is paused (snooze, operator, health). Nil disables
 	// snoozing (POST /workers/{name}/snooze answers 503) and leaves pause/resume as plain Orchard
 	// calls. `grove serve` hands the same store to the expiry loop and the health monitor.

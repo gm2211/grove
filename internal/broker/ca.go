@@ -38,6 +38,9 @@ const (
 	caKeyFile = "broker-ca-key.pem"
 	caLife    = 5 * 365 * 24 * time.Hour
 	leafLife  = 7 * 24 * time.Hour
+	// caBackdate is how far before its creation a CA's validity starts, for a VM whose clock is a
+	// little behind the host's.
+	caBackdate = time.Hour
 )
 
 // LoadOrCreateCA loads the CA kept in dir, creating it (key mode 0600, dir 0700) on first use.
@@ -88,7 +91,7 @@ func newCA(now time.Time) (*CA, []byte, error) {
 	tmpl := &x509.Certificate{
 		SerialNumber:                randomSerial(),
 		Subject:                     pkix.Name{CommonName: "grove broker CA"},
-		NotBefore:                   now.Add(-time.Hour),
+		NotBefore:                   now.Add(-caBackdate),
 		NotAfter:                    now.Add(caLife),
 		IsCA:                        true,
 		BasicConstraintsValid:       true,
@@ -144,6 +147,10 @@ func (c *CA) servesInjectHosts() bool {
 }
 
 // CertPEM is the CA certificate a job VM installs as trusted.
+// MadeAt is when the CA was created: a VM booted before then trusts an older CA, if any. The
+// control plane rebuilds such VMs (fleet.BrokerCAs), told this time on every sync.
+func (c *CA) MadeAt() time.Time { return c.cert.NotBefore.Add(caBackdate) }
+
 func (c *CA) CertPEM() []byte { return append([]byte(nil), c.certPEM...) }
 
 // Leaf returns a certificate for host, one of InjectHosts, minting it on first use and again when

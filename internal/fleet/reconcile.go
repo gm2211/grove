@@ -66,6 +66,9 @@ type Options struct {
 	// Load sizes elastic pools (see Pool.MaxPerWorker and autoscale.go). Nil keeps each elastic
 	// pool at its current size, clamped to its bounds.
 	Load *JobLoad
+	// BrokerCAs, when set, rebuilds an idle shared VM that booted before its worker's credential
+	// broker made the CA it serves now (see BrokerCAs). Nil never does.
+	BrokerCAs *BrokerCAs
 	// Now returns the current time; defaults to time.Now. Overridable for tests.
 	Now func() time.Time
 	// Logger receives Run's per-tick errors without stopping the loop. Defaults to log.Default().
@@ -274,6 +277,9 @@ func (r *Reconciler) Plan(ctx context.Context) (Plan, error) {
 				}
 				if ok && !specDrifted(spec, existing) {
 					why, due := r.unhealthyVMDue(existing)
+					if why == "" {
+						why, due = r.staleBrokerCA(pool, worker.Name, existing), true
+					}
 					if why == "" || !due {
 						continue // already up to date, or unhealthy too recently to rebuild yet
 					}

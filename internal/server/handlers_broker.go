@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/gm2211/grove/internal/broker"
 )
@@ -86,6 +87,7 @@ func (s *Server) handleBrokerEntries(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusOK, resp)
 		return
 	}
+	s.observeBrokerCA(r, p.Name)
 	if pw, ok := s.keychainUnlocks.take(p.Name); ok {
 		resp.KeychainUnlock = pw
 		s.log.Info("keychain unlock collected by the worker's broker", "worker", p.Name)
@@ -99,6 +101,27 @@ func (s *Server) handleBrokerEntries(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	s.writeJSON(w, http.StatusOK, resp)
+}
+
+// BrokerCAMadeHeader is the header a worker's broker sends on GET /broker/entries: when it made
+// the CA it serves (RFC 3339). A shared VM that booted before then trusts an older CA, and the
+// fleet reconciler rebuilds it once idle (fleet.BrokerCAs). It names a time, never a key.
+const BrokerCAMadeHeader = "Grove-Broker-Ca-Made"
+
+// observeBrokerCA records BrokerCAMadeHeader for worker. Only a bound broker credential's sync
+// gets here: anything else that claimed a new CA could make the reconciler rebuild idle VMs.
+func (s *Server) observeBrokerCA(r *http.Request, worker string) {
+	v := r.Header.Get(BrokerCAMadeHeader)
+	if v == "" || s.opts.BrokerCAs == nil {
+		return
+	}
+	made, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		return
+	}
+	if s.opts.BrokerCAs.Observe(worker, made, time.Now()) {
+		s.log.Info("worker's credential broker reports its CA; VMs that booted before it are rebuilt once idle", "worker", worker, "caMade", made.UTC().Format(time.RFC3339))
+	}
 }
 
 // brokerBound reports whether p's broker credential is bound to a machine (see Binding). Only a
