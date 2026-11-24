@@ -9,6 +9,12 @@ All notable changes to grove are documented here.
   reported as "tart: not installed" and its VM slots went unchecked. Doctor now asks the shim by its
   absolute path when it is installed, and falls back to a `tart` on PATH.
 
+- **A VM that trusts the broker's old CA is rebuilt by itself.** When a release adds an inject
+  host, the broker replaces its CA, and every shared VM booted before then failed each clone
+  through it with "self signed certificate in certificate chain" until someone recycled it (a
+  worker's macOS pool sat like that for two days). The broker now tells the control plane on
+  each sync when it made its CA, and the reconciler rebuilds each such VM once it runs no job.
+
 - **The Orchard controller is kept on the unit grove renders.** On a macOS control plane,
   `grove serve` now, while idle, rewrites a stale controller plist and reloads a controller whose
   flags drifted or whose environment holds `ORCHARD_BOOTSTRAP_ADMIN_TOKEN`, rolling back if it

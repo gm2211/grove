@@ -63,6 +63,10 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body io.Re
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, reqBody, respBody any) error {
+	return c.doJSONHeader(ctx, method, path, nil, reqBody, respBody)
+}
+
+func (c *Client) doJSONHeader(ctx context.Context, method, path string, header http.Header, reqBody, respBody any) error {
 	var body io.Reader
 	if reqBody != nil {
 		data, err := json.Marshal(reqBody)
@@ -77,6 +81,11 @@ func (c *Client) doJSON(ctx context.Context, method, path string, reqBody, respB
 	}
 	if reqBody != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, vs := range header {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -107,8 +116,19 @@ func (c *Client) BrokerEntries(ctx context.Context) ([]broker.Entry, error) {
 // BrokerSync is BrokerEntries plus the rest of the answer: a login password an operator typed
 // into the control panel for this worker, handed over once.
 func (c *Client) BrokerSync(ctx context.Context) (*server.BrokerEntriesResponse, error) {
+	return c.BrokerSyncCA(ctx, time.Time{})
+}
+
+// BrokerSyncCA is BrokerSync that also tells the control plane when this broker made the CA it
+// serves (server.BrokerCAMadeHeader), so it can rebuild the VMs that booted trusting an older one.
+// A zero caMade sends nothing.
+func (c *Client) BrokerSyncCA(ctx context.Context, caMade time.Time) (*server.BrokerEntriesResponse, error) {
 	var out server.BrokerEntriesResponse
-	if err := c.doJSON(ctx, http.MethodGet, "/broker/entries", nil, &out); err != nil {
+	var header http.Header
+	if !caMade.IsZero() {
+		header = http.Header{server.BrokerCAMadeHeader: {caMade.UTC().Format(time.RFC3339)}}
+	}
+	if err := c.doJSONHeader(ctx, http.MethodGet, "/broker/entries", header, nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

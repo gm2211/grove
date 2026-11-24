@@ -9,23 +9,28 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/gm2211/grove/internal/server"
 )
 
 func TestBrokerFetchReadsItsCredentialOnceFound(t *testing.T) {
-	var auth []string
+	var auth, made []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/broker/entries" {
 			http.NotFound(w, r)
 			return
 		}
 		auth = append(auth, r.Header.Get("Authorization"))
+		made = append(made, r.Header.Get(server.BrokerCAMadeHeader))
 		w.Write([]byte(`{"entries":[]}`))
 	}))
 	defer srv.Close()
 
 	reads := 0
 	stored := false
-	fetch := brokerFetch(srv.URL, func(context.Context) (string, error) {
+	caMade := time.Date(2026, 11, 22, 5, 24, 5, 0, time.UTC)
+	fetch := brokerFetch(srv.URL, caMade, func(context.Context) (string, error) {
 		reads++
 		if !stored {
 			return "", errors.New("no broker credential in Keychain")
@@ -51,6 +56,13 @@ func TestBrokerFetchReadsItsCredentialOnceFound(t *testing.T) {
 	for _, a := range auth {
 		if a != "Bearer broker-token" {
 			t.Errorf("Authorization = %q", a)
+		}
+	}
+	// Every sync tells the control plane when this broker made its CA, so it can rebuild the VMs
+	// that booted trusting an older one.
+	for _, m := range made {
+		if m != "2026-11-22T05:24:05Z" {
+			t.Errorf("%s = %q, want the CA's creation time", server.BrokerCAMadeHeader, m)
 		}
 	}
 }

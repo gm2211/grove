@@ -319,6 +319,10 @@ tokens on the way to a fixed set of upstreams and masks the tokens on the way ba
   isn't bound to needs `grove join approve --replace` (`joinReplaces`). The control plane's own
   worker gets its credential through a `brokerOnly` join (`internal/cli/install_broker.go`), never
   another route. `internal/server/broker_binding_test.go` asserts it.
+- A VM trusts the broker CA it fetched at boot. The broker sends when it made that CA on every
+  sync (`server.BrokerCAMadeHeader`, a time, never a key; only from a bound credential), and Plan
+  rebuilds an idle shared VM that booted before it (`fleet.BrokerCAs`, `staleBrokerCA`): never ask
+  the operator to recycle VMs after a CA change, and never delete a busy one for it.
 - The broker's own credential comes from join approval (`handlers_join.go`) and lives in a 0600
   file under `~/.config/grove/credentials` (`config.ResolveBrokerToken`; the login Keychain item
   of an older grove is only a migration source and read fallback), never in arguments or the

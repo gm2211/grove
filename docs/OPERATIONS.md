@@ -612,8 +612,11 @@ jobs ghcr.io, app.terraform.io, api.render.com and api.cloudflare.com) the broke
 - terminates TLS with its own CA (`<grove config dir>/broker/broker-ca.pem`), which is
   name-constrained to those hosts, so it can't be used to impersonate any other site. A CA kept
   from a grove that served other hosts is replaced when the broker starts (`LoadOrCreateCA`):
-  VMs that trusted the old one keep it until they are recreated, and a new VM fetches the new one
-  at boot, so recycle shared VMs after an upgrade that adds a host;
+  a VM fetches the CA once, at boot, so one booted before the change trusts only the old one and
+  can't clone or call any of those hosts. The broker tells the control plane on every sync when
+  it made its CA, and `grove serve` rebuilds each shared VM that booted before then as soon as it
+  runs no job (`fleet.BrokerCAs`; the delete reason says "trusts the credential broker's previous
+  CA"). Nobody recycles VMs by hand after an upgrade;
 - refuses the request unless the placeholder is live, issued for that service, and sent from the
   job's own VM (see "Binding a placeholder to its VM" below);
 - swaps the placeholder for the real token in `Authorization` (Bearer, token or Basic, which is
