@@ -78,9 +78,8 @@ type Pool struct {
 	JobCPU    uint64 `yaml:"jobCPU,omitempty" json:"jobCPU,omitempty"`
 	JobMemory uint64 `yaml:"jobMemory,omitempty" json:"jobMemory,omitempty"`
 	// Fallback names the pool this pool's jobs move to when they can't be placed here (see
-	// Spec.FallbackFor and docs/JOBS.md "Falling back to macOS"). Empty means automatic: a shared
-	// Linux pool falls back to a shared macos pool, since most Linux build scripts run on macOS
-	// too. FallbackNone turns it off.
+	// Spec.FallbackFor): another shared pool with the same guest OS. Empty, or FallbackNone, means
+	// none. A pool of the other OS is ignored, with a warning: a Linux job never runs on macOS.
 	Fallback string `yaml:"fallback,omitempty" json:"fallback,omitempty"`
 	// MinPerWorker and MaxPerWorker make a shared pool elastic: each matching worker runs between
 	// min and max of its VMs, more while jobs wait for the pool, fewer once they sit idle, and a
@@ -125,25 +124,32 @@ func (p Pool) Elastic() bool {
 const FallbackNone = "none"
 
 // FallbackFor resolves p.Fallback against the spec: the pool p's unplaceable jobs move to, or ""
-// for none. Only a shared pool falls back, and only to another shared pool: a sealed pool's jobs
-// run under different isolation and on the control plane's own Nomad client.
+// for none. Only a shared pool falls back, only to another shared pool, and only to one with the
+// same guest OS: a Linux pool's job never runs on macOS (or the other way round), it waits for a
+// VM of its own pool (an elastic pool scales up for it) or fails saying why. A sealed pool's jobs
+// run under different isolation and on the control plane's own Nomad client. Nothing falls back
+// by default.
 func (s *Spec) FallbackFor(p Pool) string {
-	if p.Isolated() || p.Fallback == FallbackNone {
+	if p.Isolated() || p.Fallback == "" || p.Fallback == FallbackNone {
 		return ""
 	}
-	target := p.Fallback
-	if target == "" {
-		if p.MacOS() {
-			return ""
-		}
-		target = MacOSPool
-	}
 	for _, q := range s.Pools {
-		if q.Name == target && q.Name != p.Name && !q.Isolated() {
-			return target
+		if q.Name == p.Fallback && q.Name != p.Name && !q.Isolated() && q.MacOS() == p.MacOS() {
+			return q.Name
 		}
 	}
 	return ""
+}
+
+// crossOSFallback reports whether p names a fallback pool of another guest OS, which FallbackFor
+// ignores (an earlier grove moved Linux jobs to macOS).
+func (s *Spec) crossOSFallback(p Pool) bool {
+	for _, q := range s.Pools {
+		if q.Name == p.Fallback && q.MacOS() != p.MacOS() {
+			return true
+		}
+	}
+	return false
 }
 
 // MacOSPool is the name of the pool whose VMs are macOS guests; every other pool is Linux.

@@ -56,6 +56,11 @@ func (s *service) fallbackTarget(rec *record, evals []nomad.Evaluation, now time
 		return "", ""
 	}
 	tpc := s.pools[target]
+	if spc := s.pools[req.Pool]; spc.OS != "" && tpc.OS != "" && spc.OS != tpc.OS {
+		// A job runs on its own pool's OS or not at all: a Linux job that "succeeds" on macOS
+		// hides that its pool had no VM. fleet.Spec.FallbackFor never names such a pool either.
+		return "", ""
+	}
 	if len(req.Credentials) > 0 && tpc.Isolated {
 		// A sealed pool's VMs can't reach the credential broker.
 		return "", ""
