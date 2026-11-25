@@ -4,6 +4,12 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **`grove setup` rejoins under the worker's own name.** A re-run joined under the Mac's
+  hostname (often just "Mac"), so the control plane issued credentials for a worker that didn't
+  exist, refused the one still running under its installed name, and the Mac's VMs were deleted.
+  Setup now asks to join as the name the worker is installed under, and uses the hostname only
+  for a first install.
+
 - **`grove doctor` finds the Grove Tart copy.** It looked for `tart` only on PATH, which a login
   shell never has the worker's Grove Tart shim on, so a worker that runs nothing but that copy was
   reported as "tart: not installed" and its VM slots went unchecked. Doctor now asks the shim by its
