@@ -450,8 +450,10 @@ chosen by the control plane; the clone token runs only in the runner image or th
   or any other field into it, and never forward `Meta["image"]` (the old passthrough was a bug).
 - build.nomad.hcl's `source` task stays on `{{.RunnerImage}}`: it holds the clone token. Only `main`
   uses `${NOMAD_META_task_image}`, and a missing value must fail the task, not default to an image.
-- A job with an environment falls back only to a macOS pool with toolchains enabled, and only when
-  it carries a toolchain (`effectivePin`, `fallbackTarget`); Submit is the only place
+- No job falls back to a pool of another OS (`fleet.Spec.FallbackFor`, and `fallbackTarget`
+  refuses a `PoolConfig.OS` mismatch): a Linux job waits for a Linux VM, an elastic pool at zero
+  scales up for it, and it fails saying why when none can come. Never reintroduce a Linux-to-macOS
+  fallback. A toolchain job runs on macOS only when submitted to that pool. Submit is the only place
   `toolchain_json` is set, from the validated, re-marshalled spec (`ValidateToolchain`,
   `canonical`), never from a caller's bytes or `Meta`; the installer runs as `_grovetool` from
   root-owned code and `_grovejob` can't write the cache. Sealed pools refuse environments, and

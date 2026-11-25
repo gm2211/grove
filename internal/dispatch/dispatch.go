@@ -95,7 +95,7 @@ type Environment struct {
 	// Image is "<registry>/<repository>@sha256:<64 hex>": explicit registry host, digest, no tag.
 	Image string `json:"image"`
 	// Toolchain asks for native tool versions instead of (on a macOS pool) or as well as (on a
-	// Linux pool, where it makes the job eligible to fall back to macOS) the image. The control
+	// Linux pool) the image. The control
 	// plane validates it (ValidateToolchain) and hands the worker only the re-marshalled form.
 	Toolchain *Toolchain `json:"toolchain,omitempty"`
 }

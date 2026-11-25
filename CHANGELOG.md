@@ -4,6 +4,14 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **A Linux job runs on Linux or fails; it never runs on macOS.** A Linux pool scaled to zero had
+  no Nomad node, so 20 seconds after submit grove moved its job to the `macos` pool, where it ran
+  and reported success (`uname -a` printed `Darwin`), and because the job then counted as macOS
+  demand the Linux pool never scaled back up. Nothing falls back to a pool of another OS now, by
+  default or when fleet.yaml says `fallback: macos` (ignored, with a warning): the job waits as
+  Linux demand, the pool starts a VM for it, and when no Mac can host the pool the job fails
+  saying why. See docs/JOBS.md "A job runs on its pool's OS, or not at all".
+
 - **`grove doctor` finds the Grove Tart copy.** It looked for `tart` only on PATH, which a login
   shell never has the worker's Grove Tart shim on, so a worker that runs nothing but that copy was
   reported as "tart: not installed" and its VM slots went unchecked. Doctor now asks the shim by its

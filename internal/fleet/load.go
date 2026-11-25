@@ -66,6 +66,11 @@ func (s *Spec) Warnings() []string {
 				"pool %q: workerSelector pins it to one Mac (host: %s), so the pool stops whenever that Mac is away; drop it: grove runs the pool on every Mac that is up and can get its image, and learns which ones can",
 				p.Name, host))
 		}
+		if p.Fallback != "" && p.Fallback != FallbackNone && s.crossOSFallback(p) {
+			out = append(out, fmt.Sprintf(
+				"pool %q: fallback %q is ignored: it runs another OS, and a job never runs on another OS than its pool's. Remove it; the pool's jobs wait for a VM of their own pool instead",
+				p.Name, p.Fallback))
+		}
 		if len(p.PreferWorkers) > 0 {
 			out = append(out, fmt.Sprintf(
 				"pool %q: preferWorkers is ignored; grove places the pool's VMs on every Mac that is up and can get its image. Remove it",
@@ -223,6 +228,8 @@ func (s *Spec) Validate() error {
 			return fmt.Errorf("pool %q: fallback can't be the pool itself", p.Name)
 		case !seen[p.Fallback]:
 			return fmt.Errorf("pool %q: fallback pool %q doesn't exist", p.Name, p.Fallback)
+		case s.crossOSFallback(p):
+			// Ignored with a warning (Warnings), so an older fleet.yaml still loads.
 		case s.FallbackFor(p) == "":
 			return fmt.Errorf("pool %q: fallback needs two shared (not isolated) pools", p.Name)
 		}
