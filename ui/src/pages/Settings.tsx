@@ -36,11 +36,13 @@ export function SettingsPage() {
         title="Connection and credentials"
         lede="Where this UI sends its requests, and the one control-plane setting an operator can change from here."
       />
-      <div className="grid max-w-5xl grid-cols-1 items-start gap-5 lg:grid-cols-2">
+      <div className="grid max-w-5xl grid-cols-1 items-stretch gap-5 lg:grid-cols-2">
         <section className="panel flex flex-col gap-4 p-5">
-          <span className="kicker" style={{ fontSize: 10 }}>
-            Control plane
-          </span>
+          <div className="panel-head">
+            <span className="kicker" style={{ fontSize: 10 }}>
+              Control plane
+            </span>
+          </div>
           {!localBridge && (
             <label className="field">
               <span className="label">grove server URL</span>

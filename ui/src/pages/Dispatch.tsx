@@ -159,7 +159,7 @@ export function DispatchPage() {
                   setEnv((rows) => rows.map((r, idx) => (idx === i ? { ...r, value: e.target.value } : r)))
                 }
               />
-              <Button type="button" size="icon" className="h-[38px] w-[38px]" title="remove" onClick={() => setEnv((rows) => rows.filter((_, idx) => idx !== i))}>
+              <Button type="button" size="icon" title="remove" onClick={() => setEnv((rows) => rows.filter((_, idx) => idx !== i))}>
                 ✕
               </Button>
             </div>

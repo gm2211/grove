@@ -130,13 +130,15 @@ export function ViewHead({
   actions?: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-wrap items-end gap-4">
-      <div className="flex max-w-[74ch] flex-col gap-[7px]">
-        <span className="kicker">{kicker}</span>
-        <h1 className="headline m-0">{title}</h1>
-        {lede && <p className="lede m-0">{lede}</p>}
+    <div className="flex flex-col gap-[7px]">
+      <span className="kicker">{kicker}</span>
+      {/* Actions share the headline's row, so they line up with the title rather than floating
+          beside however many lines the lede wraps to. */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
+        <h1 className="headline m-0 min-w-0">{title}</h1>
+        {actions && <div className="flex flex-wrap items-center gap-2 sm:ml-auto">{actions}</div>}
       </div>
-      {actions && <div className="ml-auto flex flex-wrap items-center gap-2">{actions}</div>}
+      {lede && <p className="lede m-0 max-w-[74ch]">{lede}</p>}
     </div>
   );
 }

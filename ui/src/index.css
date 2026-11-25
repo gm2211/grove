@@ -13,6 +13,10 @@
  * offline.
  */
 :root {
+  /* One height per control size, so buttons, tabs, selects and inputs on a row line up. */
+  --ctl-h: 32px;
+  --ctl-h-sm: 24px;
+  --field-h: 38px;
   color-scheme: dark;
 
   --bg: #1d2024;
@@ -224,6 +228,13 @@ button {
   border: 1px solid var(--border);
   border-radius: 10px;
 }
+/* A panel's title row: kicker plus optional pill, same height whether or not the pill is there. */
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 20px;
+}
 
 .chip {
   font-family: var(--font-mono);
@@ -266,7 +277,12 @@ button {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   line-height: 1;
-  padding: 8px 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--ctl-h);
+  padding: 0 12px;
   border-radius: 5px;
   background: transparent;
   border: 1px solid var(--border-3);
@@ -288,7 +304,8 @@ button {
 }
 .act.sm {
   font-size: 10px;
-  padding: 5px 8px;
+  height: var(--ctl-h-sm);
+  padding: 0 8px;
 }
 .act-rec {
   border-color: var(--accent);
@@ -330,8 +347,8 @@ button {
 }
 
 .iconbtn {
-  width: 30px;
-  height: 30px;
+  width: var(--ctl-h);
+  height: var(--ctl-h);
   flex: none;
   display: flex;
   align-items: center;
@@ -360,7 +377,10 @@ button {
   font-size: 11.5px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  padding: 7px 13px;
+  display: inline-flex;
+  align-items: center;
+  height: calc(var(--ctl-h) - 2px);
+  padding: 0 13px;
   background: transparent;
   color: var(--fg-muted);
   border: 0;
@@ -383,7 +403,8 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 6px 11px;
+  height: var(--ctl-h);
+  padding: 0 11px;
   border: 1px solid #383f46;
   border-radius: 7px;
   background: transparent;
@@ -439,6 +460,25 @@ button {
   border-radius: 7px;
   padding: 9px 11px;
   transition: border-color 140ms ease;
+}
+input.input,
+select.input {
+  height: var(--field-h);
+}
+/* A toolbar-sized select or search box, sitting beside .selbtn / .act on one row. */
+.input.compact {
+  height: var(--ctl-h);
+  padding-top: 0;
+  padding-bottom: 0;
+}
+/* Inside a form, a segmented control is as tall as the inputs next to it. */
+.field > .seg .systab {
+  height: calc(var(--field-h) - 2px);
+}
+/* Iconbtn beside a form input (e.g. an env row's remove button) matches the input. */
+.field .iconbtn {
+  width: var(--field-h);
+  height: var(--field-h);
 }
 .input:hover {
   border-color: var(--border-3);
