@@ -607,10 +607,17 @@ larger body gets a 400.
 A job never holds a real credential. It gets a placeholder (`gph1_…`), and each worker Mac runs
 `grove broker`, the proxy its job VMs send traffic through (port 3128 on the VM bridge address,
 192.168.64.1 unless vmnet is configured otherwise). For a request to one of the fixed upstreams
-(github.com, api.github.com, api.anthropic.com, api.openai.com, chatgpt.com) the broker:
+(github.com, api.github.com, api.anthropic.com, api.openai.com, chatgpt.com, and for deploy
+jobs ghcr.io, app.terraform.io, api.render.com and api.cloudflare.com) the broker:
 
 - terminates TLS with its own CA (`<grove config dir>/broker/broker-ca.pem`), which is
-  name-constrained to those five hosts, so it can't be used to impersonate any other site;
+  name-constrained to those hosts, so it can't be used to impersonate any other site. A CA kept
+  from a grove that served other hosts is replaced when the broker starts (`LoadOrCreateCA`):
+  a VM fetches the CA once, at boot, so one booted before the change trusts only the old one and
+  can't clone or call any of those hosts. The broker tells the control plane on every sync when
+  it made its CA, and `grove serve` rebuilds each shared VM that booted before then as soon as it
+  runs no job (`fleet.BrokerCAs`; the delete reason says "trusts the credential broker's previous
+  CA"). Nobody recycles VMs by hand after an upgrade;
 - refuses the request unless the placeholder is live, issued for that service, and sent from the
   job's own VM (see "Binding a placeholder to its VM" below);
 - swaps the placeholder for the real token in `Authorization` (Bearer, token or Basic, which is
@@ -996,7 +1003,8 @@ loads; a guest with no IPv4 default route gets no exception.
 
 At boot a shared VM fetches the broker's CA from `http://<gateway>:3128/ca.pem` and keeps it only
 if it is a single CA certificate (pathlen 0) whose critical name constraints permit only the
-broker's hosts (github.com, api.github.com, api.anthropic.com, api.openai.com, chatgpt.com, or
+broker's hosts (github.com, api.github.com, api.anthropic.com, api.openai.com, chatgpt.com,
+ghcr.io, app.terraform.io, api.render.com, api.cloudflare.com, or
 some of them) and exclude every IP address; even a forged CA that passes can vouch for no other
 site. The VM then
 advertises the broker as Nomad node meta (`grove_broker`, `grove_broker_ca`, in
@@ -1273,6 +1281,15 @@ then fails to connect, and Xcode host mounts are refused. A launchd job also kee
 and environment of the plist it was bootstrapped from, so re-rendering the file changes nothing
 until the job is reloaded. `grove doctor` (`orchard-controller-unit`) and `grove install` report a
 running controller that differs from the rendered unit; install never restarts it.
+
+On macOS, `grove serve` does the steps below by itself (`install.HealOrchardController`, checked
+every 30 minutes, only while no job is pending or running): it rewrites a plist that differs from
+the rendered one, reloads a controller that runs other flags or holds
+`ORCHARD_BOOTSTRAP_ADMIN_TOKEN`, waits up to two minutes for the controller to answer, and
+otherwise puts back a plist with the arguments that were running (never the token) and reloads
+that. It reloads at most once a day and logs what it did. Deleting the `bootstrap-admin` service
+account (next section) stays a hand step: it needs that account's own admin credential.
+The manual steps, for Linux or when the log says it could not:
 
 Restart onto the rendered unit (control plane, as the user that owns the controller):
 

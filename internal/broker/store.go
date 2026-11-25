@@ -42,12 +42,24 @@ const (
 	KindGitHub    Kind = "github"
 	KindAnthropic Kind = "anthropic"
 	KindOpenAI    Kind = "openai"
+	// Deploy credentials: a job that pushes an image to GHCR and runs Terraform against HCP
+	// Terraform state and the Render and Cloudflare providers holds only placeholders for these.
+	// ghcr is its own kind, not github's: a token armed for pushing images never reaches the
+	// GitHub API, and a github token never reaches the registry.
+	KindGHCR       Kind = "ghcr"
+	KindTerraform  Kind = "terraform"
+	KindRender     Kind = "render"
+	KindCloudflare Kind = "cloudflare"
 )
 
 var kindHosts = map[Kind][]string{
-	KindGitHub:    {"github.com", "api.github.com"},
-	KindAnthropic: {"api.anthropic.com"},
-	KindOpenAI:    {"api.openai.com", "chatgpt.com"},
+	KindGitHub:     {"github.com", "api.github.com"},
+	KindAnthropic:  {"api.anthropic.com"},
+	KindOpenAI:     {"api.openai.com", "chatgpt.com"},
+	KindGHCR:       {"ghcr.io"},
+	KindTerraform:  {"app.terraform.io"},
+	KindRender:     {"api.render.com"},
+	KindCloudflare: {"api.cloudflare.com"},
 }
 
 // Hosts returns the upstream hosts a kind's token may be sent to.

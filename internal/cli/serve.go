@@ -192,6 +192,9 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 		ControllerURL: cfg.Orchard.URL, ServerURL: cfg.Server.URL,
 		GitAuth: gitAuthStore, RegistryAuth: registryStore, Secrets: secretStore, Pauses: pauseStore,
 	}
+	// One record of each worker broker's CA, written by its syncs and read by the reconciler.
+	brokerCAs := &fleet.BrokerCAs{}
+	serverOpts.BrokerCAs = brokerCAs
 	serverOpts.WorkerVMImages = func(ctx context.Context, worker string) ([]string, error) {
 		spec, err := fleet.Load(cfg.Fleet)
 		if err != nil {
@@ -239,7 +242,7 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 	go runGitHubRenewal(ctx, gitAuthStore)
 	// Idle means no job is pending or running: a restart drops the in-memory credential entries
 	// their brokers sync from here.
-	go runAutoUpdate(ctx, "serve", func(ctx context.Context) bool {
+	idle := func(ctx context.Context) bool {
 		jobs, err := ds.List(ctx)
 		if err != nil {
 			return false
@@ -250,7 +253,10 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 			}
 		}
 		return true
-	}, restartSelf)
+	}
+	go runAutoUpdate(ctx, "serve", idle, restartSelf)
+	// The controller reload pauses scheduling for seconds, so it waits for idle too.
+	go runControllerHeal(ctx, filepath.Dir(cfgPath), oc, idle)
 
 	// Recreate TTL-recycled VMs: ARCHITECTURE.md's "Recycling / hygiene" step 3 says grove's fleet
 	// reconciler notices a deleted VM and recreates it, but until now `grove serve` never actually
@@ -269,6 +275,7 @@ func runServe(ctx context.Context, listen string, fleetReconcileInterval time.Du
 		loop := newFleetReconcileLoop(cfg, oc, srv.FleetReconcile())
 		loop.health = poolHealth
 		loop.registry = registryStore
+		loop.brokerCAs = brokerCAs
 		// Image names and Orchard's messages only; without it the pool just isn't kept on its last
 		// good image, so a broken file must not stop serve.
 		if holds, err := fleet.OpenImageHolds(filepath.Join(filepath.Dir(cfgPath), "images.json")); err != nil {
@@ -420,6 +427,9 @@ type fleetReconcileLoop struct {
 	// images keeps a pool on the last image it ran while the one it names can't be pulled (see
 	// fleet.ImageHolds); nil turns that off.
 	images *fleet.ImageHolds
+	// brokerCAs is when each worker's credential broker made its CA, as its syncs report it
+	// (shared with the HTTP server), so VMs that booted trusting an older one are rebuilt.
+	brokerCAs *fleet.BrokerCAs
 
 	// jobs, vmLoads and tracker feed elastic pools' autoscaling (see fleet.JobLoad); nil leaves
 	// elastic pools at their current size.
@@ -517,6 +527,7 @@ func (l *fleetReconcileLoop) tick(ctx context.Context) {
 	}
 
 	options.Load = l.jobLoad(ctx, time.Now())
+	options.BrokerCAs = l.brokerCAs
 	if l.registry != nil {
 		options.RegistryPull = l.registry
 	}

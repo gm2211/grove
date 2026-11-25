@@ -154,7 +154,7 @@ func runBroker(cmd *cobra.Command, _ []string) error {
 	store := broker.NewStore(0)
 	unlocks := newKeychainHandoff()
 	syncer := &broker.Syncer{
-		Fetch:    brokerFetch(serverURL, config.ResolveBrokerToken, unlocks.offer),
+		Fetch:    brokerFetch(serverURL, ca.MadeAt(), config.ResolveBrokerToken, unlocks.offer),
 		Sources:  brokerSources(install.ExecRunner{}),
 		Store:    store,
 		Interval: brokerSyncInterval,
@@ -215,7 +215,7 @@ func brokerSources(r broker.Runner) *broker.TartSources {
 // returns. It reads the credential on first use and keeps it once found: until `grove setup` has
 // stored one, every sync fails (and says why) but the broker keeps serving, so job VMs still get
 // its CA and plain tunnels. Setup restarts the broker when it stores a new credential.
-func brokerFetch(serverURL string, token func(context.Context) (string, error), unlock func(password string)) func(context.Context) ([]broker.Entry, error) {
+func brokerFetch(serverURL string, caMade time.Time, token func(context.Context) (string, error), unlock func(password string)) func(context.Context) ([]broker.Entry, error) {
 	var mu sync.Mutex
 	var client *apiclient.Client
 	return func(ctx context.Context) ([]broker.Entry, error) {
@@ -230,7 +230,7 @@ func brokerFetch(serverURL string, token func(context.Context) (string, error), 
 		}
 		c := client
 		mu.Unlock()
-		resp, err := c.BrokerSync(ctx)
+		resp, err := c.BrokerSyncCA(ctx, caMade)
 		if err != nil {
 			return nil, err
 		}

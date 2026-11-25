@@ -12,6 +12,23 @@ All notable changes to grove are documented here.
   Linux demand, the pool starts a VM for it, and when no Mac can host the pool the job fails
   saying why. See docs/JOBS.md "A job runs on its pool's OS, or not at all".
 
+- **`grove doctor` finds the Grove Tart copy.** It looked for `tart` only on PATH, which a login
+  shell never has the worker's Grove Tart shim on, so a worker that runs nothing but that copy was
+  reported as "tart: not installed" and its VM slots went unchecked. Doctor now asks the shim by its
+  absolute path when it is installed, and falls back to a `tart` on PATH.
+
+- **A VM that trusts the broker's old CA is rebuilt by itself.** When a release adds an inject
+  host, the broker replaces its CA, and every shared VM booted before then failed each clone
+  through it with "self signed certificate in certificate chain" until someone recycled it (a
+  worker's macOS pool sat like that for two days). The broker now tells the control plane on
+  each sync when it made its CA, and the reconciler rebuilds each such VM once it runs no job.
+
+- **The Orchard controller is kept on the unit grove renders.** On a macOS control plane,
+  `grove serve` now, while idle, rewrites a stale controller plist and reloads a controller whose
+  flags drifted or whose environment holds `ORCHARD_BOOTSTRAP_ADMIN_TOKEN`, rolling back if it
+  doesn't come back within two minutes. Before, `grove doctor` reported it and waited for an
+  operator; a stale plist meant the next reboot cut every worker off.
+
 - **A worker Mac gone for a day is no longer silent.** `GET /fleet` (and the Map's stuck panel)
   lists a `worker-offline` problem for a worker that has been offline 24 hours or more and that
   nobody snoozed, with what to do: bring it back, snooze it, or remove it.

@@ -14,6 +14,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"sync"
 	"time"
 )
@@ -36,19 +38,30 @@ const (
 	caKeyFile = "broker-ca-key.pem"
 	caLife    = 5 * 365 * 24 * time.Hour
 	leafLife  = 7 * 24 * time.Hour
+	// caBackdate is how far before its creation a CA's validity starts, for a VM whose clock is a
+	// little behind the host's.
+	caBackdate = time.Hour
 )
 
 // LoadOrCreateCA loads the CA kept in dir, creating it (key mode 0600, dir 0700) on first use.
 // Keeping it across restarts means a VM that already trusts it keeps working when the broker
 // restarts. With dir "" the CA lives in memory only.
+//
+// A stored CA whose name constraints are not exactly InjectHosts (a grove that served fewer or
+// other hosts made it) is replaced: it could not sign a leaf for a newly added host, and must not
+// keep vouching for a host the broker no longer serves. VMs that trusted the old CA keep it until
+// they are recreated; a new VM fetches the new one at boot. The broker only restarts onto a new
+// release when no job is pending or running, so no job is cut off mid-run.
 func LoadOrCreateCA(dir string) (*CA, error) {
 	if dir != "" {
 		certPEM, certErr := os.ReadFile(filepath.Join(dir, caFile))
 		keyPEM, keyErr := os.ReadFile(filepath.Join(dir, caKeyFile))
 		if certErr == nil && keyErr == nil {
-			return parseCA(certPEM, keyPEM)
-		}
-		if !errors.Is(certErr, os.ErrNotExist) || !errors.Is(keyErr, os.ErrNotExist) {
+			ca, err := parseCA(certPEM, keyPEM)
+			if err != nil || ca.servesInjectHosts() {
+				return ca, err
+			}
+		} else if !errors.Is(certErr, os.ErrNotExist) || !errors.Is(keyErr, os.ErrNotExist) {
 			return nil, fmt.Errorf("broker CA in %s is incomplete or unreadable (cert: %v, key: %v); delete both files to start over", dir, certErr, keyErr)
 		}
 	}
@@ -78,7 +91,7 @@ func newCA(now time.Time) (*CA, []byte, error) {
 	tmpl := &x509.Certificate{
 		SerialNumber:                randomSerial(),
 		Subject:                     pkix.Name{CommonName: "grove broker CA"},
-		NotBefore:                   now.Add(-time.Hour),
+		NotBefore:                   now.Add(-caBackdate),
 		NotAfter:                    now.Add(caLife),
 		IsCA:                        true,
 		BasicConstraintsValid:       true,
@@ -125,7 +138,19 @@ func parseCA(certPEM, keyPEM []byte) (*CA, error) {
 	return &CA{cert: cert, certPEM: certPEM, key: key, leaves: map[string]*tls.Certificate{}, now: time.Now}, nil
 }
 
+// servesInjectHosts reports whether the CA's permitted names are exactly InjectHosts.
+func (c *CA) servesInjectHosts() bool {
+	got := append([]string(nil), c.cert.PermittedDNSDomains...)
+	sort.Strings(got)
+	want := InjectHosts()
+	return c.cert.PermittedDNSDomainsCritical && slices.Equal(got, want)
+}
+
 // CertPEM is the CA certificate a job VM installs as trusted.
+// MadeAt is when the CA was created: a VM booted before then trusts an older CA, if any. The
+// control plane rebuilds such VMs (fleet.BrokerCAs), told this time on every sync.
+func (c *CA) MadeAt() time.Time { return c.cert.NotBefore.Add(caBackdate) }
+
 func (c *CA) CertPEM() []byte { return append([]byte(nil), c.certPEM...) }
 
 // Leaf returns a certificate for host, one of InjectHosts, minting it on first use and again when
