@@ -4,6 +4,12 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **`grove setup` rejoins under the worker's own name.** A re-run joined under the Mac's
+  hostname (often just "Mac"), so the control plane issued credentials for a worker that didn't
+  exist, refused the one still running under its installed name, and the Mac's VMs were deleted.
+  Setup now asks to join as the name the worker is installed under, and uses the hostname only
+  for a first install.
+
 - **A Linux job runs on Linux or fails; it never runs on macOS.** A Linux pool scaled to zero had
   no Nomad node, so 20 seconds after submit grove moved its job to the `macos` pool, where it ran
   and reported success (`uname -a` printed `Darwin`), and because the job then counted as macOS

@@ -148,7 +148,11 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 		}
 		defer stop()
 	}
-	host, _ := os.Hostname()
+	joinOpts := install.Options{}
+	if target != nil {
+		joinOpts = target.options()
+	}
+	host := setupJoinName(joinOpts, os.Hostname)
 	start, err := createJoin(cmd.Context(), serverURL, host, st.TailnetIP())
 	if err != nil {
 		return err
@@ -210,6 +214,19 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 }
 
 var runtimeOS = func() string { return runtime.GOOS }
+
+// setupJoinName is the worker name a join asks for: the name this user's worker is already
+// installed under, when it has one, else the Mac's hostname. A re-run that joined under the
+// hostname instead (often just "Mac") left the installed worker running under its own name with
+// credentials for another, and the control plane refused it ("a worker account can act only on its
+// own worker"): the Mac dropped out of the fleet.
+func setupJoinName(opts install.Options, hostname func() (string, error)) string {
+	if name := install.InstalledWorkerName(opts); name != "" {
+		return name
+	}
+	h, _ := hostname()
+	return h
+}
 
 // groveCandidate is one tailnet peer that answered like a Grove control plane.
 type groveCandidate struct {
