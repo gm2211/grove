@@ -171,7 +171,7 @@ function Row({ k, v }: { k: string; v: string }) {
 function Section({ children, on }: { children: ReactNode; on?: boolean }) {
   return (
     <section className="panel flex flex-col gap-4 p-5">
-      <div className="flex items-baseline gap-[9px]">
+      <div className="panel-head">
         <span className="kicker" style={{ fontSize: 10 }}>
           Private repository sourcing
         </span>

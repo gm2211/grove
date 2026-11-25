@@ -5,7 +5,7 @@ import { api } from "../api/client";
 import { View, ViewHead } from "../components/Layout";
 import { StatusPill, TONES, toneOf } from "../components/StatusPill";
 import { formatJobDuration, formatRelativeAge, shortRepo } from "../lib/format";
-import type { JobStatus } from "../api/types";
+import type { Job, JobStatus } from "../api/types";
 
 const ALL_STATUSES: JobStatus[] = ["running", "pending", "success", "failed", "canceled", "lost"];
 const COLS = "minmax(0,1.1fr) 0.55fr 0.6fr minmax(0,1.5fr) 0.8fr minmax(0,1.2fr) 0.65fr minmax(0,1fr)";
@@ -19,6 +19,7 @@ export function JobsPage() {
   });
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [poolFilter, setPoolFilter] = useState<string>("all");
+  const [search, setSearch] = useState("");
 
   const all = useMemo(() => data ?? [], [data]);
   const pools = useMemo(() => Array.from(new Set(all.map((j) => j.request.pool))).sort(), [all]);
@@ -33,8 +34,9 @@ export function JobsPage() {
       all
         .filter((j) => statusFilter === "all" || j.status === statusFilter)
         .filter((j) => poolFilter === "all" || j.request.pool === poolFilter)
+        .filter((j) => matches(j, search))
         .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()),
-    [all, statusFilter, poolFilter],
+    [all, statusFilter, poolFilter, search],
   );
 
   const title = isLoading
@@ -59,8 +61,17 @@ export function JobsPage() {
             {s} <span className="n">{counts[s] ?? 0}</span>
           </button>
         ))}
+        <input
+          type="search"
+          className="input compact min-w-0 flex-1 sm:ml-auto sm:w-64 sm:flex-none"
+          placeholder="search jobs"
+          title="matches id, repo, ref, node, requester or pool"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          aria-label="search jobs"
+        />
         <select
-          className="input ml-auto w-auto py-[6px]"
+          className="input compact w-auto"
           value={poolFilter}
           onChange={(e) => setPoolFilter(e.target.value)}
           aria-label="pool"
@@ -126,10 +137,19 @@ export function JobsPage() {
             </div>
           ))}
           {!isLoading && filtered.length === 0 && (
-            <div className="mapcol-empty px-[18px] py-8">no jobs match this filter</div>
+            <div className="mapcol-empty px-[18px] py-8">no jobs match {search.trim() ? "this search" : "this filter"}</div>
           )}
         </div>
       </div>
     </View>
   );
+}
+
+/** Case-insensitive substring match over the fields a person scans the table for. */
+function matches(job: Job, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return [job.id, job.request.repo, job.request.ref, job.node, job.request.requester, job.request.pool]
+    .filter(Boolean)
+    .some((v) => v!.toLowerCase().includes(q));
 }
