@@ -20,8 +20,8 @@ import (
 var rootHelperUser string
 
 var rootHelperCmd = &cobra.Command{
-	Use:   "root-helper",
-	Short: "The root helper: an admin types a password once, and the worker Mac's root steps happen by themselves",
+	Use:    "root-helper",
+	Short:  "The root helper: an admin types a password once, and the worker Mac's root steps happen by themselves",
 	Hidden: true, // reached through `sudo grove doctor --fix`
 }
 
