@@ -502,6 +502,9 @@ func rootlessFirewallWanted(opts Options) bool {
 	if opts.Firewall {
 		return true
 	}
+	if _, ok := RootHelperFor(opts); ok {
+		return true
+	}
 	_, installed := hostFirewallPaths(opts)
 	_, err := os.Stat(installed)
 	return err == nil
