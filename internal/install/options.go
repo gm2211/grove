@@ -87,10 +87,7 @@ type Options struct {
 	// this binary. `grove setup --user` sets it on both sides (the admin's grove, which pins the
 	// plist, and the worker user's, which stages it) so they render the same plist.
 	GroveBin string
-	// rootKeeperSource overrides the binary the root-keeper step copies (this process's own).
-	// Test override.
-	rootKeeperSource string
-	Home             string // test override; defaults to os.UserHomeDir()
+	Home     string // test override; defaults to os.UserHomeDir()
 	// GroveVersion is this grove binary's release version ("0.1.21"; empty or "dev" for a local
 	// build). The Orchard binary is downloaded from that release's assets before any source build.
 	GroveVersion string

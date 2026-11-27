@@ -4,12 +4,6 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
-- **One admin password, once.** `sudo grove root-keeper install --user <worker user>` does every
-  pending root step now and installs `com.grove.root-keeper`, a root LaunchDaemon that does them by
-  itself from then on: a release that changes the VM firewall or the worker daemons no longer
-  waits for an admin to run setup again. Its own root-owned grove updates only to a release whose
-  checksum and build provenance verify. Worker plans list it as a root step too.
-
 - **`grove setup` rejoins under the worker's own name.** A re-run joined under the Mac's
   hostname (often just "Mac"), so the control plane issued credentials for a worker that didn't
   exist, refused the one still running under its installed name, and the Mac's VMs were deleted.

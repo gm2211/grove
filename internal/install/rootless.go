@@ -513,8 +513,7 @@ func rootlessFirewallWanted(opts Options) bool {
 func rootlessTailSteps(r Runner, opts Options) []Step {
 	steps := rootlessSkipSteps(opts)
 	if rootlessFirewallWanted(opts) {
-		// The firewall is root's, so its next change needs root too: the keeper does it then.
-		return append(append(hostFirewallSteps(r, opts), rootKeeperStep(r, opts)), steps[1:]...)
+		return append(hostFirewallSteps(r, opts), steps[1:]...)
 	}
 	return steps
 }

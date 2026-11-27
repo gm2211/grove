@@ -364,22 +364,6 @@ Orchard binary a worker downloads goes through the same `fetchReleaseAsset`. Nev
 entries); never through sudo or into a path this user doesn't own (Homebrew's is left to brew);
 never a development build. Never tell the operator to upgrade a machine by hand when this covers it.
 
-## The root keeper — an admin types a password once
-
-`internal/install/rootkeeper.go`, `internal/cli/root_keeper.go`: `sudo grove root-keeper install
---user <worker user>` (or the `root-keeper` root step of any worker plan) installs
-`com.grove.root-keeper`, a root LaunchDaemon that every 15 minutes renders the worker user's pending
-root steps with its own binary (`PendingRootSteps`, exactly what an admin's `grove setup --user`
-renders, SHA-256 pins and all) and runs them, so a release that changes the VM firewall or the
-worker daemons never waits for an admin. Keep it that way:
-
-- Its binary is `/usr/local/libexec/grove-root-keeper/grove`, root-owned, copied once (pinned by
-  the SHA-256 it had at plan time) and from then on replaced only by `install.SelfUpdate` of a
-  verified release (checksums, Sigstore provenance, version). It is the one self-update that runs
-  as root, and only into that root-owned path; never run a binary the worker user can write.
-- Nothing the worker user's process prints, writes or stages becomes root script text. The keeper
-  never changes a worker's shape (rootless stays rootless) and never rewrites its own plist.
-
 ## Image holds — a pool never goes down for a bad image
 
 `internal/fleet/imagehold.go`: `grove serve` keeps a pool on the last image a VM of it ran while
