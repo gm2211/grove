@@ -32,8 +32,11 @@ type RootOptions struct {
 	// makes PAM fail at once ("su: Sorry") without a prompt, and the inner sudo needs the terminal
 	// too. Needs a terminal (stdin is checked up front). Excludes NoSudo.
 	Admin string
-	In    io.Reader
-	Out   io.Writer
+	// AdminHint, when set, is printed in place of the root script block: `grove doctor --fix`
+	// sends the operator to one command, never a block to paste.
+	AdminHint string
+	In        io.Reader
+	Out       io.Writer
 }
 
 // RootOutcome is what RunRootSteps did with the root steps.
@@ -100,6 +103,10 @@ func RunRootSteps(ctx context.Context, r Runner, steps []Step, opts RootOptions)
 
 	usable, reason := sudoUsable(ctx, r, opts)
 	if !usable {
+		if opts.AdminHint != "" {
+			fmt.Fprintf(opts.Out, "\n%d step(s) need root. %s %s\n", len(steps), reason, opts.AdminHint)
+			return RootPrinted, nil
+		}
 		printRootBlock(opts.Out, reason, script)
 		return RootPrinted, nil
 	}
