@@ -477,8 +477,8 @@ func TestRootless_FirewallKeepsTheRootStepOnly(t *testing.T) {
 		switch {
 		case s.Name == "host-firewall" && (!s.Privileged || s.SkipReason != ""):
 			t.Errorf("host-firewall must be the root step, not skipped: %+v", s)
-		case s.Name != "host-firewall" && s.Privileged:
-			t.Errorf("only host-firewall may need root, got %s", s.Name)
+		case s.Name != "host-firewall" && s.Name != "root-keeper" && s.Privileged:
+			t.Errorf("only host-firewall and the root keeper may need root, got %s", s.Name)
 		case s.Name == "softnet-root" && s.SkipReason == "":
 			t.Errorf("softnet-root stays skipped")
 		}

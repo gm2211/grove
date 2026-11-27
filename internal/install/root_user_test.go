@@ -56,7 +56,7 @@ func TestPendingRootSteps_RendersForAnotherUser(t *testing.T) {
 		}
 		names = append(names, s.Name)
 	}
-	if strings.Join(names, ",") != "disable-sleep,worker-daemons,host-firewall" {
+	if strings.Join(names, ",") != "disable-sleep,worker-daemons,host-firewall,root-keeper" {
 		t.Fatalf("pending root steps = %v", names)
 	}
 	script, err := stepNamed(t, steps, "worker-daemons").Root(context.Background())
