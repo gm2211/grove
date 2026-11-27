@@ -221,7 +221,7 @@ func TestCheckHostFirewall(t *testing.T) {
 			if got.OK != tc.ok || !strings.Contains(got.Detail, tc.detail) {
 				t.Errorf("= %+v, want OK=%v and %q", got, tc.ok, tc.detail)
 			}
-			if !got.OK && !strings.Contains(got.Remediation, "grove setup") {
+			if !got.OK && !strings.Contains(got.Remediation, "grove doctor --fix") {
 				t.Errorf("remediation doesn't say what to run: %q", got.Remediation)
 			}
 		})

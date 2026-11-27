@@ -567,7 +567,7 @@ func checkKeepAwake(ctx context.Context, r Runner, opts Options) CheckResult {
 		return CheckResult{Name: name, OK: true, Detail: label + " (an existing caffeinate agent) keeps this Mac awake"}
 	}
 	return CheckResult{Name: name, OK: false, Detail: "nothing keeps this Mac awake, so a worker Mac that sleeps stops accepting jobs",
-		Remediation: "run `grove install --role worker` again as " + opts.userLabel() + ": it installs the " + keepAwakeLabel + " LaunchAgent"}
+		Remediation: "run `grove doctor --fix` as " + opts.userLabel() + ": it installs the " + keepAwakeLabel + " LaunchAgent"}
 }
 
 // checkRootlessFirewall is the warning that stands in for host-firewall in a rootless install:

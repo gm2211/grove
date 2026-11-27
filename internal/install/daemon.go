@@ -270,7 +270,7 @@ func checkLoginSession(ctx context.Context, r Runner, opts Options) CheckResult 
 // daemonsRemediation is what `grove doctor` tells an operator to do about a daemon that isn't
 // installed or loaded.
 func daemonsRemediation(opts Options) string {
-	return "run `grove setup` (or `grove install --role worker`) again: it runs the worker-daemons root step with one sudo prompt, or prints one block for an admin"
+	return "run `grove doctor --fix` (root steps: from an admin account, `sudo grove doctor --fix`)"
 }
 
 // checkWorkerDaemon reports on the Orchard worker's LaunchDaemon: that it is the one this grove
@@ -301,7 +301,7 @@ func checkWorkerDaemon(ctx context.Context, r Runner, opts Options) CheckResult 
 	if _, err := os.Stat(legacyAgentPlist(opts, d.Label)); err == nil {
 		return CheckResult{Name: name, OK: false,
 			Detail:      legacyAgentPlist(opts, d.Label) + " is still there and would start a second worker at login",
-			Remediation: "run `grove install --role worker`, which removes it now that the daemon is loaded"}
+			Remediation: "run `grove doctor --fix`, which removes it now that the daemon is loaded"}
 	}
 	return CheckResult{Name: name, OK: true, Detail: d.Label + " runs at boot as " + user}
 }

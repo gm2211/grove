@@ -402,7 +402,7 @@ func checkHostFirewall(ctx context.Context, r Runner, opts Options) CheckResult 
 		}
 		result := CheckResult{Name: name, OK: ok, Detail: detail}
 		if !ok {
-			result.Remediation = "run `grove install --role worker` as this user: it sends the rules to the root helper, no sudo. If the helper refused them as too new, an admin runs `sudo grove root-helper install --user " + opts.userLabel() + "` once with this grove"
+			result.Remediation = "run `grove doctor --fix` as " + opts.userLabel() + ": it sends the rules to the root helper, no sudo. If the helper refused them as too new, from an admin account: `sudo grove doctor --fix`"
 		}
 		return result
 	}
@@ -415,7 +415,7 @@ func checkHostFirewall(ctx context.Context, r Runner, opts Options) CheckResult 
 	result := CheckResult{Name: name, OK: ok, Detail: detail}
 	if !ok {
 		result.Detail += ", so a VM whose root removes its own fence reaches every port on this Mac"
-		result.Remediation = "run `grove setup` (or `grove install --role worker`) again: it runs the host-firewall root step with one sudo prompt, or prints one block for an admin"
+		result.Remediation = "from an admin account, run `sudo grove doctor --fix`: it sets up the root helper, which keeps the VM firewall current from then on"
 	}
 	return result
 }

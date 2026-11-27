@@ -28,6 +28,7 @@ var installFlags struct {
 	force         bool
 	yes           bool
 	noSudo        bool
+	adminHint     string
 	admin         string
 	rootless      bool
 	firewall      bool
@@ -89,6 +90,8 @@ func init() {
 	installCmd.Flags().StringVar(&installFlags.admin, "admin", "", "admin account to run the root steps through (`su <admin>` then sudo; asks for its password on the terminal), for a worker account that has no sudo; excludes --no-sudo. Over ssh use `ssh -t`")
 	installCmd.Flags().BoolVar(&installFlags.firewall, "firewall", false, "with a rootless worker, still install the VM firewall (host-firewall): its one root step is run or printed for an admin, and the worker stays LaunchAgents")
 	installCmd.Flags().BoolVar(&installFlags.rootless, "rootless", false, "install the worker with no root: per-user LaunchAgents, a caffeinate keep-awake agent, no VM firewall (worker role; chosen automatically for a user who isn't an admin; --rootless=false keeps the root-based install)")
+	installCmd.Flags().StringVar(&installFlags.adminHint, "admin-hint", "", "")
+	_ = installCmd.Flags().MarkHidden("admin-hint")
 	installCmd.Flags().BoolVar(&installFlags.dryRun, "dry-run", false, "print the plan; change nothing")
 	_ = installCmd.MarkFlagRequired("role")
 	Root.AddCommand(installCmd)
@@ -172,6 +175,7 @@ func applyInstall(cmd *cobra.Command, opts install.Options, dryRun, yes, noSudo 
 		Yes:         yes,
 		NoSudo:      noSudo,
 		Admin:       admin,
+		AdminHint:   installFlags.adminHint,
 		In:          cmd.InOrStdin(),
 		Out:         out,
 	}

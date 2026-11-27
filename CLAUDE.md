@@ -368,6 +368,10 @@ Keep it that way:
   block only, no rdr, nat, route-to, anchor, load, set, include or table file), chosen so the worst
   it can do is loosen the fence around the user's own VMs. Never widen the grammar under the same
   version; `pfgrammar_test.go` keeps today's rules inside it.
+- Operators reach it through `sudo grove doctor --fix` (`install.FixAsRoot`), which finds the worker
+  user, refuses to run a grove that user can write, installs or updates the helper and runs the
+  other pending root steps. Doctor's fix lines name `grove doctor --fix`; never send the operator
+  to `root-helper` or a pasted block.
 - The helper reads `inbox/request.json` only as a regular file the configured uid owns, with
   `O_NOFOLLOW`, size-capped, strict JSON. It runs pfctl with fixed arguments and the rules on stdin,
   keeps the last rules that loaded and goes back to them, and never echoes a request into its

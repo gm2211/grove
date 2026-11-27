@@ -4,6 +4,12 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **`grove doctor` fixes what it finds.** When a check fails it asks "Fix it?" (`--fix` fixes
+  without asking). As the worker's account it re-runs the worker install; root steps go to one
+  sudo prompt for an admin, or to one line: from an admin account, `sudo grove doctor --fix`. Run
+  that way it finds the worker's account itself, installs or updates the root helper, and runs
+  every other pending root step. Doctor's fix lines now name `grove doctor --fix` instead of
+  setup, install and root-helper commands.
 - **One admin password, once: the root helper.** `sudo grove root-helper install --user <worker
   user>` installs `com.grove.root-helper`, a root LaunchDaemon that loads the VM firewall rules the
   worker user's grove asks for, so a release that changes the rules needs no admin. The helper
