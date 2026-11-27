@@ -230,7 +230,6 @@ func buildWorkerSteps(r Runner, opts Options, out io.Writer) []Step {
 	steps = append(steps, retireOtherUserStacksStep(r, opts, opts.hostname()))
 	steps = append(steps, workerFinishSteps(r, opts, daemons, bk, out)...)
 	steps = append(steps, hostFirewallSteps(r, opts)...)
-	steps = append(steps, rootKeeperStep(r, opts))
 	return steps
 }
 
