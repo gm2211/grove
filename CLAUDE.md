@@ -350,6 +350,29 @@ privileged step, printed for an admin. Keep it that way:
 - Every pass comes before the block. `hostfirewall_test.go` loads the anchor on the macOS CI
   runner's real pf (`GROVE_PF_TEST=1`).
 
+## The root helper — an admin types a password once
+
+`internal/install/roothelper.go`, `pfgrammar.go`, `internal/cli/root_helper.go`: `sudo grove
+root-helper install --user <worker user>` installs `com.grove.root-helper` (root, under
+`/Library/Application Support/grove/root-helper`). The worker user's grove writes a request into
+the helper's `inbox/`; the helper validates it and does it, and writes `status.json`, which the
+user's install step and `grove doctor` read. With a helper, `host-firewall` is an ordinary step.
+Keep it that way:
+
+- The helper never runs new code. Its binary is copied once from the admin's grove (refused when
+  the worker user can write it or a directory above it) and never self-updates: every release is
+  built from main, and a worker user may hold a GitHub login that can put commits on main, so a
+  root process that trusts "a verified release" trusts that user. A new kind of root step means a
+  new request version and an admin reinstall, never a helper that fetches code.
+- A request is data inside a fixed grammar (`ValidateVMFirewallRules`: vmnet bridges only, pass and
+  block only, no rdr, nat, route-to, anchor, load, set, include or table file), chosen so the worst
+  it can do is loosen the fence around the user's own VMs. Never widen the grammar under the same
+  version; `pfgrammar_test.go` keeps today's rules inside it.
+- The helper reads `inbox/request.json` only as a regular file the configured uid owns, with
+  `O_NOFOLLOW`, size-capped, strict JSON. It runs pfctl with fixed arguments and the rules on stdin,
+  keeps the last rules that loaded and goes back to them, and never echoes a request into its
+  status.
+
 ## Self-update — nobody upgrades grove by hand
 
 `internal/install/selfupdate.go` and `internal/cli/self_update.go`: `grove serve` and the broker

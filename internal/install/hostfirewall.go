@@ -281,18 +281,36 @@ func hostFirewallRootScript(staged, installed, plist string) string {
 // share it, so a control plane that moved shows up as an installed plist that is no longer the one
 // grove renders.
 func renderHostFirewall(ctx context.Context, r Runner, opts Options) (string, error) {
-	gw, err := VMNetGateway(ctx, r)
-	if err != nil {
-		return "", err
-	}
-	if !gw.Is4() {
-		return "", fmt.Errorf("vmnet gateway %s is not an IPv4 address", gw)
-	}
-	nomad, err := resolveNomadTargets(ctx, r, opts)
+	gw, nomad, err := hostFirewallInputs(ctx, r, opts)
 	if err != nil {
 		return "", err
 	}
 	return hostFirewallPlist(gw, nomad), nil
+}
+
+// renderHostFirewallRules renders the anchor's rules alone, for the root helper.
+func renderHostFirewallRules(ctx context.Context, r Runner, opts Options) (string, error) {
+	gw, nomad, err := hostFirewallInputs(ctx, r, opts)
+	if err != nil {
+		return "", err
+	}
+	return hostFirewallRules(gw, nomad), nil
+}
+
+// hostFirewallInputs are this Mac's vmnet gateway and the control plane's addresses.
+func hostFirewallInputs(ctx context.Context, r Runner, opts Options) (netip.Addr, nomadTargets, error) {
+	gw, err := VMNetGateway(ctx, r)
+	if err != nil {
+		return netip.Addr{}, nil, err
+	}
+	if !gw.Is4() {
+		return netip.Addr{}, nil, fmt.Errorf("vmnet gateway %s is not an IPv4 address", gw)
+	}
+	nomad, err := resolveNomadTargets(ctx, r, opts)
+	if err != nil {
+		return netip.Addr{}, nil, err
+	}
+	return gw, nomad, nil
 }
 
 // hostFirewallSteps stage the VM firewall's LaunchDaemon and then install it. Installing is
@@ -300,6 +318,9 @@ func renderHostFirewall(ctx context.Context, r Runner, opts Options) (string, er
 // that command, and both the install step's check and `grove doctor` compare what is installed
 // with what grove renders, never with the staged file.
 func hostFirewallSteps(r Runner, opts Options) []Step {
+	if _, ok := RootHelperFor(opts); ok {
+		return helperFirewallSteps(r, opts)
+	}
 	staged, installed := hostFirewallPaths(opts)
 	render := func(ctx context.Context) (string, error) { return renderHostFirewall(ctx, r, opts) }
 	return []Step{
@@ -373,6 +394,18 @@ func hostFirewallInstalled(ctx context.Context, r Runner, opts Options, render f
 // checkHostFirewall reports on the worker Mac's VM firewall.
 func checkHostFirewall(ctx context.Context, r Runner, opts Options) CheckResult {
 	const name = "host-firewall"
+	if _, ok := RootHelperFor(opts); ok {
+		ok, detail, err := helperFirewallLoaded(ctx, r, opts)
+		if err != nil {
+			return CheckResult{Name: name, OK: false, Detail: err.Error(),
+				Remediation: "fix what the message names (Tailscale and DNS for a name that does not resolve), then run `grove doctor` again"}
+		}
+		result := CheckResult{Name: name, OK: ok, Detail: detail}
+		if !ok {
+			result.Remediation = "run `grove install --role worker` as this user: it sends the rules to the root helper, no sudo. If the helper refused them as too new, an admin runs `sudo grove root-helper install --user " + opts.userLabel() + "` once with this grove"
+		}
+		return result
+	}
 	render := func(ctx context.Context) (string, error) { return renderHostFirewall(ctx, r, opts) }
 	ok, detail, err := hostFirewallInstalled(ctx, r, opts, render)
 	if err != nil {

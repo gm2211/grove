@@ -4,6 +4,14 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **One admin password, once: the root helper.** `sudo grove root-helper install --user <worker
+  user>` installs `com.grove.root-helper`, a root LaunchDaemon that loads the VM firewall rules the
+  worker user's grove asks for, so a release that changes the rules needs no admin. The helper
+  never runs new code: its binary is copied once from the admin's grove (refused if the worker user
+  can write it) and never updates itself. It checks every request against a fixed pf grammar (VM
+  bridges only, pass and block only, no rdr, nat, route-to, anchor or file) and goes back to the
+  last rules that loaded when new ones don't. It replaces `com.grove.pf-vm` and sets the Mac never
+  to sleep and to start again after a power cut.
 - **`grove setup` rejoins under the worker's own name.** A re-run joined under the Mac's
   hostname (often just "Mac"), so the control plane issued credentials for a worker that didn't
   exist, refused the one still running under its installed name, and the Mac's VMs were deleted.
