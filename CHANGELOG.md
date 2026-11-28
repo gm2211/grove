@@ -4,6 +4,10 @@ All notable changes to grove are documented here.
 
 ## Unreleased
 
+- **`grove doctor --fix` does the root part too.** Run by the worker's own account when it isn't an
+  admin (argos), it now asks for an admin's password itself and finishes the job: it verifies this
+  grove release, fetches it as the admin into a folder the worker can't touch, checks the digest
+  and runs the root fixes with it. No script to download, no command to paste.
 - **`grove doctor` fixes what it finds.** When a check fails it asks "Fix it?" (`--fix` fixes
   without asking). As the worker's account it re-runs the worker install; root steps go to one
   sudo prompt for an admin, or to one line: from an admin account, `sudo grove doctor --fix`. Run

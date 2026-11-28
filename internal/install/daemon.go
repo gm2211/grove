@@ -270,7 +270,7 @@ func checkLoginSession(ctx context.Context, r Runner, opts Options) CheckResult 
 // daemonsRemediation is what `grove doctor` tells an operator to do about a daemon that isn't
 // installed or loaded.
 func daemonsRemediation(opts Options) string {
-	return "run `grove doctor --fix` (root steps: from an admin account, `sudo grove doctor --fix`)"
+	return "run `grove doctor --fix` (it asks for an admin's password for the root part)"
 }
 
 // checkWorkerDaemon reports on the Orchard worker's LaunchDaemon: that it is the one this grove
