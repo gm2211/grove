@@ -25,7 +25,7 @@ func TestFixAsRootRefusesAWorkerWritableGrove(t *testing.T) {
 	_ = os.WriteFile(rootHelperConfigPath(), cfg, 0o644)
 	exe := filepath.Join(t.TempDir(), "grove")
 	_ = os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755)
-	err = FixAsRoot(context.Background(), r, exe, "v", io.Discard)
+	err = FixAsRoot(context.Background(), r, exe, "v", "", io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "root won't run it") {
 		t.Fatalf("err = %v", err)
 	}
@@ -45,7 +45,7 @@ func TestFindWorkerUserFromHelperConfig(t *testing.T) {
 	}
 	cfg, _ := json.Marshal(RootHelperConfig{Version: 1, User: me.Username, UID: uid})
 	_ = os.WriteFile(rootHelperConfigPath(), cfg, 0o644)
-	u, err := FindWorkerUser()
+	u, err := FindWorkerUser("")
 	if err != nil || u.Username != me.Username {
 		t.Fatalf("FindWorkerUser = %v, %v", u, err)
 	}

@@ -22,7 +22,14 @@ var usersDir = "/Users"
 // FindWorkerUser names the account this Mac's grove worker runs as, from what only root writes
 // first (the root helper's config, the worker LaunchDaemons) and then from each home's grove
 // worker identity. It fails unless exactly one account is found.
-func FindWorkerUser() (*user.User, error) {
+func FindWorkerUser(hint string) (*user.User, error) {
+	if hint != "" {
+		u, err := user.Lookup(hint)
+		if err != nil || u.Uid == "0" || !hasWorker(u) {
+			return nil, fmt.Errorf("%s has no grove worker on this Mac", hint)
+		}
+		return u, nil
+	}
 	if cfg, err := readRootHelperConfig(); err == nil {
 		return user.Lookup(cfg.User)
 	}
@@ -42,8 +49,7 @@ func FindWorkerUser() (*user.User, error) {
 		if err != nil || u.Uid == "0" {
 			continue
 		}
-		opts := Options{User: u.Username, Home: u.HomeDir}
-		if _, err := os.Stat(workerIdentityPath(opts)); err == nil {
+		if hasWorker(u) {
 			found = append(found, u)
 		}
 	}
@@ -59,6 +65,18 @@ func FindWorkerUser() (*user.User, error) {
 		}
 		return nil, fmt.Errorf("more than one account has a grove worker (%s)", strings.Join(names, ", "))
 	}
+}
+
+// hasWorker reports whether u's home holds a grove worker install: its identity record or its
+// worker LaunchAgent.
+func hasWorker(u *user.User) bool {
+	opts := Options{User: u.Username, Home: u.HomeDir}
+	for _, p := range []string{workerIdentityPath(opts), legacyAgentPlist(opts, orchardWorkerLabel)} {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // RootRepairOptions are the Options for rendering u's worker's root steps the way an admin's
@@ -108,11 +126,11 @@ func installedBrokerProgram(opts Options) string {
 // FixAsRoot is `sudo grove doctor --fix`: the root helper for the worker user (installed, or
 // replaced by this grove when it differs), then the worker's other pending root steps as one
 // script. exe is this process's binary.
-func FixAsRoot(ctx context.Context, r Runner, exe, version string, out io.Writer) error {
+func FixAsRoot(ctx context.Context, r Runner, exe, version, workerHint string, out io.Writer) error {
 	if rootHelperEUID() != 0 {
 		return errors.New("FixAsRoot runs as root")
 	}
-	u, err := FindWorkerUser()
+	u, err := FindWorkerUser(workerHint)
 	if err != nil {
 		return err
 	}
